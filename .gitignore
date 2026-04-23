@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.python-version
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Packaging/build
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test and simulation artifacts
+sim_build/
+results.xml
+*.vcd
+*.fst
+*.lxt
+*.lxt2
+*.wlf
+*.vvp
+
+# Generated outputs
+out/
+
+# OpenRAM reference docs (local guidance only)
+openram_doc/
+
+# OpenRAM/EDA collateral that may be created locally
+OpenRAM/
+technology/
+pdks/
+miniconda/
+*.gds
+*.lef
+*.lib
+*.spef
+*.sdf
+*.sdc
+
+# Logs/temp/editor files
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+prompt.md
