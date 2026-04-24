@@ -67,3 +67,7 @@ Thumbs.db
 .vscode/
 
 prompt.md
+
+OpenRAM/*
+input/*
+pdk/*
