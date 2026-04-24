@@ -1,0 +1,12 @@
+memory_name: "sram_1rw"
+wrapper_module_name: "sram_1rw_mbist"
+addr_width: 10
+data_width: 32
+we_active_low: true
+ports:
+  clk: "clk0"
+  addr: "addr0"
+  din: "din0"
+  dout: "dout0"
+  we: "we0"
+  csb: "csb0"
