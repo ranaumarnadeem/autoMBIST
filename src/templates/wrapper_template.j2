@@ -68,6 +68,19 @@ module {{ wrapper_module_name }} #(
     assign sram_csb  = test_mode ? mbist_sram_csb : func_csb;
     assign func_dout = sram_dout;
 
+{% if use_saboteur %}
+    {{ memory_name }}_saboteur #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .DATA_WIDTH(DATA_WIDTH)
+    ) u_sram (
+        .{{ ports.clk }}(mbist_sram_clk),
+        .{{ ports.csb }}(sram_csb),
+        .{{ ports.addr }}(sram_addr),
+        .{{ ports.din }}(sram_din),
+        .{{ ports.we }}(sram_we),
+        .{{ ports.dout }}(sram_dout)
+    );
+{% else %}
     {{ memory_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH)
@@ -79,5 +92,6 @@ module {{ wrapper_module_name }} #(
         .{{ ports.we }}(sram_we),
         .{{ ports.dout }}(sram_dout)
     );
+{% endif %}
 
 endmodule
