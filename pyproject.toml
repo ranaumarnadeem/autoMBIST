@@ -19,3 +19,8 @@ autombist = "autombist.main:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/autombist"]
+
+[project.urls]
+Homepage = "https://github.com/ranaumarnadeem/autoMBIST"
+Repository = "https://github.com/ranaumarnadeem/autoMBIST"
+Issues = "https://github.com/ranaumarnadeem/autoMBIST/issues"
