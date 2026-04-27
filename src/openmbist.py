@@ -100,6 +100,10 @@ def render_saboteur(config: dict[str, Any], template_dir: Path) -> str:
     return _render_template(config, template_dir, "saboteur_template.j2")
 
 
+def render_fault_makefile(config: dict[str, Any], template_dir: Path) -> str:
+    return _render_template(config, template_dir, "fault_makefile_template.j2")
+
+
 def copy_mbist_rtl(repo_root: Path, outdir: Path) -> None:
     rtl_dir = repo_root / "rtl"
     for rtl_file in MBIST_RTL_FILES:
@@ -153,6 +157,13 @@ def generate_from_config(
         saboteur_path = module_outdir / f"{config['memory_name']}_saboteur.v"
         saboteur_path.write_text(saboteur_text, encoding="utf-8")
 
+        render_config["fault_count"] = faults
+        render_config["fault_seed"] = fault_seed
+
+        makefile_text = render_fault_makefile(render_config, template_dir)
+        makefile_path = module_outdir / "Makefile"
+        makefile_path.write_text(makefile_text, encoding="utf-8")
+
     wrapper_text = render_wrapper(render_config, template_dir)
     wrapper_path = module_outdir / f"{config['memory_name']}_mbist.v"
     wrapper_path.write_text(wrapper_text, encoding="utf-8")
@@ -172,10 +183,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(
         prog="python3 src/openmbist.py",
-        description="Generate MBIST wrapper artifacts.",
+        description="Generate MBIST artifacts in OUTDIR/<memory_name>. Test mode also emits a runnable fault-sim Makefile.",
     )
     parser.add_argument("--config", default="config.yml", metavar="CONFIG", help="Config file path")
-    parser.add_argument("--out", default="out", metavar="OUTDIR", help="Output directory")
+    parser.add_argument(
+        "--out",
+        default="out",
+        metavar="OUTDIR",
+        help="Base output directory (artifacts go to OUTDIR/<memory_name>)",
+    )
     parser.add_argument(
         "--test",
         nargs="?",
@@ -183,7 +199,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=False,
         type=parse_bool,
         metavar="BOOL",
-        help="Enable saboteur test mode (default: false)",
+        help="Enable saboteur test mode and generate Makefile in output module dir (default: false)",
     )
     parser.add_argument(
         "-r",
@@ -221,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Generated MBIST wrapper: {wrapper_path}")
     if args.test:
         print(f"Generated fault masks in: {wrapper_path.parent / 'faults'}")
+        print(f"Generated fault-sim Makefile: {wrapper_path.parent / 'Makefile'}")
     return 0
 
 
