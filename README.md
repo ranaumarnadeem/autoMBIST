@@ -37,7 +37,7 @@ For development:
 python -m pip install -e .
 ```
 
-If the package is published to PyPI, you can install directly with:
+Or you can install directly with Pypi:
 
 ```bash
 python -m pip install autombist
