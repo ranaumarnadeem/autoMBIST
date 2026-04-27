@@ -5,13 +5,17 @@ from pathlib import Path
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from openmbist import ConfigError, generate_from_config, load_config, parse_args
+from autombist import ConfigError, __version__, generate_from_config, load_config
+from autombist.main import app
+
+runner = CliRunner()
 
 
 @pytest.fixture
@@ -147,39 +151,47 @@ def test_negative_faults_raises(tmp_path: Path, base_config: dict[str, object]) 
         generate_from_config(config_path, outdir, use_saboteur=True, faults=-1)
 
 
-def test_cli_defaults() -> None:
-    args = parse_args([])
+def test_cli_help_mentions_version_and_options() -> None:
+    result = runner.invoke(app, ["--help"])
 
-    assert args.config == "config.yml"
-    assert args.out == "out"
-    assert args.test is False
-    assert args.faults == 50
-    assert args.seed is None
-
-
-def test_cli_short_and_optional_values() -> None:
-    args = parse_args(["--config", "a.yml", "--out", "build", "--test", "true", "-r", "12", "--seed", "9"])
-
-    assert args.config == "a.yml"
-    assert args.out == "build"
-    assert args.test is True
-    assert args.faults == 12
-    assert args.seed == 9
+    assert result.exit_code == 0
+    assert "--version" in result.output
+    assert "--config" in result.output
+    assert "--out" in result.output
 
 
-def test_cli_test_flag_without_value_is_true() -> None:
-    args = parse_args(["--test"])
-    assert args.test is True
+def test_cli_version() -> None:
+    result = runner.invoke(app, ["--version"])
+
+    assert result.exit_code == 0
+    assert __version__ in result.output
 
 
-def test_cli_test_false_value() -> None:
-    args = parse_args(["--test", "false"])
-    assert args.test is False
+def test_cli_generate_defaults(tmp_path: Path, base_config: dict[str, object]) -> None:
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    result = runner.invoke(app, ["--config", str(config_path), "--out", str(outdir)])
+
+    assert result.exit_code == 0
+    assert (outdir / "sram_1rw" / "sram_1rw_mbist.v").exists()
 
 
-def test_cli_invalid_bool_raises_system_exit() -> None:
-    with pytest.raises(SystemExit):
-        parse_args(["--test", "maybe"])
+def test_cli_generate_test_mode(tmp_path: Path, base_config: dict[str, object]) -> None:
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    result = runner.invoke(
+        app,
+        ["--config", str(config_path), "--out", str(outdir), "--test", "--faults", "8", "--seed", "9"],
+    )
+
+    assert result.exit_code == 0
+    module_outdir = outdir / "sram_1rw"
+    assert (module_outdir / "Makefile").exists()
+    assert (module_outdir / "faults" / "sa0_faults.hex").exists()
 
 
 def test_generated_fault_makefile_has_simple_targets(
