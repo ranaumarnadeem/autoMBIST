@@ -11,7 +11,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from fault_gen import generate_fault_files
+from autombist.fault_gen import generate_fault_files
 
 
 def _prepare_fault_files() -> None:

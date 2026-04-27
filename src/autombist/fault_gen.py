@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import argparse
 import random
-import sys
 from pathlib import Path
 
 SA0_FILENAME = "sa0_faults.hex"
@@ -112,49 +110,3 @@ def generate_fault_files(
         sa0_words=sa0_words,
         sa1_words=sa1_words,
     )
-
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        prog="python3 src/fault_gen.py",
-        description="Generate static Stuck-At fault mask hex files for saboteur SRAM simulation.",
-    )
-    parser.add_argument("--addr-width", required=True, type=int, help="SRAM address width")
-    parser.add_argument("--data-width", required=True, type=int, help="SRAM data width")
-    parser.add_argument("--faults", type=int, default=0, help="Number of random faults")
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Optional random seed for deterministic fault generation",
-    )
-    parser.add_argument(
-        "--outdir",
-        default="./out/faults",
-        help="Output directory for sa0_faults.hex and sa1_faults.hex",
-    )
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-
-    try:
-        sa0_path, sa1_path = generate_fault_files(
-            outdir=args.outdir,
-            addr_width=args.addr_width,
-            data_width=args.data_width,
-            faults=args.faults,
-            seed=args.seed,
-        )
-    except (OSError, ValueError) as exc:
-        print(f"fault_gen: {exc}", file=sys.stderr)
-        return 1
-
-    print(f"Generated {sa0_path}")
-    print(f"Generated {sa1_path}")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
