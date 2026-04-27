@@ -11,7 +11,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from openmbist import ConfigError, generate_from_config, load_config
+from openmbist import ConfigError, generate_from_config, load_config, parse_args
 
 
 @pytest.fixture
@@ -56,6 +56,8 @@ def test_generate_wrapper_and_package_rtl(tmp_path: Path, base_config: dict[str,
 
     for rtl_name in ("mbist_algo.sv", "mbist_fsm.sv", "mbist_top.sv"):
         assert (module_outdir / rtl_name).exists(), f"Missing copied RTL file: {rtl_name}"
+
+    assert not (module_outdir / "Makefile").exists()
 
 
 def test_missing_required_key_raises(tmp_path: Path, base_config: dict[str, object]) -> None:
@@ -114,6 +116,7 @@ def test_generate_with_saboteur_creates_fault_assets(
 
     saboteur_path = module_outdir / "sram_1rw_saboteur.v"
     assert saboteur_path.exists()
+    assert (module_outdir / "Makefile").exists()
 
     wrapper_text = wrapper_path.read_text(encoding="utf-8")
     assert "sram_1rw_saboteur" in wrapper_text
@@ -142,3 +145,65 @@ def test_negative_faults_raises(tmp_path: Path, base_config: dict[str, object]) 
 
     with pytest.raises(ValueError, match="faults"):
         generate_from_config(config_path, outdir, use_saboteur=True, faults=-1)
+
+
+def test_cli_defaults() -> None:
+    args = parse_args([])
+
+    assert args.config == "config.yml"
+    assert args.out == "out"
+    assert args.test is False
+    assert args.faults == 50
+    assert args.seed is None
+
+
+def test_cli_short_and_optional_values() -> None:
+    args = parse_args(["--config", "a.yml", "--out", "build", "--test", "true", "-r", "12", "--seed", "9"])
+
+    assert args.config == "a.yml"
+    assert args.out == "build"
+    assert args.test is True
+    assert args.faults == 12
+    assert args.seed == 9
+
+
+def test_cli_test_flag_without_value_is_true() -> None:
+    args = parse_args(["--test"])
+    assert args.test is True
+
+
+def test_cli_test_false_value() -> None:
+    args = parse_args(["--test", "false"])
+    assert args.test is False
+
+
+def test_cli_invalid_bool_raises_system_exit() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--test", "maybe"])
+
+
+def test_generated_fault_makefile_has_simple_targets(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    generate_from_config(
+        config_path,
+        outdir,
+        use_saboteur=True,
+        faults=8,
+        fault_seed=21,
+    )
+
+    makefile_path = outdir / "sram_1rw" / "Makefile"
+    makefile_text = makefile_path.read_text(encoding="utf-8")
+
+    assert "all: fault-test" in makefile_text
+    assert "fault-test:" in makefile_text
+    assert "debug: precheck" in makefile_text
+    assert "Python3 not found at $(PYTHON_BIN). Maybe use venv? or install Python3." in makefile_text
+    assert "$(MAKE) -C $(PROJECT_ROOT)/tests/hardware" in makefile_text
+    assert "PYTHON_BIN=$(PYTHON_BIN)" in makefile_text
+    assert "SIM_LOG ?= fault_sim.log" in makefile_text
