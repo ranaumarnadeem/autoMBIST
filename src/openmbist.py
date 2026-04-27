@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
-from textwrap import dedent
 from pathlib import Path
 from typing import Any
 
@@ -20,26 +19,6 @@ REQUIRED_TOP_KEYS = (
 )
 REQUIRED_PORT_KEYS = ("clk", "addr", "din", "dout", "we", "csb")
 MBIST_RTL_FILES = ("mbist_algo.sv", "mbist_fsm.sv", "mbist_top.sv")
-
-HELP_EPILOG = dedent(
-     """
-     Examples (run from repository root):
-        1) Generate wrapper + packaged MBIST RTL:
-            python3 src/openmbist.py --config config.yml --outdir out
-
-        2) Run software tests:
-            venv/bin/python3 -m pytest tests/software/test_generator.py -q
-
-        3) Run hardware smoke test (cocotb + iverilog):
-            PATH=\"$PWD/venv/bin:$PATH\" make -C tests/hardware SIM=icarus
-
-        4) Run everything in sequence:
-            python3 src/openmbist.py --config config.yml --outdir out && \
-            venv/bin/python3 -m pytest tests/software/test_generator.py -q && \
-            PATH=\"$PWD/venv/bin:$PATH\" make -C tests/hardware SIM=icarus
-     """
-)
-
 
 class ConfigError(ValueError):
     """Raised when config.yml is missing required values or has invalid types."""
@@ -97,7 +76,7 @@ def load_config(config_path: Path) -> dict[str, Any]:
     return loaded
 
 
-def render_wrapper(config: dict[str, Any], template_dir: Path) -> str:
+def _render_template(config: dict[str, Any], template_dir: Path, template_name: str) -> str:
     env = Environment(
         loader=FileSystemLoader(str(template_dir)),
         trim_blocks=True,
@@ -106,11 +85,19 @@ def render_wrapper(config: dict[str, Any], template_dir: Path) -> str:
     )
 
     try:
-        template = env.get_template("wrapper_template.j2")
+        template = env.get_template(template_name)
     except TemplateNotFound as exc:
-        raise FileNotFoundError(f"Template not found: {template_dir / 'wrapper_template.j2'}") from exc
+        raise FileNotFoundError(f"Template not found: {template_dir / template_name}") from exc
 
     return template.render(**config)
+
+
+def render_wrapper(config: dict[str, Any], template_dir: Path) -> str:
+    return _render_template(config, template_dir, "wrapper_template.j2")
+
+
+def render_saboteur(config: dict[str, Any], template_dir: Path) -> str:
+    return _render_template(config, template_dir, "saboteur_template.j2")
 
 
 def copy_mbist_rtl(repo_root: Path, outdir: Path) -> None:
@@ -122,7 +109,17 @@ def copy_mbist_rtl(repo_root: Path, outdir: Path) -> None:
         shutil.copy2(source_path, outdir / rtl_file)
 
 
-def generate_from_config(config_path: Path, outdir: Path) -> Path:
+def generate_from_config(
+    config_path: Path,
+    outdir: Path,
+    *,
+    use_saboteur: bool = False,
+    faults: int = 0,
+    fault_seed: int | None = None,
+) -> Path:
+    if faults < 0:
+        raise ValueError("faults must be a non-negative integer")
+
     config = load_config(config_path)
 
     script_dir = Path(__file__).resolve().parent
@@ -131,23 +128,78 @@ def generate_from_config(config_path: Path, outdir: Path) -> Path:
 
     outdir.mkdir(parents=True, exist_ok=True)
 
-    wrapper_text = render_wrapper(config, template_dir)
-    wrapper_path = outdir / f"{config['memory_name']}_mbist.v"
+    module_outdir = outdir / config["memory_name"]
+    module_outdir.mkdir(parents=True, exist_ok=True)
+
+    render_config = dict(config)
+    render_config["use_saboteur"] = use_saboteur
+
+    if use_saboteur:
+        from fault_gen import generate_fault_files
+
+        fault_dir = module_outdir / "faults"
+        sa0_path, sa1_path = generate_fault_files(
+            outdir=fault_dir,
+            addr_width=config["addr_width"],
+            data_width=config["data_width"],
+            faults=faults,
+            seed=fault_seed,
+        )
+
+        render_config["sa0_faults_file"] = sa0_path.resolve().as_posix()
+        render_config["sa1_faults_file"] = sa1_path.resolve().as_posix()
+
+        saboteur_text = render_saboteur(render_config, template_dir)
+        saboteur_path = module_outdir / f"{config['memory_name']}_saboteur.v"
+        saboteur_path.write_text(saboteur_text, encoding="utf-8")
+
+    wrapper_text = render_wrapper(render_config, template_dir)
+    wrapper_path = module_outdir / f"{config['memory_name']}_mbist.v"
     wrapper_path.write_text(wrapper_text, encoding="utf-8")
 
-    copy_mbist_rtl(repo_root, outdir)
+    copy_mbist_rtl(repo_root, module_outdir)
     return wrapper_path
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    def parse_bool(value: str) -> bool:
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "t", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "f", "no", "n", "off"}:
+            return False
+        raise argparse.ArgumentTypeError("Expected true/false")
+
     parser = argparse.ArgumentParser(
         prog="python3 src/openmbist.py",
-        description="Generate MBIST wrapper and package MBIST RTL artifacts from a YAML config.",
-        epilog=HELP_EPILOG,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Generate MBIST wrapper artifacts.",
     )
-    parser.add_argument("--config", required=True, help="Path to config.yml")
-    parser.add_argument("--outdir", default="./out", help="Output directory for generated files")
+    parser.add_argument("--config", default="config.yml", metavar="CONFIG", help="Config file path")
+    parser.add_argument("--out", default="out", metavar="OUTDIR", help="Output directory")
+    parser.add_argument(
+        "--test",
+        nargs="?",
+        const=True,
+        default=False,
+        type=parse_bool,
+        metavar="BOOL",
+        help="Enable saboteur test mode (default: false)",
+    )
+    parser.add_argument(
+        "-r",
+        "--faults",
+        type=int,
+        default=50,
+        metavar="NUMBEROFFAULTS",
+        help="Number of faults in test mode (default: 50)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        metavar="SEED",
+        help="Optional random seed",
+    )
     return parser.parse_args(argv)
 
 
@@ -155,12 +207,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     try:
-        wrapper_path = generate_from_config(Path(args.config), Path(args.outdir))
-    except (ConfigError, FileNotFoundError, OSError, yaml.YAMLError) as exc:
+        wrapper_path = generate_from_config(
+            Path(args.config),
+            Path(args.out),
+            use_saboteur=args.test,
+            faults=args.faults,
+            fault_seed=args.seed,
+        )
+    except (ConfigError, FileNotFoundError, OSError, ValueError, yaml.YAMLError) as exc:
         print(f"openmbist: {exc}", file=sys.stderr)
         return 1
 
     print(f"Generated MBIST wrapper: {wrapper_path}")
+    if args.test:
+        print(f"Generated fault masks in: {wrapper_path.parent / 'faults'}")
     return 0
 
 

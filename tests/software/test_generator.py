@@ -44,7 +44,9 @@ def test_generate_wrapper_and_package_rtl(tmp_path: Path, base_config: dict[str,
 
     wrapper_path = generate_from_config(config_path, outdir)
 
-    assert wrapper_path == outdir / "sram_1rw_mbist.v"
+    module_outdir = outdir / "sram_1rw"
+
+    assert wrapper_path == module_outdir / "sram_1rw_mbist.v"
     assert wrapper_path.exists()
 
     wrapper_text = wrapper_path.read_text(encoding="utf-8")
@@ -53,7 +55,7 @@ def test_generate_wrapper_and_package_rtl(tmp_path: Path, base_config: dict[str,
     assert ".csb0(sram_csb)" in wrapper_text
 
     for rtl_name in ("mbist_algo.sv", "mbist_fsm.sv", "mbist_top.sv"):
-        assert (outdir / rtl_name).exists(), f"Missing copied RTL file: {rtl_name}"
+        assert (module_outdir / rtl_name).exists(), f"Missing copied RTL file: {rtl_name}"
 
 
 def test_missing_required_key_raises(tmp_path: Path, base_config: dict[str, object]) -> None:
@@ -89,3 +91,54 @@ def test_invalid_boolean_type_raises(tmp_path: Path, base_config: dict[str, obje
 
     with pytest.raises(ConfigError, match="we_active_low"):
         load_config(config_path)
+
+
+def test_generate_with_saboteur_creates_fault_assets(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    wrapper_path = generate_from_config(
+        config_path,
+        outdir,
+        use_saboteur=True,
+        faults=5,
+        fault_seed=7,
+    )
+
+    assert wrapper_path.exists()
+
+    module_outdir = outdir / "sram_1rw"
+
+    saboteur_path = module_outdir / "sram_1rw_saboteur.v"
+    assert saboteur_path.exists()
+
+    wrapper_text = wrapper_path.read_text(encoding="utf-8")
+    assert "sram_1rw_saboteur" in wrapper_text
+
+    sa0_path = module_outdir / "faults" / "sa0_faults.hex"
+    sa1_path = module_outdir / "faults" / "sa1_faults.hex"
+    assert sa0_path.exists()
+    assert sa1_path.exists()
+
+    sa0_lines = sa0_path.read_text(encoding="ascii").splitlines()
+    sa1_lines = sa1_path.read_text(encoding="ascii").splitlines()
+
+    expected_depth = 1 << int(base_config["addr_width"])
+    expected_hex_width = (int(base_config["data_width"]) + 3) // 4
+
+    assert len(sa0_lines) == expected_depth
+    assert len(sa1_lines) == expected_depth
+    assert all(len(line) == expected_hex_width for line in sa0_lines)
+    assert all(len(line) == expected_hex_width for line in sa1_lines)
+
+
+def test_negative_faults_raises(tmp_path: Path, base_config: dict[str, object]) -> None:
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    with pytest.raises(ValueError, match="faults"):
+        generate_from_config(config_path, outdir, use_saboteur=True, faults=-1)
