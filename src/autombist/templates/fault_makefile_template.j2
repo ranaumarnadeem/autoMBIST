@@ -10,6 +10,10 @@ WRAPPER_MODULE := {{ wrapper_module_name }}
 USE_SABOTEUR := 1
 FAULT_MODE := faults
 FAULTS := {{ fault_count }}
+FAULT_TYPE := {{ fault_type }}
+PULSE_WIDTH_NS := {{ pulse_width_ns }}
+ADDR_WIDTH := {{ addr_width }}
+DATA_WIDTH := {{ data_width }}
 {% if fault_seed is not none %}FAULT_SEED := {{ fault_seed }}
 {% else %}FAULT_SEED :=
 {% endif %}
@@ -36,7 +40,12 @@ fault-test: precheck
 		USE_SABOTEUR=$(USE_SABOTEUR) \
 		FAULT_MODE=$(FAULT_MODE) \
 		FAULTS=$(FAULTS) \
+		FAULT_TYPE=$(FAULT_TYPE) \
+		PULSE_WIDTH_NS=$(PULSE_WIDTH_NS) \
+		ADDR_WIDTH=$(ADDR_WIDTH) \
+		DATA_WIDTH=$(DATA_WIDTH) \
 		FAULT_SEED=$(FAULT_SEED) \
+		ALGO={{ algo }} \
 		PYTHON_BIN=$(PYTHON_BIN) > $(SIM_LOG) 2>&1 || (echo "[autombist] Simulation failed. Inspect $(SIM_LOG)"; grep -E "ERROR|FAIL|Traceback|AssertionError" $(SIM_LOG) || true; exit 1)
 	@if grep -q "test_mbist.test_faults passed" $(SIM_LOG); then \
 		echo "[autombist] Result: PASS"; \
@@ -58,7 +67,12 @@ debug: precheck
 		USE_SABOTEUR=$(USE_SABOTEUR) \
 		FAULT_MODE=$(FAULT_MODE) \
 		FAULTS=$(FAULTS) \
+		FAULT_TYPE=$(FAULT_TYPE) \
+		PULSE_WIDTH_NS=$(PULSE_WIDTH_NS) \
+		ADDR_WIDTH=$(ADDR_WIDTH) \
+		DATA_WIDTH=$(DATA_WIDTH) \
 		FAULT_SEED=$(FAULT_SEED) \
+		ALGO={{ algo }} \
 		PYTHON_BIN=$(PYTHON_BIN) > $(SIM_LOG) 2>&1 || (echo "[autombist] Simulation failed. Showing last errors:"; grep -E "ERROR|FAIL|Traceback|AssertionError" $(SIM_LOG) || true; exit 1)
 	@grep -vE "\*\* TESTS=|\*\* TEST\s+STATUS|\*\* test_mbist\.test_|\*{10,}" $(SIM_LOG)
 	@if grep -q "test_mbist.test_faults passed" $(SIM_LOG); then \

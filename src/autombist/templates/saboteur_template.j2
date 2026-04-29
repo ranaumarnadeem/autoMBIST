@@ -13,6 +13,12 @@ module {{ memory_name }}_saboteur #(
 );
 
     logic [DATA_WIDTH-1:0] real_dout;
+    logic [DATA_WIDTH-1:0] real_din;
+    logic write_cycle;
+
+    assign write_cycle = (~{{ ports.csb }}) & (~{{ ports.we }});
+
+{% if fault_type == "stuck-at" %}
     logic [DATA_WIDTH-1:0] sa0_mask [0:(1<<ADDR_WIDTH)-1];
     logic [DATA_WIDTH-1:0] sa1_mask [0:(1<<ADDR_WIDTH)-1];
 
@@ -20,6 +26,57 @@ module {{ memory_name }}_saboteur #(
         $readmemh("{{ sa0_faults_file }}", sa0_mask);
         $readmemh("{{ sa1_faults_file }}", sa1_mask);
     end
+{% elif fault_type == "transition-up" %}
+    logic [DATA_WIDTH-1:0] tf_up_mask [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] shadow_mem [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] prior_word;
+    logic [DATA_WIDTH-1:0] blocked_up;
+    integer idx;
+
+    initial begin
+        $readmemh("{{ tf_up_faults_file }}", tf_up_mask);
+        for (idx = 0; idx < (1<<ADDR_WIDTH); idx = idx + 1) begin
+            shadow_mem[idx] = '0;
+        end
+    end
+
+    always_comb begin
+        prior_word = shadow_mem[{{ ports.addr }}];
+        blocked_up = (~prior_word) & {{ ports.din }} & tf_up_mask[{{ ports.addr }}];
+        real_din = ({{ ports.din }} & ~blocked_up) | (prior_word & blocked_up);
+    end
+
+    always_ff @(posedge {{ ports.clk }}) begin
+        if (write_cycle) begin
+            shadow_mem[{{ ports.addr }}] <= real_din;
+        end
+    end
+{% elif fault_type == "transition-down" %}
+    logic [DATA_WIDTH-1:0] tf_down_mask [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] shadow_mem [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] prior_word;
+    logic [DATA_WIDTH-1:0] blocked_down;
+    integer idx;
+
+    initial begin
+        $readmemh("{{ tf_down_faults_file }}", tf_down_mask);
+        for (idx = 0; idx < (1<<ADDR_WIDTH); idx = idx + 1) begin
+            shadow_mem[idx] = '0;
+        end
+    end
+
+    always_comb begin
+        prior_word = shadow_mem[{{ ports.addr }}];
+        blocked_down = prior_word & (~{{ ports.din }}) & tf_down_mask[{{ ports.addr }}];
+        real_din = ({{ ports.din }} & ~blocked_down) | (prior_word & blocked_down);
+    end
+
+    always_ff @(posedge {{ ports.clk }}) begin
+        if (write_cycle) begin
+            shadow_mem[{{ ports.addr }}] <= real_din;
+        end
+    end
+{% endif %}
 
     {{ memory_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
@@ -29,10 +86,15 @@ module {{ memory_name }}_saboteur #(
         .{{ ports.csb }}({{ ports.csb }}),
         .{{ ports.we }}({{ ports.we }}),
         .{{ ports.addr }}({{ ports.addr }}),
-        .{{ ports.din }}({{ ports.din }}),
+        .{{ ports.din }}(real_din),
         .{{ ports.dout }}(real_dout)
     );
 
+{% if fault_type == "stuck-at" %}
+    assign real_din = {{ ports.din }};
     assign {{ ports.dout }} = (real_dout & sa0_mask[{{ ports.addr }}]) | sa1_mask[{{ ports.addr }}];
+{% else %}
+    assign {{ ports.dout }} = real_dout;
+{% endif %}
 
 endmodule

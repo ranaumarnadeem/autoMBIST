@@ -35,11 +35,11 @@ module {{ wrapper_module_name }} #(
     logic selected_write_req;
     logic mbist_write_req;
 
-    mbist_top #(
+    {{ algo_top_module }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
         .READ_LATENCY(1)
-    ) u_mbist_top (
+    ) u_algo_top (
         .clk(clk),
         .rst_n(rst_n),
         .bist_start(bist_start && test_mode),
