@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
@@ -57,9 +58,20 @@ def test_generate_wrapper_and_package_rtl(tmp_path: Path, base_config: dict[str,
     assert "module sram_1rw_mbist" in wrapper_text
     assert ".clk0(mbist_sram_clk)" in wrapper_text
     assert ".csb0(sram_csb)" in wrapper_text
+    assert "march_c_top" in wrapper_text
 
     for rtl_name in ("mbist_algo.sv", "mbist_fsm.sv", "mbist_top.sv"):
         assert (module_outdir / rtl_name).exists(), f"Missing copied RTL file: {rtl_name}"
+
+    for rtl_name in (
+        "march_c/march_c_algo.sv",
+        "march_c/march_c_fsm.sv",
+        "march_c/march_c_top.sv",
+        "march_raw/march_raw_algo.sv",
+        "march_raw/march_raw_fsm.sv",
+        "march_raw/march_raw_top.sv",
+    ):
+        assert (module_outdir / rtl_name).exists(), f"Missing copied algorithm RTL file: {rtl_name}"
 
     assert not (module_outdir / "Makefile").exists()
 
@@ -77,7 +89,7 @@ def test_missing_required_key_raises(tmp_path: Path, base_config: dict[str, obje
 
 def test_missing_required_port_key_raises(tmp_path: Path, base_config: dict[str, object]) -> None:
     invalid = dict(base_config)
-    ports = dict(invalid["ports"])
+    ports = cast(dict[str, str], invalid["ports"])
     ports.pop("csb")
     invalid["ports"] = ports
 
@@ -133,8 +145,8 @@ def test_generate_with_saboteur_creates_fault_assets(
     sa0_lines = sa0_path.read_text(encoding="ascii").splitlines()
     sa1_lines = sa1_path.read_text(encoding="ascii").splitlines()
 
-    expected_depth = 1 << int(base_config["addr_width"])
-    expected_hex_width = (int(base_config["data_width"]) + 3) // 4
+    expected_depth = 1 << int(cast(int, base_config["addr_width"]))
+    expected_hex_width = (int(cast(int, base_config["data_width"])) + 3) // 4
 
     assert len(sa0_lines) == expected_depth
     assert len(sa1_lines) == expected_depth
@@ -219,3 +231,176 @@ def test_generated_fault_makefile_has_simple_targets(
     assert "$(MAKE) -C $(PROJECT_ROOT)/tests/hardware" in makefile_text
     assert "PYTHON_BIN=$(PYTHON_BIN)" in makefile_text
     assert "SIM_LOG ?= fault_sim.log" in makefile_text
+    assert "ALGO=march-c" in makefile_text
+    assert "FAULT_TYPE := stuck-at" in makefile_text
+    assert "PULSE_WIDTH_NS := 2" in makefile_text
+
+
+def test_generate_transition_up_faults(tmp_path: Path, base_config: dict[str, object]) -> None:
+    """Verify transition-up fault generation creates proper hex files."""
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    wrapper_path = generate_from_config(
+        config_path,
+        outdir,
+        use_saboteur=True,
+        faults=10,
+        fault_seed=42,
+        fault_type="transition-up",
+    )
+
+    assert wrapper_path.exists()
+
+    module_outdir = outdir / "sram_1rw"
+
+    tf_up_path = module_outdir / "faults" / "tf_up_faults.hex"
+    assert tf_up_path.exists(), "transition-up fault file not generated"
+    assert not (module_outdir / "faults" / "sa0_faults.hex").exists()
+    assert not (module_outdir / "faults" / "sa1_faults.hex").exists()
+
+    saboteur_text = (module_outdir / "sram_1rw_saboteur.v").read_text(encoding="utf-8")
+    assert "tf_up_mask" in saboteur_text
+    assert "shadow_mem" in saboteur_text
+    assert "sa0_mask" not in saboteur_text
+
+    tf_up_lines = tf_up_path.read_text(encoding="ascii").splitlines()
+    expected_depth = 1 << int(cast(int, base_config["addr_width"]))
+    expected_hex_width = (int(cast(int, base_config["data_width"])) + 3) // 4
+
+    assert len(tf_up_lines) == expected_depth
+    assert all(len(line) == expected_hex_width for line in tf_up_lines)
+
+
+def test_generate_transition_down_faults(tmp_path: Path, base_config: dict[str, object]) -> None:
+    """Verify transition-down fault generation creates proper hex files."""
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    wrapper_path = generate_from_config(
+        config_path,
+        outdir,
+        use_saboteur=True,
+        faults=15,
+        fault_seed=123,
+        fault_type="transition-down",
+    )
+
+    assert wrapper_path.exists()
+
+    module_outdir = outdir / "sram_1rw"
+
+    tf_down_path = module_outdir / "faults" / "tf_down_faults.hex"
+    assert tf_down_path.exists(), "transition-down fault file not generated"
+    assert not (module_outdir / "faults" / "sa0_faults.hex").exists()
+    assert not (module_outdir / "faults" / "sa1_faults.hex").exists()
+
+    saboteur_text = (module_outdir / "sram_1rw_saboteur.v").read_text(encoding="utf-8")
+    assert "tf_down_mask" in saboteur_text
+    assert "shadow_mem" in saboteur_text
+    assert "sa0_mask" not in saboteur_text
+
+    tf_down_lines = tf_down_path.read_text(encoding="ascii").splitlines()
+    expected_depth = 1 << int(cast(int, base_config["addr_width"]))
+    expected_hex_width = (int(cast(int, base_config["data_width"])) + 3) // 4
+
+    assert len(tf_down_lines) == expected_depth
+    assert all(len(line) == expected_hex_width for line in tf_down_lines)
+
+
+def test_invalid_fault_type_raises(tmp_path: Path, base_config: dict[str, object]) -> None:
+    """Verify invalid fault types are rejected."""
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    with pytest.raises(ValueError, match="Invalid fault_type"):
+        generate_from_config(
+            config_path,
+            outdir,
+            use_saboteur=True,
+            faults=5,
+            fault_type="invalid-fault-type",
+        )
+
+
+def test_cli_transition_fault_flags(tmp_path: Path, base_config: dict[str, object]) -> None:
+    """Verify CLI accepts transition fault type and pulse width flags."""
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    result = runner.invoke(
+        app,
+        [
+            "--config", str(config_path),
+            "--out", str(outdir),
+            "--test",
+            "--fault-type", "transition-up",
+            "--pulse-width-ns", "3",
+            "--algo", "march-raw",
+        ],
+    )
+
+    assert result.exit_code == 0
+    module_outdir = outdir / "sram_1rw"
+    assert (module_outdir / "faults" / "tf_up_faults.hex").exists()
+    assert (module_outdir / "sram_1rw_mbist.v").read_text(encoding="utf-8").count("march_raw_top") == 1
+
+
+def test_transition_fault_files_have_expected_depth_and_width(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    generate_from_config(
+        config_path,
+        outdir,
+        use_saboteur=True,
+        faults=12,
+        fault_seed=99,
+        fault_type="transition-up",
+    )
+
+    module_outdir = outdir / "sram_1rw"
+    tf_up_path = module_outdir / "faults" / "tf_up_faults.hex"
+    tf_lines = tf_up_path.read_text(encoding="ascii").splitlines()
+
+    expected_depth = 1 << int(cast(int, base_config["addr_width"]))
+    expected_hex_width = (int(cast(int, base_config["data_width"])) + 3) // 4
+
+    assert len(tf_lines) == expected_depth
+    assert all(len(line) == expected_hex_width for line in tf_lines)
+
+
+def test_cli_march_raw_algo_accepted(tmp_path: Path, base_config: dict[str, object]) -> None:
+    """Verify CLI accepts march-raw algorithm selection."""
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    result = runner.invoke(
+        app,
+        [
+            "--config", str(config_path),
+            "--out", str(outdir),
+            "--algo", "march-raw",
+        ],
+    )
+
+    assert result.exit_code == 0
+    wrapper_text = (outdir / "sram_1rw" / "sram_1rw_mbist.v").read_text(encoding="utf-8")
+    assert "march_raw_top" in wrapper_text
+
+
+def test_invalid_algo_raises(tmp_path: Path, base_config: dict[str, object]) -> None:
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    with pytest.raises(ValueError, match="algo must be one of"):
+        generate_from_config(config_path, outdir, algo="invalid-algo")

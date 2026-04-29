@@ -12,10 +12,14 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from autombist.fault_gen import generate_fault_files
+from autombist.fault_gen import FaultType
 
 
 def _prepare_fault_files() -> None:
     mode = os.getenv("FAULT_MODE", "clean").strip().lower()
+    fault_type_raw = os.getenv("FAULT_TYPE", "stuck-at").strip().lower()
+    addr_width = int(os.getenv("ADDR_WIDTH", "10"))
+    data_width = int(os.getenv("DATA_WIDTH", "32"))
     faults = int(os.getenv("FAULTS", "0"))
     fault_seed_raw = os.getenv("FAULT_SEED", "")
     fault_seed = int(fault_seed_raw) if fault_seed_raw else None
@@ -26,10 +30,19 @@ def _prepare_fault_files() -> None:
     elif mode != "faults":
         raise ValueError(f"Unsupported FAULT_MODE: {mode}")
 
+    fault_type_map = {
+        "stuck-at": FaultType.STUCK_AT,
+        "transition-up": FaultType.TRANSITION_UP,
+        "transition-down": FaultType.TRANSITION_DOWN,
+    }
+    if fault_type_raw not in fault_type_map:
+        raise ValueError(f"Unsupported FAULT_TYPE: {fault_type_raw}")
+
     generate_fault_files(
         outdir=REPO_ROOT / "out" / memory_name / "faults",
-        addr_width=10,
-        data_width=32,
+        addr_width=addr_width,
+        data_width=data_width,
+        fault_type=fault_type_map[fault_type_raw],
         faults=faults,
         seed=fault_seed,
     )
@@ -74,6 +87,21 @@ async def test_clean(dut):
 async def test_faults(dut):
     if os.getenv("FAULT_MODE", "clean").strip().lower() != "faults":
         return
+    if os.getenv("FAULT_TYPE", "stuck-at").strip().lower() != "stuck-at":
+        return
 
     await _run_mbist_once(dut)
     assert int(dut.bist_fail.value) == 1, "MBIST did not detect injected faults"
+
+
+@cocotb.test()
+async def test_transition_faults(dut):
+    if os.getenv("FAULT_MODE", "clean").strip().lower() != "faults":
+        return
+
+    fault_type = os.getenv("FAULT_TYPE", "stuck-at").strip().lower()
+    if fault_type not in {"transition-up", "transition-down"}:
+        return
+
+    await _run_mbist_once(dut)
+    assert int(dut.bist_fail.value) == 1, "MBIST did not detect transition faults"
