@@ -16,8 +16,17 @@ REQUIRED_TOP_KEYS = (
     "ports",
 )
 REQUIRED_PORT_KEYS = ("clk", "addr", "din", "dout", "we", "csb")
-MBIST_RTL_FILES = ("mbist_algo.sv", "mbist_fsm.sv", "mbist_top.sv")
 
+
+def _normalize_algo(algo: str) -> tuple[str, str]:
+    algo_value = algo.strip().lower()
+    algo_map = {
+        "march-c": ("march_c", "march_c_top"),
+        "march-raw": ("march_raw", "march_raw_top"),
+    }
+    if algo_value not in algo_map:
+        raise ValueError("algo must be one of: march-c, march-raw")
+    return algo_map[algo_value]
 
 class ConfigError(ValueError):
     """Raised when config.yml is missing required values or has invalid types."""
@@ -105,11 +114,12 @@ def render_fault_makefile(config: dict[str, Any]) -> str:
 
 def copy_mbist_rtl(repo_root: Path, outdir: Path) -> None:
     rtl_dir = repo_root / "rtl"
-    for rtl_file in MBIST_RTL_FILES:
-        source_path = rtl_dir / rtl_file
-        if not source_path.exists():
-            raise FileNotFoundError(f"Required RTL file not found: {source_path}")
-        shutil.copy2(source_path, outdir / rtl_file)
+    for source_path in rtl_dir.rglob("*"):
+        if source_path.is_file():
+            relative_path = source_path.relative_to(rtl_dir)
+            destination_path = outdir / relative_path
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, destination_path)
 
 
 def generate_from_config(
@@ -140,6 +150,10 @@ def generate_from_config(
     render_config["pulse_width_ns"] = pulse_width_ns
     render_config["algo"] = algo
     render_config["fault_type"] = fault_type
+
+    algo_dir, algo_top_module = _normalize_algo(algo)
+    render_config["algo_dir"] = algo_dir
+    render_config["algo_top_module"] = algo_top_module
 
     if use_saboteur:
         from .fault_gen import FaultType, generate_fault_files
