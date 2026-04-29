@@ -119,6 +119,9 @@ def generate_from_config(
     use_saboteur: bool = False,
     faults: int = 0,
     fault_seed: int | None = None,
+    fault_type: str = "stuck-at",
+    pulse_width_ns: int = 2,
+    algo: str = "march-c",
 ) -> Path:
     if faults < 0:
         raise ValueError("faults must be a non-negative integer")
@@ -134,21 +137,43 @@ def generate_from_config(
 
     render_config = dict(config)
     render_config["use_saboteur"] = use_saboteur
+    render_config["pulse_width_ns"] = pulse_width_ns
+    render_config["algo"] = algo
+    render_config["fault_type"] = fault_type
 
     if use_saboteur:
-        from .fault_gen import generate_fault_files
+        from .fault_gen import FaultType, generate_fault_files
+
+        # Map fault_type string to FaultType enum
+        fault_type_map = {
+            "stuck-at": FaultType.STUCK_AT,
+            "transition-up": FaultType.TRANSITION_UP,
+            "transition-down": FaultType.TRANSITION_DOWN,
+        }
+        
+        if fault_type not in fault_type_map:
+            raise ValueError(f"Invalid fault_type: {fault_type}. Must be one of: stuck-at, transition-up, transition-down")
+        
+        fault_enum = fault_type_map[fault_type]
 
         fault_dir = module_outdir / "faults"
-        sa0_path, sa1_path = generate_fault_files(
+        file1_path, file2_path = generate_fault_files(
             outdir=fault_dir,
             addr_width=config["addr_width"],
             data_width=config["data_width"],
+            fault_type=fault_enum,
             faults=faults,
             seed=fault_seed,
         )
 
-        render_config["sa0_faults_file"] = sa0_path.resolve().as_posix()
-        render_config["sa1_faults_file"] = sa1_path.resolve().as_posix()
+        # Set file paths in render config based on fault type
+        if fault_enum == FaultType.STUCK_AT:
+            render_config["sa0_faults_file"] = file1_path.resolve().as_posix()
+            render_config["sa1_faults_file"] = file2_path.resolve().as_posix()
+        elif fault_enum == FaultType.TRANSITION_UP:
+            render_config["tf_up_faults_file"] = file1_path.resolve().as_posix()
+        elif fault_enum == FaultType.TRANSITION_DOWN:
+            render_config["tf_down_faults_file"] = file1_path.resolve().as_posix()
 
         saboteur_text = render_saboteur(render_config)
         saboteur_path = module_outdir / f"{config['memory_name']}_saboteur.v"
