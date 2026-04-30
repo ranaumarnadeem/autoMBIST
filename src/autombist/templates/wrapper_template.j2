@@ -29,6 +29,9 @@ module {{ wrapper_module_name }} #(
     logic [ADDR_WIDTH-1:0] sram_addr;
     logic [DATA_WIDTH-1:0] sram_din;
     logic [DATA_WIDTH-1:0] sram_dout;
+    logic [DATA_WIDTH-1:0] sram_dbg_actual_word;
+    logic [DATA_WIDTH-1:0] sram_dbg_fault_word;
+    logic [DATA_WIDTH-1:0] sram_dbg_intended_word;
     logic                  sram_csb;
     logic                  sram_we;
 
@@ -78,7 +81,10 @@ module {{ wrapper_module_name }} #(
         .{{ ports.addr }}(sram_addr),
         .{{ ports.din }}(sram_din),
         .{{ ports.we }}(sram_we),
-        .{{ ports.dout }}(sram_dout)
+        .{{ ports.dout }}(sram_dout),
+        .dbg_actual_word(sram_dbg_actual_word),
+        .dbg_fault_word(sram_dbg_fault_word),
+        .dbg_intended_word(sram_dbg_intended_word)
     );
 {% else %}
     {{ memory_name }} #(
