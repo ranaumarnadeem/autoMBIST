@@ -1,10 +1,10 @@
 # autombist
 
 autombist automatically generates MBIST integration artifacts for OpenRAM-generated SRAM macros.
-It builds a March C-oriented MBIST wrapper around your memory interface, emits the required MBIST RTL files, and creates outputs under `out/` by default.
+It builds a selectable MBIST wrapper around your memory interface, emits the required MBIST RTL files, and creates outputs under `out/` by default.
 
 The generated artifacts can be synthesized with Yosys or other synthesis tools.
-autombist also supports fault simulation by injecting stuck-at faults (`SA0` and `SA1`) and validating behavior through Cocotb with Icarus Verilog.
+autombist also supports fault simulation by injecting stuck-at faults (`SA0` and `SA1`) or transition faults (`transition-up` and `transition-down`) and validating behavior through Cocotb with Icarus Verilog.
 
 ## What It Generates
 
@@ -14,6 +14,7 @@ For each memory in your config, autombist generates a module directory under `ou
 - Required MBIST RTL support files
 - Optional saboteur wrapper for fault injection (`--test` mode)
 - Optional fault masks and a local simulation Makefile (`--test` mode)
+- Algorithm-specific RTL for the selected `--algo` family
 
 ## Prerequisites
 
@@ -58,7 +59,7 @@ If `--out` is omitted, `out/` is used by default.
 Generate fault-enabled artifacts (saboteur + fault masks + module Makefile):
 
 ```bash
-autombist --config config.yml --out out --test --faults 50 --seed 1234
+autombist --config config.yml --out out --test --faults 50 --seed 1234 --algo march-c --fault-type stuck-at
 ```
 
 This command injects random `SA0`/`SA1` faults into the memory model and writes fault files to:
@@ -73,6 +74,8 @@ Then run simulation from the generated module directory:
 cd out/<memory_name>
 make
 ```
+
+For transition fault simulation, set `--fault-type transition-up` or `--fault-type transition-down` and run the generated module Makefile the same way.
 
 For verbose simulation output:
 
