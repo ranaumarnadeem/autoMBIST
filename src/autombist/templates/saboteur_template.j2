@@ -9,7 +9,10 @@ module {{ memory_name }}_saboteur #(
     input  logic                  {{ ports.we }},
     input  logic [ADDR_WIDTH-1:0] {{ ports.addr }},
     input  logic [DATA_WIDTH-1:0] {{ ports.din }},
-    output logic [DATA_WIDTH-1:0] {{ ports.dout }}
+    output logic [DATA_WIDTH-1:0] {{ ports.dout }},
+    output logic [DATA_WIDTH-1:0] dbg_actual_word,
+    output logic [DATA_WIDTH-1:0] dbg_fault_word,
+    output logic [DATA_WIDTH-1:0] dbg_intended_word
 );
 
     logic [DATA_WIDTH-1:0] real_dout;
@@ -93,8 +96,14 @@ module {{ memory_name }}_saboteur #(
 {% if fault_type == "stuck-at" %}
     assign real_din = {{ ports.din }};
     assign {{ ports.dout }} = (real_dout & sa0_mask[{{ ports.addr }}]) | sa1_mask[{{ ports.addr }}];
+    assign dbg_actual_word = real_dout;
+    assign dbg_fault_word = {{ ports.dout }};
+    assign dbg_intended_word = {{ ports.din }};
 {% else %}
     assign {{ ports.dout }} = real_dout;
+    assign dbg_actual_word = prior_word;
+    assign dbg_fault_word = real_din;
+    assign dbg_intended_word = {{ ports.din }};
 {% endif %}
 
 endmodule
