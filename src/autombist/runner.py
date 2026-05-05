@@ -12,7 +12,7 @@ import re
 from autombist import __version__
 
 from .generator import load_config
-from .reporting import build_simulation_report, write_simulation_report
+from .reporting import build_simulation_report, write_simulation_report, write_text_report
 
 
 MAKEFILE_VAR_RE = re.compile(r"^(?P<key>[A-Z0-9_]+)\s*:?=\s*(?P<value>.*)$")
@@ -178,8 +178,33 @@ def run_simulation(
     if backend_log_path.exists():
         backend_log_contents = backend_log_path.read_text(encoding="utf-8")
 
+    # If cocotb produced a JUnit XML (results.xml), extract its <system-out>
+    # text and include it in the parser input so coverage metrics inside the
+    # XML are discovered reliably.
+    results_xml_path = hardware_dir / "results.xml"
+    results_xml_contents = ""
+    if results_xml_path.exists():
+        try:
+            import xml.etree.ElementTree as ET
+
+            tree = ET.parse(str(results_xml_path))
+            root = tree.getroot()
+            # gather any system-out text nodes
+            outs: list[str] = []
+            for elem in root.iter():
+                if elem.tag.endswith("system-out") and elem.text:
+                    outs.append(elem.text)
+            results_xml_contents = "\n".join(outs)
+        except Exception:
+            # best-effort: ignore XML problems and continue with plain logs
+            results_xml_contents = ""
+
     reports_dir = module_outdir / "reports"
     runtime = time.time() - start_time
+
+    # include the backend simulator log contents in the parser input so
+    # coverage/injected metrics printed by cocotb are detected
+    full_stdout = "".join(part for part in (completed.stdout, backend_log_contents, results_xml_contents) if part)
 
     report = build_simulation_report(
         tool_version=__version__,
@@ -190,7 +215,7 @@ def run_simulation(
         report_path=reports_dir / "latest.json",
         returncode=completed.returncode,
         runtime_seconds=runtime,
-        stdout=completed.stdout,
+        stdout=full_stdout,
         stderr=completed.stderr,
         use_saboteur=use_saboteur,
         faults=faults,
@@ -200,6 +225,7 @@ def run_simulation(
         algo=algo,
     )
     report_path = write_simulation_report(report, reports_dir)
+    write_text_report(report, reports_dir, backend_log_contents)
 
     result = SimulationResult(
         command=command,
