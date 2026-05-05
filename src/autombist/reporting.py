@@ -9,6 +9,7 @@ from typing import Any
 
 FAULT_COVERAGE_RE = re.compile(r"Fault coverage:\s*(\d+)\/(\d+)\s*\((\d+(?:\.\d+)?)%\)")
 INJECTED_FAULTS_RE = re.compile(r"Injected faults:\s*(\d+)")
+FAULT_COUNT_RE = re.compile(r"Fault count:\s*(\d+)")
 
 
 @dataclass(slots=True)
@@ -40,6 +41,10 @@ def parse_fault_metrics(stdout: str, stderr: str) -> FaultMetrics:
     injected_match = INJECTED_FAULTS_RE.search(combined)
     if injected_match:
         metrics.injected_faults = int(injected_match.group(1))
+    else:
+        fault_count_match = FAULT_COUNT_RE.search(combined)
+        if fault_count_match:
+            metrics.injected_faults = int(fault_count_match.group(1))
 
     return metrics
 
@@ -63,10 +68,12 @@ def build_simulation_report(*,
     algo: str,
 ) -> dict[str, Any]:
     metrics = parse_fault_metrics(stdout, stderr)
+    if metrics.injected_faults is None:
+        metrics.injected_faults = faults
     now = datetime.now(timezone.utc).isoformat()
     status = "pass" if returncode == 0 else "fail"
 
-    return {
+    report = {
         "schema_version": "1.0.0",
         "generated_at": now,
         "tool_version": tool_version,
@@ -95,6 +102,9 @@ def build_simulation_report(*,
         "fault_metrics": metrics.to_dict(),
     }
 
+    report["summary"] = format_simulation_summary(report)
+    return report
+
 
 def write_simulation_report(report: dict[str, Any], report_dir: Path) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -121,6 +131,8 @@ def format_simulation_summary(report: dict[str, Any]) -> str:
         lines.append(
             f"  coverage: {metrics['detected_faults']}/{metrics['total_fault_sites']} ({metrics.get('coverage_percent', 0.0):.2f}%)"
         )
+    else:
+        lines.append("  coverage: not reported by the simulator")
     if metrics.get("injected_faults") is not None:
         lines.append(f"  injected faults: {metrics['injected_faults']}")
     return "\n".join(lines)
