@@ -84,7 +84,7 @@ module {{ memory_name }}_saboteur #(
     {{ memory_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH)
-    ) u_sram_real (
+    ) u_sram (
         .{{ ports.clk }}({{ ports.clk }}),
         .{{ ports.csb }}({{ ports.csb }}),
         .{{ ports.we }}({{ ports.we }}),
