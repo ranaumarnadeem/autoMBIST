@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from typing import cast
@@ -74,6 +75,7 @@ def test_generate_wrapper_and_package_rtl(tmp_path: Path, base_config: dict[str,
         assert (module_outdir / rtl_name).exists(), f"Missing copied algorithm RTL file: {rtl_name}"
 
     assert not (module_outdir / "Makefile").exists()
+    assert (module_outdir / "config.yml").exists()
 
 
 def test_missing_required_key_raises(tmp_path: Path, base_config: dict[str, object]) -> None:
@@ -168,8 +170,9 @@ def test_cli_help_mentions_version_and_options() -> None:
 
     assert result.exit_code == 0
     assert "--version" in result.output
-    assert "--config" in result.output
-    assert "--out" in result.output
+    assert "generate" in result.output
+    assert "simulate" in result.output
+    assert "run" in result.output
 
 
 def test_cli_version() -> None:
@@ -179,12 +182,34 @@ def test_cli_version() -> None:
     assert __version__ in result.output
 
 
+def test_cli_generate_uses_local_config_yaml(tmp_path: Path, base_config: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["generate", "--out", str(outdir)])
+
+    assert result.exit_code == 0
+    assert (outdir / "sram_1rw" / "sram_1rw_mbist.v").exists()
+
+
+def test_cli_generate_errors_without_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["generate", "--out", str(tmp_path / "out")])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, FileNotFoundError)
+    assert "Config file not found" in str(result.exception)
+
+
 def test_cli_generate_defaults(tmp_path: Path, base_config: dict[str, object]) -> None:
     config_path = tmp_path / "config.yml"
     outdir = tmp_path / "out"
     _write_yaml(config_path, base_config)
 
-    result = runner.invoke(app, ["--config", str(config_path), "--out", str(outdir)])
+    result = runner.invoke(app, ["generate", "--config", str(config_path), "--out", str(outdir)])
 
     assert result.exit_code == 0
     assert (outdir / "sram_1rw" / "sram_1rw_mbist.v").exists()
@@ -197,13 +222,33 @@ def test_cli_generate_test_mode(tmp_path: Path, base_config: dict[str, object]) 
 
     result = runner.invoke(
         app,
-        ["--config", str(config_path), "--out", str(outdir), "--test", "--faults", "8", "--seed", "9"],
+        ["generate", "--config", str(config_path), "--out", str(outdir), "--test", "--faults", "8", "--seed", "9"],
     )
 
     assert result.exit_code == 0
     module_outdir = outdir / "sram_1rw"
     assert (module_outdir / "Makefile").exists()
     assert (module_outdir / "faults" / "sa0_faults.hex").exists()
+
+
+def test_cli_simulate_reports_summary(
+    tmp_path: Path, base_config: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+    generate_from_config(config_path, outdir)
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="PASS\n", stderr="")
+
+    monkeypatch.setattr("autombist.runner.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["simulate", "--out", str(outdir)])
+
+    assert result.exit_code == 0
+    assert "simulation PASS" in result.output
+    assert (outdir / "sram_1rw" / "simulate.log").exists()
 
 
 def test_generated_fault_makefile_has_simple_targets(
@@ -335,6 +380,7 @@ def test_cli_transition_fault_flags(tmp_path: Path, base_config: dict[str, objec
     result = runner.invoke(
         app,
         [
+            "generate",
             "--config", str(config_path),
             "--out", str(outdir),
             "--test",
@@ -386,6 +432,7 @@ def test_cli_march_raw_algo_accepted(tmp_path: Path, base_config: dict[str, obje
     result = runner.invoke(
         app,
         [
+            "generate",
             "--config", str(config_path),
             "--out", str(outdir),
             "--algo", "march-raw",
