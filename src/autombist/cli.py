@@ -183,6 +183,7 @@ def simulate(
     Output:
       - out/<memory_name>/simulate.log (full simulator output)
       - out/<memory_name>/reports/latest.json (structured results)
+            - out/<memory_name>/reports/report.txt (plain-text human report)
       - Terminal summary with coverage metrics
 
     Examples:
@@ -220,6 +221,7 @@ def run(
     Output:
       - out/<memory_name>/ (all generated wrapper and RTL files)
       - out/<memory_name>/reports/latest.json (simulation results)
+            - out/<memory_name>/reports/report.txt (plain-text human report)
       - out/<memory_name>/simulate.log (simulator output)
 
     Requirements:
