@@ -150,6 +150,12 @@ def generate_from_config(
     render_config["pulse_width_ns"] = pulse_width_ns
     render_config["algo"] = algo
     render_config["fault_type"] = fault_type
+    render_config["autombist_use_saboteur"] = use_saboteur
+    render_config["autombist_faults"] = faults
+    render_config["autombist_fault_seed"] = fault_seed
+    render_config["autombist_fault_type"] = fault_type
+    render_config["autombist_pulse_width_ns"] = pulse_width_ns
+    render_config["autombist_algo"] = algo
 
     algo_dir, algo_top_module = _normalize_algo(algo)
     render_config["algo_dir"] = algo_dir
@@ -199,6 +205,9 @@ def generate_from_config(
         makefile_text = render_fault_makefile(render_config)
         makefile_path = module_outdir / "Makefile"
         makefile_path.write_text(makefile_text, encoding="utf-8")
+
+    config_snapshot_path = module_outdir / "config.yml"
+    config_snapshot_path.write_text(yaml.safe_dump(render_config, sort_keys=False), encoding="utf-8")
 
     wrapper_text = render_wrapper(render_config)
     wrapper_path = module_outdir / f"{config['memory_name']}_mbist.v"
