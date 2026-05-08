@@ -32,6 +32,10 @@ module {{ wrapper_module_name }} #(
     logic [DATA_WIDTH-1:0] sram_dbg_actual_word;
     logic [DATA_WIDTH-1:0] sram_dbg_fault_word;
     logic [DATA_WIDTH-1:0] sram_dbg_intended_word;
+    logic [DATA_WIDTH-1:0] sram_dbg_prior_value;
+    logic [DATA_WIDTH-1:0] sram_dbg_attempted_write;
+    logic [DATA_WIDTH-1:0] sram_dbg_actual_read;
+    logic [DATA_WIDTH-1:0] sram_dbg_blocked_bits;
     logic                  sram_csb;
     logic                  sram_we;
 
@@ -84,7 +88,11 @@ module {{ wrapper_module_name }} #(
         .{{ ports.dout }}(sram_dout),
         .dbg_actual_word(sram_dbg_actual_word),
         .dbg_fault_word(sram_dbg_fault_word),
-        .dbg_intended_word(sram_dbg_intended_word)
+        .dbg_intended_word(sram_dbg_intended_word),
+        .dbg_prior_value(sram_dbg_prior_value),
+        .dbg_attempted_write(sram_dbg_attempted_write),
+        .dbg_actual_read(sram_dbg_actual_read),
+        .dbg_blocked_bits(sram_dbg_blocked_bits)
     );
 {% else %}
     {{ memory_name }} #(
