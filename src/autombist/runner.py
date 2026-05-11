@@ -114,8 +114,39 @@ def _build_clean_command(*, hardware_dir: Path, module_outdir: Path, config: dic
     ]
 
 
-def _build_fault_command(*, module_outdir: Path, verbose: bool) -> list[str]:
-    return ["make", "-C", str(module_outdir), "debug" if verbose else "fault-test"]
+def _build_fault_command(
+    *,
+    hardware_dir: Path,
+    module_outdir: Path,
+    config: dict[str, Any],
+    faults: int,
+    fault_seed: int | None,
+    fault_type: str,
+    pulse_width_ns: int,
+    algo: str,
+) -> list[str]:
+    command = [
+        "make",
+        "-C",
+        str(hardware_dir),
+        "SIM=icarus",
+        f"OUTDIR={module_outdir.parent}",
+        f"MEMORY_NAME={config['memory_name']}",
+        f"WRAPPER_MODULE={config['wrapper_module_name']}",
+        "USE_SABOTEUR=1",
+        "FAULT_MODE=faults",
+        f"FAULTS={faults}",
+        f"FAULT_TYPE={fault_type}",
+        f"PULSE_WIDTH_NS={pulse_width_ns}",
+        f"ADDR_WIDTH={config['addr_width']}",
+        f"DATA_WIDTH={config['data_width']}",
+        f"ALGO={algo}",
+        f"PYTHON_BIN={sys.executable}",
+        "sim",
+    ]
+    if fault_seed is not None:
+        command.append(f"FAULT_SEED={fault_seed}")
+    return command
 
 
 def run_simulation(
@@ -132,7 +163,12 @@ def run_simulation(
             f"Generated wrapper not found: {wrapper_path}. Run `autombist generate` first."
         )
 
-    use_saboteur = bool(config.get("autombist_use_saboteur", False)) or (module_outdir / "Makefile").exists()
+    config_declares_saboteur = "autombist_use_saboteur" in config
+    if config_declares_saboteur:
+        use_saboteur = bool(config.get("autombist_use_saboteur"))
+    else:
+        # Backward compatibility for legacy outputs that did not snapshot metadata.
+        use_saboteur = (module_outdir / "Makefile").exists()
     if use_saboteur:
         saboteur_path = module_outdir / f"{config['memory_name']}_saboteur.v"
         if not saboteur_path.exists():
@@ -150,7 +186,16 @@ def run_simulation(
     pulse_width_ns = int(_get_run_metadata(config, "autombist_pulse_width_ns", 2))
 
     if use_saboteur:
-        command = _build_fault_command(module_outdir=module_outdir, verbose=verbose)
+        command = _build_fault_command(
+            hardware_dir=hardware_dir,
+            module_outdir=module_outdir,
+            config=config,
+            faults=faults,
+            fault_seed=fault_seed,
+            fault_type=fault_type,
+            pulse_width_ns=pulse_width_ns,
+            algo=algo,
+        )
     else:
         command = _build_clean_command(
             hardware_dir=hardware_dir,
