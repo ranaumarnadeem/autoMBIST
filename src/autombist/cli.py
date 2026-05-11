@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 import typer
@@ -10,10 +11,24 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from autombist import __version__
     from autombist.generator import ConfigError, generate_from_config
+    from autombist.openram_flow import (
+        OpenRAMConfigError,
+        build_openram_command_args,
+        default_openram_config,
+        load_openram_config,
+        run_openram_synthesis,
+    )
     from autombist.runner import SimulationError, run_simulation
 else:
     from . import __version__
     from .generator import ConfigError, generate_from_config
+    from .openram_flow import (
+        OpenRAMConfigError,
+        build_openram_command_args,
+        default_openram_config,
+        load_openram_config,
+        run_openram_synthesis,
+    )
     from .runner import SimulationError, run_simulation
 
 
@@ -67,6 +82,59 @@ def _show_version(value: bool) -> bool:
         typer.echo(f"autombist {__version__}")
         raise typer.Exit()
     return value
+
+
+def _default_mbist_config() -> dict[str, object]:
+    return {
+        "memory_name": "sram_1rw",
+        "wrapper_module_name": "sram_1rw_mbist",
+        "addr_width": 10,
+        "data_width": 32,
+        "we_active_low": True,
+        "ports": {
+            "clk": "clk0",
+            "addr": "addr0",
+            "din": "din0",
+            "dout": "dout0",
+            "we": "we0",
+            "csb": "csb0",
+        },
+    }
+
+
+def _default_project_makefile_text() -> str:
+    return "\n".join(
+        [
+            "AUTOMBIST ?= autombist",
+            "OUT ?= out",
+            "MBIST_CONFIG ?= config.yml",
+            "OPENRAM_CONFIG ?= openram.yml",
+            "",
+            ".PHONY: ram-synth generate simulate run smoke",
+            "",
+            "ram-synth:",
+            "\t$(AUTOMBIST) ram-synth --config $(OPENRAM_CONFIG)",
+            "",
+            "generate:",
+            "\t$(AUTOMBIST) generate --config $(MBIST_CONFIG) --out $(OUT)",
+            "",
+            "simulate:",
+            "\t$(AUTOMBIST) simulate --out $(OUT)",
+            "",
+            "run:",
+            "\t$(AUTOMBIST) run --config $(MBIST_CONFIG) --out $(OUT) --test",
+            "",
+            "smoke:",
+            "\t$(AUTOMBIST) smoke",
+            "",
+        ]
+    )
+
+
+def _write_file_with_overwrite_guard(path: Path, content: str, *, force: bool) -> None:
+    if path.exists() and not force:
+        raise FileExistsError(f"Refusing to overwrite existing file: {path}. Use --force to overwrite.")
+    path.write_text(content, encoding="utf-8")
 
 
 def _generate(
@@ -241,3 +309,137 @@ def run(
         typer.echo(f"Generated fault masks in: {wrapper_path.parent / 'faults'}")
         typer.echo(f"Generated fault-sim Makefile: {wrapper_path.parent / 'Makefile'}")
     _simulate(wrapper_path.parent, verbose)
+
+
+@app.command("ram-synth")
+def ram_synth(
+    config: Path = typer.Option("openram.yml", "--config", help="OpenRAM synthesis config file"),
+    show_command: bool = typer.Option(False, "--show-command", help="Print synthesized command before execution"),
+) -> None:
+    """Synthesize an SRAM macro through OpenRAM using YAML config.
+
+    This command reuses the existing OpenRAM synthesis helper under scripts/
+    and lets users pass dimensions/settings through a config file instead of
+    manually writing command-line arguments.
+    """
+
+    try:
+        resolved = config if config.is_absolute() else (Path.cwd() / config).resolve()
+        cfg = load_openram_config(resolved)
+        if show_command:
+            cmd = build_openram_command_args(cfg, resolved)
+            typer.echo("$ " + " ".join(str(token) for token in cmd))
+        result = run_openram_synthesis(resolved)
+    except (FileNotFoundError, OpenRAMConfigError, OSError) as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    if result.stdout:
+        typer.echo(result.stdout, nl=False)
+    if result.stderr:
+        typer.echo(result.stderr, err=True, nl=False)
+    if result.returncode != 0:
+        raise typer.Exit(code=result.returncode)
+
+
+@app.command()
+def init(
+    out: Path = typer.Option(".", "--out", help="Directory where starter files will be created"),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing files"),
+) -> None:
+    """Create starter config.yml, openram.yml, and Makefile scaffolding."""
+
+    target_dir = out if out.is_absolute() else (Path.cwd() / out).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    mbist_config_path = target_dir / "config.yml"
+    openram_config_path = target_dir / "openram.yml"
+    makefile_path = target_dir / "Makefile"
+
+    try:
+        _write_file_with_overwrite_guard(
+            mbist_config_path,
+            yaml.safe_dump(_default_mbist_config(), sort_keys=False),
+            force=force,
+        )
+        _write_file_with_overwrite_guard(
+            openram_config_path,
+            yaml.safe_dump(default_openram_config(), sort_keys=False),
+            force=force,
+        )
+        _write_file_with_overwrite_guard(
+            makefile_path,
+            _default_project_makefile_text(),
+            force=force,
+        )
+    except (FileExistsError, OSError) as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Created starter MBIST config: {mbist_config_path}")
+    typer.echo(f"Created starter OpenRAM config: {openram_config_path}")
+    typer.echo(f"Created starter Makefile: {makefile_path}")
+
+
+@app.command()
+def smoke(
+    run_sim: bool = typer.Option(True, "--run-sim/--no-sim", help="Run cocotb/iverilog simulation smoke check"),
+    keep_artifacts: bool = typer.Option(False, "--keep-artifacts", help="Keep generated smoke workspace"),
+    out: Path | None = typer.Option(None, "--out", help="Optional workspace path for smoke artifacts"),
+) -> None:
+    """Run smoke checks to verify the installed toolchain works."""
+
+    temp_ctx: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        if out is None:
+            if keep_artifacts:
+                workspace = Path(tempfile.mkdtemp(prefix="autombist-smoke-"))
+            else:
+                temp_ctx = tempfile.TemporaryDirectory(prefix="autombist-smoke-")
+                workspace = Path(temp_ctx.name)
+        else:
+            workspace = out if out.is_absolute() else (Path.cwd() / out).resolve()
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        smoke_config_path = workspace / "config.yml"
+        smoke_openram_config = workspace / "openram.yml"
+        smoke_out = workspace / "out"
+
+        smoke_config_path.write_text(
+            yaml.safe_dump(_default_mbist_config(), sort_keys=False),
+            encoding="utf-8",
+        )
+        smoke_openram_config.write_text(
+            yaml.safe_dump(default_openram_config(), sort_keys=False),
+            encoding="utf-8",
+        )
+
+        wrapper_path = _generate(
+            smoke_config_path,
+            smoke_out,
+            test=False,
+            faults=0,
+            seed=None,
+            fault_type="stuck-at",
+            pulse_width_ns=2,
+            algo="march-c",
+        )
+        module_outdir = wrapper_path.parent
+        typer.echo(f"[smoke] generate: PASS ({wrapper_path})")
+
+        try:
+            cfg = load_openram_config(smoke_openram_config)
+            build_openram_command_args(cfg, smoke_openram_config)
+            typer.echo("[smoke] ram-synth config parse: PASS")
+        except (FileNotFoundError, OpenRAMConfigError, OSError) as exc:
+            typer.secho(f"autombist: smoke ram-synth config parse failed: {exc}", err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+        if run_sim:
+            _simulate(module_outdir, verbose=False)
+            typer.echo("[smoke] simulate: PASS")
+
+        typer.echo(f"[smoke] workspace: {workspace}")
+    finally:
+        if temp_ctx is not None:
+            temp_ctx.cleanup()
