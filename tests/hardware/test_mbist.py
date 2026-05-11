@@ -279,7 +279,7 @@ _prepare_fault_files()
 
 async def _run_mbist_once(
     dut,
-    fault_type: str,
+    fault_type: str = "stuck-at",
     observations: list[dict[str, int]] | None = None,
     transition_stats: dict[str, object] | None = None,
 ) -> None:
