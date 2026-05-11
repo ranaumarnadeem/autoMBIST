@@ -44,22 +44,26 @@ Or you can install directly with Pypi:
 python -m pip install autombist
 ```
 
-## Basic Generation
+## Quick Start
 
 Generate MBIST outputs using the default output directory (`out`):
 
 ```bash
-autombist --config config.yml --out out
+autombist generate --config config.yml --out out
 ```
 
-If `--out` is omitted, `out/` is used by default.
+Run generation + simulation in one step:
+
+```bash
+autombist run --config config.yml --out out
+```
 
 ## Fault Simulation Flow
 
 Generate fault-enabled artifacts (saboteur + fault masks + module Makefile):
 
 ```bash
-autombist --config config.yml --out out --test --faults 50 --seed 1234 --algo march-c --fault-type stuck-at
+autombist generate --config config.yml --out out --test --faults 50 --seed 1234 --algo march-c --fault-type stuck-at
 ```
 
 This command injects random `SA0`/`SA1` faults into the memory model and writes fault files to:
@@ -68,19 +72,39 @@ This command injects random `SA0`/`SA1` faults into the memory model and writes 
 out/<memory_name>/faults/
 ```
 
-Then run simulation from the generated module directory:
+Then run simulation:
 
 ```bash
-cd out/<memory_name>
-make
+autombist simulate --out out/<memory_name>
 ```
 
-For transition fault simulation, set `--fault-type transition-up` or `--fault-type transition-down` and run the generated module Makefile the same way.
+For transition fault simulation, set `--fault-type transition-up` or `--fault-type transition-down`, then run `autombist simulate --out out/<memory_name>`.
 
-For verbose simulation output:
+## OpenRAM Synthesis + Starter Scaffolding
+
+Generate starter files (`config.yml`, `openram.yml`, and `Makefile`) for a new project:
 
 ```bash
-make debug
+autombist init --out .
+```
+
+Synthesize SRAM through OpenRAM from config:
+
+```bash
+autombist ram-synth --config openram.yml
+```
+
+Show the exact OpenRAM command before execution:
+
+```bash
+autombist ram-synth --config openram.yml --show-command
+```
+
+Run installation smoke checks (generation, OpenRAM config parse, optional simulation):
+
+```bash
+autombist smoke
+autombist smoke --no-sim
 ```
 
 ## Synthesis

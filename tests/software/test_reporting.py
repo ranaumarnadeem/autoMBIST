@@ -42,6 +42,7 @@ def test_build_simulation_report_falls_back_to_requested_faults(tmp_path: Path) 
         fault_type="transition-up",
         pulse_width_ns=2,
         algo="march-raw",
+        results_xml_path=tmp_path / "results.xml",
     )
 
     assert report["fault_metrics"]["injected_faults"] == 100

@@ -173,6 +173,9 @@ def test_cli_help_mentions_version_and_options() -> None:
     assert "generate" in result.output
     assert "simulate" in result.output
     assert "run" in result.output
+    assert "ram-synth" in result.output
+    assert "init" in result.output
+    assert "smoke" in result.output
 
 
 def test_cli_version() -> None:
@@ -451,3 +454,83 @@ def test_invalid_algo_raises(tmp_path: Path, base_config: dict[str, object]) -> 
 
     with pytest.raises(ValueError, match="algo must be one of"):
         generate_from_config(config_path, outdir, algo="invalid-algo")
+
+
+def test_cli_init_creates_scaffold_files(tmp_path: Path) -> None:
+    outdir = tmp_path / "starter"
+    result = runner.invoke(app, ["init", "--out", str(outdir)])
+
+    assert result.exit_code == 0
+    assert (outdir / "config.yml").exists()
+    assert (outdir / "openram.yml").exists()
+    assert (outdir / "Makefile").exists()
+
+    openram_cfg = yaml.safe_load((outdir / "openram.yml").read_text(encoding="utf-8"))
+    assert openram_cfg["tech"] == "scn4m_subm"
+    assert openram_cfg["word_size"] == 32
+
+
+def test_cli_init_refuses_overwrite_without_force(tmp_path: Path) -> None:
+    outdir = tmp_path / "starter"
+    outdir.mkdir(parents=True)
+    (outdir / "config.yml").write_text("memory_name: keep_me\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["init", "--out", str(outdir)])
+    assert result.exit_code == 1
+    assert "Refusing to overwrite existing file" in result.output
+
+
+def test_cli_init_overwrites_with_force(tmp_path: Path) -> None:
+    outdir = tmp_path / "starter"
+    outdir.mkdir(parents=True)
+    (outdir / "config.yml").write_text("memory_name: keep_me\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["init", "--out", str(outdir), "--force"])
+    assert result.exit_code == 0
+    rendered = yaml.safe_load((outdir / "config.yml").read_text(encoding="utf-8"))
+    assert rendered["memory_name"] == "sram_1rw"
+
+
+def test_cli_ram_synth_uses_config_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    openram_cfg_path = tmp_path / "openram.yml"
+    openram_cfg_path.write_text(
+        yaml.safe_dump(
+            {
+                "tech": "scn4m_subm",
+                "word_size": 8,
+                "num_words": 16,
+                "num_rw_ports": 1,
+                "num_r_ports": 0,
+                "num_w_ports": 0,
+                "output_root": "input",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, Path] = {}
+
+    def fake_run_openram(config_path: Path):
+        captured["config_path"] = config_path
+        return subprocess.CompletedProcess(args=["python3", "scripts/synthesize_sram.py"], returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr("autombist.cli.run_openram_synthesis", fake_run_openram)
+
+    result = runner.invoke(app, ["ram-synth", "--config", str(openram_cfg_path)])
+    assert result.exit_code == 0
+    assert captured["config_path"] == openram_cfg_path.resolve()
+    assert "ok" in result.output
+
+
+def test_cli_smoke_no_sim_passes(tmp_path: Path) -> None:
+    outdir = tmp_path / "smoke-out"
+    result = runner.invoke(app, ["smoke", "--no-sim", "--out", str(outdir)])
+
+    assert result.exit_code == 0
+    assert "[smoke] generate: PASS" in result.output
+    assert "[smoke] ram-synth config parse: PASS" in result.output
+    assert (outdir / "config.yml").exists()
+    assert (outdir / "openram.yml").exists()
