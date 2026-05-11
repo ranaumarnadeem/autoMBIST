@@ -100,7 +100,7 @@ Show the exact OpenRAM command before execution:
 autombist ram-synth --config openram.yml --show-command
 ```
 
-Run installation smoke checks (generation, OpenRAM config parse, optional simulation):
+Run installation smoke checks (generation + OpenRAM config parse + optional small fault simulations for coverage):
 
 ```bash
 autombist smoke
