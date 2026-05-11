@@ -461,13 +461,13 @@ def smoke(
     keep_artifacts: bool = typer.Option(False, "--keep-artifacts", help="Keep generated smoke workspace"),
     out: Path | None = typer.Option(None, "--out", help="Optional workspace path for smoke artifacts"),
 ) -> None:
-    """Run smoke checks to verify all generation modes and optionally simulate.
+    """Run smoke checks to verify generation modes and optional fault simulation.
 
     Exercises all generation modes (clean, stuck-at, transition-up,
     transition-down) with both march-c and march-raw algorithms.
     Validates expected output artifacts exist after each generation step.
-    Optionally runs a clean-mode simulation to verify the simulator
-    toolchain (iverilog + cocotb).
+    Optionally runs small fault-injection simulations so coverage
+    reporting is exercised for stuck-at and transition fault modes.
 
     Examples:
       autombist smoke
@@ -524,10 +524,13 @@ def smoke(
             raise typer.Exit(code=1)
         typer.echo("[smoke] generate (clean, march-raw): PASS")
 
+        smoke_faults = 8
+        smoke_seed = 42
+
         # --- 3. Stuck-at fault generation ---
         wrapper_path = _generate(
             smoke_config_path, smoke_out,
-            test=True, faults=10, seed=42,
+            test=True, faults=smoke_faults, seed=smoke_seed,
             fault_type="stuck-at", pulse_width_ns=2, algo="march-c",
         )
         module_outdir = wrapper_path.parent
@@ -540,7 +543,7 @@ def smoke(
         # --- 4. Transition-up fault generation (march-raw) ---
         wrapper_path = _generate(
             smoke_config_path, smoke_out,
-            test=True, faults=10, seed=42,
+            test=True, faults=smoke_faults, seed=smoke_seed,
             fault_type="transition-up", pulse_width_ns=2, algo="march-raw",
         )
         module_outdir = wrapper_path.parent
@@ -554,7 +557,7 @@ def smoke(
         # --- 5. Transition-down fault generation (march-raw) ---
         wrapper_path = _generate(
             smoke_config_path, smoke_out,
-            test=True, faults=10, seed=42,
+            test=True, faults=smoke_faults, seed=smoke_seed,
             fault_type="transition-down", pulse_width_ns=3, algo="march-raw",
         )
         module_outdir = wrapper_path.parent
@@ -574,15 +577,27 @@ def smoke(
             typer.secho(f"autombist: smoke ram-synth config parse failed: {exc}", err=True, fg=typer.colors.RED)
             raise typer.Exit(code=1)
 
-        # --- 7. Optional clean simulation ---
+        # --- 7. Optional fault simulations with small fault counts ---
         if run_sim:
-            wrapper_path = _generate(
-                smoke_config_path, smoke_out,
-                test=False, faults=0, seed=None,
-                fault_type="stuck-at", pulse_width_ns=2, algo="march-c",
-            )
-            _simulate(wrapper_path.parent, verbose=False)
-            typer.echo("[smoke] simulate (clean): PASS")
+            simulate_scenarios = [
+                ("stuck-at", "march-c", 2),
+                ("transition-up", "march-raw", 2),
+                ("transition-down", "march-raw", 3),
+            ]
+            for fault_type, algo, pulse_width in simulate_scenarios:
+                wrapper_path = _generate(
+                    smoke_config_path,
+                    smoke_out,
+                    test=True,
+                    faults=smoke_faults,
+                    seed=smoke_seed,
+                    fault_type=fault_type,
+                    pulse_width_ns=pulse_width,
+                    algo=algo,
+                )
+                module_outdir = wrapper_path.parent
+                _simulate(module_outdir, verbose=False)
+                typer.echo(f"[smoke] simulate ({fault_type}, {algo}, faults={smoke_faults}): PASS")
 
         typer.echo(f"[smoke] workspace: {workspace}")
         typer.echo("[smoke] All checks passed")

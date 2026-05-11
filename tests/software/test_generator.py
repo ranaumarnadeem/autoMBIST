@@ -540,3 +540,36 @@ def test_cli_smoke_no_sim_passes(tmp_path: Path) -> None:
     assert "[smoke] All checks passed" in result.output
     assert (outdir / "config.yml").exists()
     assert (outdir / "openram.yml").exists()
+
+
+def test_cli_smoke_with_sim_runs_fault_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outdir = tmp_path / "smoke-out"
+    calls: list[tuple[str, str, int, bool]] = []
+
+    def fake_simulate(module_outdir: Path, verbose: bool) -> None:
+        assert verbose is False
+        snapshot = yaml.safe_load((module_outdir / "config.yml").read_text(encoding="utf-8"))
+        calls.append(
+            (
+                str(snapshot["autombist_fault_type"]),
+                str(snapshot["autombist_algo"]),
+                int(snapshot["autombist_faults"]),
+                bool(snapshot["autombist_use_saboteur"]),
+            )
+        )
+
+    monkeypatch.setattr("autombist.cli._simulate", fake_simulate)
+
+    result = runner.invoke(app, ["smoke", "--out", str(outdir)])
+
+    assert result.exit_code == 0
+    assert calls == [
+        ("stuck-at", "march-c", 8, True),
+        ("transition-up", "march-raw", 8, True),
+        ("transition-down", "march-raw", 8, True),
+    ]
+    assert "[smoke] simulate (stuck-at, march-c, faults=8): PASS" in result.output
+    assert "[smoke] simulate (transition-up, march-raw, faults=8): PASS" in result.output
+    assert "[smoke] simulate (transition-down, march-raw, faults=8): PASS" in result.output
