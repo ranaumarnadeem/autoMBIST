@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autombist"
-version = "1.1.0"
+version = "1.1.1"
 description = "MBIST wrapper and fault-flow generator"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,6 +12,12 @@ dependencies = [
   "Jinja2>=3.1",
   "PyYAML>=6.0",
   "typer[all]>=0.12",
+]
+
+[project.optional-dependencies]
+hardware-test = [
+  "cocotb>=1.8",
+  "cocotb-tools>=0.3",
 ]
 
 [project.scripts]
@@ -22,6 +28,7 @@ packages = ["src/autombist"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "rtl" = "autombist/rtl"
+"tests" = "autombist/tests"
 
 [project.urls]
 Homepage = "https://github.com/ranaumarnadeem/autoMBIST"
