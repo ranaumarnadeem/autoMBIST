@@ -15,6 +15,47 @@ from .generator import load_config
 from .reporting import build_simulation_report, write_simulation_report, write_text_report
 
 
+def _find_hardware_dir() -> Path:
+    """Locate the tests/hardware directory for simulation.
+    
+    Tries multiple approaches to support both development and installed package modes:
+    1. Check relative to autombist package location (for installed packages)
+    2. Check relative to source root (for development)
+    3. Check in current working directory and parent directories
+    
+    Raises SimulationError if tests/hardware cannot be found.
+    """
+    candidates = []
+    
+    # Approach 1: Installed package mode - look in site-packages/autombist/tests/hardware
+    package_root = Path(__file__).resolve().parent
+    installed_hardware = package_root / "tests" / "hardware"
+    candidates.append(installed_hardware)
+    
+    # Approach 2: Development mode - look relative to project root
+    # parents[2] goes from src/autombist/runner.py to project root
+    project_root = Path(__file__).resolve().parents[2]
+    dev_hardware = project_root / "tests" / "hardware"
+    candidates.append(dev_hardware)
+    
+    # Approach 3: Check current working directory and parents
+    cwd = Path.cwd()
+    for parent in [cwd] + list(cwd.parents):
+        candidates.append(parent / "tests" / "hardware")
+    
+    for candidate in candidates:
+        if candidate.exists() and (candidate / "Makefile").exists():
+            return candidate
+    
+    # Provide helpful error message
+    raise SimulationError(
+        f"Hardware simulation directory not found. Looked in:\n"
+        f"  - {installed_hardware}\n"
+        f"  - {dev_hardware}\n"
+        f"\nMake sure 'tests' is included in your autombist installation, or set AUTOMBIST_HARDWARE_DIR environment variable."
+    )
+
+
 MAKEFILE_VAR_RE = re.compile(r"^(?P<key>[A-Z0-9_]+)\s*:?=\s*(?P<value>.*)$")
 
 
@@ -94,11 +135,22 @@ def _load_simulation_config(module_outdir: Path) -> dict[str, Any]:
     }
 
 
-def _build_clean_command(*, hardware_dir: Path, module_outdir: Path, config: dict[str, Any], algo: str) -> list[str]:
+def _build_clean_command(
+    *,
+    hardware_dir: Path,
+    module_outdir: Path,
+    config: dict[str, Any],
+    algo: str,
+    project_root: Path | None = None,
+) -> list[str]:
+    if project_root is None:
+        project_root = Path(__file__).resolve().parents[2]
+    
     return [
         "make",
         "-C",
         str(hardware_dir),
+        f"PROJECT_ROOT={project_root}",
         "SIM=icarus",
         f"OUTDIR={module_outdir.parent}",
         f"MEMORY_NAME={config['memory_name']}",
@@ -124,11 +176,16 @@ def _build_fault_command(
     fault_type: str,
     pulse_width_ns: int,
     algo: str,
+    project_root: Path | None = None,
 ) -> list[str]:
+    if project_root is None:
+        project_root = Path(__file__).resolve().parents[2]
+    
     command = [
         "make",
         "-C",
         str(hardware_dir),
+        f"PROJECT_ROOT={project_root}",
         "SIM=icarus",
         f"OUTDIR={module_outdir.parent}",
         f"MEMORY_NAME={config['memory_name']}",
@@ -176,14 +233,23 @@ def run_simulation(
                 f"Saboteur wrapper not found: {saboteur_path}. Run `autombist generate --test` first."
             )
 
+    hardware_dir = _find_hardware_dir()
     repo_root = Path(__file__).resolve().parents[2]
-    hardware_dir = repo_root / "tests" / "hardware"
 
     algo = str(_get_run_metadata(config, "autombist_algo", "march-c"))
     fault_seed = _get_run_metadata(config, "autombist_fault_seed", None)
     faults = int(_get_run_metadata(config, "autombist_faults", 0))
     fault_type = str(_get_run_metadata(config, "autombist_fault_type", "stuck-at"))
     pulse_width_ns = int(_get_run_metadata(config, "autombist_pulse_width_ns", 2))
+
+    # Determine PROJECT_ROOT for the makefile
+    # Try dev mode first, then fallback to hardware_dir parent
+    dev_project_root = Path(__file__).resolve().parents[2]
+    if (dev_project_root / "tests" / "hardware").exists():
+        project_root = dev_project_root
+    else:
+        # Installed mode: use a sensible default (hardware dir or cwd)
+        project_root = Path.cwd()
 
     if use_saboteur:
         command = _build_fault_command(
@@ -195,6 +261,7 @@ def run_simulation(
             fault_type=fault_type,
             pulse_width_ns=pulse_width_ns,
             algo=algo,
+            project_root=project_root,
         )
     else:
         command = _build_clean_command(
@@ -202,11 +269,12 @@ def run_simulation(
             module_outdir=module_outdir,
             config=config,
             algo=algo,
+            project_root=project_root,
         )
 
     completed = subprocess.run(
         command,
-        cwd=repo_root,
+        cwd=project_root,
         env=os.environ.copy(),
         capture_output=True,
         text=True,
@@ -234,7 +302,7 @@ def run_simulation(
         tool_version=__version__,
         config=config,
         command=command,
-        cwd=repo_root,
+        cwd=project_root,
         log_path=log_path,
         report_path=reports_dir / "latest.json",
         returncode=completed.returncode,
@@ -254,7 +322,7 @@ def run_simulation(
 
     result = SimulationResult(
         command=command,
-        cwd=repo_root,
+        cwd=project_root,
         log_path=log_path,
         report_path=report_path,
         returncode=completed.returncode,
