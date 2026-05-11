@@ -72,3 +72,9 @@ OpenRAM/*
 input/*
 pdk/*
 .aider*
+
+# Ignored markdown files
+changelog.md
+promptphase3.md
+*plan*.md
+plan-trans*.md
