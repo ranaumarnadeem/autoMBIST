@@ -61,8 +61,9 @@ def test_generate_wrapper_and_package_rtl(tmp_path: Path, base_config: dict[str,
     assert ".csb0(sram_csb)" in wrapper_text
     assert "march_c_top" in wrapper_text
 
+    assert (module_outdir / "sram_model.sv").exists(), "Missing copied RTL file: sram_model.sv"
     for rtl_name in ("mbist_algo.sv", "mbist_fsm.sv", "mbist_top.sv"):
-        assert (module_outdir / rtl_name).exists(), f"Missing copied RTL file: {rtl_name}"
+        assert not (module_outdir / rtl_name).exists(), f"Legacy RTL file should not be copied: {rtl_name}"
 
     for rtl_name in (
         "march_c/march_c_algo.sv",
@@ -530,7 +531,12 @@ def test_cli_smoke_no_sim_passes(tmp_path: Path) -> None:
     result = runner.invoke(app, ["smoke", "--no-sim", "--out", str(outdir)])
 
     assert result.exit_code == 0
-    assert "[smoke] generate: PASS" in result.output
+    assert "[smoke] generate (clean, march-c): PASS" in result.output
+    assert "[smoke] generate (clean, march-raw): PASS" in result.output
+    assert "[smoke] generate (stuck-at, march-c): PASS" in result.output
+    assert "[smoke] generate (transition-up, march-raw): PASS" in result.output
+    assert "[smoke] generate (transition-down, march-raw): PASS" in result.output
     assert "[smoke] ram-synth config parse: PASS" in result.output
+    assert "[smoke] All checks passed" in result.output
     assert (outdir / "config.yml").exists()
     assert (outdir / "openram.yml").exists()

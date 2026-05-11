@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.resources
 import shutil
 from pathlib import Path
 from typing import Any
@@ -112,8 +113,29 @@ def render_fault_makefile(config: dict[str, Any]) -> str:
     return _render_template(config, "fault_makefile_template.j2")
 
 
-def copy_mbist_rtl(repo_root: Path, outdir: Path) -> None:
+def _find_rtl_dir() -> Path:
+    """Locate the MBIST RTL directory (works for both pip installs and dev installs)."""
+    # Try package data first (pip-installed wheel)
+    try:
+        pkg_rtl = importlib.resources.files("autombist").joinpath("rtl")
+        marker = pkg_rtl.joinpath("sram_model.sv")
+        if marker.is_file():
+            return Path(str(pkg_rtl))
+    except (TypeError, FileNotFoundError, AttributeError):
+        pass
+    # Fallback: repo root layout (editable / dev install)
+    repo_root = Path(__file__).resolve().parents[2]
     rtl_dir = repo_root / "rtl"
+    if rtl_dir.is_dir():
+        return rtl_dir
+    raise FileNotFoundError(
+        "MBIST RTL directory not found. Reinstall autombist or verify your installation."
+    )
+
+
+def copy_mbist_rtl(outdir: Path) -> None:
+    """Copy algorithm RTL and shared models into the output directory."""
+    rtl_dir = _find_rtl_dir()
     for source_path in rtl_dir.rglob("*"):
         if source_path.is_file():
             relative_path = source_path.relative_to(rtl_dir)
@@ -137,8 +159,6 @@ def generate_from_config(
         raise ValueError("faults must be a non-negative integer")
 
     config = load_config(config_path)
-
-    repo_root = Path(__file__).resolve().parents[2]
 
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -213,5 +233,5 @@ def generate_from_config(
     wrapper_path = module_outdir / f"{config['memory_name']}_mbist.v"
     wrapper_path.write_text(wrapper_text, encoding="utf-8")
 
-    copy_mbist_rtl(repo_root, module_outdir)
+    copy_mbist_rtl(module_outdir)
     return wrapper_path

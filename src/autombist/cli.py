@@ -342,12 +342,67 @@ def ram_synth(
         raise typer.Exit(code=result.returncode)
 
 
+def _default_sram_model_text() -> str:
+    """Return a sample SRAM model matching the default config ports."""
+    return "\n".join([
+        "// Sample SRAM model for autombist",
+        "// Replace this with your OpenRAM-generated SRAM macro",
+        "`timescale 1ns/1ps",
+        "",
+        "module sram_1rw #(",
+        "    parameter integer ADDR_WIDTH = 10,",
+        "    parameter integer DATA_WIDTH = 32",
+        ") (",
+        "    input  wire                  clk0,",
+        "    input  wire                  csb0,",
+        "    input  wire [ADDR_WIDTH-1:0] addr0,",
+        "    input  wire [DATA_WIDTH-1:0] din0,",
+        "    input  wire                  we0,",
+        "    output reg [DATA_WIDTH-1:0]  dout0",
+        ");",
+        "",
+        "    localparam integer DEPTH = (1 << ADDR_WIDTH);",
+        "",
+        "    reg [DATA_WIDTH-1:0] mem [0:DEPTH-1];",
+        "",
+        "    reg                  csb0_q;",
+        "    reg                  we0_q;",
+        "    reg [ADDR_WIDTH-1:0] addr0_q;",
+        "",
+        "    always @(posedge clk0) begin",
+        "        csb0_q  <= csb0;",
+        "        we0_q   <= we0;",
+        "        addr0_q <= addr0;",
+        "",
+        "        if (!csb0 && !we0) begin",
+        "            mem[addr0] <= din0;",
+        "        end",
+        "",
+        "        if (!csb0_q && we0_q) begin",
+        "            dout0 <= mem[addr0_q];",
+        "        end",
+        "    end",
+        "",
+        "endmodule",
+        "",
+    ])
+
+
 @app.command()
 def init(
     out: Path = typer.Option(".", "--out", help="Directory where starter files will be created"),
     force: bool = typer.Option(False, "--force", help="Overwrite existing files"),
 ) -> None:
-    """Create starter config.yml, openram.yml, and Makefile scaffolding."""
+    """Create starter config.yml, openram.yml, Makefile, and sample SRAM model.
+
+    Generates a complete starter project that can immediately be used
+    with 'autombist generate' and 'autombist simulate'.
+
+    Examples:
+      autombist init
+      autombist init --out my_project
+      autombist init --force
+    """
 
     target_dir = out if out.is_absolute() else (Path.cwd() / out).resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -355,6 +410,7 @@ def init(
     mbist_config_path = target_dir / "config.yml"
     openram_config_path = target_dir / "openram.yml"
     makefile_path = target_dir / "Makefile"
+    sram_model_path = target_dir / "sram_1rw.v"
 
     try:
         _write_file_with_overwrite_guard(
@@ -372,6 +428,11 @@ def init(
             _default_project_makefile_text(),
             force=force,
         )
+        _write_file_with_overwrite_guard(
+            sram_model_path,
+            _default_sram_model_text(),
+            force=force,
+        )
     except (FileExistsError, OSError) as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
@@ -379,6 +440,19 @@ def init(
     typer.echo(f"Created starter MBIST config: {mbist_config_path}")
     typer.echo(f"Created starter OpenRAM config: {openram_config_path}")
     typer.echo(f"Created starter Makefile: {makefile_path}")
+    typer.echo(f"Created sample SRAM model: {sram_model_path}")
+    typer.echo("")
+    typer.echo("Next steps:")
+    typer.echo("  1. Edit config.yml to match your SRAM macro")
+    typer.echo("  2. Replace sram_1rw.v with your OpenRAM-generated SRAM")
+    typer.echo("  3. Run: autombist generate --config config.yml")
+
+
+def _assert_smoke_file(path: Path, label: str) -> None:
+    """Fail the smoke run if an expected file is missing."""
+    if not path.exists():
+        typer.secho(f"[smoke] FAIL: expected {label} at {path}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -387,7 +461,19 @@ def smoke(
     keep_artifacts: bool = typer.Option(False, "--keep-artifacts", help="Keep generated smoke workspace"),
     out: Path | None = typer.Option(None, "--out", help="Optional workspace path for smoke artifacts"),
 ) -> None:
-    """Run smoke checks to verify the installed toolchain works."""
+    """Run smoke checks to verify all generation modes and optionally simulate.
+
+    Exercises all generation modes (clean, stuck-at, transition-up,
+    transition-down) with both march-c and march-raw algorithms.
+    Validates expected output artifacts exist after each generation step.
+    Optionally runs a clean-mode simulation to verify the simulator
+    toolchain (iverilog + cocotb).
+
+    Examples:
+      autombist smoke
+      autombist smoke --no-sim
+      autombist smoke --keep-artifacts --out smoke_workspace
+    """
 
     temp_ctx: tempfile.TemporaryDirectory[str] | None = None
     try:
@@ -404,6 +490,7 @@ def smoke(
         smoke_config_path = workspace / "config.yml"
         smoke_openram_config = workspace / "openram.yml"
         smoke_out = workspace / "out"
+        memory_name = str(_default_mbist_config()["memory_name"])
 
         smoke_config_path.write_text(
             yaml.safe_dump(_default_mbist_config(), sort_keys=False),
@@ -414,19 +501,71 @@ def smoke(
             encoding="utf-8",
         )
 
+        # --- 1. Clean generation (march-c) ---
         wrapper_path = _generate(
-            smoke_config_path,
-            smoke_out,
-            test=False,
-            faults=0,
-            seed=None,
-            fault_type="stuck-at",
-            pulse_width_ns=2,
-            algo="march-c",
+            smoke_config_path, smoke_out,
+            test=False, faults=0, seed=None,
+            fault_type="stuck-at", pulse_width_ns=2, algo="march-c",
+        )
+        _assert_smoke_file(wrapper_path, "wrapper (clean, march-c)")
+        _assert_smoke_file(wrapper_path.parent / "config.yml", "config snapshot")
+        typer.echo("[smoke] generate (clean, march-c): PASS")
+
+        # --- 2. Clean generation (march-raw) ---
+        wrapper_path = _generate(
+            smoke_config_path, smoke_out,
+            test=False, faults=0, seed=None,
+            fault_type="stuck-at", pulse_width_ns=2, algo="march-raw",
+        )
+        _assert_smoke_file(wrapper_path, "wrapper (clean, march-raw)")
+        wrapper_text = wrapper_path.read_text(encoding="utf-8")
+        if "march_raw_top" not in wrapper_text:
+            typer.secho("[smoke] FAIL: wrapper missing march_raw_top", err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        typer.echo("[smoke] generate (clean, march-raw): PASS")
+
+        # --- 3. Stuck-at fault generation ---
+        wrapper_path = _generate(
+            smoke_config_path, smoke_out,
+            test=True, faults=10, seed=42,
+            fault_type="stuck-at", pulse_width_ns=2, algo="march-c",
         )
         module_outdir = wrapper_path.parent
-        typer.echo(f"[smoke] generate: PASS ({wrapper_path})")
+        _assert_smoke_file(module_outdir / "faults" / "sa0_faults.hex", "sa0_faults.hex")
+        _assert_smoke_file(module_outdir / "faults" / "sa1_faults.hex", "sa1_faults.hex")
+        _assert_smoke_file(module_outdir / f"{memory_name}_saboteur.v", "saboteur (stuck-at)")
+        _assert_smoke_file(module_outdir / "Makefile", "fault Makefile")
+        typer.echo("[smoke] generate (stuck-at, march-c): PASS")
 
+        # --- 4. Transition-up fault generation (march-raw) ---
+        wrapper_path = _generate(
+            smoke_config_path, smoke_out,
+            test=True, faults=10, seed=42,
+            fault_type="transition-up", pulse_width_ns=2, algo="march-raw",
+        )
+        module_outdir = wrapper_path.parent
+        _assert_smoke_file(module_outdir / "faults" / "tf_up_faults.hex", "tf_up_faults.hex")
+        saboteur_text = (module_outdir / f"{memory_name}_saboteur.v").read_text(encoding="utf-8")
+        if "tf_up_mask" not in saboteur_text:
+            typer.secho("[smoke] FAIL: saboteur missing tf_up_mask", err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        typer.echo("[smoke] generate (transition-up, march-raw): PASS")
+
+        # --- 5. Transition-down fault generation (march-raw) ---
+        wrapper_path = _generate(
+            smoke_config_path, smoke_out,
+            test=True, faults=10, seed=42,
+            fault_type="transition-down", pulse_width_ns=3, algo="march-raw",
+        )
+        module_outdir = wrapper_path.parent
+        _assert_smoke_file(module_outdir / "faults" / "tf_down_faults.hex", "tf_down_faults.hex")
+        saboteur_text = (module_outdir / f"{memory_name}_saboteur.v").read_text(encoding="utf-8")
+        if "tf_down_mask" not in saboteur_text:
+            typer.secho("[smoke] FAIL: saboteur missing tf_down_mask", err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        typer.echo("[smoke] generate (transition-down, march-raw): PASS")
+
+        # --- 6. OpenRAM config parse ---
         try:
             cfg = load_openram_config(smoke_openram_config)
             build_openram_command_args(cfg, smoke_openram_config)
@@ -435,11 +574,18 @@ def smoke(
             typer.secho(f"autombist: smoke ram-synth config parse failed: {exc}", err=True, fg=typer.colors.RED)
             raise typer.Exit(code=1)
 
+        # --- 7. Optional clean simulation ---
         if run_sim:
-            _simulate(module_outdir, verbose=False)
-            typer.echo("[smoke] simulate: PASS")
+            wrapper_path = _generate(
+                smoke_config_path, smoke_out,
+                test=False, faults=0, seed=None,
+                fault_type="stuck-at", pulse_width_ns=2, algo="march-c",
+            )
+            _simulate(wrapper_path.parent, verbose=False)
+            typer.echo("[smoke] simulate (clean): PASS")
 
         typer.echo(f"[smoke] workspace: {workspace}")
+        typer.echo("[smoke] All checks passed")
     finally:
         if temp_ctx is not None:
             temp_ctx.cleanup()
