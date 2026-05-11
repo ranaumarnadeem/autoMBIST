@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.resources
 import shutil
 from pathlib import Path
 from typing import Any
@@ -112,8 +113,29 @@ def render_fault_makefile(config: dict[str, Any]) -> str:
     return _render_template(config, "fault_makefile_template.j2")
 
 
-def copy_mbist_rtl(repo_root: Path, outdir: Path) -> None:
+def _find_rtl_dir() -> Path:
+    """Locate the MBIST RTL directory (works for both pip installs and dev installs)."""
+    # Try package data first (pip-installed wheel)
+    try:
+        pkg_rtl = importlib.resources.files("autombist").joinpath("rtl")
+        marker = pkg_rtl.joinpath("sram_model.sv")
+        if marker.is_file():
+            return Path(str(pkg_rtl))
+    except (TypeError, FileNotFoundError, AttributeError):
+        pass
+    # Fallback: repo root layout (editable / dev install)
+    repo_root = Path(__file__).resolve().parents[2]
     rtl_dir = repo_root / "rtl"
+    if rtl_dir.is_dir():
+        return rtl_dir
+    raise FileNotFoundError(
+        "MBIST RTL directory not found. Reinstall autombist or verify your installation."
+    )
+
+
+def copy_mbist_rtl(outdir: Path) -> None:
+    """Copy algorithm RTL and shared models into the output directory."""
+    rtl_dir = _find_rtl_dir()
     for source_path in rtl_dir.rglob("*"):
         if source_path.is_file():
             relative_path = source_path.relative_to(rtl_dir)
@@ -138,8 +160,6 @@ def generate_from_config(
 
     config = load_config(config_path)
 
-    repo_root = Path(__file__).resolve().parents[2]
-
     outdir.mkdir(parents=True, exist_ok=True)
 
     module_outdir = outdir / config["memory_name"]
@@ -150,6 +170,12 @@ def generate_from_config(
     render_config["pulse_width_ns"] = pulse_width_ns
     render_config["algo"] = algo
     render_config["fault_type"] = fault_type
+    render_config["autombist_use_saboteur"] = use_saboteur
+    render_config["autombist_faults"] = faults
+    render_config["autombist_fault_seed"] = fault_seed
+    render_config["autombist_fault_type"] = fault_type
+    render_config["autombist_pulse_width_ns"] = pulse_width_ns
+    render_config["autombist_algo"] = algo
 
     algo_dir, algo_top_module = _normalize_algo(algo)
     render_config["algo_dir"] = algo_dir
@@ -200,9 +226,12 @@ def generate_from_config(
         makefile_path = module_outdir / "Makefile"
         makefile_path.write_text(makefile_text, encoding="utf-8")
 
+    config_snapshot_path = module_outdir / "config.yml"
+    config_snapshot_path.write_text(yaml.safe_dump(render_config, sort_keys=False), encoding="utf-8")
+
     wrapper_text = render_wrapper(render_config)
     wrapper_path = module_outdir / f"{config['memory_name']}_mbist.v"
     wrapper_path.write_text(wrapper_text, encoding="utf-8")
 
-    copy_mbist_rtl(repo_root, module_outdir)
+    copy_mbist_rtl(module_outdir)
     return wrapper_path

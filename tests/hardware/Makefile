@@ -19,6 +19,7 @@ ALGO_TEST ?= 0
 SIM_BUILD ?= sim_build/$(ALGO_DIR)_t$(ALGO_TEST)_s$(USE_SABOTEUR)
 PYTHON_BIN ?= $(PROJECT_ROOT)/venv/bin/python3
 COCOTB_MAKEFILES_DIR := $(shell $(PYTHON_BIN) -c "import pathlib, cocotb_tools; print(pathlib.Path(cocotb_tools.__file__).resolve().parent / 'makefiles')")
+COCOTB_RESULTS_FILE ?= $(MODULE_OUTDIR)/results.xml
 
 ifeq ($(ALGO_TEST),1)
 SRAM_SOURCE :=
@@ -71,5 +72,6 @@ export DATA_WIDTH
 export MEMORY_NAME
 export ALGO
 export ALGO_TEST
+export COCOTB_RESULTS_FILE
 
 include $(COCOTB_MAKEFILES_DIR)/Makefile.sim

@@ -12,14 +12,20 @@ module {{ memory_name }}_saboteur #(
     output logic [DATA_WIDTH-1:0] {{ ports.dout }},
     output logic [DATA_WIDTH-1:0] dbg_actual_word,
     output logic [DATA_WIDTH-1:0] dbg_fault_word,
-    output logic [DATA_WIDTH-1:0] dbg_intended_word
+    output logic [DATA_WIDTH-1:0] dbg_intended_word,
+    output logic [DATA_WIDTH-1:0] dbg_prior_value,
+    output logic [DATA_WIDTH-1:0] dbg_attempted_write,
+    output logic [DATA_WIDTH-1:0] dbg_actual_read,
+    output logic [DATA_WIDTH-1:0] dbg_blocked_bits
 );
 
     logic [DATA_WIDTH-1:0] real_dout;
     logic [DATA_WIDTH-1:0] real_din;
     logic write_cycle;
+    logic read_cycle;
 
     assign write_cycle = (~{{ ports.csb }}) & (~{{ ports.we }});
+    assign read_cycle  = (~{{ ports.csb }}) & ({{ ports.we }});
 
 {% if fault_type == "stuck-at" %}
     logic [DATA_WIDTH-1:0] sa0_mask [0:(1<<ADDR_WIDTH)-1];
@@ -32,15 +38,27 @@ module {{ memory_name }}_saboteur #(
 {% elif fault_type == "transition-up" %}
     logic [DATA_WIDTH-1:0] tf_up_mask [0:(1<<ADDR_WIDTH)-1];
     logic [DATA_WIDTH-1:0] shadow_mem [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] blocked_bits_q [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] delayed_bits_q [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] delayed_target_q [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] read_data_q;
     logic [DATA_WIDTH-1:0] prior_word;
     logic [DATA_WIDTH-1:0] blocked_up;
+    localparam integer DELAY_CYCLES = ({{ pulse_width_ns }} < 1) ? 1 : {{ pulse_width_ns }};
+    localparam integer DELAY_CNT_W = (DELAY_CYCLES < 2) ? 1 : $clog2(DELAY_CYCLES + 1);
+    logic [DELAY_CNT_W-1:0] delay_cnt_q [0:(1<<ADDR_WIDTH)-1];
     integer idx;
 
     initial begin
         $readmemh("{{ tf_up_faults_file }}", tf_up_mask);
         for (idx = 0; idx < (1<<ADDR_WIDTH); idx = idx + 1) begin
             shadow_mem[idx] = '0;
+            blocked_bits_q[idx] = '0;
+            delayed_bits_q[idx] = '0;
+            delayed_target_q[idx] = '0;
+            delay_cnt_q[idx] = '0;
         end
+        read_data_q = '0;
     end
 
     always_comb begin
@@ -50,22 +68,58 @@ module {{ memory_name }}_saboteur #(
     end
 
     always_ff @(posedge {{ ports.clk }}) begin
+        for (idx = 0; idx < (1<<ADDR_WIDTH); idx = idx + 1) begin
+            if (delay_cnt_q[idx] != '0) begin
+                if (delay_cnt_q[idx] == 1) begin
+                    shadow_mem[idx] <= (shadow_mem[idx] & ~delayed_bits_q[idx]) | (delayed_target_q[idx] & delayed_bits_q[idx]);
+                    blocked_bits_q[idx] <= '0;
+                    delayed_bits_q[idx] <= '0;
+                    delayed_target_q[idx] <= '0;
+                end
+                delay_cnt_q[idx] <= delay_cnt_q[idx] - 1'b1;
+            end
+        end
+
         if (write_cycle) begin
             shadow_mem[{{ ports.addr }}] <= real_din;
+            blocked_bits_q[{{ ports.addr }}] <= blocked_up;
+            delayed_bits_q[{{ ports.addr }}] <= blocked_up;
+            delayed_target_q[{{ ports.addr }}] <= {{ ports.din }};
+            if (blocked_up != '0) begin
+                delay_cnt_q[{{ ports.addr }}] <= DELAY_CYCLES;
+            end else begin
+                delay_cnt_q[{{ ports.addr }}] <= '0;
+            end
+        end
+
+        if (read_cycle) begin
+            read_data_q <= shadow_mem[{{ ports.addr }}];
         end
     end
 {% elif fault_type == "transition-down" %}
     logic [DATA_WIDTH-1:0] tf_down_mask [0:(1<<ADDR_WIDTH)-1];
     logic [DATA_WIDTH-1:0] shadow_mem [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] blocked_bits_q [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] delayed_bits_q [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] delayed_target_q [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] read_data_q;
     logic [DATA_WIDTH-1:0] prior_word;
     logic [DATA_WIDTH-1:0] blocked_down;
+    localparam integer DELAY_CYCLES = ({{ pulse_width_ns }} < 1) ? 1 : {{ pulse_width_ns }};
+    localparam integer DELAY_CNT_W = (DELAY_CYCLES < 2) ? 1 : $clog2(DELAY_CYCLES + 1);
+    logic [DELAY_CNT_W-1:0] delay_cnt_q [0:(1<<ADDR_WIDTH)-1];
     integer idx;
 
     initial begin
         $readmemh("{{ tf_down_faults_file }}", tf_down_mask);
         for (idx = 0; idx < (1<<ADDR_WIDTH); idx = idx + 1) begin
             shadow_mem[idx] = '0;
+            blocked_bits_q[idx] = '0;
+            delayed_bits_q[idx] = '0;
+            delayed_target_q[idx] = '0;
+            delay_cnt_q[idx] = '0;
         end
+        read_data_q = '0;
     end
 
     always_comb begin
@@ -75,16 +129,41 @@ module {{ memory_name }}_saboteur #(
     end
 
     always_ff @(posedge {{ ports.clk }}) begin
+        for (idx = 0; idx < (1<<ADDR_WIDTH); idx = idx + 1) begin
+            if (delay_cnt_q[idx] != '0) begin
+                if (delay_cnt_q[idx] == 1) begin
+                    shadow_mem[idx] <= (shadow_mem[idx] & ~delayed_bits_q[idx]) | (delayed_target_q[idx] & delayed_bits_q[idx]);
+                    blocked_bits_q[idx] <= '0;
+                    delayed_bits_q[idx] <= '0;
+                    delayed_target_q[idx] <= '0;
+                end
+                delay_cnt_q[idx] <= delay_cnt_q[idx] - 1'b1;
+            end
+        end
+
         if (write_cycle) begin
             shadow_mem[{{ ports.addr }}] <= real_din;
+            blocked_bits_q[{{ ports.addr }}] <= blocked_down;
+            delayed_bits_q[{{ ports.addr }}] <= blocked_down;
+            delayed_target_q[{{ ports.addr }}] <= {{ ports.din }};
+            if (blocked_down != '0) begin
+                delay_cnt_q[{{ ports.addr }}] <= DELAY_CYCLES;
+            end else begin
+                delay_cnt_q[{{ ports.addr }}] <= '0;
+            end
+        end
+
+        if (read_cycle) begin
+            read_data_q <= shadow_mem[{{ ports.addr }}];
         end
     end
 {% endif %}
 
+{% if fault_type == "stuck-at" %}
     {{ memory_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH)
-    ) u_sram_real (
+    ) u_sram (
         .{{ ports.clk }}({{ ports.clk }}),
         .{{ ports.csb }}({{ ports.csb }}),
         .{{ ports.we }}({{ ports.we }}),
@@ -92,6 +171,7 @@ module {{ memory_name }}_saboteur #(
         .{{ ports.din }}(real_din),
         .{{ ports.dout }}(real_dout)
     );
+{% endif %}
 
 {% if fault_type == "stuck-at" %}
     assign real_din = {{ ports.din }};
@@ -99,11 +179,28 @@ module {{ memory_name }}_saboteur #(
     assign dbg_actual_word = real_dout;
     assign dbg_fault_word = {{ ports.dout }};
     assign dbg_intended_word = {{ ports.din }};
-{% else %}
-    assign {{ ports.dout }} = real_dout;
+    assign dbg_prior_value = '0;
+    assign dbg_attempted_write = '0;
+    assign dbg_actual_read = real_dout;
+    assign dbg_blocked_bits = '0;
+{% elif fault_type == "transition-up" %}
+    assign {{ ports.dout }} = read_data_q;
     assign dbg_actual_word = prior_word;
     assign dbg_fault_word = real_din;
     assign dbg_intended_word = {{ ports.din }};
+    assign dbg_prior_value = prior_word;
+    assign dbg_attempted_write = {{ ports.din }};
+    assign dbg_actual_read = read_data_q;
+    assign dbg_blocked_bits = write_cycle ? blocked_up : blocked_bits_q[{{ ports.addr }}];
+{% else %}
+    assign {{ ports.dout }} = read_data_q;
+    assign dbg_actual_word = prior_word;
+    assign dbg_fault_word = real_din;
+    assign dbg_intended_word = {{ ports.din }};
+    assign dbg_prior_value = prior_word;
+    assign dbg_attempted_write = {{ ports.din }};
+    assign dbg_actual_read = read_data_q;
+    assign dbg_blocked_bits = write_cycle ? blocked_down : blocked_bits_q[{{ ports.addr }}];
 {% endif %}
 
 endmodule
