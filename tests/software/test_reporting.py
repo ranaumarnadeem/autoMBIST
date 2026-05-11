@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import json
 
+import pytest
+
 from autombist.reporting import build_simulation_report, parse_fault_metrics, render_text_report
 
 
@@ -95,6 +97,9 @@ def test_render_text_report_matches_sample_artifact() -> None:
     report_json = workspace / "out" / "input_demo_8x16_scn4m" / "reports" / "latest.json"
     fault_log = workspace / "out" / "input_demo_8x16_scn4m" / "fault_sim.log"
     report_txt = workspace / "out" / "input_demo_8x16_scn4m" / "reports" / "report.txt"
+
+    if not all(p.exists() for p in (report_json, fault_log, report_txt)):
+        pytest.skip("Local simulation artifacts not present (run autombist simulate first)")
 
     report = json.loads(report_json.read_text(encoding="utf-8"))
     rendered = render_text_report(report, fault_log.read_text(encoding="utf-8"))

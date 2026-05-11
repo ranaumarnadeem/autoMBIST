@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autombist"
-version = "0.3.1"
+version = "1.0.0"
 description = "MBIST wrapper and fault-flow generator"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,6 +19,9 @@ autombist = "autombist.main:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/autombist"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"rtl" = "autombist/rtl"
 
 [project.urls]
 Homepage = "https://github.com/ranaumarnadeem/autoMBIST"
