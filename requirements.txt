@@ -6,4 +6,4 @@ typer[all]>=0.12
 # Development / test dependencies
 pytest>=7.0
 cocotb>=2.0
-cocotb-tools>=1.0
+cocotb-tools>=0.1.0
