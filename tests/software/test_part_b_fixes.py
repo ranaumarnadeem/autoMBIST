@@ -6,7 +6,17 @@ import pytest
 import yaml
 
 from autombist.generator import generate_from_config
-from autombist.reporting import parse_junit_xml
+from autombist.reporting import coverage_meets_threshold, parse_junit_xml
+
+
+def test_coverage_meets_threshold_gate() -> None:
+    # Part B #3: optional coverage gate.
+    rep = {"fault_metrics": {"coverage_percent": 100.0}}
+    assert coverage_meets_threshold(rep, None) == (True, None)        # no gate
+    assert coverage_meets_threshold(rep, 90.0) == (True, 100.0)       # above
+    ok, cov = coverage_meets_threshold({"fault_metrics": {"coverage_percent": 75.0}}, 90.0)
+    assert ok is False and cov == 75.0                                # below
+    assert coverage_meets_threshold({"fault_metrics": {}}, 90.0) == (True, None)  # not reported
 
 
 def test_parse_junit_xml_handles_malformed(tmp_path: Path) -> None:

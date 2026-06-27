@@ -470,6 +470,23 @@ def format_simulation_summary(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def coverage_meets_threshold(
+    report: dict[str, Any], min_coverage: float | None
+) -> tuple[bool, float | None]:
+    """Gate a run on array fault coverage.
+
+    Returns ``(ok, coverage)``. ``ok`` is True when no gate is set or the reported
+    coverage meets the threshold; ``coverage`` is the reported percent (or None if
+    the simulator reported none — which never fails the gate).
+    """
+    if min_coverage is None:
+        return True, None
+    coverage = report.get("fault_metrics", {}).get("coverage_percent")
+    if coverage is None:
+        return True, None
+    return coverage >= min_coverage, coverage
+
+
 def merge_faultflow_coverage(
     report: dict[str, Any], faultflow_block: dict[str, Any] | None
 ) -> dict[str, Any]:

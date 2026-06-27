@@ -39,24 +39,34 @@ module {{ memory_name }}_saboteur #(
     logic [DATA_WIDTH-1:0] tf_up_mask [0:(1<<ADDR_WIDTH)-1];
     logic [DATA_WIDTH-1:0] shadow_mem [0:(1<<ADDR_WIDTH)-1];
     logic [DATA_WIDTH-1:0] blocked_bits_q [0:(1<<ADDR_WIDTH)-1];
-    logic [DATA_WIDTH-1:0] delayed_bits_q [0:(1<<ADDR_WIDTH)-1];
-    logic [DATA_WIDTH-1:0] delayed_target_q [0:(1<<ADDR_WIDTH)-1];
     logic [DATA_WIDTH-1:0] read_data_q;
     logic [DATA_WIDTH-1:0] prior_word;
     logic [DATA_WIDTH-1:0] blocked_up;
     localparam integer DELAY_CYCLES = ({{ pulse_width_ns }} < 1) ? 1 : {{ pulse_width_ns }};
     localparam integer DELAY_CNT_W = (DELAY_CYCLES < 2) ? 1 : $clog2(DELAY_CYCLES + 1);
-    logic [DELAY_CNT_W-1:0] delay_cnt_q [0:(1<<ADDR_WIDTH)-1];
+    // Active-pending list (sim only): commit delayed transitions without scanning
+    // the whole address space every clock. At most one write per cycle, each
+    // pending for DELAY_CYCLES cycles, so MAX_PEND = DELAY_CYCLES + 2 always has a
+    // free slot. Cost is O(DELAY_CYCLES)/clock, independent of memory depth.
+    localparam integer MAX_PEND = DELAY_CYCLES + 2;
+    logic [ADDR_WIDTH-1:0]  pend_addr [0:MAX_PEND-1];
+    logic [DATA_WIDTH-1:0]  pend_bits [0:MAX_PEND-1];
+    logic [DATA_WIDTH-1:0]  pend_tgt  [0:MAX_PEND-1];
+    logic [DELAY_CNT_W-1:0] pend_cnt  [0:MAX_PEND-1];
+    logic                   pend_val  [0:MAX_PEND-1];
     integer idx;
+    integer p;
+    integer free_slot;
 
     initial begin
         $readmemh("{{ tf_up_faults_file }}", tf_up_mask);
         for (idx = 0; idx < (1<<ADDR_WIDTH); idx = idx + 1) begin
             shadow_mem[idx] = '0;
             blocked_bits_q[idx] = '0;
-            delayed_bits_q[idx] = '0;
-            delayed_target_q[idx] = '0;
-            delay_cnt_q[idx] = '0;
+        end
+        for (p = 0; p < MAX_PEND; p = p + 1) begin
+            pend_val[p] = 1'b0;
+            pend_cnt[p] = '0;
         end
         read_data_q = '0;
     end
@@ -68,27 +78,33 @@ module {{ memory_name }}_saboteur #(
     end
 
     always_ff @(posedge {{ ports.clk }}) begin
-        for (idx = 0; idx < (1<<ADDR_WIDTH); idx = idx + 1) begin
-            if (delay_cnt_q[idx] != '0) begin
-                if (delay_cnt_q[idx] == 1) begin
-                    shadow_mem[idx] <= (shadow_mem[idx] & ~delayed_bits_q[idx]) | (delayed_target_q[idx] & delayed_bits_q[idx]);
-                    blocked_bits_q[idx] <= '0;
-                    delayed_bits_q[idx] <= '0;
-                    delayed_target_q[idx] <= '0;
+        for (p = 0; p < MAX_PEND; p = p + 1) begin
+            if (pend_val[p]) begin
+                if (pend_cnt[p] <= 1) begin
+                    shadow_mem[pend_addr[p]] <= (shadow_mem[pend_addr[p]] & ~pend_bits[p]) | (pend_tgt[p] & pend_bits[p]);
+                    blocked_bits_q[pend_addr[p]] <= '0;
+                    pend_val[p] <= 1'b0;
+                end else begin
+                    pend_cnt[p] <= pend_cnt[p] - 1'b1;
                 end
-                delay_cnt_q[idx] <= delay_cnt_q[idx] - 1'b1;
             end
         end
 
         if (write_cycle) begin
             shadow_mem[{{ ports.addr }}] <= real_din;
             blocked_bits_q[{{ ports.addr }}] <= blocked_up;
-            delayed_bits_q[{{ ports.addr }}] <= blocked_up;
-            delayed_target_q[{{ ports.addr }}] <= {{ ports.din }};
             if (blocked_up != '0) begin
-                delay_cnt_q[{{ ports.addr }}] <= DELAY_CYCLES;
-            end else begin
-                delay_cnt_q[{{ ports.addr }}] <= '0;
+                free_slot = -1;
+                for (p = MAX_PEND - 1; p >= 0; p = p - 1) begin
+                    if (!pend_val[p]) free_slot = p;
+                end
+                if (free_slot >= 0) begin
+                    pend_addr[free_slot] <= {{ ports.addr }};
+                    pend_bits[free_slot] <= blocked_up;
+                    pend_tgt[free_slot]  <= {{ ports.din }};
+                    pend_cnt[free_slot]  <= DELAY_CYCLES;
+                    pend_val[free_slot]  <= 1'b1;
+                end
             end
         end
 
@@ -100,24 +116,34 @@ module {{ memory_name }}_saboteur #(
     logic [DATA_WIDTH-1:0] tf_down_mask [0:(1<<ADDR_WIDTH)-1];
     logic [DATA_WIDTH-1:0] shadow_mem [0:(1<<ADDR_WIDTH)-1];
     logic [DATA_WIDTH-1:0] blocked_bits_q [0:(1<<ADDR_WIDTH)-1];
-    logic [DATA_WIDTH-1:0] delayed_bits_q [0:(1<<ADDR_WIDTH)-1];
-    logic [DATA_WIDTH-1:0] delayed_target_q [0:(1<<ADDR_WIDTH)-1];
     logic [DATA_WIDTH-1:0] read_data_q;
     logic [DATA_WIDTH-1:0] prior_word;
     logic [DATA_WIDTH-1:0] blocked_down;
     localparam integer DELAY_CYCLES = ({{ pulse_width_ns }} < 1) ? 1 : {{ pulse_width_ns }};
     localparam integer DELAY_CNT_W = (DELAY_CYCLES < 2) ? 1 : $clog2(DELAY_CYCLES + 1);
-    logic [DELAY_CNT_W-1:0] delay_cnt_q [0:(1<<ADDR_WIDTH)-1];
+    // Active-pending list (sim only): commit delayed transitions without scanning
+    // the whole address space every clock. At most one write per cycle, each
+    // pending for DELAY_CYCLES cycles, so MAX_PEND = DELAY_CYCLES + 2 always has a
+    // free slot. Cost is O(DELAY_CYCLES)/clock, independent of memory depth.
+    localparam integer MAX_PEND = DELAY_CYCLES + 2;
+    logic [ADDR_WIDTH-1:0]  pend_addr [0:MAX_PEND-1];
+    logic [DATA_WIDTH-1:0]  pend_bits [0:MAX_PEND-1];
+    logic [DATA_WIDTH-1:0]  pend_tgt  [0:MAX_PEND-1];
+    logic [DELAY_CNT_W-1:0] pend_cnt  [0:MAX_PEND-1];
+    logic                   pend_val  [0:MAX_PEND-1];
     integer idx;
+    integer p;
+    integer free_slot;
 
     initial begin
         $readmemh("{{ tf_down_faults_file }}", tf_down_mask);
         for (idx = 0; idx < (1<<ADDR_WIDTH); idx = idx + 1) begin
             shadow_mem[idx] = '0;
             blocked_bits_q[idx] = '0;
-            delayed_bits_q[idx] = '0;
-            delayed_target_q[idx] = '0;
-            delay_cnt_q[idx] = '0;
+        end
+        for (p = 0; p < MAX_PEND; p = p + 1) begin
+            pend_val[p] = 1'b0;
+            pend_cnt[p] = '0;
         end
         read_data_q = '0;
     end
@@ -129,27 +155,33 @@ module {{ memory_name }}_saboteur #(
     end
 
     always_ff @(posedge {{ ports.clk }}) begin
-        for (idx = 0; idx < (1<<ADDR_WIDTH); idx = idx + 1) begin
-            if (delay_cnt_q[idx] != '0) begin
-                if (delay_cnt_q[idx] == 1) begin
-                    shadow_mem[idx] <= (shadow_mem[idx] & ~delayed_bits_q[idx]) | (delayed_target_q[idx] & delayed_bits_q[idx]);
-                    blocked_bits_q[idx] <= '0;
-                    delayed_bits_q[idx] <= '0;
-                    delayed_target_q[idx] <= '0;
+        for (p = 0; p < MAX_PEND; p = p + 1) begin
+            if (pend_val[p]) begin
+                if (pend_cnt[p] <= 1) begin
+                    shadow_mem[pend_addr[p]] <= (shadow_mem[pend_addr[p]] & ~pend_bits[p]) | (pend_tgt[p] & pend_bits[p]);
+                    blocked_bits_q[pend_addr[p]] <= '0;
+                    pend_val[p] <= 1'b0;
+                end else begin
+                    pend_cnt[p] <= pend_cnt[p] - 1'b1;
                 end
-                delay_cnt_q[idx] <= delay_cnt_q[idx] - 1'b1;
             end
         end
 
         if (write_cycle) begin
             shadow_mem[{{ ports.addr }}] <= real_din;
             blocked_bits_q[{{ ports.addr }}] <= blocked_down;
-            delayed_bits_q[{{ ports.addr }}] <= blocked_down;
-            delayed_target_q[{{ ports.addr }}] <= {{ ports.din }};
             if (blocked_down != '0) begin
-                delay_cnt_q[{{ ports.addr }}] <= DELAY_CYCLES;
-            end else begin
-                delay_cnt_q[{{ ports.addr }}] <= '0;
+                free_slot = -1;
+                for (p = MAX_PEND - 1; p >= 0; p = p - 1) begin
+                    if (!pend_val[p]) free_slot = p;
+                end
+                if (free_slot >= 0) begin
+                    pend_addr[free_slot] <= {{ ports.addr }};
+                    pend_bits[free_slot] <= blocked_down;
+                    pend_tgt[free_slot]  <= {{ ports.din }};
+                    pend_cnt[free_slot]  <= DELAY_CYCLES;
+                    pend_val[free_slot]  <= 1'b1;
+                end
             end
         end
 

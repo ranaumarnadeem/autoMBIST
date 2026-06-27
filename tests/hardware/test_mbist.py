@@ -305,6 +305,7 @@ async def _run_mbist_once(
     seen_reads: set[tuple[int, ...]] = set()
     pending_transitions: dict[int, dict[str, int]] = {}
     pending_read_checks: list[dict[str, int]] = []
+    pending_sa_checks: list[dict[str, int]] = []
     use_saboteur = os.getenv("USE_SABOTEUR", "1").strip().lower() not in {"0", "false", "no"}
     algo_name = os.getenv("ALGO", "march-c").strip().lower()
     fsm_name = "u_march_c_fsm" if algo_name == "march-c" else "u_march_raw_fsm"
@@ -401,28 +402,45 @@ async def _run_mbist_once(
                 )
             pending_read_checks = next_checks
 
+        if fault_type == "stuck-at" and pending_sa_checks and use_saboteur:
+            next_sa_checks: list[dict[str, int]] = []
+            for check in pending_sa_checks:
+                check["cycles_left"] -= 1
+                if check["cycles_left"] > 0:
+                    next_sa_checks.append(check)
+                    continue
+                actual_word = _safe_int(dut.u_sram.dbg_actual_word)
+                fault_word = _safe_int(dut.u_sram.dbg_fault_word)
+                if actual_word is None or fault_word is None:
+                    continue
+                sa_addr = check["addr"]
+                key = (sa_addr, actual_word, fault_word)
+                if key in seen_reads or actual_word == fault_word:
+                    continue
+                seen_reads.add(key)
+                observations.append(
+                    {
+                        "addr": sa_addr,
+                        "actual_word": actual_word,
+                        "fault_word": fault_word,
+                        "read_word": fault_word,
+                    }
+                )
+            pending_sa_checks = next_sa_checks
+
         if int(dut.rst_n.value) == 1 and int(dut.test_mode.value) == 1:
             addr = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_addr")
             mem_en = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_en")
             mem_we = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_we")
 
             if fault_type == "stuck-at":
-                actual_word = _safe_int(dut.u_sram.dbg_actual_word) if use_saboteur else None
-                if actual_word is not None and mem_en == 1 and mem_we == 0:
-                    read_word = _safe_int(dut.u_sram.dbg_fault_word)
-                    fault_word = read_word
-                    if read_word is not None:
-                        key = (addr, actual_word, fault_word, read_word)
-                        if key not in seen_reads and actual_word != fault_word:
-                            seen_reads.add(key)
-                            observations.append(
-                                {
-                                    "addr": addr,
-                                    "actual_word": actual_word,
-                                    "fault_word": fault_word,
-                                    "read_word": read_word,
-                                }
-                            )
+                if use_saboteur and mem_en == 1 and mem_we == 0:
+                    # Defer sampling until the faulted read data for this address is
+                    # valid (the same point the MBIST FSM checks it). Sampling at the
+                    # issue cycle reads stale/X data and misses every fault.
+                    pending_sa_checks.append(
+                        {"addr": addr, "cycles_left": max(read_latency + 1, 1)}
+                    )
             elif use_saboteur:
                 if mem_en == 1 and mem_we == 1:
                     prior_word = _safe_int(dut.u_sram.dbg_prior_value)
@@ -467,7 +485,7 @@ async def _run_mbist_once(
                             }
                         )
 
-        if int(dut.bist_done.value) == 1 and not pending_read_checks:
+        if int(dut.bist_done.value) == 1 and not pending_read_checks and not pending_sa_checks:
             break
 
     if transition_stats is not None:
