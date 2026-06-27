@@ -163,20 +163,29 @@ def _generate(
         raise typer.Exit(code=1)
 
 
-def _simulate(module_outdir: Path, verbose: bool) -> None:
+def _simulate(module_outdir: Path, verbose: bool, min_coverage: float | None = None) -> None:
     try:
         result = run_simulation(module_outdir, verbose=verbose)
     except (ConfigError, FileNotFoundError, OSError, ValueError, yaml.YAMLError, SimulationError) as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    from autombist.reporting import format_simulation_summary
+    from autombist.reporting import coverage_meets_threshold, format_simulation_summary
 
     typer.echo(format_simulation_summary(result.report))
     if verbose and result.stdout:
         typer.echo(result.stdout, nl=False)
     if verbose and result.stderr:
         typer.echo(result.stderr, err=True, nl=False)
+
+    ok, coverage = coverage_meets_threshold(result.report, min_coverage)
+    if not ok:
+        typer.secho(
+            f"autombist: coverage {coverage:.2f}% is below --min-coverage {min_coverage:.2f}%",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
 
 
 def _build_faultflow_options(
@@ -293,6 +302,7 @@ def generate(
 def simulate(
     out: Path = typer.Option("out", "--out", help="Output directory containing generated autombist output"),
     verbose: bool = typer.Option(False, "--verbose", help="Print full simulator console output and detailed logs"),
+    min_coverage: float | None = typer.Option(None, "--min-coverage", help="Fail (exit 1) if array fault coverage is below this percent"),
 ) -> None:
     """Run MBIST simulation using Cocotb and Icarus Verilog.
 
@@ -323,7 +333,7 @@ def simulate(
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    _simulate(module_outdir, verbose)
+    _simulate(module_outdir, verbose, min_coverage)
 
 
 @app.command()
@@ -341,6 +351,7 @@ def run(
     faultflow_repo: Path | None = typer.Option(None, "--faultflow-repo", envvar="FAULTFLOW_HOME", help="FaultFlow repo path (or set FAULTFLOW_HOME)"),
     cell_lib: str = typer.Option("sky130", "--cell-lib", help="FaultFlow standard-cell library: sky130 or osu035"),
     scan_chains: int = typer.Option(1, "--scan-chains", help="Scan chains for controller grading"),
+    min_coverage: float | None = typer.Option(None, "--min-coverage", help="Fail (exit 1) if array fault coverage is below this percent"),
 ) -> None:
     """Generate wrapper AND run simulation in one command (convenience mode).
 
