@@ -66,7 +66,7 @@ class FaultFlowOptions:
         repo = Path(repo)
         if not repo.exists():
             raise FaultFlowError(f"FaultFlow repo not found: {repo}")
-        return repo
+        return repo.resolve()
 
     def resolved_ff_python(self, repo: Path) -> str:
         if self.ff_python:
@@ -226,6 +226,10 @@ def _readme(top: str) -> str:
 
 def emit_bundle(module_outdir: Path, config: dict[str, Any], opts: FaultFlowOptions) -> Path:
     """Write the self-contained, re-runnable FaultFlow bundle. No tools required."""
+    # Absolute paths throughout: run_faultflow.sh cd's into $FAULTFLOW_HOME before
+    # invoking ff.py, so every path it references (ofs, netlist, synth script) must
+    # be absolute, not relative to the autombist working directory.
+    module_outdir = Path(module_outdir).resolve()
     repo = opts.resolved_repo()
     cell_json, liberty, vmodels = opts.cell_lib_paths(repo)
 

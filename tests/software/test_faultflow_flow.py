@@ -133,6 +133,20 @@ def test_emit_bundle_writes_all_files(tmp_path: Path) -> None:
     assert "flatten" in run.lower()
 
 
+def test_emit_bundle_resolves_to_absolute_paths(tmp_path: Path, monkeypatch) -> None:
+    # run_faultflow.sh cd's into $FAULTFLOW_HOME before invoking ff.py, so the
+    # bundle paths (.ofs, netlist) must be absolute even if --out was relative.
+    repo = _fake_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    rel_module = Path("out") / "input_demo_8x16_scn4m"
+    rel_module.mkdir(parents=True)
+    bundle = emit_bundle(rel_module, _config(), FaultFlowOptions(repo=repo))
+    assert bundle.is_absolute()
+    cp = configparser.ConfigParser()
+    cp.read_string((bundle / "input_demo_8x16_scn4m_mbist.ofs").read_text())
+    assert Path(cp["design"]["netlist"]).is_absolute()
+
+
 def test_read_coverage_and_merge(tmp_path: Path) -> None:
     repo = _fake_repo(tmp_path)
     top = "input_demo_8x16_scn4m_mbist"
