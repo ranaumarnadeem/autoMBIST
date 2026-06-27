@@ -570,6 +570,7 @@ def smoke(
     run_sim: bool = typer.Option(True, "--run-sim/--no-sim", help="Run cocotb/iverilog simulation smoke check"),
     keep_artifacts: bool = typer.Option(False, "--keep-artifacts", help="Keep generated smoke workspace"),
     out: Path | None = typer.Option(None, "--out", help="Optional workspace path for smoke artifacts"),
+    faultflow: bool = typer.Option(False, "--faultflow/--no-faultflow", help="Also emit + verify a FaultFlow controller-grading bundle (emit-only; no Yosys/FaultFlow needed)"),
 ) -> None:
     """Run smoke checks to verify generation modes and optional fault simulation.
 
@@ -708,6 +709,31 @@ def smoke(
                 module_outdir = wrapper_path.parent
                 _simulate(module_outdir, verbose=False)
                 typer.echo(f"[smoke] simulate ({fault_type}, {algo}, faults={smoke_faults}): PASS")
+
+        # --- FaultFlow controller-grading bundle (emit-only; no Yosys/FaultFlow needed) ---
+        if faultflow:
+            from autombist.faultflow_flow import FaultFlowError, FaultFlowOptions, grade_controller
+
+            wrapper_path = _generate(
+                smoke_config_path, smoke_out,
+                test=False, faults=0, seed=None,
+                fault_type="stuck-at", pulse_width_ns=2, algo="march-c",
+            )
+            ff_module_outdir = wrapper_path.parent
+            fake_repo = workspace / "faultflow_repo"
+            (fake_repo / "cells" / "sky130").mkdir(parents=True, exist_ok=True)
+            try:
+                grade_controller(ff_module_outdir, FaultFlowOptions(repo=fake_repo), run=False)
+            except (FaultFlowError, ConfigError, OSError, ValueError, yaml.YAMLError) as exc:
+                typer.secho(f"[smoke] FAIL: FaultFlow bundle emit failed: {exc}", err=True, fg=typer.colors.RED)
+                raise typer.Exit(code=1)
+            bundle = ff_module_outdir / "faultflow"
+            top = str(_default_mbist_config()["wrapper_module_name"])
+            _assert_smoke_file(bundle / f"{memory_name}_bbox.v", "faultflow blackbox stub")
+            _assert_smoke_file(bundle / "synth_collar.ys", "faultflow synth script")
+            _assert_smoke_file(bundle / f"{top}.ofs", "faultflow .ofs")
+            _assert_smoke_file(bundle / "run_faultflow.sh", "faultflow run script")
+            typer.echo("[smoke] faultflow bundle emit (emit-only): PASS")
 
         typer.echo(f"[smoke] workspace: {workspace}")
         typer.echo("[smoke] All checks passed")
