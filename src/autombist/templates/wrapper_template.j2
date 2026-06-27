@@ -45,7 +45,7 @@ module {{ wrapper_module_name }} #(
     {{ algo_top_module }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
-        .READ_LATENCY(1)
+        .READ_LATENCY({{ read_latency }})
     ) u_algo_top (
         .clk(clk),
         .rst_n(rst_n),

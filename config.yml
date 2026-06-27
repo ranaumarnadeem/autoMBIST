@@ -10,3 +10,12 @@ ports:
   dout: "dout0"
   we: "web0"
   csb: "csb0"
+
+# Optional FaultFlow controller-grading defaults (used by `autombist grade-controller`
+# / `autombist run --faultflow`). All keys are optional; CLI flags override them.
+# faultflow:
+#   cell_lib: "sky130"      # or "osu035"
+#   scan_chains: 1
+#   threshold: 90.0
+#   max_rounds: 20
+#   sram_instance: "u_sram"

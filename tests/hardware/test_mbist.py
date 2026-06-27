@@ -62,8 +62,19 @@ def _format_addr_bits_map(mapping: dict[int, int], top_n: int = 8) -> str:
     return ", ".join(f"0x{addr:04X}:{count}" for addr, count in ranked)
 
 
+def _module_outdir(memory_name: str) -> Path:
+    """Resolve the generated module directory, honoring --out/OUTDIR via MODULE_OUTDIR.
+
+    Falls back to REPO_ROOT/out/<memory> only when the env var is absent (e.g. a
+    bare `make` run with no autombist OUTDIR). This is what lets a custom --out
+    directory (or a pip-installed run) find the right fault masks.
+    """
+    env = os.getenv("MODULE_OUTDIR", "").strip()
+    return Path(env) if env else REPO_ROOT / "out" / memory_name
+
+
 def _fault_mask_paths(memory_name: str, fault_type: str) -> tuple[Path, Path | None]:
-    fault_dir = REPO_ROOT / "out" / memory_name / "faults"
+    fault_dir = _module_outdir(memory_name) / "faults"
     if fault_type == "stuck-at":
         return fault_dir / "sa0_faults.hex", fault_dir / "sa1_faults.hex"
     if fault_type == "transition-up":
@@ -264,8 +275,15 @@ def _prepare_fault_files() -> None:
     if fault_type_raw not in fault_type_map:
         raise ValueError(f"Unsupported FAULT_TYPE: {fault_type_raw}")
 
+    # Consume the masks the generator already wrote, so the analysis masks are
+    # identical to what the saboteur $readmemh-loads (reproducible, and correct
+    # even when --seed is unset). Only (re)generate when they are missing, e.g. a
+    # bare `make` run without a prior `autombist generate`.
+    file1, file2 = _fault_mask_paths(memory_name, fault_type_raw)
+    if file1.exists() and (file2 is None or file2.exists()):
+        return
     generate_fault_files(
-        outdir=REPO_ROOT / "out" / memory_name / "faults",
+        outdir=_module_outdir(memory_name) / "faults",
         addr_width=addr_width,
         data_width=data_width,
         fault_type=fault_type_map[fault_type_raw],

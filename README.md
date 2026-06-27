@@ -18,6 +18,8 @@ For each memory in your config, autombist generates a module directory under `ou
 
 ## Prerequisites
 
+> **Platform: Linux or WSL only.** The EDA toolchain autombist drives (Icarus Verilog, Yosys, OpenRAM, and the optional FaultFlow controller-grading flow) is Unix-only. Use a venv created inside WSL/Linux.
+
 1. Python 3.10+
 2. OpenRAM-generated memory and matching config file
 3. For fault simulation:
