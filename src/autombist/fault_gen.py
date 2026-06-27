@@ -72,11 +72,9 @@ def generate_fault_masks(
             bit_mask = 1 << bit
 
             if rng.randrange(2) == 0:
-                sa0_words[addr] &= ~bit_mask
-                sa1_words[addr] &= ~bit_mask
+                sa0_words[addr] &= ~bit_mask  # SA0: this bit always reads low
             else:
-                sa1_words[addr] |= bit_mask
-                sa0_words[addr] |= bit_mask
+                sa1_words[addr] |= bit_mask  # SA1: this bit always reads high
 
         return sa0_words, sa1_words
     

@@ -129,7 +129,17 @@ def parse_junit_xml(results_xml_path: Path) -> dict[str, Any]:
             "system_out": [],
         }
 
-    root = ET.parse(results_xml_path).getroot()
+    try:
+        root = ET.parse(results_xml_path).getroot()
+    except ET.ParseError:
+        return {
+            "path": str(results_xml_path),
+            "exists": True,
+            "parse_error": True,
+            "summary": {"tests": 0, "failures": 0, "errors": 0, "skipped": 0, "time_seconds": 0.0},
+            "tests": [],
+            "system_out": [],
+        }
     suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
     if not suites and root.tag == "testsuites":
         suites = [elem for elem in root if elem.tag == "testsuite"]
@@ -230,7 +240,7 @@ def build_simulation_report(
         metrics.injected_faults = faults
 
     report = {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "tool_version": tool_version,
         "status": "pass" if returncode == 0 else "fail",
@@ -439,6 +449,17 @@ def format_simulation_summary(report: dict[str, Any]) -> str:
             f"resolved-before-read={transition_metrics.get('resolved_before_read_bits', 'unknown')}, "
             f"overwrites={transition_metrics.get('pending_overwrites', 'unknown')}"
         )
+    controller = report.get("controller_grading")
+    if controller:
+        coverage = controller.get("coverage_percent")
+        if isinstance(coverage, (int, float)):
+            lines.append(
+                "  controller (FaultFlow scan SA): "
+                f"{controller.get('detected')}/{controller.get('denominator')} "
+                f"({coverage:.2f}%), excluded-blackbox={controller.get('excluded_blackbox')}"
+            )
+        else:
+            lines.append("  controller (FaultFlow scan SA): not reported")
     junit_summary = report.get("junit", {}).get("summary", {})
     lines.append(
         "  junit: "
@@ -447,3 +468,17 @@ def format_simulation_summary(report: dict[str, Any]) -> str:
         f"{junit_summary.get('errors', 0)} errors"
     )
     return "\n".join(lines)
+
+
+def merge_faultflow_coverage(
+    report: dict[str, Any], faultflow_block: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Attach FaultFlow controller-structural coverage to a simulation report.
+
+    Stored under the top-level ``controller_grading`` key, kept distinct from the
+    array-test ``fault_metrics``. Refreshes the rendered ``summary``.
+    """
+    if faultflow_block:
+        report["controller_grading"] = faultflow_block
+        report["summary"] = format_simulation_summary(report)
+    return report

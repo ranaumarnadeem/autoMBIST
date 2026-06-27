@@ -133,15 +133,29 @@ def _find_rtl_dir() -> Path:
     )
 
 
-def copy_mbist_rtl(outdir: Path) -> None:
-    """Copy algorithm RTL and shared models into the output directory."""
+_ALGO_DIRS = {"march_c", "march_raw"}
+
+
+def copy_mbist_rtl(outdir: Path, algo_dir: str | None = None) -> None:
+    """Copy the selected algorithm RTL and shared models into the output directory.
+
+    Only the chosen ``algo_dir`` is copied (not every algorithm family), and the
+    demo ``input_demo_*`` macros are skipped — they are never compiled from the
+    output directory and only add clutter.
+    """
     rtl_dir = _find_rtl_dir()
     for source_path in rtl_dir.rglob("*"):
-        if source_path.is_file():
-            relative_path = source_path.relative_to(rtl_dir)
-            destination_path = outdir / relative_path
-            destination_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_path, destination_path)
+        if not source_path.is_file():
+            continue
+        relative_path = source_path.relative_to(rtl_dir)
+        top = relative_path.parts[0]
+        if top in _ALGO_DIRS and algo_dir is not None and top != algo_dir:
+            continue
+        if top.startswith("input_demo"):
+            continue
+        destination_path = outdir / relative_path
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, destination_path)
 
 
 def generate_from_config(
@@ -158,6 +172,11 @@ def generate_from_config(
     if faults < 0:
         raise ValueError("faults must be a non-negative integer")
 
+    if fault_type not in {"stuck-at", "transition-up", "transition-down"}:
+        raise ValueError(
+            f"Invalid fault_type: {fault_type}. Must be one of: stuck-at, transition-up, transition-down"
+        )
+
     config = load_config(config_path)
 
     outdir.mkdir(parents=True, exist_ok=True)
@@ -166,6 +185,7 @@ def generate_from_config(
     module_outdir.mkdir(parents=True, exist_ok=True)
 
     render_config = dict(config)
+    render_config["read_latency"] = config.get("read_latency", 1)
     render_config["use_saboteur"] = use_saboteur
     render_config["pulse_width_ns"] = pulse_width_ns
     render_config["algo"] = algo
@@ -233,5 +253,5 @@ def generate_from_config(
     wrapper_path = module_outdir / f"{config['memory_name']}_mbist.v"
     wrapper_path.write_text(wrapper_text, encoding="utf-8")
 
-    copy_mbist_rtl(module_outdir)
+    copy_mbist_rtl(module_outdir, algo_dir)
     return wrapper_path

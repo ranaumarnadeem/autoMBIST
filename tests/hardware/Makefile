@@ -13,6 +13,7 @@ FAULT_TYPE ?= stuck-at
 PULSE_WIDTH_NS ?= 2
 ADDR_WIDTH ?= 10
 DATA_WIDTH ?= 32
+READ_LATENCY ?= 1
 ALGO ?= march-c
 ALGO_DIR := $(subst -,_,$(ALGO))
 ALGO_TEST ?= 0
@@ -69,7 +70,9 @@ export FAULT_TYPE
 export PULSE_WIDTH_NS
 export ADDR_WIDTH
 export DATA_WIDTH
+export READ_LATENCY
 export MEMORY_NAME
+export MODULE_OUTDIR
 export ALGO
 export ALGO_TEST
 export COCOTB_RESULTS_FILE

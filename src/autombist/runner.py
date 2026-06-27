@@ -160,6 +160,7 @@ def _build_clean_command(
         "FAULTS=0",
         f"ADDR_WIDTH={config['addr_width']}",
         f"DATA_WIDTH={config['data_width']}",
+        f"READ_LATENCY={config.get('read_latency', 1)}",
         f"ALGO={algo}",
         f"PYTHON_BIN={sys.executable}",
         "sim",
@@ -197,6 +198,7 @@ def _build_fault_command(
         f"PULSE_WIDTH_NS={pulse_width_ns}",
         f"ADDR_WIDTH={config['addr_width']}",
         f"DATA_WIDTH={config['data_width']}",
+        f"READ_LATENCY={config.get('read_latency', 1)}",
         f"ALGO={algo}",
         f"PYTHON_BIN={sys.executable}",
         "sim",
@@ -343,3 +345,20 @@ def run_simulation(
         )
 
     return result
+
+
+def run_controller_grading(
+    module_outdir: Path,
+    opts: Any,
+    *,
+    run: bool = True,
+) -> dict[str, Any] | None:
+    """Emit (and optionally run) the FaultFlow controller-grading bundle.
+
+    Returns the normalized coverage block when run, else ``None``. Separate from
+    ``run_simulation`` so array-test simulation and structural controller grading
+    are independently invocable.
+    """
+    from .faultflow_flow import grade_controller
+
+    return grade_controller(module_outdir, opts, run=run)

@@ -179,6 +179,63 @@ def _simulate(module_outdir: Path, verbose: bool) -> None:
         typer.echo(result.stderr, err=True, nl=False)
 
 
+def _build_faultflow_options(
+    faultflow_repo: Path | None,
+    cell_lib: str,
+    scan_chains: int,
+    threshold: float,
+    max_rounds: int,
+):
+    from autombist.faultflow_flow import FaultFlowOptions
+
+    return FaultFlowOptions(
+        repo=faultflow_repo,
+        cell_lib=cell_lib,
+        scan_chains=scan_chains,
+        threshold=threshold,
+        max_rounds=max_rounds,
+    )
+
+
+def _grade_controller(module_outdir: Path, opts, run: bool) -> None:
+    import json
+
+    from autombist.faultflow_flow import FaultFlowError
+    from autombist.reporting import merge_faultflow_coverage, write_simulation_report
+    from autombist.runner import run_controller_grading
+
+    bundle = module_outdir / "faultflow"
+    try:
+        coverage = run_controller_grading(module_outdir, opts, run=run)
+    except (FaultFlowError, ConfigError, FileNotFoundError, OSError, ValueError, yaml.YAMLError) as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    if not run:
+        typer.echo(f"Emitted FaultFlow bundle: {bundle}")
+        typer.echo(f"  Run on Linux/WSL:  FAULTFLOW_HOME=<path> bash {bundle / 'run_faultflow.sh'}")
+        return
+
+    report_path = module_outdir / "reports" / "latest.json"
+    if coverage and report_path.exists():
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            merge_faultflow_coverage(report, coverage)
+            write_simulation_report(report, module_outdir / "reports")
+        except (OSError, ValueError):
+            pass
+
+    coverage_percent = coverage.get("coverage_percent") if coverage else None
+    if isinstance(coverage_percent, (int, float)):
+        typer.echo(
+            "Controller structural coverage (FaultFlow): "
+            f"{coverage.get('detected')}/{coverage.get('denominator')} ({coverage_percent:.2f}%), "
+            f"excluded-blackbox={coverage.get('excluded_blackbox')}"
+        )
+    else:
+        typer.echo(f"Controller grading complete. Bundle: {bundle}")
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(
@@ -280,6 +337,10 @@ def run(
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
     algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c or march-raw"),
     verbose: bool = typer.Option(False, "--verbose", help="Print full simulator console output and detailed logs"),
+    faultflow: bool = typer.Option(False, "--faultflow/--no-faultflow", help="After sim, grade the MBIST controller logic with FaultFlow (Linux/WSL)"),
+    faultflow_repo: Path | None = typer.Option(None, "--faultflow-repo", envvar="FAULTFLOW_HOME", help="FaultFlow repo path (or set FAULTFLOW_HOME)"),
+    cell_lib: str = typer.Option("sky130", "--cell-lib", help="FaultFlow standard-cell library: sky130 or osu035"),
+    scan_chains: int = typer.Option(1, "--scan-chains", help="Scan chains for controller grading"),
 ) -> None:
     """Generate wrapper AND run simulation in one command (convenience mode).
 
@@ -309,6 +370,44 @@ def run(
         typer.echo(f"Generated fault masks in: {wrapper_path.parent / 'faults'}")
         typer.echo(f"Generated fault-sim Makefile: {wrapper_path.parent / 'Makefile'}")
     _simulate(wrapper_path.parent, verbose)
+    if faultflow:
+        opts = _build_faultflow_options(faultflow_repo, cell_lib, scan_chains, 90.0, 20)
+        _grade_controller(wrapper_path.parent, opts, run=True)
+
+
+@app.command("grade-controller")
+def grade_controller(
+    out: Path = typer.Option("out", "--out", help="Output directory containing a generated (clean) MBIST wrapper"),
+    faultflow_repo: Path | None = typer.Option(None, "--faultflow-repo", envvar="FAULTFLOW_HOME", help="FaultFlow repo path (or set FAULTFLOW_HOME)"),
+    cell_lib: str = typer.Option("sky130", "--cell-lib", help="FaultFlow standard-cell library: sky130 or osu035"),
+    scan_chains: int = typer.Option(1, "--scan-chains", help="Number of scan chains for controller grading"),
+    threshold: float = typer.Option(90.0, "--threshold", help="Target coverage percent for ATPG"),
+    max_rounds: int = typer.Option(20, "--max-rounds", help="Maximum progressive ATPG rounds"),
+    run: bool = typer.Option(True, "--run/--no-run", help="Run the bundle (needs Yosys + FaultFlow); --no-run only emits it"),
+) -> None:
+    """Grade the MBIST controller logic with FaultFlow (memory macro blackboxed).
+
+    Emits a self-contained, re-runnable bundle under out/<memory>/faultflow/
+    (blackbox stub, Yosys script, FaultFlow .ofs, run_faultflow.sh) and, unless
+    --no-run is given, synthesizes the collar and runs scan stuck-at ATPG, then
+    reports controller structural coverage and merges it into the latest report.
+
+    Requirements (Linux/WSL): Yosys, and a built FaultFlow at --faultflow-repo
+    (or $FAULTFLOW_HOME). FaultFlow is invoked from its own venv.
+
+    Examples:
+      autombist grade-controller --out out --faultflow-repo ~/faultflow
+      autombist grade-controller --out out --no-run     # just emit the bundle
+    """
+
+    try:
+        module_outdir = _resolve_module_outdir(out)
+    except (FileNotFoundError, NotADirectoryError, OSError) as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    opts = _build_faultflow_options(faultflow_repo, cell_lib, scan_chains, threshold, max_rounds)
+    _grade_controller(module_outdir, opts, run)
 
 
 @app.command("ram-synth")
