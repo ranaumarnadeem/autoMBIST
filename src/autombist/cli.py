@@ -428,6 +428,7 @@ def test(
     algo: str = typer.Option("march_c", "--algo", help="Built-in algorithm name (march_c, mats_plus, march_ss, march_x) or a path to a .alg file"),
     fsm: Path | None = typer.Option(None, "--fsm", help="Validate a controller FSM .sv instead of an algorithm (takes precedence over --algo); sibling .sv/.v files in its directory are gathered automatically"),
     faults: Path = typer.Option(..., "--faults", help="Fault-list file: 'TYPE VADDR VBIT AADDR ABIT P0 P1' per line"),
+    fault_types: Path | None = typer.Option(None, "--fault-types", help="JSON file with a list of custom fault-primitive specs, added to the built-in 19 (see fault_primitives.py for the schema)"),
     init: int = typer.Option(1, "--init", help="Memory init value (0 or 1)"),
     sim: str = typer.Option("verilator", "--sim", help="Simulator backend (Verilator only; Icarus cannot run the SV fault engine)"),
     verbose: bool = typer.Option(False, "--verbose", help="Print per-fault activation counts (+FAULT_VERBOSE)"),
@@ -452,28 +453,51 @@ def test(
       autombist test -aw 8 -dw 8 --algo my_algo.alg --faults faults.txt --report cov.md
       autombist test -aw 8 -dw 8 --algo march_c --faults faults.txt --min-coverage 90
       autombist test -aw 10 -dw 32 --fsm rtl/march_c/march_c_top.sv --faults faults.txt
+      autombist test -aw 8 -dw 8 --algo march_ss --faults faults.txt --fault-types mytypes.json
     """
+
+    import json
 
     from autombist.alg_spec import AlgSpecError, resolve_algo
     from autombist.algo_engine import CampaignError, MemoryParams, load_fault_list, run_algo_campaign, run_fsm_campaign
     from autombist.algo_reporting import coverage_meets_threshold, write_campaign_report
+    from autombist.fault_primitives import FaultPrimitiveError
+    from autombist.fault_primitives import default_registry as fp_default_registry
+    from autombist.fault_primitives import from_dict as fp_from_dict
+    from autombist.fault_primitives import validate as fp_validate
+    from autombist.fault_ram_gen import render_and_write
     from autombist.fsm_harness import FsmPortError, check_ports, gather_sibling_sources
 
     try:
         records = load_fault_list(faults)
         mem = MemoryParams(addr_width=addr_width, data_width=data_width, init_val=init)
+
+        fault_ram_sv = None
+        if fault_types is not None:
+            specs = json.loads(fault_types.read_text(encoding="utf-8"))
+            if not isinstance(specs, list):
+                raise ValueError("--fault-types file must contain a JSON list of fault-primitive specs")
+            registry = fp_default_registry()
+            for spec_dict in specs:
+                prim = fp_from_dict(spec_dict)
+                fp_validate(prim, existing_names={p.name for p in registry})
+                registry.append(prim)
+            fault_ram_sv = render_and_write(
+                registry, Path(tempfile.mkdtemp(prefix="autombist-test-types-")) / "fault_ram.sv"
+            )
+
         if fsm is not None:
             sources = gather_sibling_sources(fsm)
             ports = check_ports(fsm.read_text(encoding="utf-8"))
-            result = run_fsm_campaign(mem, sources, ports.module_name, records, sim=sim)
+            result = run_fsm_campaign(mem, sources, ports.module_name, records, sim=sim, fault_ram_sv=fault_ram_sv)
             label = f"FSM:{ports.module_name} ({len(sources)} source file(s))"
         else:
             spec = resolve_algo(algo)
-            result = run_algo_campaign(mem, spec, records, sim=sim, verbose=verbose)
+            result = run_algo_campaign(mem, spec, records, sim=sim, verbose=verbose, fault_ram_sv=fault_ram_sv)
             label = f"{spec.name} ({spec.length_n}n)"
         if report is not None:
             write_campaign_report(result, report, fmt=fmt)
-    except (AlgSpecError, CampaignError, FsmPortError, FileNotFoundError, OSError, ValueError) as exc:
+    except (AlgSpecError, CampaignError, FsmPortError, FaultPrimitiveError, FileNotFoundError, OSError, ValueError) as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 

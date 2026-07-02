@@ -10,6 +10,7 @@ tests) without depending on a TTY.
 from __future__ import annotations
 
 import cmd
+import json
 import os
 import shlex
 import shutil
@@ -31,7 +32,13 @@ from .algo_engine import (
     write_fault_list,
 )
 from .algo_reporting import render_matrix_md, write_campaign_report, write_matrix_report
+from .fault_primitives import FaultPrimitive, FaultPrimitiveError, default_registry, from_dict, validate
+from .fault_ram_gen import render_and_write
 from .fsm_harness import check_ports, gather_sibling_sources
+
+# The 15 DSL-covered built-ins' names, for distinguishing "custom" registry
+# entries (added via add_fault_type) from the defaults in `list types`.
+_DEFAULT_REGISTRY_NAMES = frozenset(p.name for p in default_registry())
 
 # Shorthand aliases so `compare_algo mine -march C,X,SS` reads the way the
 # literature abbreviates these algorithms.
@@ -90,6 +97,7 @@ class Session:
     algos: dict[str, AlgSpec] = field(default_factory=dict)
     fsms: dict[str, FsmEntry] = field(default_factory=dict)
     faults: list[FaultRecord] = field(default_factory=list)
+    registry: list[FaultPrimitive] = field(default_factory=default_registry)
     sim: str = "verilator"
     last_results: dict[str, CampaignResult] = field(default_factory=dict)
     last_matrix: list[CampaignResult] | None = None
@@ -150,6 +158,13 @@ class AlgoShell(cmd.Cmd):
             f"{result.algo_name}: {result.detected}/{result.total} detected "
             f"({result.coverage_percent:.2f}%)  build={result.build_seconds:.2f}s run={result.run_seconds:.2f}s"
         )
+
+    def _render_fault_ram_for(self, workdir: Path) -> Path:
+        """Render fault_ram.sv from the session's registry into workdir. The
+        registry starts as the 19 built-ins (default_registry() + the 4 fixed
+        types the template always includes); add_fault_type appends to it, so
+        this always reflects any custom types the researcher has defined."""
+        return render_and_write(self.session.registry, workdir / "fault_ram.sv")
 
     # -- cmd.Cmd overrides ---------------------------------------------------
     def emptyline(self) -> bool:
@@ -214,6 +229,44 @@ class AlgoShell(cmd.Cmd):
         self.session.fsms[name] = FsmEntry(sources=sources, module_name=module_name)
         self._out(f"FSM '{name}' registered (module {module_name}, {len(sources)} source file(s))")
 
+    def do_add_fault_type(self, arg: str) -> None:
+        """add_fault_type <json> | --file <path.json>
+        Define a new fault primitive from a JSON spec:
+          {"name": "MYCF", "category": "write_effect",
+           "sensitize": {"transition": "p0", "on": "aggressor"},
+           "effect": {"kind": "invert"}}
+        category is one of static_clamp | write_effect | read_effect (not
+        addr_decoder -- AF_NOACC/AF_ALIAS remain the only address-decoder
+        faults). See fault_primitives.py's module docstring for the full
+        schema, the per-site variable scope, and the raw_sv escape hatch.
+        Takes effect on the next run/compare_algo (fault_ram.sv is
+        regenerated from the updated registry)."""
+        stripped = arg.strip()
+        if stripped.startswith("--file"):
+            # Only the file PATH goes through the shell tokenizer here -- a
+            # simple single argument, same treatment as add_algo/load_faults.
+            file_tokens = _tokenize(stripped[len("--file") :])
+            if not file_tokens:
+                raise ValueError("usage: add_fault_type --file <path.json>")
+            payload = json.loads(Path(file_tokens[0]).read_text(encoding="utf-8"))
+        elif stripped:
+            # The JSON blob is parsed directly from the raw argument, NOT
+            # through _tokenize()/shlex: shlex's POSIX quote-stripping (needed
+            # so file-path arguments elsewhere can contain spaces) treats
+            # JSON's own double quotes as shell grouping syntax and strips
+            # them, corrupting the payload (e.g. {"name": "X"} -> {name: X}).
+            payload = json.loads(stripped)
+        else:
+            raise ValueError("usage: add_fault_type <json> | --file <path.json>")
+        try:
+            prim = from_dict(payload)
+        except (KeyError, TypeError) as exc:
+            raise FaultPrimitiveError(f"malformed fault-primitive spec: {exc}") from exc
+        existing = {p.name for p in self.session.registry}
+        validate(prim, existing_names=existing)
+        self.session.registry.append(prim)
+        self._out(f"fault type '{prim.name}' registered ({prim.category}); takes effect on the next run")
+
     def do_add_fault(self, arg: str) -> None:
         """add_fault TYPE VADDR VBIT [AADDR ABIT P0 P1]
         Append one fault instance to the current fault list."""
@@ -264,17 +317,19 @@ class AlgoShell(cmd.Cmd):
         if name in self.session.fsms:
             entry = self.session.fsms[name]
             workdir = self.session.next_run_dir(f"run_fsm_{name}")
+            fault_ram_sv = self._render_fault_ram_for(workdir)
             result = run_fsm_campaign(
                 mem, entry.sources, entry.module_name, self.session.faults,
-                sim=self.session.sim, workdir=workdir,
+                sim=self.session.sim, workdir=workdir, fault_ram_sv=fault_ram_sv,
             )
             result.algo_name = name
         else:
             spec = self._resolve_algo(name)
             workdir = self.session.next_run_dir(f"run_{spec.name}")
+            fault_ram_sv = self._render_fault_ram_for(workdir)
             result = run_algo_campaign(
                 mem, spec, self.session.faults, sim=self.session.sim,
-                workdir=workdir, verbose=bool(flags.get("verbose")),
+                workdir=workdir, verbose=bool(flags.get("verbose")), fault_ram_sv=fault_ram_sv,
             )
             name = spec.name
 
@@ -296,7 +351,11 @@ class AlgoShell(cmd.Cmd):
         for name in names:
             spec = self._resolve_algo(name)
             workdir = self.session.next_run_dir(f"cmp_{spec.name}")
-            result = run_algo_campaign(mem, spec, self.session.faults, sim=self.session.sim, workdir=workdir)
+            fault_ram_sv = self._render_fault_ram_for(workdir)
+            result = run_algo_campaign(
+                mem, spec, self.session.faults, sim=self.session.sim,
+                workdir=workdir, fault_ram_sv=fault_ram_sv,
+            )
             self.session.last_results[spec.name] = result
             results.append(result)
 
@@ -328,15 +387,18 @@ class AlgoShell(cmd.Cmd):
 
     def do_export_tb(self, arg: str) -> None:
         """export_tb <dir>
-        Dump a self-contained bundle: engine sources, registered .alg specs,
-        and the current fault list, runnable standalone via run_campaign.sh."""
+        Dump a self-contained bundle: engine sources (fault_ram.sv regenerated
+        from the session's registry, so any custom types via add_fault_type
+        are included), registered .alg specs, and the current fault list,
+        runnable standalone via run_campaign.sh."""
         tokens = _tokenize(arg)
         if not tokens:
             raise ValueError("usage: export_tb <dir>")
         outdir = Path(tokens[0])
         outdir.mkdir(parents=True, exist_ok=True)
         engine_dir = find_engine_dir()
-        for name in ("fault_ram.sv", "march_engine.sv", "openram_shim.sv", "run_campaign.sh"):
+        self._render_fault_ram_for(outdir)
+        for name in ("march_engine.sv", "openram_shim.sv", "run_campaign.sh"):
             shutil.copy2(engine_dir / name, outdir / name)
         for name, spec in self.session.algos.items():
             spec.write_numeric(outdir / f"{name}.algc")
@@ -361,7 +423,10 @@ class AlgoShell(cmd.Cmd):
         if what in ("faults", "all"):
             self._out(f"faults: {len(self.session.faults)} loaded")
         if what in ("types", "all"):
-            self._out("built-in fault types: " + ", ".join(BUILTIN_FAULT_TYPES))
+            self._out("fault types (usable in add_fault/load_faults/gen_faults): " + ", ".join(BUILTIN_FAULT_TYPES))
+            custom = sorted(p.name for p in self.session.registry if p.name not in _DEFAULT_REGISTRY_NAMES)
+            if custom:
+                self._out("custom types (added via add_fault_type): " + ", ".join(custom))
 
     def do_status(self, arg: str) -> None:
         """status
