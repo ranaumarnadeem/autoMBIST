@@ -69,11 +69,16 @@ def test_generate_wrapper_and_package_rtl(tmp_path: Path, base_config: dict[str,
         "march_c/march_c_algo.sv",
         "march_c/march_c_fsm.sv",
         "march_c/march_c_top.sv",
+    ):
+        assert (module_outdir / rtl_name).exists(), f"Missing copied algorithm RTL file: {rtl_name}"
+
+    # copy_mbist_rtl is selective: only the chosen algo's RTL is copied.
+    for rtl_name in (
         "march_raw/march_raw_algo.sv",
         "march_raw/march_raw_fsm.sv",
         "march_raw/march_raw_top.sv",
     ):
-        assert (module_outdir / rtl_name).exists(), f"Missing copied algorithm RTL file: {rtl_name}"
+        assert not (module_outdir / rtl_name).exists(), f"Unselected algorithm RTL should not be copied: {rtl_name}"
 
     assert not (module_outdir / "Makefile").exists()
     assert (module_outdir / "config.yml").exists()

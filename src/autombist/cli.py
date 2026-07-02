@@ -421,6 +421,47 @@ def grade_controller(
     _grade_controller(module_outdir, opts, run)
 
 
+@app.command()
+def test(
+    addr_width: int = typer.Option(..., "--addr-width", "-aw", help="Memory address width in bits"),
+    data_width: int = typer.Option(..., "--data-width", "-dw", help="Memory data width in bits"),
+    algo: str = typer.Option("march_c", "--algo", help="Built-in algorithm name (march_c, mats_plus, march_ss, march_x) or a path to a .alg file"),
+    faults: Path = typer.Option(..., "--faults", help="Fault-list file: 'TYPE VADDR VBIT AADDR ABIT P0 P1' per line"),
+    init: int = typer.Option(1, "--init", help="Memory init value (0 or 1)"),
+    sim: str = typer.Option("verilator", "--sim", help="Simulator backend (Verilator only; Icarus cannot run the SV fault engine)"),
+    verbose: bool = typer.Option(False, "--verbose", help="Print per-fault activation counts (+FAULT_VERBOSE)"),
+) -> None:
+    """Grade a memory against a functional fault library with an MBIST algorithm.
+
+    Compiles the fault-injectable RAM model once (Verilator), runs a golden pass,
+    then one simulation per fault in the list, and reports detection coverage.
+    This models 19 functional fault primitives (stuck-at, transition, write/read
+    disturb, address-decoder, and all four coupling classes) -- richer than the
+    stuck-at/transition mask faults used by `autombist generate --test`.
+
+    Examples:
+      autombist test --addr-width 8 --data-width 8 --algo march_c --faults faults.txt
+      autombist test -aw 10 -dw 32 --algo march_ss --faults faults.txt --verbose
+      autombist test -aw 8 -dw 8 --algo my_algo.alg --faults faults.txt
+    """
+
+    from autombist.alg_spec import AlgSpecError, resolve_algo
+    from autombist.algo_engine import CampaignError, MemoryParams, load_fault_list, run_algo_campaign
+
+    try:
+        spec = resolve_algo(algo)
+        records = load_fault_list(faults)
+        mem = MemoryParams(addr_width=addr_width, data_width=data_width, init_val=init)
+        result = run_algo_campaign(mem, spec, records, sim=sim, verbose=verbose)
+    except (AlgSpecError, CampaignError, FileNotFoundError, OSError, ValueError) as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"autombist test: {spec.name} ({spec.length_n}n) on {addr_width}x{data_width} memory, init={init}")
+    typer.echo(f"  faults: {result.total}   detected: {result.detected}   coverage: {result.coverage_percent:.2f}%")
+    typer.echo(f"  build: {result.build_seconds:.2f}s   run: {result.run_seconds:.2f}s   sim: {result.sim}")
+
+
 @app.command("ram-synth")
 def ram_synth(
     config: Path = typer.Option("openram.yml", "--config", help="OpenRAM synthesis config file"),
