@@ -322,6 +322,10 @@ def compile_engine(
     cmd = [
         "verilator", "--binary", "--timing",
         "-Wno-WIDTHTRUNC", "-Wno-WIDTHEXPAND",
+        # PINMISSING: FSM harnesses (P5) deliberately connect only the required
+        # port contract; optional controller outputs (e.g. bist_busy) are left
+        # unconnected by design, not by omission.
+        "-Wno-PINMISSING",
         f"-GAW={mem.addr_width}", f"-GDW={mem.data_width}",
         "--top-module", top_module,
         *[str(s) for s in sources],
@@ -339,6 +343,13 @@ def compile_engine(
     return BuildArtifact(exe=exe, workdir=workdir, top_module=top_module, build_seconds=build_seconds)
 
 
+# Defense-in-depth: the FSM harness has its own in-simulation watchdog
+# (WATCHDOG_CYCLES in fsm_harness_template.sv.j2), but a researcher-submitted
+# FSM is untrusted input -- a bug in the watchdog itself, or a genuine
+# simulator-level hang, must not be able to wedge the whole campaign forever.
+DEFAULT_RUN_TIMEOUT_SECONDS = 120
+
+
 def run_one(
     artifact: BuildArtifact,
     *,
@@ -347,6 +358,7 @@ def run_one(
     index: int | None = None,
     verbose: bool = False,
     extra_plusargs: list[str] | None = None,
+    timeout_seconds: float | None = DEFAULT_RUN_TIMEOUT_SECONDS,
 ) -> str:
     args = [str(artifact.exe)]
     if alg_file is not None:
@@ -359,7 +371,17 @@ def run_one(
         args.append("+FAULT_VERBOSE")
     if extra_plusargs:
         args.extend(extra_plusargs)
-    completed = subprocess.run(args, cwd=artifact.workdir, capture_output=True, text=True, check=False)
+    try:
+        completed = subprocess.run(
+            args, cwd=artifact.workdir, capture_output=True, text=True, check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = "".join(part for part in (exc.stdout, exc.stderr) if part)
+        raise CampaignError(
+            f"simulation exceeded the {timeout_seconds}s timeout (top={artifact.top_module}); "
+            f"the design likely never asserts bist_done/RESULT. Partial output:\n{partial[-2000:]}"
+        ) from exc
     return (completed.stdout or "") + (completed.stderr or "")
 
 
@@ -435,6 +457,85 @@ def run_algo_campaign(
 
         return CampaignResult(
             algo_name=alg.name, mem=mem, golden_clean=True, faults=results,
+            detected=detected_count, total=total, coverage_percent=coverage,
+            build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
+        )
+    finally:
+        if own_tmp is not None:
+            own_tmp.cleanup()
+
+
+def run_fsm_campaign(
+    mem: MemoryParams,
+    fsm_sources: list[Path],
+    fsm_module_name: str,
+    faults: list[FaultRecord],
+    *,
+    sim: str = "verilator",
+    workdir: Path | None = None,
+    fault_ram_sv: Path | None = None,
+) -> CampaignResult:
+    """Compile FSM + openram_shim + fault_ram (via a generated harness) once,
+    golden-gate, then one run per fault. Detection is bist_fail only -- no
+    elem/op attribution, since a black-box controller has no step counter.
+    """
+    from .fsm_harness import HARNESS_TOP, render_harness
+
+    own_tmp: tempfile.TemporaryDirectory[str] | None = None
+    if workdir is None:
+        own_tmp = tempfile.TemporaryDirectory(prefix="autombist-fsm-")
+        workdir = Path(own_tmp.name)
+    else:
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        engine_dir = find_engine_dir()
+        fault_ram_sv = fault_ram_sv or (engine_dir / "fault_ram.sv")
+        shim_sv = engine_dir / "openram_shim.sv"
+
+        harness_path = workdir / f"{HARNESS_TOP}.sv"
+        harness_path.write_text(
+            render_harness(addr_width=mem.addr_width, data_width=mem.data_width, fsm_module_name=fsm_module_name),
+            encoding="utf-8",
+        )
+
+        artifact = compile_engine(
+            mem,
+            sources=[fault_ram_sv, shim_sv, *fsm_sources, harness_path],
+            top_module=HARNESS_TOP,
+            workdir=workdir,
+            sim=sim,
+        )
+
+        fault_file = write_fault_list(faults, workdir / "faults.txt") if faults else None
+        plusargs = _common_plusargs(mem)
+
+        start = time.time()
+
+        golden_out = run_one(artifact, extra_plusargs=plusargs)
+        golden_detected, *_ = parse_result_line(golden_out)
+        if golden_detected:
+            raise CampaignError(
+                f"golden run for FSM '{fsm_module_name}' unexpectedly reported DETECTED "
+                f"(no faults were injected). The FSM or harness wiring is broken.\n{golden_out}"
+            )
+
+        results: list[FaultResult] = []
+        for i, record in enumerate(faults):
+            out = run_one(artifact, fault_file=fault_file, index=i, extra_plusargs=plusargs)
+            detected, elem, op, addr, xor_bits = parse_result_line(out)
+            results.append(
+                FaultResult(index=i, record=record, detected=detected, elem=elem, op=op, addr=addr, xor=xor_bits)
+            )
+
+        run_seconds = time.time() - start
+        detected_count = sum(1 for r in results if r.detected)
+        total = len(results)
+        coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
+
+        return CampaignResult(
+            algo_name=f"FSM:{fsm_module_name}", mem=mem, golden_clean=True, faults=results,
             detected=detected_count, total=total, coverage_percent=coverage,
             build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
         )

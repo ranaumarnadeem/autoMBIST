@@ -27,9 +27,11 @@ from .algo_engine import (
     generate_random_faults,
     load_fault_list,
     run_algo_campaign,
+    run_fsm_campaign,
     write_fault_list,
 )
 from .algo_reporting import render_matrix_md, write_campaign_report, write_matrix_report
+from .fsm_harness import check_ports, gather_sibling_sources
 
 # Shorthand aliases so `compare_algo mine -march C,X,SS` reads the way the
 # literature abbreviates these algorithms.
@@ -76,11 +78,17 @@ def _parse_flags(tokens: list[str], spec: dict[str, type | None]) -> tuple[list[
     return positional, flags
 
 
+@dataclass(slots=True)
+class FsmEntry:
+    sources: list[Path]     # top file first, then any auto-gathered/explicit siblings
+    module_name: str
+
+
 @dataclass
 class Session:
     mem: MemoryParams | None = None
     algos: dict[str, AlgSpec] = field(default_factory=dict)
-    fsms: dict[str, Path] = field(default_factory=dict)
+    fsms: dict[str, FsmEntry] = field(default_factory=dict)
     faults: list[FaultRecord] = field(default_factory=list)
     sim: str = "verilator"
     last_results: dict[str, CampaignResult] = field(default_factory=dict)
@@ -186,6 +194,26 @@ class AlgoShell(cmd.Cmd):
         self.session.algos[name] = spec
         self._out(f"algorithm '{name}' registered ({spec.length_n}n, {len(spec.elements)} elements)")
 
+    def do_add_fsm(self, arg: str) -> None:
+        """add_fsm <top.sv> [<dep1.sv> <dep2.sv> ...] [--name NAME] [--top MODULE]
+        Register a controller FSM (must expose the March-FSM port contract:
+        clk/rst_n/bist_start in, bist_done/bist_fail out, sram_* bus). With a
+        single file, sibling .sv/.v files in the same directory are pulled in
+        automatically (matches this repo's rtl/<algo>/ layout); pass multiple
+        files explicitly to override."""
+        pos, flags = _parse_flags(_tokenize(arg), {"name": str, "top": str})
+        if not pos:
+            raise ValueError("usage: add_fsm <top.sv> [<dep.sv> ...] [--name NAME] [--top MODULE]")
+        top_path = Path(pos[0])
+        if not top_path.exists():
+            raise ValueError(f"FSM source not found: {top_path}")
+        sources = [Path(p).resolve() for p in pos] if len(pos) > 1 else gather_sibling_sources(top_path)
+        ports = check_ports(top_path.read_text(encoding="utf-8"), module_name=flags.get("top"))
+        module_name = str(flags.get("top", ports.module_name))
+        name = str(flags.get("name", top_path.stem))
+        self.session.fsms[name] = FsmEntry(sources=sources, module_name=module_name)
+        self._out(f"FSM '{name}' registered (module {module_name}, {len(sources)} source file(s))")
+
     def do_add_fault(self, arg: str) -> None:
         """add_fault TYPE VADDR VBIT [AADDR ABIT P0 P1]
         Append one fault instance to the current fault list."""
@@ -223,20 +251,35 @@ class AlgoShell(cmd.Cmd):
         self._out(f"generated {len(records)} faults")
 
     def do_run(self, arg: str) -> None:
-        """run <algo_name> [--verbose]
-        Run a fault campaign for one algorithm against the current fault list."""
+        """run <algo_name|fsm_name> [--verbose]
+        Run a fault campaign for one algorithm, or a registered FSM (from
+        add_fsm), against the current fault list. FSM runs report detect/
+        escape only (--verbose has no effect for them)."""
         mem = self._require_memory()
         pos, flags = _parse_flags(_tokenize(arg), {"verbose": None})
         if not pos:
-            raise ValueError("usage: run <algo_name> [--verbose]")
-        spec = self._resolve_algo(pos[0])
-        workdir = self.session.next_run_dir(f"run_{spec.name}")
-        result = run_algo_campaign(
-            mem, spec, self.session.faults, sim=self.session.sim,
-            workdir=workdir, verbose=bool(flags.get("verbose")),
-        )
-        self.session.last_results[spec.name] = result
-        self.session.last_op = ("run", spec.name)
+            raise ValueError("usage: run <algo_name|fsm_name> [--verbose]")
+        name = pos[0]
+
+        if name in self.session.fsms:
+            entry = self.session.fsms[name]
+            workdir = self.session.next_run_dir(f"run_fsm_{name}")
+            result = run_fsm_campaign(
+                mem, entry.sources, entry.module_name, self.session.faults,
+                sim=self.session.sim, workdir=workdir,
+            )
+            result.algo_name = name
+        else:
+            spec = self._resolve_algo(name)
+            workdir = self.session.next_run_dir(f"run_{spec.name}")
+            result = run_algo_campaign(
+                mem, spec, self.session.faults, sim=self.session.sim,
+                workdir=workdir, verbose=bool(flags.get("verbose")),
+            )
+            name = spec.name
+
+        self.session.last_results[name] = result
+        self.session.last_op = ("run", name)
         self._print_result_summary(result)
 
     def do_compare_algo(self, arg: str) -> None:
@@ -311,10 +354,10 @@ class AlgoShell(cmd.Cmd):
                 self._out(f"  {name}  ({spec.length_n}n, {len(spec.elements)} elements)")
         if what in ("fsms", "all"):
             self._out("fsms:")
-            for name in sorted(self.session.fsms):
-                self._out(f"  {name}")
+            for name, entry in sorted(self.session.fsms.items()):
+                self._out(f"  {name}  (module {entry.module_name}, {len(entry.sources)} source file(s))")
             if not self.session.fsms:
-                self._out("  (none -- add_fsm is not yet available)")
+                self._out("  (none registered; use add_fsm)")
         if what in ("faults", "all"):
             self._out(f"faults: {len(self.session.faults)} loaded")
         if what in ("types", "all"):
@@ -327,6 +370,7 @@ class AlgoShell(cmd.Cmd):
         self._out(f"memory: {f'{mem.addr_width}x{mem.data_width} init={mem.init_val}' if mem else '(not set)'}")
         self._out(f"sim: {self.session.sim}")
         self._out(f"algos: {len(self.session.algos)} ({', '.join(sorted(self.session.algos))})")
+        self._out(f"fsms: {len(self.session.fsms)} ({', '.join(sorted(self.session.fsms))})")
         self._out(f"faults loaded: {len(self.session.faults)}")
         self._out(f"workdir: {self.session.workdir}")
 
