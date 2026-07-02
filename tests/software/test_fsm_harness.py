@@ -121,3 +121,21 @@ def test_render_harness_wires_the_fsm_by_name() -> None:
     assert "openram_shim #(" in text
     assert "RESULT DETECTED alg=FSM" in text
     assert "RESULT ESCAPED alg=FSM" in text
+
+
+def test_render_harness_bist_busy_wiring_is_conditional() -> None:
+    # bist_busy is optional in the port contract; a named connection to a pin
+    # the target module doesn't declare is a Verilator error, so the harness
+    # must only wire it when the FSM actually has it.
+    without = render_harness(addr_width=8, data_width=8, fsm_module_name="tiny_fsm", has_bist_busy=False)
+    assert ".bist_busy(bist_busy)" not in without
+
+    withit = render_harness(addr_width=8, data_width=8, fsm_module_name="tiny_fsm", has_bist_busy=True)
+    assert ".bist_busy(bist_busy)" in withit
+
+
+def test_check_ports_march_c_top_has_bist_busy() -> None:
+    # march_c_top.sv declares the optional bist_busy port; used by
+    # run_fsm_campaign to decide whether to wire it in the harness.
+    ports = parse_ports(MARCH_C_TOP.read_text(encoding="utf-8"))
+    assert ports.ports.get("bist_busy") == "output"

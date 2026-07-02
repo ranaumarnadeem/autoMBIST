@@ -479,7 +479,7 @@ def run_fsm_campaign(
     golden-gate, then one run per fault. Detection is bist_fail only -- no
     elem/op attribution, since a black-box controller has no step counter.
     """
-    from .fsm_harness import HARNESS_TOP, render_harness
+    from .fsm_harness import HARNESS_TOP, parse_ports, render_harness
 
     own_tmp: tempfile.TemporaryDirectory[str] | None = None
     if workdir is None:
@@ -494,9 +494,18 @@ def run_fsm_campaign(
         fault_ram_sv = fault_ram_sv or (engine_dir / "fault_ram.sv")
         shim_sv = engine_dir / "openram_shim.sv"
 
+        # bist_busy is optional in the FSM port contract; only wire it up if
+        # this FSM actually declares it, or Verilator errors on a named
+        # connection to a port the target module doesn't have.
+        top_text = fsm_sources[0].read_text(encoding="utf-8")
+        has_bist_busy = parse_ports(top_text, module_name=fsm_module_name).ports.get("bist_busy") == "output"
+
         harness_path = workdir / f"{HARNESS_TOP}.sv"
         harness_path.write_text(
-            render_harness(addr_width=mem.addr_width, data_width=mem.data_width, fsm_module_name=fsm_module_name),
+            render_harness(
+                addr_width=mem.addr_width, data_width=mem.data_width,
+                fsm_module_name=fsm_module_name, has_bist_busy=has_bist_busy,
+            ),
             encoding="utf-8",
         )
 
