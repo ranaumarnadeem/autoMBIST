@@ -12,6 +12,7 @@ queues, ``foreach``, and ``final`` blocks, none of which Icarus Verilog supports
 """
 from __future__ import annotations
 
+import random
 import re
 import shutil
 import subprocess
@@ -22,6 +23,13 @@ from pathlib import Path
 from typing import Any
 
 from .alg_spec import AlgSpec, find_engine_dir
+
+# The 19 functional fault primitives fault_ram.sv implements natively (see
+# engine/README.md). P6 (add_fault_type) will let researchers extend this set.
+BUILTIN_FAULT_TYPES: tuple[str, ...] = (
+    "SA0", "SA1", "TF0", "TF1", "WDF0", "WDF1", "RDF0", "RDF1", "DRDF0", "DRDF1",
+    "IRF0", "IRF1", "SOF", "AF_NOACC", "AF_ALIAS", "CFIN", "CFID", "CFST", "CFDS",
+)
 
 
 class CampaignError(RuntimeError):
@@ -176,6 +184,50 @@ def write_fault_list(records: list[FaultRecord], path: Path) -> Path:
     path = Path(path)
     path.write_text("\n".join(r.to_line() for r in records) + "\n", encoding="ascii")
     return path
+
+
+def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
+    """One instance of every built-in fault primitive, spread across the memory
+    (mirrors the shape of engine/faults.example.txt, scaled to this memory)."""
+    depth = mem.depth
+    dw = mem.data_width
+    records: list[FaultRecord] = []
+    for i, t in enumerate(BUILTIN_FAULT_TYPES):
+        va = (i * 7 + 3) % depth
+        vb = i % dw
+        aa = (va + 1) % depth  # aggressor: different word, same bit lane
+        ab = vb
+        p0 = p1 = 0
+        if t == "CFIN":
+            p0 = 2  # either direction
+        elif t == "CFID":
+            p0, p1 = 2, 1  # either direction, forced to 1
+        elif t == "CFST":
+            p0, p1 = 1, 0  # aggressor holds 1, victim forced to 0
+        elif t == "CFDS":
+            p0 = 4  # any read disturbs
+        elif t == "AF_ALIAS":
+            aa = (va + 2) % depth
+        records.append(FaultRecord(t, va, vb, aa, ab, p0, p1))
+    return records
+
+
+def generate_random_faults(mem: MemoryParams, n: int, seed: int = 0) -> list[FaultRecord]:
+    """N faults with a random type/site each, for stress-testing an algorithm."""
+    rng = random.Random(seed)
+    depth = mem.depth
+    dw = mem.data_width
+    records: list[FaultRecord] = []
+    for _ in range(n):
+        records.append(
+            FaultRecord(
+                type=rng.choice(BUILTIN_FAULT_TYPES),
+                vaddr=rng.randrange(depth), vbit=rng.randrange(dw),
+                aaddr=rng.randrange(depth), abit=rng.randrange(dw),
+                p0=rng.randrange(3), p1=rng.randrange(2),
+            )
+        )
+    return records
 
 
 # --------------------------------------------------------------------------- #

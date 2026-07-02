@@ -479,6 +479,38 @@ def test(
         raise typer.Exit(code=1)
 
 
+@app.command()
+def algo(
+    script: Path | None = typer.Option(None, "--script", help="Run commands from a file (or '-' for stdin) instead of an interactive prompt"),
+) -> None:
+    """Launch the interactive MBIST algorithm research shell.
+
+    Register algorithms (add_algo) and fault instances (add_fault/load_faults/
+    gen_faults), run a campaign (run), compare against built-in marches
+    (compare_algo), and export a report (write_report) or a standalone
+    testbench bundle (export_tb). Built-in algorithms (march_c, mats_plus,
+    march_ss, march_x) are preloaded. Type 'help' inside the shell for the
+    full command list.
+
+    Examples:
+      autombist algo
+      autombist algo --script session.algo
+      printf 'set_memory 8 8\\nrun march_c\\nquit\\n' | autombist algo --script -
+    """
+
+    from autombist.algo_shell import AlgoShell, Session
+
+    shell = AlgoShell(Session())
+    if script is None:
+        shell.cmdloop()
+        return
+
+    lines = sys.stdin.read().splitlines() if str(script) == "-" else script.read_text(encoding="utf-8").splitlines()
+    for line in lines:
+        if shell.onecmd(shell.precmd(line)):
+            break
+
+
 @app.command("ram-synth")
 def ram_synth(
     config: Path = typer.Option("openram.yml", "--config", help="OpenRAM synthesis config file"),
