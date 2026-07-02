@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from autombist.alg_spec import AlgSpecError, builtin_algos, parse_alg, resolve_algo
+from autombist.alg_spec import AlgSpecError, _find_pkg_subdir, builtin_algos, load_alg_file, parse_alg, resolve_algo
 
 
 def test_parse_human_elements() -> None:
@@ -49,3 +51,49 @@ def test_validation_errors() -> None:
         parse_alg("up " + " ".join(["r0"] * 9) + "\n", "t")  # >8 ops
     with pytest.raises(AlgSpecError):
         resolve_algo("no_such_algo")
+
+
+def test_parse_alg_rejects_empty_spec() -> None:
+    with pytest.raises(AlgSpecError, match="no march elements found"):
+        parse_alg("# just a comment\n\n", "empty")
+
+
+def test_parse_alg_rejects_too_many_elements() -> None:
+    text = "\n".join(["either w0"] * 17)  # MAX_ELEMENTS is 16
+    with pytest.raises(AlgSpecError, match="exceeds engine max"):
+        parse_alg(text, "toolong")
+
+
+def test_element_human_form() -> None:
+    spec = parse_alg("up r0 w1\n", "t")
+    assert spec.elements[0].human() == "up r0 w1"
+
+
+def test_load_alg_file_missing_path_raises(tmp_path: Path) -> None:
+    with pytest.raises(AlgSpecError, match="algorithm spec not found"):
+        load_alg_file(tmp_path / "does_not_exist.alg")
+
+
+def test_resolve_algo_accepts_a_direct_file_path(tmp_path: Path) -> None:
+    custom = tmp_path / "custom.alg"
+    custom.write_text("either w0\nup r0 w1\n", encoding="utf-8")
+    spec = resolve_algo(str(custom))
+    assert spec.length_n == 3
+
+
+def test_find_pkg_subdir_falls_back_to_dev_layout_then_raises() -> None:
+    # A name that exists nowhere (neither installed package data nor a local
+    # src/autombist/<name> dir) exercises the final not-found raise.
+    with pytest.raises(AlgSpecError, match="directory not found"):
+        _find_pkg_subdir("no_such_asset_dir_xyz", "no_such_marker.txt")
+
+
+def test_find_pkg_subdir_handles_importlib_resources_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    import autombist.alg_spec as alg_spec_mod
+
+    def boom(_pkg: str) -> None:
+        raise ModuleNotFoundError("simulated")
+
+    monkeypatch.setattr(alg_spec_mod.importlib.resources, "files", boom)
+    with pytest.raises(AlgSpecError, match="directory not found"):
+        _find_pkg_subdir("no_such_asset_dir_xyz", "no_such_marker.txt")

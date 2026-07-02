@@ -87,3 +87,44 @@ def test_from_dict_applies_defaults_for_missing_fields() -> None:
     assert prim.sensitize.on == "victim"
     assert prim.sensitize.pre == "x"
     assert prim.effect.target == "victim"
+
+
+def _prim(**overrides: object) -> FaultPrimitive:
+    defaults = dict(name="MYFAULT", category="static_clamp", sensitize=Sensitize(), effect=Effect(kind="force", value="0"))
+    defaults.update(overrides)
+    return FaultPrimitive(**defaults)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "overrides,match",
+    [
+        ({"sensitize": Sensitize(on="bogus")}, "sensitize.on must be one of"),
+        ({"sensitize": Sensitize(pre="bogus")}, "sensitize.pre must be one of"),
+        ({"sensitize": Sensitize(written="bogus")}, "sensitize.written must be one of"),
+        ({"sensitize": Sensitize(transition="bogus")}, "sensitize.transition must be one of"),
+        ({"effect": Effect(kind="bogus")}, "effect.kind must be one of"),
+        ({"effect": Effect(kind="force", value="bogus")}, "effect.value must be one of"),
+        ({"effect": Effect(kind="force", value="0", also_read="bogus")}, "effect.also_read must be one of"),
+    ],
+)
+def test_validate_rejects_each_invalid_dsl_field(overrides: dict, match: str) -> None:
+    with pytest.raises(FaultPrimitiveError, match=match):
+        validate(_prim(**overrides), existing_names=set())
+
+
+def test_validate_rejects_write_effect_victim_with_bad_kind() -> None:
+    prim = _prim(category="write_effect", sensitize=Sensitize(on="victim"), effect=Effect(kind="invert"))
+    with pytest.raises(FaultPrimitiveError, match="write_effect on=victim primitives must use force or block_write"):
+        validate(prim, existing_names=set())
+
+
+def test_validate_rejects_write_effect_aggressor_with_bad_kind() -> None:
+    prim = _prim(category="write_effect", sensitize=Sensitize(on="aggressor"), effect=Effect(kind="block_write", value="0"))
+    with pytest.raises(FaultPrimitiveError, match="write_effect on=aggressor primitives must use force or invert"):
+        validate(prim, existing_names=set())
+
+
+def test_validate_rejects_read_effect_with_bad_kind() -> None:
+    prim = _prim(category="read_effect", sensitize=Sensitize(on="victim"), effect=Effect(kind="force", value="0"))
+    with pytest.raises(FaultPrimitiveError, match="read_effect primitives must use corrupt_read or force_read"):
+        validate(prim, existing_names=set())
