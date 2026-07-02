@@ -430,6 +430,9 @@ def test(
     init: int = typer.Option(1, "--init", help="Memory init value (0 or 1)"),
     sim: str = typer.Option("verilator", "--sim", help="Simulator backend (Verilator only; Icarus cannot run the SV fault engine)"),
     verbose: bool = typer.Option(False, "--verbose", help="Print per-fault activation counts (+FAULT_VERBOSE)"),
+    report: Path | None = typer.Option(None, "--report", help="Write a per-fault coverage report to this path"),
+    fmt: str = typer.Option("md", "--fmt", help="Report format: md, csv, or json"),
+    min_coverage: float | None = typer.Option(None, "--min-coverage", help="Fail (exit 1) if coverage is below this percent"),
 ) -> None:
     """Grade a memory against a functional fault library with an MBIST algorithm.
 
@@ -442,17 +445,21 @@ def test(
     Examples:
       autombist test --addr-width 8 --data-width 8 --algo march_c --faults faults.txt
       autombist test -aw 10 -dw 32 --algo march_ss --faults faults.txt --verbose
-      autombist test -aw 8 -dw 8 --algo my_algo.alg --faults faults.txt
+      autombist test -aw 8 -dw 8 --algo my_algo.alg --faults faults.txt --report cov.md
+      autombist test -aw 8 -dw 8 --algo march_c --faults faults.txt --min-coverage 90
     """
 
     from autombist.alg_spec import AlgSpecError, resolve_algo
     from autombist.algo_engine import CampaignError, MemoryParams, load_fault_list, run_algo_campaign
+    from autombist.algo_reporting import coverage_meets_threshold, write_campaign_report
 
     try:
         spec = resolve_algo(algo)
         records = load_fault_list(faults)
         mem = MemoryParams(addr_width=addr_width, data_width=data_width, init_val=init)
         result = run_algo_campaign(mem, spec, records, sim=sim, verbose=verbose)
+        if report is not None:
+            write_campaign_report(result, report, fmt=fmt)
     except (AlgSpecError, CampaignError, FileNotFoundError, OSError, ValueError) as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
@@ -460,6 +467,16 @@ def test(
     typer.echo(f"autombist test: {spec.name} ({spec.length_n}n) on {addr_width}x{data_width} memory, init={init}")
     typer.echo(f"  faults: {result.total}   detected: {result.detected}   coverage: {result.coverage_percent:.2f}%")
     typer.echo(f"  build: {result.build_seconds:.2f}s   run: {result.run_seconds:.2f}s   sim: {result.sim}")
+    if report is not None:
+        typer.echo(f"  report: {report}")
+
+    if not coverage_meets_threshold(result, min_coverage):
+        typer.secho(
+            f"autombist: coverage {result.coverage_percent:.2f}% is below --min-coverage {min_coverage:.2f}%",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
 
 
 @app.command("ram-synth")
