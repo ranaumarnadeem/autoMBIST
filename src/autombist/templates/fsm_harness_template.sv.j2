@@ -12,6 +12,7 @@ module {{ harness_top }} #(
   logic clk = 0;
   logic rst_n;
   logic bist_start;
+  logic bist_busy;   // optional per the FSM port contract; connected but unused here
   logic bist_done;
   logic bist_fail;
 
@@ -44,6 +45,9 @@ module {{ harness_top }} #(
     .clk(clk),
     .rst_n(rst_n),
     .bist_start(bist_start),
+{% if has_bist_busy %}
+    .bist_busy(bist_busy),
+{% endif %}
     .bist_done(bist_done),
     .bist_fail(bist_fail),
     .sram_clk0(sram_clk0),

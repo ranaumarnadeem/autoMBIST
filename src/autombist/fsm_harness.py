@@ -144,13 +144,14 @@ def gather_sibling_sources(top_path: Path) -> list[Path]:
     return [top_path, *siblings]
 
 
-def render_harness(*, addr_width: int, data_width: int, fsm_module_name: str) -> str:
+def render_harness(*, addr_width: int, data_width: int, fsm_module_name: str, has_bist_busy: bool = False) -> str:
     return _render_template(
         {
             "harness_top": HARNESS_TOP,
             "addr_width": addr_width,
             "data_width": data_width,
             "fsm_module_name": fsm_module_name,
+            "has_bist_busy": has_bist_busy,
         },
         "fsm_harness_template.sv.j2",
     )
