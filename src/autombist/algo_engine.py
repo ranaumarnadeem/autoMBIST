@@ -1,0 +1,391 @@
+"""Shared fault-campaign engine: compile the SystemVerilog fault-injectable RAM
+once, run one simulation per fault (plus a golden run), and parse the output
+grammar into structured results.
+
+Two "fronts" share this engine and its output grammar:
+  - the algorithm front (``march_engine.sv`` driven by a ``.alg`` spec) -- P2
+  - the FSM front (a generated harness around a researcher's controller) -- P5
+
+Both print exactly one line beginning with ``RESULT`` per run, so one parser
+serves both. The engine is Verilator-only: ``fault_ram.sv`` uses SystemVerilog
+queues, ``foreach``, and ``final`` blocks, none of which Icarus Verilog supports.
+"""
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .alg_spec import AlgSpec, find_engine_dir
+
+
+class CampaignError(RuntimeError):
+    """Raised when the fault-campaign engine cannot be built or run."""
+
+
+# --------------------------------------------------------------------------- #
+# Data model
+# --------------------------------------------------------------------------- #
+@dataclass(slots=True)
+class MemoryParams:
+    addr_width: int
+    data_width: int
+    num_wmasks: int = 1
+    init_val: int = 1
+
+    @property
+    def depth(self) -> int:
+        return 1 << self.addr_width
+
+
+@dataclass(slots=True)
+class FaultRecord:
+    type: str
+    vaddr: int
+    vbit: int
+    aaddr: int = 0
+    abit: int = 0
+    p0: int = 0
+    p1: int = 0
+
+    def to_line(self) -> str:
+        return f"{self.type} {self.vaddr} {self.vbit} {self.aaddr} {self.abit} {self.p0} {self.p1}"
+
+
+@dataclass(slots=True)
+class FaultResult:
+    index: int
+    record: FaultRecord
+    detected: bool
+    elem: int | None = None
+    op: int | None = None
+    addr: int | None = None
+    xor: str | None = None
+    activations: int | None = None
+
+
+@dataclass(slots=True)
+class CampaignResult:
+    algo_name: str
+    mem: MemoryParams
+    golden_clean: bool
+    faults: list[FaultResult]
+    detected: int
+    total: int
+    coverage_percent: float
+    build_seconds: float
+    run_seconds: float
+    sim: str
+
+    def matrix_row(self) -> dict[str, str]:
+        """{fault label: 'D'/'E'}, keyed by 'TYPE@vaddr.vbit' to disambiguate repeats."""
+        row: dict[str, str] = {}
+        for r in self.faults:
+            key = f"{r.record.type}@{r.record.vaddr}.{r.record.vbit}"
+            row[key] = "D" if r.detected else "E"
+        return row
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "algo_name": self.algo_name,
+            "mem": {
+                "addr_width": self.mem.addr_width,
+                "data_width": self.mem.data_width,
+                "init_val": self.mem.init_val,
+            },
+            "sim": self.sim,
+            "golden_clean": self.golden_clean,
+            "detected": self.detected,
+            "total": self.total,
+            "coverage_percent": self.coverage_percent,
+            "build_seconds": round(self.build_seconds, 3),
+            "run_seconds": round(self.run_seconds, 3),
+            "faults": [
+                {
+                    "index": r.index,
+                    "type": r.record.type,
+                    "vaddr": r.record.vaddr,
+                    "vbit": r.record.vbit,
+                    "aaddr": r.record.aaddr,
+                    "abit": r.record.abit,
+                    "p0": r.record.p0,
+                    "p1": r.record.p1,
+                    "detected": r.detected,
+                    "elem": r.elem,
+                    "op": r.op,
+                    "addr": r.addr,
+                    "xor": r.xor,
+                    "activations": r.activations,
+                }
+                for r in self.faults
+            ],
+        }
+
+
+@dataclass(slots=True)
+class BuildArtifact:
+    exe: Path
+    workdir: Path
+    top_module: str
+    build_seconds: float
+
+
+# --------------------------------------------------------------------------- #
+# Fault-list I/O
+# --------------------------------------------------------------------------- #
+_FAULT_LINE_RE = re.compile(
+    r"^\s*(?P<type>[A-Za-z0-9_]+)\s+(?P<va>-?\d+)\s+(?P<vb>-?\d+)\s+"
+    r"(?P<aa>-?\d+)\s+(?P<ab>-?\d+)\s+(?P<p0>-?\d+)\s+(?P<p1>-?\d+)\s*$"
+)
+
+
+def parse_fault_list(text: str) -> list[FaultRecord]:
+    records: list[FaultRecord] = []
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = _FAULT_LINE_RE.match(line)
+        if not m:
+            raise CampaignError(f"fault list line {lineno}: cannot parse '{raw}'")
+        g = m.groupdict()
+        records.append(
+            FaultRecord(
+                type=g["type"],
+                vaddr=int(g["va"]), vbit=int(g["vb"]),
+                aaddr=int(g["aa"]), abit=int(g["ab"]),
+                p0=int(g["p0"]), p1=int(g["p1"]),
+            )
+        )
+    return records
+
+
+def load_fault_list(path: Path) -> list[FaultRecord]:
+    path = Path(path)
+    if not path.exists():
+        raise CampaignError(f"fault list not found: {path}")
+    return parse_fault_list(path.read_text(encoding="utf-8"))
+
+
+def write_fault_list(records: list[FaultRecord], path: Path) -> Path:
+    path = Path(path)
+    path.write_text("\n".join(r.to_line() for r in records) + "\n", encoding="ascii")
+    return path
+
+
+# --------------------------------------------------------------------------- #
+# Output grammar
+# --------------------------------------------------------------------------- #
+RESULT_DETECTED_RE = re.compile(
+    r"RESULT DETECTED alg=(?P<alg>\S+) elem=(?P<elem>\d+) op=(?P<op>\d+) "
+    r"addr=(?P<addr>\d+) xor=(?P<xor>[01]+)"
+)
+RESULT_ESCAPED_RE = re.compile(r"RESULT ESCAPED alg=(?P<alg>\S+)")
+FAULT_LOADED_RE = re.compile(
+    r"FAULT_LOADED idx=(?P<idx>\d+) type=(?P<type>\S+) "
+    r"v=(?P<va>\d+)\.(?P<vb>\d+) a=(?P<aa>\d+)\.(?P<ab>\d+) "
+    r"p0=(?P<p0>-?\d+) p1=(?P<p1>-?\d+)"
+)
+FAULT_HITS_RE = re.compile(
+    r"FAULT_HITS idx=(?P<idx>\d+) type=(?P<type>\S+) activations=(?P<hits>\d+)"
+)
+
+
+def parse_result_line(text: str) -> tuple[bool, int | None, int | None, int | None, str | None]:
+    """Returns (detected, elem, op, addr, xor_bits)."""
+    m = RESULT_DETECTED_RE.search(text)
+    if m:
+        return True, int(m["elem"]), int(m["op"]), int(m["addr"]), m["xor"]
+    m = RESULT_ESCAPED_RE.search(text)
+    if m:
+        return False, None, None, None, None
+    raise CampaignError(f"no RESULT line found in simulator output:\n{text[-2000:]}")
+
+
+def parse_fault_loaded(text: str) -> tuple[int, str, int, int, int, int, int, int] | None:
+    m = FAULT_LOADED_RE.search(text)
+    if not m:
+        return None
+    return (
+        int(m["idx"]), m["type"],
+        int(m["va"]), int(m["vb"]), int(m["aa"]), int(m["ab"]),
+        int(m["p0"]), int(m["p1"]),
+    )
+
+
+def parse_fault_hits(text: str) -> tuple[int, str, int] | None:
+    m = FAULT_HITS_RE.search(text)
+    if not m:
+        return None
+    return int(m["idx"]), m["type"], int(m["hits"])
+
+
+# --------------------------------------------------------------------------- #
+# Subprocess execution (mirrors runner.run_simulation's pattern)
+# --------------------------------------------------------------------------- #
+def _exec(cmd: list[str], *, cwd: Path, log_path: Path | None = None) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
+    if log_path is not None:
+        log_path.write_text(
+            "".join(part for part in (completed.stdout, completed.stderr) if part),
+            encoding="utf-8",
+        )
+    return completed
+
+
+def _require_verilator(sim: str) -> None:
+    if sim != "verilator":
+        raise CampaignError(
+            f"unsupported simulator '{sim}': the fault engine (fault_ram.sv) uses "
+            "SystemVerilog queues, foreach, and final blocks, none of which Icarus "
+            "Verilog supports. Use --sim verilator (Verilator 5.x)."
+        )
+    if shutil.which("verilator") is None:
+        raise CampaignError(
+            "verilator not found on PATH. Install Verilator 5.x (this engine only "
+            "runs under Verilator or a commercial SV simulator, never Icarus)."
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Build + run
+# --------------------------------------------------------------------------- #
+def compile_engine(
+    mem: MemoryParams,
+    *,
+    sources: list[Path],
+    top_module: str,
+    workdir: Path,
+    sim: str = "verilator",
+) -> BuildArtifact:
+    _require_verilator(sim)
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    exe_name = f"{top_module}_sim"
+    cmd = [
+        "verilator", "--binary", "--timing",
+        "-Wno-WIDTHTRUNC", "-Wno-WIDTHEXPAND",
+        f"-GAW={mem.addr_width}", f"-GDW={mem.data_width}",
+        "--top-module", top_module,
+        *[str(s) for s in sources],
+        "-o", exe_name,
+    ]
+    log_path = workdir / "verilator_build.log"
+    start = time.time()
+    completed = _exec(cmd, cwd=workdir, log_path=log_path)
+    build_seconds = time.time() - start
+    if completed.returncode != 0:
+        raise CampaignError(f"verilator build failed (exit {completed.returncode}). See {log_path}.")
+    exe = workdir / "obj_dir" / exe_name
+    if not exe.exists():
+        raise CampaignError(f"verilator did not produce the expected binary: {exe}")
+    return BuildArtifact(exe=exe, workdir=workdir, top_module=top_module, build_seconds=build_seconds)
+
+
+def run_one(
+    artifact: BuildArtifact,
+    *,
+    alg_file: Path | None = None,
+    fault_file: Path | None = None,
+    index: int | None = None,
+    verbose: bool = False,
+    extra_plusargs: list[str] | None = None,
+) -> str:
+    args = [str(artifact.exe)]
+    if alg_file is not None:
+        args.append(f"+ALG_FILE={alg_file}")
+    if fault_file is not None:
+        args.append(f"+FAULTS={fault_file}")
+    if index is not None:
+        args.append(f"+FAULT_INDEX={index}")
+    if verbose:
+        args.append("+FAULT_VERBOSE")
+    if extra_plusargs:
+        args.extend(extra_plusargs)
+    completed = subprocess.run(args, cwd=artifact.workdir, capture_output=True, text=True, check=False)
+    return (completed.stdout or "") + (completed.stderr or "")
+
+
+def _common_plusargs(mem: MemoryParams) -> list[str]:
+    return [f"+INIT={mem.init_val}"]
+
+
+def run_algo_campaign(
+    mem: MemoryParams,
+    alg: AlgSpec,
+    faults: list[FaultRecord],
+    *,
+    sim: str = "verilator",
+    workdir: Path | None = None,
+    verbose: bool = False,
+    fault_ram_sv: Path | None = None,
+) -> CampaignResult:
+    """Compile march_engine once, run a golden pass, then one run per fault."""
+    own_tmp: tempfile.TemporaryDirectory[str] | None = None
+    if workdir is None:
+        own_tmp = tempfile.TemporaryDirectory(prefix="autombist-algo-")
+        workdir = Path(own_tmp.name)
+    else:
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        engine_dir = find_engine_dir()
+        fault_ram_sv = fault_ram_sv or (engine_dir / "fault_ram.sv")
+        march_sv = engine_dir / "march_engine.sv"
+
+        artifact = compile_engine(
+            mem, sources=[fault_ram_sv, march_sv], top_module="march_engine",
+            workdir=workdir, sim=sim,
+        )
+
+        alg_file = alg.write_numeric(workdir / f"{alg.name}.algc")
+        fault_file = write_fault_list(faults, workdir / "faults.txt") if faults else None
+        plusargs = _common_plusargs(mem)
+
+        start = time.time()
+
+        golden_out = run_one(artifact, alg_file=alg_file, extra_plusargs=plusargs)
+        golden_detected, *_ = parse_result_line(golden_out)
+        if golden_detected:
+            raise CampaignError(
+                f"golden run for algorithm '{alg.name}' unexpectedly reported DETECTED "
+                f"(no faults were injected). The algorithm spec or engine is broken.\n{golden_out}"
+            )
+
+        results: list[FaultResult] = []
+        for i, record in enumerate(faults):
+            out = run_one(
+                artifact, alg_file=alg_file, fault_file=fault_file, index=i,
+                verbose=verbose, extra_plusargs=plusargs,
+            )
+            detected, elem, op, addr, xor_bits = parse_result_line(out)
+            activations = None
+            if verbose:
+                hits = parse_fault_hits(out)
+                activations = hits[2] if hits else None
+            results.append(
+                FaultResult(
+                    index=i, record=record, detected=detected,
+                    elem=elem, op=op, addr=addr, xor=xor_bits, activations=activations,
+                )
+            )
+
+        run_seconds = time.time() - start
+        detected_count = sum(1 for r in results if r.detected)
+        total = len(results)
+        coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
+
+        return CampaignResult(
+            algo_name=alg.name, mem=mem, golden_clean=True, faults=results,
+            detected=detected_count, total=total, coverage_percent=coverage,
+            build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
+        )
+    finally:
+        if own_tmp is not None:
+            own_tmp.cleanup()
