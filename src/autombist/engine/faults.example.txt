@@ -1,0 +1,23 @@
+# TYPE      VADDR VBIT  AADDR ABIT  P0 P1
+# All fields decimal. Unused fields must still be present (use 0).
+# Victim = affected cell. Aggressor = acting cell (coupling) or alias target.
+# P0/P1 meaning per type: see README.md.
+SA0         10    3     0     0     0  0
+SA1         17    0     0     0     0  0
+TF0         34    5     0     0     0  0
+TF1         35    2     0     0     0  0
+WDF0        40    1     0     0     0  0
+WDF1        41    6     0     0     0  0
+RDF0        50    2     0     0     0  0
+RDF1        51    7     0     0     0  0
+DRDF0       52    4     0     0     0  0
+DRDF1       53    0     0     0     0  0
+IRF0        60    3     0     0     0  0
+IRF1        61    1     0     0     0  0
+SOF         70    5     0     0     0  0
+AF_NOACC    80    0     0     0     0  0
+AF_ALIAS    90    0     91    0     0  0
+CFIN        100   2     101   2     2  0
+CFID        110   4     111   4     0  1
+CFST        120   6     121   6     1  0
+CFDS        130   1     131   1     4  0

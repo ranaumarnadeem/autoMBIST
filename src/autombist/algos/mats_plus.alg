@@ -1,0 +1,5 @@
+# MATS+  (4n) — minimal march. Detects SAF, AF and some read/transition faults.
+# Reference coverage: 12/19 on faults.example.txt.
+either w0
+up   r0 w1
+down r1 w0
