@@ -6,6 +6,9 @@ from pathlib import Path
 from autombist.algo_engine import MemoryParams
 from autombist.algo_shell import AlgoShell, Session
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MARCH_C_TOP = REPO_ROOT / "rtl" / "march_c" / "march_c_top.sv"
+
 
 def _shell() -> AlgoShell:
     shell = AlgoShell(Session())
@@ -87,6 +90,36 @@ def test_gen_faults_random_is_seed_reproducible() -> None:
         s.onecmd("gen_faults --n 5 --seed 42")
     assert a.session.faults == b.session.faults
     assert len(a.session.faults) == 5
+
+
+def test_add_fsm_gathers_sibling_sources() -> None:
+    shell = _shell()
+    shell.onecmd(f"add_fsm {MARCH_C_TOP}")
+    assert "march_c_top" in shell.session.fsms
+    entry = shell.session.fsms["march_c_top"]
+    assert entry.module_name == "march_c_top"
+    names = {p.name for p in entry.sources}
+    assert {"march_c_top.sv", "march_c_fsm.sv", "march_c_algo.sv"} <= names
+    assert "registered" in _output(shell)
+
+
+def test_add_fsm_custom_name() -> None:
+    shell = _shell()
+    shell.onecmd(f"add_fsm {MARCH_C_TOP} --name mine")
+    assert "mine" in shell.session.fsms
+    assert "march_c_top" not in shell.session.fsms
+
+
+def test_add_fsm_rejects_missing_ports(tmp_path: Path) -> None:
+    broken = tmp_path / "broken.sv"
+    broken.write_text(
+        "module broken(input logic clk, input logic rst_n, output logic bist_done);\nendmodule\n",
+        encoding="utf-8",
+    )
+    shell = _shell()
+    shell.onecmd(f"add_fsm {broken}")
+    assert "broken" not in shell.session.fsms
+    assert "missing the required MBIST-FSM port contract" in _output(shell)
 
 
 def test_run_requires_memory() -> None:

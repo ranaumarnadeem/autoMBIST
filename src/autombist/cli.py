@@ -426,6 +426,7 @@ def test(
     addr_width: int = typer.Option(..., "--addr-width", "-aw", help="Memory address width in bits"),
     data_width: int = typer.Option(..., "--data-width", "-dw", help="Memory data width in bits"),
     algo: str = typer.Option("march_c", "--algo", help="Built-in algorithm name (march_c, mats_plus, march_ss, march_x) or a path to a .alg file"),
+    fsm: Path | None = typer.Option(None, "--fsm", help="Validate a controller FSM .sv instead of an algorithm (takes precedence over --algo); sibling .sv/.v files in its directory are gathered automatically"),
     faults: Path = typer.Option(..., "--faults", help="Fault-list file: 'TYPE VADDR VBIT AADDR ABIT P0 P1' per line"),
     init: int = typer.Option(1, "--init", help="Memory init value (0 or 1)"),
     sim: str = typer.Option("verilator", "--sim", help="Simulator backend (Verilator only; Icarus cannot run the SV fault engine)"),
@@ -440,31 +441,43 @@ def test(
     then one simulation per fault in the list, and reports detection coverage.
     This models 19 functional fault primitives (stuck-at, transition, write/read
     disturb, address-decoder, and all four coupling classes) -- richer than the
-    stuck-at/transition mask faults used by `autombist generate --test`.
+    stuck-at/transition mask faults used by `autombist generate --test`. Pass
+    --fsm to validate an actual controller (bist_fail) instead of an algorithm
+    spec -- no elem/op attribution in that mode, since a black-box controller
+    has no step counter to report.
 
     Examples:
       autombist test --addr-width 8 --data-width 8 --algo march_c --faults faults.txt
       autombist test -aw 10 -dw 32 --algo march_ss --faults faults.txt --verbose
       autombist test -aw 8 -dw 8 --algo my_algo.alg --faults faults.txt --report cov.md
       autombist test -aw 8 -dw 8 --algo march_c --faults faults.txt --min-coverage 90
+      autombist test -aw 10 -dw 32 --fsm rtl/march_c/march_c_top.sv --faults faults.txt
     """
 
     from autombist.alg_spec import AlgSpecError, resolve_algo
-    from autombist.algo_engine import CampaignError, MemoryParams, load_fault_list, run_algo_campaign
+    from autombist.algo_engine import CampaignError, MemoryParams, load_fault_list, run_algo_campaign, run_fsm_campaign
     from autombist.algo_reporting import coverage_meets_threshold, write_campaign_report
+    from autombist.fsm_harness import FsmPortError, check_ports, gather_sibling_sources
 
     try:
-        spec = resolve_algo(algo)
         records = load_fault_list(faults)
         mem = MemoryParams(addr_width=addr_width, data_width=data_width, init_val=init)
-        result = run_algo_campaign(mem, spec, records, sim=sim, verbose=verbose)
+        if fsm is not None:
+            sources = gather_sibling_sources(fsm)
+            ports = check_ports(fsm.read_text(encoding="utf-8"))
+            result = run_fsm_campaign(mem, sources, ports.module_name, records, sim=sim)
+            label = f"FSM:{ports.module_name} ({len(sources)} source file(s))"
+        else:
+            spec = resolve_algo(algo)
+            result = run_algo_campaign(mem, spec, records, sim=sim, verbose=verbose)
+            label = f"{spec.name} ({spec.length_n}n)"
         if report is not None:
             write_campaign_report(result, report, fmt=fmt)
-    except (AlgSpecError, CampaignError, FileNotFoundError, OSError, ValueError) as exc:
+    except (AlgSpecError, CampaignError, FsmPortError, FileNotFoundError, OSError, ValueError) as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    typer.echo(f"autombist test: {spec.name} ({spec.length_n}n) on {addr_width}x{data_width} memory, init={init}")
+    typer.echo(f"autombist test: {label} on {addr_width}x{data_width} memory, init={init}")
     typer.echo(f"  faults: {result.total}   detected: {result.detected}   coverage: {result.coverage_percent:.2f}%")
     typer.echo(f"  build: {result.build_seconds:.2f}s   run: {result.run_seconds:.2f}s   sim: {result.sim}")
     if report is not None:
