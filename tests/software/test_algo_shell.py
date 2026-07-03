@@ -8,6 +8,7 @@ from autombist.algo_shell import AlgoShell, Session
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MARCH_C_TOP = REPO_ROOT / "rtl" / "march_c" / "march_c_top.sv"
+MARCH_2RW_TOP = REPO_ROOT / "rtl" / "march_2rw" / "march_2rw_top.sv"
 
 
 def _shell() -> AlgoShell:
@@ -158,6 +159,47 @@ def test_add_fsm_rejects_missing_ports(tmp_path: Path) -> None:
     shell.onecmd(f"add_fsm {broken}")
     assert "broken" not in shell.session.fsms
     assert "missing the required MBIST-FSM port contract" in _output(shell)
+
+
+def test_add_fsm_defaults_to_single_port_contract_with_no_memory_configured() -> None:
+    # Regression: no set_memory call at all -> single-port validation, exactly
+    # today's behavior. march_2rw_top.sv is 2-port-shaped, so it MUST be
+    # rejected (missing nothing relative to single-port contract, but this
+    # confirms the single-port path is what's actually exercised, not a
+    # silent 2-port fallback).
+    shell = _shell()
+    shell.onecmd(f"add_fsm {MARCH_C_TOP}")
+    assert "march_c_top" in shell.session.fsms
+
+
+def test_add_fsm_validates_against_2port_contract_when_session_configured_for_2_ports() -> None:
+    shell = _shell()
+    shell.onecmd("set_memory 10 32 --ports 2")
+    shell.onecmd(f"add_fsm {MARCH_2RW_TOP}")
+    assert "march_2rw_top" in shell.session.fsms
+    assert "registered" in _output(shell)
+
+
+def test_add_fsm_2port_session_rejects_single_port_fsm() -> None:
+    # march_c_top.sv is single-port-shaped (no sram_*1 bus); registering it
+    # against a session configured for 2 ports must fail with the 2-port
+    # contract's missing-pin diff, not silently succeed.
+    shell = _shell()
+    shell.onecmd("set_memory 10 32 --ports 2")
+    shell.onecmd(f"add_fsm {MARCH_C_TOP}")
+    assert "march_c_top" not in shell.session.fsms
+    out = _output(shell)
+    assert "missing the required MBIST-FSM port contract" in out
+    assert "sram_clk1" in out
+
+
+def test_add_fsm_1port_session_still_uses_single_port_contract() -> None:
+    # Regression: an explicit --ports 1 session must behave identically to no
+    # memory configured at all (today's default single-port validation).
+    shell = _shell()
+    shell.onecmd("set_memory 10 32 --ports 1")
+    shell.onecmd(f"add_fsm {MARCH_C_TOP}")
+    assert "march_c_top" in shell.session.fsms
 
 
 def test_run_requires_memory() -> None:

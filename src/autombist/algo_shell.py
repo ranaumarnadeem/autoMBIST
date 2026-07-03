@@ -230,7 +230,11 @@ class AlgoShell(cmd.Cmd):
         clk/rst_n/bist_start in, bist_done/bist_fail out, sram_* bus). With a
         single file, sibling .sv/.v files in the same directory are pulled in
         automatically (matches this repo's rtl/<algo>/ layout); pass multiple
-        files explicitly to override."""
+        files explicitly to override.
+        If the session's memory was configured with `set_memory --ports 2`,
+        the FSM is validated against the 2-port contract (sram_*0 AND
+        sram_*1 buses both required); otherwise the single-port contract
+        (today's default) applies."""
         pos, flags = _parse_flags(_tokenize(arg), {"name": str, "top": str})
         if not pos:
             raise ValueError("usage: add_fsm <top.sv> [<dep.sv> ...] [--name NAME] [--top MODULE]")
@@ -238,7 +242,10 @@ class AlgoShell(cmd.Cmd):
         if not top_path.exists():
             raise ValueError(f"FSM source not found: {top_path}")
         sources = [Path(p).resolve() for p in pos] if len(pos) > 1 else gather_sibling_sources(top_path)
-        ports = check_ports(top_path.read_text(encoding="utf-8"), module_name=flags.get("top"))
+        num_ports = self.session.mem.num_ports if self.session.mem is not None else 1
+        ports = check_ports(
+            top_path.read_text(encoding="utf-8"), module_name=flags.get("top"), num_ports=num_ports,
+        )
         module_name = str(flags.get("top", ports.module_name))
         name = str(flags.get("name", top_path.stem))
         self.session.fsms[name] = FsmEntry(sources=sources, module_name=module_name)

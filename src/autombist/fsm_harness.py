@@ -35,6 +35,20 @@ REQUIRED_PORTS: dict[str, str] = {
     "sram_dout0": "input",
 }
 
+# 2-port sibling of REQUIRED_PORTS. Mirrors rtl/march_2rw/march_2rw_top.sv:
+# the clk/rst_n/bist_start/bist_done/bist_fail handshake is unchanged, and
+# BOTH port-0 and port-1 OpenRAM-style SRAM buses are required (a genuinely
+# symmetric 2RW pinout, not a second read-only or write-only port).
+REQUIRED_PORTS_MP: dict[str, str] = {
+    **REQUIRED_PORTS,
+    "sram_clk1": "output",
+    "sram_csb1": "output",
+    "sram_web1": "output",
+    "sram_addr1": "output",
+    "sram_din1": "output",
+    "sram_dout1": "input",
+}
+
 _MODULE_RE = re.compile(r"\bmodule\s+(\w+)\b")
 # One port declaration per line (the convention used throughout this repo's RTL).
 _PORT_LINE_RE = re.compile(
@@ -51,8 +65,8 @@ class FsmPorts:
     module_name: str
     ports: dict[str, str]  # name -> direction ("input"/"output"/"inout")
 
-    def missing(self) -> dict[str, str]:
-        return {name: expected for name, expected in REQUIRED_PORTS.items() if self.ports.get(name) != expected}
+    def missing(self, contract: dict[str, str] = REQUIRED_PORTS) -> dict[str, str]:
+        return {name: expected for name, expected in contract.items() if self.ports.get(name) != expected}
 
 
 def _skip_balanced(text: str, open_pos: int) -> int:
@@ -106,17 +120,26 @@ def parse_ports(sv_text: str, module_name: str | None = None) -> FsmPorts:
     return FsmPorts(module_name=module_name, ports=ports)
 
 
-def check_ports(sv_text: str, module_name: str | None = None) -> FsmPorts:
+def check_ports(sv_text: str, module_name: str | None = None, num_ports: int = 1) -> FsmPorts:
     """Validate the FSM exposes the required port contract. Raises FsmPortError
-    with an expected-vs-found diff if anything is missing or mis-directioned."""
+    with an expected-vs-found diff if anything is missing or mis-directioned.
+
+    num_ports=1 (the default, preserving every existing call site's exact
+    behavior) validates against REQUIRED_PORTS (single sram_*0 bus).
+    num_ports=2 validates against REQUIRED_PORTS_MP (sram_*0 AND sram_*1
+    buses both required), mirroring rtl/march_2rw/march_2rw_top.sv's pinout.
+    """
+    if num_ports not in (1, 2):
+        raise ValueError(f"num_ports must be 1 or 2, got {num_ports!r}")
+    contract = REQUIRED_PORTS_MP if num_ports == 2 else REQUIRED_PORTS
     parsed = parse_ports(sv_text, module_name=module_name)
-    missing = parsed.missing()
+    missing = parsed.missing(contract)
     if missing:
         lines = [f"module '{parsed.module_name}' is missing the required MBIST-FSM port contract:"]
         for name, expected_dir in missing.items():
             found_dir = parsed.ports.get(name, "(not found)")
             lines.append(f"  {name}: expected {expected_dir}, found {found_dir}")
-        lines.append("Required ports: " + ", ".join(f"{n}({d})" for n, d in REQUIRED_PORTS.items()))
+        lines.append("Required ports: " + ", ".join(f"{n}({d})" for n, d in contract.items()))
         lines.append(
             "(Port declarations must be one-per-line, e.g. 'output logic bist_fail,' -- "
             "this is a structural check, not a full Verilog parser.)"
@@ -154,4 +177,21 @@ def render_harness(*, addr_width: int, data_width: int, fsm_module_name: str, ha
             "has_bist_busy": has_bist_busy,
         },
         "fsm_harness_template.sv.j2",
+    )
+
+
+def render_harness_mp(*, addr_width: int, data_width: int, fsm_module_name: str, has_bist_busy: bool = False) -> str:
+    """2-port sibling of render_harness -- same parameters, wires a 2-port
+    researcher FSM (REQUIRED_PORTS_MP contract) through openram_shim_mp.sv
+    (which wraps ONE fault_ram core rendered with num_ports=2) instead of
+    openram_shim.sv."""
+    return _render_template(
+        {
+            "harness_top": HARNESS_TOP,
+            "addr_width": addr_width,
+            "data_width": data_width,
+            "fsm_module_name": fsm_module_name,
+            "has_bist_busy": has_bist_busy,
+        },
+        "fsm_harness_mp_template.sv.j2",
     )
