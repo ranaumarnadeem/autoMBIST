@@ -435,6 +435,8 @@ def test(
     report: Path | None = typer.Option(None, "--report", help="Write a per-fault coverage report to this path"),
     fmt: str = typer.Option("md", "--fmt", help="Report format: md, csv, or json"),
     min_coverage: float | None = typer.Option(None, "--min-coverage", help="Fail (exit 1) if coverage is below this percent"),
+    diagnosis: Path | None = typer.Option(None, "--diagnosis", help="Write a per-cell (addr, bit) diagnosis/fail-bitmap report to this path"),
+    diagnosis_fmt: str = typer.Option("md", "--diagnosis-fmt", help="Diagnosis report format: md, csv, or json"),
 ) -> None:
     """Grade a memory against a functional fault library with an MBIST algorithm.
 
@@ -454,13 +456,14 @@ def test(
       autombist test -aw 8 -dw 8 --algo march_c --faults faults.txt --min-coverage 90
       autombist test -aw 10 -dw 32 --fsm rtl/march_c/march_c_top.sv --faults faults.txt
       autombist test -aw 8 -dw 8 --algo march_ss --faults faults.txt --fault-types mytypes.json
+      autombist test -aw 8 -dw 8 --algo march_c --faults faults.txt --diagnosis diag.md
     """
 
     import json
 
     from autombist.alg_spec import AlgSpecError, resolve_algo
     from autombist.algo_engine import CampaignError, MemoryParams, load_fault_list, run_algo_campaign, run_fsm_campaign
-    from autombist.algo_reporting import coverage_meets_threshold, write_campaign_report
+    from autombist.algo_reporting import coverage_meets_threshold, write_campaign_report, write_diagnosis_report
     from autombist.fault_primitives import FaultPrimitiveError
     from autombist.fault_primitives import default_registry as fp_default_registry
     from autombist.fault_primitives import from_dict as fp_from_dict
@@ -497,6 +500,8 @@ def test(
             label = f"{spec.name} ({spec.length_n}n)"
         if report is not None:
             write_campaign_report(result, report, fmt=fmt)
+        if diagnosis is not None:
+            write_diagnosis_report(result, diagnosis, fmt=diagnosis_fmt)
     except (AlgSpecError, CampaignError, FsmPortError, FaultPrimitiveError, FileNotFoundError, OSError, ValueError) as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
@@ -506,6 +511,8 @@ def test(
     typer.echo(f"  build: {result.build_seconds:.2f}s   run: {result.run_seconds:.2f}s   sim: {result.sim}")
     if report is not None:
         typer.echo(f"  report: {report}")
+    if diagnosis is not None:
+        typer.echo(f"  diagnosis: {diagnosis}")
 
     if not coverage_meets_threshold(result, min_coverage):
         typer.secho(

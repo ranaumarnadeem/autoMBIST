@@ -9,6 +9,7 @@ from autombist.reporting import (
     build_simulation_report,
     format_simulation_summary,
     parse_fault_metrics,
+    parse_fault_site_lines,
     parse_junit_xml,
     parse_transition_metrics,
     render_text_report,
@@ -623,3 +624,194 @@ def test_write_text_report_matches_render_text_report(tmp_path: Path) -> None:
     assert report_path == report_dir / "report.txt"
     assert report_path.exists()
     assert report_path.read_text(encoding="utf-8") == render_text_report(report, fault_log_text)
+
+
+# ---------------------------------------------------------------------------
+# parse_fault_site_lines
+# ---------------------------------------------------------------------------
+
+
+def test_parse_fault_site_lines_extracts_detected_and_escaped() -> None:
+    stdout = """
+Fault summary
++---+------+--------+-----+--------+-------+------+
+Fault coverage: 1/2 (50.00%)
+Injected faults: 2
+FAULT_SITE {"#": "1", "TYPE": "SA0", "ADDR": "0x0004", "BIT": "3", "ACTUAL": "0", "FAULT": "1", "READ": "1", "status": "detected"}
+FAULT_SITE {"addr": 7, "bit": 2, "fault_value": 1, "kind": "SA1", "status": "escaped"}
+[autombist] Result: FAIL
+"""
+    sites = parse_fault_site_lines(stdout, "")
+
+    assert len(sites) == 2
+    assert sites[0]["status"] == "detected"
+    assert sites[0]["ADDR"] == "0x0004"
+    assert sites[0]["TYPE"] == "SA0"
+    assert sites[1]["status"] == "escaped"
+    assert sites[1]["addr"] == 7
+    assert sites[1]["bit"] == 2
+    assert sites[1]["kind"] == "SA1"
+
+
+def test_parse_fault_site_lines_skips_malformed_json() -> None:
+    stdout = (
+        "FAULT_SITE not-json\n"
+        'FAULT_SITE {"addr": 1, "bit": 0, "kind": "SA0", "status": "detected"}\n'
+    )
+    sites = parse_fault_site_lines(stdout, "")
+
+    assert len(sites) == 1
+    assert sites[0]["addr"] == 1
+
+
+def test_parse_fault_site_lines_reads_stderr_too() -> None:
+    stdout = 'FAULT_SITE {"addr": 1, "bit": 0, "kind": "SA0", "status": "detected"}\n'
+    stderr = 'FAULT_SITE {"addr": 2, "bit": 1, "kind": "SA1", "status": "escaped"}\n'
+    sites = parse_fault_site_lines(stdout, stderr)
+
+    assert len(sites) == 2
+    assert sites[0]["addr"] == 1
+    assert sites[1]["addr"] == 2
+
+
+def test_parse_fault_site_lines_empty_input_returns_empty_list() -> None:
+    assert parse_fault_site_lines("", "") == []
+
+
+def test_parse_fault_site_lines_no_fault_site_markers_returns_empty_list() -> None:
+    stdout = "some normal output\nno markers here at all\n"
+    assert parse_fault_site_lines(stdout, "") == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: FAULT_SITE lines must never be swept into the human-readable
+# fault-summary text block extracted by _extract_fault_summary_block. That
+# function's window starts at "Fault summary" and ends (inclusive) at the
+# first line beginning with "Injected faults:" -- FAULT_SITE lines are always
+# printed strictly after that terminator, so this must be byte-identical
+# whether or not FAULT_SITE lines are present in the surrounding log text.
+# ---------------------------------------------------------------------------
+
+
+def test_extract_fault_summary_block_byte_identical_with_fault_site_lines() -> None:
+    text_without_fault_sites = (
+        "preamble\n"
+        "Fault summary\n"
+        "Fault coverage: 5/10 (50.00%)\n"
+        "Injected faults: 10\n"
+        "trailing noise that should be excluded\n"
+    )
+    text_with_fault_sites = (
+        "preamble\n"
+        "Fault summary\n"
+        "Fault coverage: 5/10 (50.00%)\n"
+        "Injected faults: 10\n"
+        'FAULT_SITE {"addr": 1, "bit": 0, "kind": "SA0", "status": "detected"}\n'
+        'FAULT_SITE {"addr": 2, "bit": 1, "kind": "SA1", "status": "escaped"}\n'
+        "trailing noise that should be excluded\n"
+    )
+
+    block_without = _extract_fault_summary_block(text_without_fault_sites)
+    block_with = _extract_fault_summary_block(text_with_fault_sites)
+
+    assert block_with == block_without
+    assert block_with == "Fault summary\nFault coverage: 5/10 (50.00%)\nInjected faults: 10"
+    assert "FAULT_SITE" not in block_with
+
+
+# ---------------------------------------------------------------------------
+# build_simulation_report: fault_details key + existing-key stability
+# ---------------------------------------------------------------------------
+
+
+def test_build_simulation_report_schema_version_bumped_to_1_2_0(tmp_path: Path) -> None:
+    report = _build_report(tmp_path, fault_type="stuck-at")
+    assert report["schema_version"] == "1.2.0"
+
+
+def test_build_simulation_report_fault_details_empty_when_no_fault_site_lines(
+    tmp_path: Path,
+) -> None:
+    report = _build_report(tmp_path, fault_type="stuck-at", stdout="[autombist] Result: PASS\n")
+    assert report["fault_details"] == []
+
+
+def test_build_simulation_report_fault_details_populated_from_stdout(tmp_path: Path) -> None:
+    stdout = (
+        "Fault summary\n"
+        "Fault coverage: 1/2 (50.00%)\n"
+        "Injected faults: 2\n"
+        'FAULT_SITE {"addr": 4, "bit": 3, "kind": "SA0", "status": "detected"}\n'
+        'FAULT_SITE {"addr": 7, "bit": 2, "kind": "SA1", "status": "escaped"}\n'
+    )
+    report = _build_report(tmp_path, fault_type="stuck-at", stdout=stdout)
+
+    assert len(report["fault_details"]) == 2
+    assert report["fault_details"][0]["status"] == "detected"
+    assert report["fault_details"][1]["status"] == "escaped"
+
+
+def test_build_simulation_report_existing_keys_unchanged_except_schema_and_fault_details(
+    tmp_path: Path,
+) -> None:
+    """Every existing top-level key/value must be identical for a fixed input,
+    except the new `fault_details` key and the `schema_version` bump."""
+    stdout = "[autombist] Result: PASS\nFault coverage: 5/10 (50.00%)\nInjected faults: 10\n"
+
+    kwargs = dict(
+        tool_version="0.3.1",
+        config=_base_config(),
+        command=["make", "fault-test"],
+        cwd=tmp_path,
+        log_path=tmp_path / "simulate.log",
+        report_path=tmp_path / "reports" / "latest.json",
+        returncode=0,
+        runtime_seconds=1.234,
+        stdout=stdout,
+        stderr="",
+        use_saboteur=True,
+        faults=100,
+        fault_seed=42,
+        fault_type="stuck-at",
+        pulse_width_ns=2,
+        algo="march-raw",
+        results_xml_path=tmp_path / "results.xml",
+    )
+
+    report = build_simulation_report(**kwargs)
+
+    # Recompute expected values for every pre-existing key using the same
+    # helper functions this function has always used, independent of the new
+    # fault_details/schema_version additions.
+    expected_metrics = parse_fault_metrics(stdout, "").to_dict()
+
+    assert report["generated_at"]  # present, non-empty; timestamp so no fixed equality check
+    assert report["tool_version"] == "0.3.1"
+    assert report["status"] == "pass"
+    assert report["returncode"] == 0
+    assert report["runtime_seconds"] == round(1.234, 6)
+    assert report["command"] == ["make", "fault-test"]
+    assert report["cwd"] == str(tmp_path)
+    assert report["log_path"] == str(tmp_path / "simulate.log")
+    assert report["config"] == {
+        "memory_name": "input_demo_8x16_scn4m",
+        "wrapper_module_name": "input_demo_8x16_scn4m_mbist",
+        "addr_width": 4,
+        "data_width": 8,
+        "we_active_low": True,
+    }
+    assert report["simulation"] == {
+        "use_saboteur": True,
+        "faults_requested": 100,
+        "fault_seed": 42,
+        "fault_type": "stuck-at",
+        "pulse_width_ns": 2,
+        "algo": "march-raw",
+    }
+    assert report["fault_metrics"] == expected_metrics
+    assert "transition_metrics" not in report  # stuck-at fault_type omits this key
+
+    # New key present and correctly empty (no FAULT_SITE lines in this stdout).
+    assert report["fault_details"] == []
+    # The one value expected/allowed to change.
+    assert report["schema_version"] == "1.2.0"

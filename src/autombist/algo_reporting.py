@@ -171,3 +171,216 @@ def write_matrix_report(results: list[CampaignResult], path: Path, fmt: str = "m
     renderers = {"md": render_matrix_md, "csv": render_matrix_csv, "json": render_matrix_json}
     Path(path).write_text(renderers[fmt](results), encoding="utf-8")
     return Path(path)
+
+
+# --------------------------------------------------------------------------- #
+# Diagnosis / fail-bitmap report (single-campaign, cell-level)
+# --------------------------------------------------------------------------- #
+# NOTE: structurally independent from the two report families above -- its own
+# VALID_FORMATS check, its own renderer dict, its own write_* entrypoint. This
+# is deliberate: write_campaign_report/write_matrix_report and their render_*
+# functions are never touched, so an existing caller asking for the pre-existing
+# csv/md/json via those functions can never accidentally be routed through this
+# new code path.
+DIAGNOSIS_VALID_FORMATS = ("md", "csv", "json")
+
+# List-valued cell fields are '|'-joined in the flat (CSV/MD) renderings, since
+# neither format has a native list type; JSON keeps them as real lists. Applies
+# to: fault_types_injected_here, escaped_types_here, observed_from_fault_types.
+_DIAGNOSIS_LIST_JOIN = "|"
+
+
+def _check_diagnosis_fmt(fmt: str) -> None:
+    if fmt not in DIAGNOSIS_VALID_FORMATS:
+        raise ValueError(
+            f"unknown diagnosis report format '{fmt}'. Choose one of: {', '.join(DIAGNOSIS_VALID_FORMATS)}"
+        )
+
+
+def _decode_xor_bits(xor: str) -> list[int]:
+    """Decode a march_engine RESULT-line ``xor=`` bitstring into the list of
+    bit indices that mismatched, MSB-first.
+
+    The RTL prints ``det_xor`` (a ``logic [DW-1:0]``, i.e. bit DW-1 is the
+    MSB) with Verilog's ``%b`` format specifier
+    (``march_engine.sv``/``march_engine_mp.sv``: ``$display("... xor=%b", ...,
+    det_xor)``). Verilog's ``%b`` always prints the vector MSB-first: the
+    leftmost character of the string is bit ``DW-1``, and the rightmost
+    character is bit 0 -- the opposite of naively treating the string's left-
+    to-right index as the bit index.
+
+    Concretely, for a string of length ``len(xor)``, the character at
+    (0-indexed, left-to-right) string position ``i`` corresponds to bit index
+    ``len(xor) - 1 - i``.
+
+    Worked example from engine/README.md's own quick-start output
+    (``RESULT DETECTED alg=MARCHCM elem=1 op=0 addr=50 xor=00000100``, an
+    8-bit-wide memory): the single ``1`` sits at string position 5 (0-indexed
+    from the left), so its bit index is ``8 - 1 - 5 == 2`` -- i.e. bit 2
+    mismatched, not bit 5.
+    """
+    width = len(xor)
+    return [width - 1 - i for i, ch in enumerate(xor) if ch == "1"]
+
+
+def build_diagnosis_cells(result: CampaignResult) -> list[dict[str, Any]]:
+    """Sparse per-(addr, bit) diagnosis table for a single (non-matrix)
+    campaign result.
+
+    Only emits rows for cells that actually appear as either an injection
+    site (some FaultRecord's vaddr/vbit) or a decoded observation site (from
+    a DETECTED FaultResult's addr + xor) -- never the full addr x bit grid,
+    which would be mostly empty for any real memory size.
+
+    Escaped injection sites still appear in the table (with an empty
+    observation-side contribution): a fault that was injected but never
+    observed is exactly the information a fail-bitmap diagnosis exists to
+    surface, so it must not silently vanish.
+    """
+    # cell -> mutable accumulator, built in two passes (injection sites, then
+    # observation sites) before the final sort + dict conversion.
+    injected_types: dict[tuple[int, int], list[str]] = {}
+    injected_detected: dict[tuple[int, int], bool] = {}
+    injected_escaped_types: dict[tuple[int, int], list[str]] = {}
+    observed_counts: dict[tuple[int, int], int] = {}
+    observed_types: dict[tuple[int, int], list[str]] = {}
+
+    for r in result.faults:
+        cell = (r.record.vaddr, r.record.vbit)
+        injected_types.setdefault(cell, []).append(r.record.type)
+        # A cell can be the injection site for more than one fault (e.g. SA0
+        # and SA1 at the same vaddr.vbit); detected_as_injection is True if
+        # ANY of them was detected.
+        injected_detected[cell] = injected_detected.get(cell, False) or r.detected
+        # escaped_types_here is tracked PER FAULT, not derived from the OR'd
+        # detected_as_injection flag above -- if SA0 at this cell is detected
+        # but SA1 at the same cell escapes, SA1 must still show up here. Using
+        # "not detected_as_injection" instead would silently mask SA1's
+        # escape whenever any co-located fault happened to be caught.
+        if not r.detected:
+            injected_escaped_types.setdefault(cell, []).append(r.record.type)
+
+    for r in result.faults:
+        if not r.detected or r.addr is None or r.xor is None:
+            continue
+        for bit in _decode_xor_bits(r.xor):
+            cell = (r.addr, bit)
+            observed_counts[cell] = observed_counts.get(cell, 0) + 1
+            observed_types.setdefault(cell, []).append(r.record.type)
+
+    all_cells = set(injected_types) | set(observed_counts)
+
+    rows: list[dict[str, Any]] = []
+    for cell in sorted(all_cells):
+        addr, bit = cell
+        is_injection = cell in injected_types
+        is_observation = cell in observed_counts
+        if is_injection and is_observation:
+            role = "both"
+        elif is_injection:
+            role = "injection"
+        else:
+            role = "observation"
+
+        types_here = injected_types.get(cell, [])
+        detected_here = injected_detected.get(cell, False) if is_injection else False
+        escaped_here = list(injected_escaped_types.get(cell, []))
+
+        rows.append(
+            {
+                "addr": addr,
+                "bit": bit,
+                "role": role,
+                "fault_types_injected_here": list(types_here),
+                "detected_as_injection": detected_here,
+                "escaped_types_here": escaped_here,
+                "times_observed_mismatch": observed_counts.get(cell, 0),
+                "observed_from_fault_types": list(observed_types.get(cell, [])),
+            }
+        )
+    return rows
+
+
+_DIAGNOSIS_COLUMNS = (
+    "addr", "bit", "role", "fault_types_injected_here", "detected_as_injection",
+    "escaped_types_here", "times_observed_mismatch", "observed_from_fault_types",
+)
+
+
+def _diagnosis_row(cell: dict[str, Any]) -> tuple[str, ...]:
+    return (
+        str(cell["addr"]),
+        str(cell["bit"]),
+        cell["role"],
+        _DIAGNOSIS_LIST_JOIN.join(cell["fault_types_injected_here"]),
+        "True" if cell["detected_as_injection"] else "False",
+        _DIAGNOSIS_LIST_JOIN.join(cell["escaped_types_here"]),
+        str(cell["times_observed_mismatch"]),
+        _DIAGNOSIS_LIST_JOIN.join(cell["observed_from_fault_types"]),
+    )
+
+
+def render_diagnosis_csv(result: CampaignResult) -> str:
+    """CSV diagnosis report. List-valued columns (fault_types_injected_here,
+    escaped_types_here, observed_from_fault_types) are '|'-joined -- CSV has
+    no native list type."""
+    cells = build_diagnosis_cells(result)
+    lines = [",".join(_DIAGNOSIS_COLUMNS)]
+    for cell in cells:
+        lines.append(",".join(_diagnosis_row(cell)))
+    return "\n".join(lines) + "\n"
+
+
+def render_diagnosis_md(result: CampaignResult) -> str:
+    """Markdown diagnosis report. List-valued columns are '|'-joined (see
+    render_diagnosis_csv)."""
+    cells = build_diagnosis_cells(result)
+    header = (
+        f"# autombist diagnosis — {result.algo_name}\n\n"
+        f"Memory: {result.mem.addr_width}x{result.mem.data_width}, init={result.mem.init_val}  \n"
+        f"Coverage: **{result.detected}/{result.total} ({result.coverage_percent:.2f}%)**  \n"
+        f"Cells: {len(cells)} (sparse: injection and/or observation sites only)\n\n"
+    )
+    columns = _DIAGNOSIS_COLUMNS
+    rows = [list(columns)] + [list(_diagnosis_row(cell)) for cell in cells]
+    widths = [max(len(row[i]) for row in rows) for i in range(len(columns))]
+
+    def fmt_row(vals: list[str]) -> str:
+        return "| " + " | ".join(v.ljust(w) for v, w in zip(vals, widths)) + " |"
+
+    table = [fmt_row(rows[0]), "| " + " | ".join("-" * w for w in widths) + " |"]
+    table.extend(fmt_row(row) for row in rows[1:])
+    return header + "\n".join(table) + "\n"
+
+
+def render_diagnosis_json(result: CampaignResult) -> str:
+    """JSON diagnosis report. List-valued fields stay real JSON lists (unlike
+    the CSV/MD renderers, which '|'-join them)."""
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "algo_name": result.algo_name,
+        "mem": {
+            "addr_width": result.mem.addr_width,
+            "data_width": result.mem.data_width,
+            "init_val": result.mem.init_val,
+            "num_ports": result.mem.num_ports,
+        },
+        "detected": result.detected,
+        "total": result.total,
+        "coverage_percent": result.coverage_percent,
+        "cells": build_diagnosis_cells(result),
+    }
+    return json.dumps(payload, indent=2, sort_keys=False)
+
+
+def write_diagnosis_report(result: CampaignResult, path: Path, fmt: str = "md") -> Path:
+    """Write a diagnosis/fail-bitmap report (own fmt validation, own renderer
+    set -- see the module-level note above this section)."""
+    _check_diagnosis_fmt(fmt)
+    renderers = {
+        "md": render_diagnosis_md,
+        "csv": render_diagnosis_csv,
+        "json": render_diagnosis_json,
+    }
+    Path(path).write_text(renderers[fmt](result), encoding="utf-8")
+    return Path(path)

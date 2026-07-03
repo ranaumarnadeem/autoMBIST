@@ -31,7 +31,7 @@ from .algo_engine import (
     run_fsm_campaign,
     write_fault_list,
 )
-from .algo_reporting import render_matrix_md, write_campaign_report, write_matrix_report
+from .algo_reporting import render_matrix_md, write_campaign_report, write_diagnosis_report, write_matrix_report
 from .fault_primitives import FaultPrimitive, FaultPrimitiveError, default_registry, from_dict, validate
 from .fault_ram_gen import render_and_write
 from .fsm_harness import check_ports, gather_sibling_sources
@@ -405,6 +405,30 @@ class AlgoShell(cmd.Cmd):
             assert self.session.last_matrix is not None
             write_matrix_report(self.session.last_matrix, path, fmt=fmt)
         self._out(f"report written: {path}")
+
+    def do_write_diagnosis(self, arg: str) -> None:
+        """write_diagnosis <path> [--fmt md|csv|json]
+        Persist a per-cell (addr, bit) diagnosis/fail-bitmap report for the
+        most recent 'run' result. Only a single 'run' result has one obvious
+        cell-table shape; if the last op was 'compare_algo', this raises an
+        error instead -- diagnose each algorithm individually via 'run'."""
+        pos, flags = _parse_flags(_tokenize(arg), {"fmt": str})
+        if not pos:
+            raise ValueError("usage: write_diagnosis <path> [--fmt md|csv|json]")
+        fmt = str(flags.get("fmt", "md"))
+        if self.session.last_op is None:
+            raise ValueError("nothing to diagnose yet -- run 'run' first")
+        op, name = self.session.last_op
+        if op != "run":
+            raise ValueError(
+                "diagnosis only applies to a single 'run' result, not 'compare_algo' -- "
+                "a cross-algorithm diagnosis view has no single obvious cell-table shape. "
+                "Run 'run <algo_name>' for the algorithm you want to diagnose, then retry."
+            )
+        assert name is not None
+        path = Path(pos[0])
+        write_diagnosis_report(self.session.last_results[name], path, fmt=fmt)
+        self._out(f"diagnosis written: {path}")
 
     def do_export_tb(self, arg: str) -> None:
         """export_tb <dir>

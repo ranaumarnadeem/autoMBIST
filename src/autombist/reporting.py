@@ -23,6 +23,7 @@ TRANSITION_UNVERIFIED_RE = re.compile(r"Unverified pending writes at done:\s*(\d
 TRANSITION_MAX_PENDING_RE = re.compile(r"Max pending depth:\s*(\d+)")
 TRANSITION_TOP_BLOCKED_RE = re.compile(r"Top blocked addresses \(addr:bits\):\s*(.+)")
 TRANSITION_TOP_DETECTED_RE = re.compile(r"Top detected addresses \(addr:bits\):\s*(.+)")
+FAULT_SITE_RE = re.compile(r"^FAULT_SITE (.+)$", re.MULTILINE)
 
 
 @dataclass(slots=True)
@@ -117,6 +118,26 @@ def parse_transition_metrics(stdout: str, stderr: str) -> dict[str, Any]:
         metrics["top_detected_addresses"] = _parse_addr_bits_map(top_detected.group(1))
 
     return metrics
+
+
+def parse_fault_site_lines(stdout: str, stderr: str) -> list[dict[str, Any]]:
+    """Extract per-fault-site records emitted as ``FAULT_SITE {json}`` lines.
+
+    Scans both stdout and stderr (in that order) for lines matching
+    ``FAULT_SITE_RE`` and JSON-decodes the remainder of each match. Lines that
+    fail to parse as JSON are skipped rather than raising -- stdout can be
+    interleaved or truncated (e.g. on a timeout), and this parser must be
+    defensive against that.
+    """
+    combined = "\n".join(part for part in (stdout, stderr) if part)
+    sites: list[dict[str, Any]] = []
+    for match in FAULT_SITE_RE.finditer(combined):
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        sites.append(payload)
+    return sites
 
 
 def parse_junit_xml(results_xml_path: Path) -> dict[str, Any]:
@@ -240,7 +261,7 @@ def build_simulation_report(
         metrics.injected_faults = faults
 
     report = {
-        "schema_version": "1.1.0",
+        "schema_version": "1.2.0",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "tool_version": tool_version,
         "status": "pass" if returncode == 0 else "fail",
@@ -270,6 +291,7 @@ def build_simulation_report(
     }
     if fault_type in {"transition-up", "transition-down"}:
         report["transition_metrics"] = parse_transition_metrics(stdout, stderr)
+    report["fault_details"] = parse_fault_site_lines(stdout, stderr)
     report["summary"] = format_simulation_summary(report)
     return report
 
@@ -303,7 +325,13 @@ def _extract_fault_summary_block(log_text: str) -> str:
         return ""
 
     for index in range(start_index, len(lines)):
-        if lines[index].startswith("Injected faults:"):
+        # "Injected faults:" is the table's own terminator. "FAULT_SITE " lines
+        # (machine-readable per-fault-site detail, parsed separately by
+        # parse_fault_site_lines) are always printed after that terminator in
+        # the current code -- but stop here too, defensively, so this
+        # extraction stays correct even if that print ordering ever changes,
+        # rather than relying on an implicit ordering invariant elsewhere.
+        if lines[index].startswith("Injected faults:") or lines[index].startswith("FAULT_SITE "):
             end_index = index
             break
 

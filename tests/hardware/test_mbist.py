@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from pathlib import Path
@@ -234,6 +235,23 @@ def _report_fault_summary(
     ))
     print(f"Fault coverage: {detected_count}/{total_sites} ({coverage:.2f}%)")
     print(f"Injected faults: {fault_count}")
+
+    detected_keys: set[tuple[int, int]] = set()
+    for row in rows:
+        row_dict = dict(zip(headers, row))
+        print("FAULT_SITE " + json.dumps({**row_dict, "status": "detected"}))
+        try:
+            addr_key = int(row_dict["ADDR"], 16)
+            bit_key = int(row_dict["BIT"])
+        except (KeyError, ValueError):
+            continue
+        detected_keys.add((addr_key, bit_key))
+
+    for site in selected_sites:
+        key = (int(site["addr"]), int(site["bit"]))
+        if key in detected_keys:
+            continue
+        print("FAULT_SITE " + json.dumps({**site, "status": "escaped"}))
 
     if fault_type in {"transition-up", "transition-down"} and transition_stats is not None:
         print()

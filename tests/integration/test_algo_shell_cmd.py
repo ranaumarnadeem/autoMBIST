@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import shutil
 from pathlib import Path
 
@@ -67,6 +68,37 @@ def test_write_report_after_compare(tmp_path: Path) -> None:
     assert report_path.exists()
     text = report_path.read_text()
     assert "march_c,march_ss" in text
+
+
+def test_write_diagnosis_after_run_produces_file(tmp_path: Path) -> None:
+    faults = find_engine_dir() / "faults.example.txt"
+    diag_path = tmp_path / "diag.json"
+    shell, out = _run_script([
+        "set_memory 8 8",
+        f"load_faults {faults}",
+        "run march_c",
+        f"write_diagnosis {diag_path} --fmt json",
+    ])
+    assert "error:" not in out
+    assert diag_path.exists()
+    assert "diagnosis written" in out
+    payload = json.loads(diag_path.read_text())
+    assert payload["algo_name"] == "march_c"
+    assert len(payload["cells"]) > 0
+
+
+def test_write_diagnosis_after_compare_algo_raises_clear_error(tmp_path: Path) -> None:
+    faults = find_engine_dir() / "faults.example.txt"
+    diag_path = tmp_path / "diag.md"
+    shell, out = _run_script([
+        "set_memory 8 8",
+        f"load_faults {faults}",
+        "compare_algo march_c -march march_ss",
+        f"write_diagnosis {diag_path}",
+    ])
+    assert not diag_path.exists()
+    assert "error:" in out
+    assert "diagnosis only applies to a single 'run' result" in out
 
 
 def test_export_tb_produces_runnable_bundle(tmp_path: Path) -> None:
