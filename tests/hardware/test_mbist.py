@@ -308,7 +308,11 @@ async def _run_mbist_once(
     pending_sa_checks: list[dict[str, int]] = []
     use_saboteur = os.getenv("USE_SABOTEUR", "1").strip().lower() not in {"0", "false", "no"}
     algo_name = os.getenv("ALGO", "march-c").strip().lower()
-    fsm_name = "u_march_c_fsm" if algo_name == "march-c" else "u_march_raw_fsm"
+    fsm_name = {
+        "march-c": "u_march_c_fsm",
+        "march-raw": "u_march_raw_fsm",
+        "march-1r1w": "u_march_1r1w_fsm",
+    }.get(algo_name, "u_march_raw_fsm")
     read_latency = int(os.getenv("READ_LATENCY", "1"))
     data_width = int(os.getenv("DATA_WIDTH", "32"))
     data_mask = (1 << data_width) - 1
@@ -429,9 +433,32 @@ async def _run_mbist_once(
             pending_sa_checks = next_sa_checks
 
         if int(dut.rst_n.value) == 1 and int(dut.test_mode.value) == 1:
-            addr = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_addr")
-            mem_en = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_en")
-            mem_we = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_we")
+            if algo_name == "march-1r1w":
+                # march_1r1w_fsm has no single mem_addr/mem_en/mem_we -- it
+                # drives two independent port buses (mem_addr0/mem_en0 for the
+                # read-only port, mem_addr1/mem_en1 for the write-only port)
+                # from the same issue cycle. Reconstruct the single logical
+                # (addr, mem_en, mem_we) view this attribution loop expects:
+                # a write-port enable always means a write (no separate we),
+                # and a read-port enable always means a read.
+                en0 = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_en0")
+                en1 = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_en1")
+                if en1 == 1:
+                    addr = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_addr1")
+                    mem_en = 1
+                    mem_we = 1
+                elif en0 == 1:
+                    addr = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_addr0")
+                    mem_en = 1
+                    mem_we = 0
+                else:
+                    addr = 0
+                    mem_en = 0
+                    mem_we = 0
+            else:
+                addr = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_addr")
+                mem_en = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_en")
+                mem_we = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_we")
 
             if fault_type == "stuck-at":
                 if use_saboteur and mem_en == 1 and mem_we == 0:

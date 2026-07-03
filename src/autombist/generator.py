@@ -57,10 +57,55 @@ def _normalize_algo(algo: str) -> tuple[str, str]:
     algo_map = {
         "march-c": ("march_c", "march_c_top"),
         "march-raw": ("march_raw", "march_raw_top"),
+        "march-1r1w": ("march_1r1w", "march_1r1w_top"),
     }
     if algo_value not in algo_map:
-        raise ValueError("algo must be one of: march-c, march-raw")
+        raise ValueError("algo must be one of: march-c, march-raw, march-1r1w")
     return algo_map[algo_value]
+
+
+# Algorithms that require the (currently only) supported 2-port shape: exactly
+# one read-only ("r") port and one write-only ("w") port. Every other algo
+# (march-c, march-raw) is still restricted to exactly 1 port.
+_MULTI_PORT_ALGOS = {"march-1r1w"}
+_MULTI_PORT_ROLE_REQUIREMENTS = {
+    "march-1r1w": frozenset({"r", "w"}),
+}
+
+
+def _validate_port_topology(normalized_ports: dict[str, dict[str, Any]], algo: str) -> None:
+    """Cross-validate the *count* and *role composition* of normalized_ports
+    against what the selected algo actually requires.
+
+    march-c / march-raw (and any future single-port algo) require exactly one
+    port (any type). march-1r1w requires exactly two ports whose types are
+    exactly {"r", "w"} -- one read-only and one write-only port, not two of
+    the same type.
+    """
+    algo_value = algo.strip().lower()
+
+    if algo_value not in _MULTI_PORT_ALGOS:
+        if len(normalized_ports) != 1:
+            raise ConfigError(
+                f"algo {algo_value!r} requires exactly 1 port; got {len(normalized_ports)}. "
+                "multi-port configs are only supported by algo=march-1r1w"
+            )
+        return
+
+    required_roles = _MULTI_PORT_ROLE_REQUIREMENTS[algo_value]
+    if len(normalized_ports) != len(required_roles):
+        raise ConfigError(
+            f"algo {algo_value!r} requires exactly {len(required_roles)} ports "
+            f"(one of each of {sorted(required_roles)}); got {len(normalized_ports)}"
+        )
+
+    port_types = sorted(pdata["type"] for pdata in normalized_ports.values())
+    if frozenset(port_types) != required_roles or len(port_types) != len(set(port_types)):
+        raise ConfigError(
+            f"algo {algo_value!r} requires exactly one port of each type in "
+            f"{sorted(required_roles)}; got port types {port_types}"
+        )
+
 
 class ConfigError(ValueError):
     """Raised when config.yml is missing required values or has invalid types."""
@@ -123,6 +168,26 @@ def _validate_port(name: str, pdata: Any, section: str) -> dict[str, Any]:
             raise ConfigError(f"{section} {name!r}.{key} must be a non-empty string")
 
     return {"type": port_type, **{key: pdata[key] for key in required}}
+
+
+def _algo_port_suffixes(normalized_ports: dict[str, dict[str, Any]], algo: str) -> dict[str, str]:
+    """Map each port name to the numeric suffix its algo top module uses for
+    that port's ``sram_*`` pins (e.g. ``sram_clk0``, ``sram_web1``).
+
+    Single-port algos (march-c, march-raw) always use suffix "0" for their
+    one ``rw`` port -- matching march_c_top/march_raw_top exactly. march-1r1w
+    uses suffix "0" for its read-only ("r") port and suffix "1" for its
+    write-only ("w") port -- matching march_1r1w_top exactly. This mapping is
+    keyed on port *type*, not on ports-map iteration order, so it is immune to
+    however the user happened to order/name their ports: mapping.
+    """
+    algo_value = algo.strip().lower()
+    if algo_value not in _MULTI_PORT_ALGOS:
+        (only_name,) = normalized_ports.keys()
+        return {only_name: "0"}
+
+    type_to_suffix = {"r": "0", "w": "1"}
+    return {name: type_to_suffix[pdata["type"]] for name, pdata in normalized_ports.items()}
 
 
 def _check_signal_role_collisions(ports: dict[str, dict[str, Any]]) -> None:
@@ -297,12 +362,7 @@ def generate_from_config(
 
     config = load_config(config_path)
 
-    if len(config["normalized_ports"]) != 1:
-        raise ConfigError(
-            "multi-port configs (2+ ports) are not yet supported by `generate` -- "
-            "support is landing in a future release; use a single-port (or legacy "
-            "flat-dict) config for now"
-        )
+    _validate_port_topology(config["normalized_ports"], algo)
 
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -325,6 +385,7 @@ def generate_from_config(
     algo_dir, algo_top_module = _normalize_algo(algo)
     render_config["algo_dir"] = algo_dir
     render_config["algo_top_module"] = algo_top_module
+    render_config["algo_port_suffixes"] = _algo_port_suffixes(config["normalized_ports"], algo)
 
     if use_saboteur:
         from .fault_gen import FaultType, generate_fault_files

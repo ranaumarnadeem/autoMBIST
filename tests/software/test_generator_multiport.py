@@ -259,16 +259,18 @@ ports:
 
 
 # ---------------------------------------------------------------------------
-# generate_from_config: multi-port not wired into templates/RTL yet (Phase 1)
+# generate_from_config: multi-port is only supported by algo=march-1r1w
+# (Phase 3). Every other algo (the default march-c included) still requires
+# exactly 1 port -- see test_generator_1r1w.py for the march-1r1w happy path.
 # ---------------------------------------------------------------------------
 
 
-def test_generate_from_config_rejects_multiport_for_now(tmp_path: Path) -> None:
+def test_generate_from_config_rejects_multiport_for_single_port_algo(tmp_path: Path) -> None:
     config = dict(BASE_CONFIG)
     config["ports"] = RW_1R1W_PORTS
     config_path = tmp_path / "config.yml"
     outdir = tmp_path / "out"
     _write_yaml(config_path, config)
 
-    with pytest.raises(ConfigError, match="not yet supported"):
+    with pytest.raises(ConfigError, match="requires exactly 1 port"):
         generate_from_config(config_path, outdir)
