@@ -18,12 +18,18 @@ For each memory in your config, autombist generates a module directory under `ou
 
 ## Prerequisites
 
-> **Platform: Linux or WSL only.** The EDA toolchain autombist drives (Icarus Verilog, Yosys, OpenRAM, and the optional FaultFlow controller-grading flow) is Unix-only. Use a venv created inside WSL/Linux.
+> **Platform.** `autombist generate` (wrapper/RTL emission) and config/algorithm-spec
+> tooling run anywhere Python 3.10+ runs. Everything that invokes a simulator or
+> synthesis tool — `simulate`, `run`, `test`, `algo`'s `run`/`compare_algo` commands, and
+> `grade-controller --run` — needs the Unix EDA toolchain (Icarus Verilog, Verilator,
+> Yosys, OpenRAM, and the optional FaultFlow flow) and only works on Linux or WSL. Use a
+> venv created inside WSL/Linux for any of those.
 
 1. Python 3.10+
 2. OpenRAM-generated memory and matching config file
 3. For fault simulation:
-	- Icarus Verilog (`iverilog`) installed system-wide
+	- Icarus Verilog (`iverilog`) installed system-wide (array-fault `simulate`/`run`)
+	- Verilator installed system-wide (functional fault-primitive `test`/`algo` commands)
 	- Cocotb installed in your Python environment
 
 ## Installation
@@ -81,6 +87,51 @@ autombist simulate --out out/<memory_name>
 ```
 
 For transition fault simulation, set `--fault-type transition-up` or `--fault-type transition-down`, then run `autombist simulate --out out/<memory_name>`.
+
+## Functional Fault-Primitive Grading (`test` / `algo`)
+
+Beyond the array-level stuck-at/transition masks above, autombist ships a richer
+functional fault library (19 primitives: stuck-at, transition, write/read disturb,
+address-decoder, and all four coupling classes) and a programmable march-algorithm
+engine, driven through Verilator instead of Icarus.
+
+Grade a memory + march algorithm against a fault list in one shot:
+
+```bash
+autombist test --addr-width 8 --data-width 8 --algo march_c --faults faults.txt
+autombist test -aw 10 -dw 32 --algo march_ss --faults faults.txt --report cov.md
+```
+
+Or validate an actual controller FSM (rather than an algorithm spec) against the same
+fault library:
+
+```bash
+autombist test -aw 10 -dw 32 --fsm rtl/march_c/march_c_top.sv --faults faults.txt
+```
+
+For interactive exploration — registering custom algorithms/fault instances, running
+campaigns, comparing against the built-in marches, and exporting reports or standalone
+testbenches — launch the research shell:
+
+```bash
+autombist algo
+autombist algo --script session.algo   # or '-' for stdin
+```
+
+Run `help` inside the shell for the full command list.
+
+## Controller Structural Grading (`grade-controller`)
+
+Grade the MBIST controller logic itself (not the memory array) with FaultFlow's scan
+stuck-at ATPG, with the memory macro blackboxed:
+
+```bash
+autombist grade-controller --out out --faultflow-repo ~/faultflow
+autombist grade-controller --out out --no-run     # just emit the re-runnable bundle
+```
+
+Requires Yosys and a built FaultFlow repo (path via `--faultflow-repo` or `$FAULTFLOW_HOME`),
+Linux/WSL only.
 
 ## OpenRAM Synthesis + Starter Scaffolding
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.resources
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,38 @@ REQUIRED_TOP_KEYS = (
     "ports",
 )
 REQUIRED_PORT_KEYS = ("clk", "addr", "din", "dout", "we", "csb")
+
+# Per-port-type required signal keys for the named multi-port config shape
+# (ports: {name: {type: rw|r|w, ...}}). "rw" mirrors the legacy flat 6-key
+# form; "r"/"w" drop the signals a read-only/write-only port doesn't have.
+PORT_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
+    "rw": ("clk", "addr", "din", "dout", "we", "csb"),
+    "r": ("clk", "addr", "dout", "csb"),
+    "w": ("clk", "addr", "din", "csb", "we"),
+}
+_VALID_PORT_TYPES = frozenset(PORT_KEYS_BY_TYPE)
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+class _DuplicateKeyGuardLoader(yaml.SafeLoader):
+    """SafeLoader that rejects literal duplicate keys instead of silently
+    keeping only the last one (PyYAML's default, easy to trip over in a
+    hand-edited multi-port ``ports:`` map)."""
+
+
+def _construct_mapping_no_dupes(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise ConfigError(f"Duplicate key in config YAML: {key!r}")
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_DuplicateKeyGuardLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping_no_dupes
+)
 
 
 def _normalize_algo(algo: str) -> tuple[str, str]:
@@ -52,12 +85,95 @@ def _validate_non_empty_str(data: dict[str, Any], key: str) -> None:
         raise ConfigError(f"{key} must be a non-empty string")
 
 
+def _is_legacy_flat_ports(ports: dict[str, Any]) -> bool:
+    """True when ``ports`` looks like the original flat single-port dict
+    (``{clk, addr, din, dout, we, csb}``) rather than a named multi-port map.
+
+    Deliberately robust to a *missing* required key -- keyed on "no per-port
+    sub-mappings, and every present key is one of the flat signal roles" --
+    so a legacy config with e.g. ``csb`` accidentally omitted still routes to
+    the original clear "missing required key" error instead of being misread
+    as a malformed named-port map (whose entries are themselves mappings).
+    """
+    if any(isinstance(value, dict) for value in ports.values()):
+        return False
+    return set(ports.keys()) <= set(REQUIRED_PORT_KEYS)
+
+
+def _validate_port(name: str, pdata: Any, section: str) -> dict[str, Any]:
+    """Validate one entry of a named multi-port ``ports:`` map and return its
+    canonical form: ``{"type": ..., <role>: <signal>, ...}`` restricted to the
+    keys that role actually needs (extra keys on the input are dropped)."""
+    if not _IDENTIFIER_RE.match(name):
+        raise ConfigError(f"{section} name {name!r} must be a valid identifier")
+    if not isinstance(pdata, dict):
+        raise ConfigError(f"{section} {name!r} must be a mapping")
+
+    port_type = pdata.get("type")
+    if port_type not in _VALID_PORT_TYPES:
+        raise ConfigError(
+            f"{section} {name!r}: type must be one of {sorted(_VALID_PORT_TYPES)}"
+        )
+
+    required = PORT_KEYS_BY_TYPE[port_type]
+    _require_keys(pdata, required, f"{section} {name!r}")
+    for key in required:
+        value = pdata[key]
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigError(f"{section} {name!r}.{key} must be a non-empty string")
+
+    return {"type": port_type, **{key: pdata[key] for key in required}}
+
+
+def _check_signal_role_collisions(ports: dict[str, dict[str, Any]]) -> None:
+    """Reject a signal name reused for two different pin roles anywhere in the
+    design (e.g. one port's clk aliasing another port's write-enable). Reusing
+    the same signal for the *same* role across ports (a shared clock pin) is
+    fine and common on real dual-port macros."""
+    signal_role: dict[str, str] = {}
+    for pname, pdata in ports.items():
+        for role, value in pdata.items():
+            if role == "type":
+                continue
+            prior_role = signal_role.get(value)
+            if prior_role is not None and prior_role != role:
+                raise ConfigError(
+                    f"signal name {value!r} is used for both role {prior_role!r} and "
+                    f"{role!r} (port {pname!r}) -- a signal must play a single role "
+                    "across the whole design"
+                )
+            signal_role[value] = role
+
+
+def _normalize_ports(ports: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return the canonical named-port-map view of ``ports:``, accepting both
+    the legacy flat single-port dict and the new named multi-port map. Always
+    returns ``{port_name: {"type": rw|r|w, <role>: <signal>, ...}}``."""
+    if not isinstance(ports, dict) or not ports:
+        raise ConfigError("ports must be a non-empty mapping")
+
+    if _is_legacy_flat_ports(ports):
+        _require_keys(ports, REQUIRED_PORT_KEYS, "ports")
+        for key in REQUIRED_PORT_KEYS:
+            value = ports[key]
+            if not isinstance(value, str) or not value.strip():
+                raise ConfigError(f"ports.{key} must be a non-empty string")
+        return {"p0": {"type": "rw", **{key: ports[key] for key in REQUIRED_PORT_KEYS}}}
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for name, pdata in ports.items():
+        normalized[name] = _validate_port(name, pdata, "ports")
+
+    _check_signal_role_collisions(normalized)
+    return normalized
+
+
 def load_config(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
     with config_path.open("r", encoding="utf-8") as handle:
-        loaded = yaml.safe_load(handle)
+        loaded = yaml.load(handle, Loader=_DuplicateKeyGuardLoader)
 
     if not isinstance(loaded, dict):
         raise ConfigError("Config must be a YAML mapping")
@@ -76,11 +192,13 @@ def load_config(config_path: Path) -> dict[str, Any]:
     if not isinstance(ports, dict):
         raise ConfigError("ports must be a mapping")
 
-    _require_keys(ports, REQUIRED_PORT_KEYS, "ports")
-    for key in REQUIRED_PORT_KEYS:
-        value = ports[key]
-        if not isinstance(value, str) or not value.strip():
-            raise ConfigError(f"ports.{key} must be a non-empty string")
+    # Legacy flat single-port configs keep loaded["ports"] byte-identical (no
+    # downstream consumer -- templates, RTL copy -- has to change for them).
+    # loaded["normalized_ports"] is always the canonical named-port-map view,
+    # for the multi-port-aware code landing in later phases.
+    loaded["normalized_ports"] = _normalize_ports(ports)
+    if not _is_legacy_flat_ports(ports):
+        loaded["ports"] = loaded["normalized_ports"]
 
     return loaded
 
@@ -178,6 +296,13 @@ def generate_from_config(
         )
 
     config = load_config(config_path)
+
+    if len(config["normalized_ports"]) != 1:
+        raise ConfigError(
+            "multi-port configs (2+ ports) are not yet supported by `generate` -- "
+            "support is landing in a future release; use a single-port (or legacy "
+            "flat-dict) config for now"
+        )
 
     outdir.mkdir(parents=True, exist_ok=True)
 
