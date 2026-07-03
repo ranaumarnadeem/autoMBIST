@@ -241,12 +241,28 @@ endmodule
 {% else %}
 {% set _rport = (normalized_ports.values() | selectattr("type", "equalto", "r") | list)[0] %}
 {% set _wport = (normalized_ports.values() | selectattr("type", "equalto", "w") | list)[0] %}
-// 1-read-port + 1-write-port saboteur: models stuck-at / transition faults over
-// a SINGLE shared array indexed by both ports, mirroring sram_model_1r1w.sv's
-// shared mem[] architecture with a fault-mask layer on top. write_cycle is
-// derived from the write port ({{ _wport.csb }}/{{ _wport.we }}/{{ _wport.addr }}/{{ _wport.din }});
+// 1-read-port + 1-write-port saboteur: models stuck-at / transition / port-
+// coupling faults over a SINGLE shared array indexed by both ports, mirroring
+// sram_model_1r1w.sv's shared mem[] architecture with a fault-mask layer on
+// top. write_cycle is derived from the write port
+// ({{ _wport.csb }}/{{ _wport.we }}/{{ _wport.addr }}/{{ _wport.din }});
 // read_cycle from the read port ({{ _rport.csb }}/{{ _rport.addr }}). Debug taps
 // sample the read path (port 0), matching test_mbist.py's dbg_* sampling.
+//
+// port-coupling models an inter-port bridging defect: an aggressor write on
+// the write port disturbs a victim read on the read port ONLY when both
+// touch the SAME address on the SAME clock edge (genuine concurrent access).
+// The march_1r1w controller (march_1r1w_fsm.sv) asserts read_cycle for
+// EXACTLY ONE CYCLE (the ST_ISSUE cycle), then waits READ_LATENCY more
+// cycles (ST_WAIT/ST_CHECK) before actually comparing mem_rdata0 against the
+// expected value -- so the corruption must still be visible on dout that
+// many cycles later, not just on the issue cycle itself. The real memory
+// macro's own registered dout holds a write's value stable from one cycle
+// after the write until the address is written again; the coupling flag
+// must have that SAME per-address, write-scoped lifetime (set on a write
+// cycle that coincides with a same-address read issue, cleared on the next
+// write to that address) so it stays valid for however long the controller
+// takes to actually sample it, instead of only for one cycle.
 module {{ memory_name }}_saboteur #(
     parameter integer ADDR_WIDTH = {{ addr_width }},
     parameter integer DATA_WIDTH = {{ data_width }}
@@ -447,9 +463,40 @@ module {{ memory_name }}_saboteur #(
             read_data_q <= shadow_mem[{{ _rport.addr }}];
         end
     end
+{% elif fault_type == "port-coupling" %}
+    logic [DATA_WIDTH-1:0] pc_mask [0:(1<<ADDR_WIDTH)-1];
+    // Per-address sticky coupling-corruption flags: set (to the fault
+    // pattern) on a write cycle that coincides with a same-address read
+    // issued the SAME cycle -- a genuine concurrent access -- and cleared on
+    // the NEXT write to that same address (whether or not that later write
+    // is itself coincident). This mirrors blocked_bits_q's per-address,
+    // write-scoped lifetime in the transition-fault branches above: the
+    // memory macro's own registered dout holds the corrupted value stable
+    // from the write cycle onward (same 1-cycle registered-read timing as
+    // stuck-at) until the address is written again, so the flag must persist
+    // exactly as long as real_dout itself reflects that write -- not just for
+    // one cycle -- to line up with whenever the MBIST controller actually
+    // samples it (which may be more than one cycle after the write, e.g.
+    // while READ_LATENCY elapses).
+    logic [DATA_WIDTH-1:0] coupling_bits_q [0:(1<<ADDR_WIDTH)-1];
+    integer pc_idx;
+
+    initial begin
+        $readmemh("{{ pc_faults_file }}", pc_mask);
+        for (pc_idx = 0; pc_idx < (1<<ADDR_WIDTH); pc_idx = pc_idx + 1) begin
+            coupling_bits_q[pc_idx] = '0;
+        end
+    end
+
+    always_ff @(posedge {{ _wport.clk }}) begin
+        if (write_cycle) begin
+            coupling_bits_q[{{ _wport.addr }}] <=
+                (read_cycle && ({{ _rport.addr }} == {{ _wport.addr }})) ? pc_mask[{{ _wport.addr }}] : '0;
+        end
+    end
 {% endif %}
 
-{% if fault_type == "stuck-at" %}
+{% if fault_type in ("stuck-at", "port-coupling") %}
     {{ memory_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH)
@@ -476,6 +523,16 @@ module {{ memory_name }}_saboteur #(
     assign dbg_attempted_write = '0;
     assign dbg_actual_read = real_dout;
     assign dbg_blocked_bits = '0;
+{% elif fault_type == "port-coupling" %}
+    assign real_din = {{ _wport.din }};
+    assign {{ _rport.dout }} = real_dout ^ coupling_bits_q[{{ _rport.addr }}];
+    assign dbg_actual_word = real_dout;
+    assign dbg_fault_word = {{ _rport.dout }};
+    assign dbg_intended_word = {{ _wport.din }};
+    assign dbg_prior_value = real_dout;
+    assign dbg_attempted_write = {{ _wport.din }};
+    assign dbg_actual_read = real_dout;
+    assign dbg_blocked_bits = coupling_bits_q[{{ _rport.addr }}];
 {% elif fault_type == "transition-up" %}
     assign {{ _rport.dout }} = read_data_q;
     assign dbg_actual_word = prior_word;

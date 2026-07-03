@@ -17,7 +17,19 @@ READ_LATENCY ?= 1
 ALGO ?= march-c
 ALGO_DIR := $(subst -,_,$(ALGO))
 ALGO_TEST ?= 0
-SIM_BUILD ?= sim_build/$(ALGO_DIR)_t$(ALGO_TEST)_s$(USE_SABOTEUR)
+# Nested under MODULE_OUTDIR (unique per generated wrapper -- a fresh
+# pytest tmp_path each e2e test invocation, or a stable out/<memory> dir for
+# CLI use) rather than a bare relative path shared across every invocation
+# of a given algo/saboteur combination. A shared path let Make's mtime-based
+# staleness check silently reuse a stale compiled sim.vvp from a PRIOR
+# tmp_path's generated sources (different fault content, sometimes even a
+# different memory) when timestamps didn't clearly show the new sources as
+# newer -- causing real false negatives (undetected faults) and at least one
+# observed false positive (bist_fail=1 with zero injected faults). Keying by
+# MODULE_OUTDIR makes that collision structurally impossible while still
+# preserving legitimate incremental-rebuild caching within one fixed output
+# directory.
+SIM_BUILD ?= $(MODULE_OUTDIR)/sim_build/$(ALGO_DIR)_t$(ALGO_TEST)_s$(USE_SABOTEUR)
 PYTHON_BIN ?= $(PROJECT_ROOT)/venv/bin/python3
 COCOTB_MAKEFILES_DIR := $(shell $(PYTHON_BIN) -c "import pathlib, cocotb_tools; print(pathlib.Path(cocotb_tools.__file__).resolve().parent / 'makefiles')")
 COCOTB_RESULTS_FILE ?= $(MODULE_OUTDIR)/results.xml

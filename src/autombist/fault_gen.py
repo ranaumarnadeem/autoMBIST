@@ -10,12 +10,14 @@ class FaultType(Enum):
     STUCK_AT = "stuck-at"
     TRANSITION_UP = "transition-up"
     TRANSITION_DOWN = "transition-down"
+    PORT_COUPLING = "port-coupling"
 
 
 SA0_FILENAME = "sa0_faults.hex"
 SA1_FILENAME = "sa1_faults.hex"
 TF_UP_FILENAME = "tf_up_faults.hex"
 TF_DOWN_FILENAME = "tf_down_faults.hex"
+PC_MASK_FILENAME = "pc_mask.hex"
 
 
 def _validate_positive_int(name: str, value: int) -> None:
@@ -78,29 +80,55 @@ def generate_fault_masks(
 
         return sa0_words, sa1_words
     
-    else:
-        # Transition fault generation: return two mask arrays
-        # For TF-UP: mask[addr] has 1s for bits that cannot transition 0->1
-        # For TF-DOWN: mask[addr] has 1s for bits that cannot transition 1->0
-        tf_mask = [0] * depth
-        
+    elif fault_type == FaultType.PORT_COUPLING:
+        # Port-coupling fault generation: pc_mask[addr] has 1s for bits that
+        # get corrupted (XORed) on a genuine same-address, same-cycle
+        # concurrent read+write access. One mask, mirroring the transition
+        # fault convention -- the same value is returned for both mask1/mask2.
+        pc_mask = [0] * depth
+
         if faults == 0:
-            return tf_mask, tf_mask
-        
+            return pc_mask, pc_mask
+
         max_fault_sites = depth * data_width
         if faults > max_fault_sites:
             raise ValueError(
                 f"faults ({faults}) exceeds available bit locations ({max_fault_sites})"
             )
-        
+
         rng = random.Random(seed)
         selected_locations = rng.sample(range(max_fault_sites), faults)
-        
+
+        for location in selected_locations:
+            addr, bit = divmod(location, data_width)
+            bit_mask = 1 << bit
+            pc_mask[addr] |= bit_mask
+
+        return pc_mask, pc_mask
+
+    else:
+        # Transition fault generation: return two mask arrays
+        # For TF-UP: mask[addr] has 1s for bits that cannot transition 0->1
+        # For TF-DOWN: mask[addr] has 1s for bits that cannot transition 1->0
+        tf_mask = [0] * depth
+
+        if faults == 0:
+            return tf_mask, tf_mask
+
+        max_fault_sites = depth * data_width
+        if faults > max_fault_sites:
+            raise ValueError(
+                f"faults ({faults}) exceeds available bit locations ({max_fault_sites})"
+            )
+
+        rng = random.Random(seed)
+        selected_locations = rng.sample(range(max_fault_sites), faults)
+
         for location in selected_locations:
             addr, bit = divmod(location, data_width)
             bit_mask = 1 << bit
             tf_mask[addr] |= bit_mask
-        
+
         # Return the same mask for both TF-UP and TF-DOWN; the caller decides which to use
         return tf_mask, tf_mask
 
@@ -127,6 +155,9 @@ def write_fault_files(
     elif fault_type == FaultType.TRANSITION_DOWN:
         file1_path = outdir / TF_DOWN_FILENAME
         file2_path = outdir / TF_DOWN_FILENAME  # Both point to same file for TF
+    elif fault_type == FaultType.PORT_COUPLING:
+        file1_path = outdir / PC_MASK_FILENAME
+        file2_path = outdir / PC_MASK_FILENAME  # Both point to same file for PC
     else:
         raise ValueError(f"Unknown fault type: {fault_type}")
 
