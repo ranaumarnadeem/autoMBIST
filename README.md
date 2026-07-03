@@ -4,7 +4,7 @@ autombist automatically generates MBIST integration artifacts for OpenRAM-genera
 It builds a selectable MBIST wrapper around your memory interface, emits the required MBIST RTL files, and creates outputs under `out/` by default.
 
 The generated artifacts can be synthesized with Yosys or other synthesis tools.
-autombist also supports fault simulation by injecting stuck-at faults (`SA0` and `SA1`) or transition faults (`transition-up` and `transition-down`) and validating behavior through Cocotb with Icarus Verilog.
+autombist also supports fault simulation by injecting stuck-at faults (`SA0` and `SA1`), transition faults (`transition-up` and `transition-down`), or (for multi-port memories) inter-port coupling faults, and validating behavior through Cocotb with Icarus Verilog.
 
 ## What It Generates
 
@@ -87,6 +87,63 @@ autombist simulate --out out/<memory_name>
 ```
 
 For transition fault simulation, set `--fault-type transition-up` or `--fault-type transition-down`, then run `autombist simulate --out out/<memory_name>`.
+
+## Multi-Port Memories (`march-1r1w`)
+
+Beyond single-port memories, autombist supports a 1-read-port + 1-write-port (1R1W)
+memory shape with a genuinely concurrent MBIST algorithm: the read port and write port
+issue to the same address on the same clock edge, which is what lets it catch inter-port
+bridging defects a "test each port separately" approach structurally cannot.
+
+Describe a multi-port memory with a named `ports:` map instead of the flat single-port
+form (`type: r` for the read-only port, `type: w` for the write-only port):
+
+```yaml
+memory_name: "sram_1r1w_64x32"
+wrapper_module_name: "sram_1r1w_64x32_mbist"
+addr_width: 6
+data_width: 32
+we_active_low: true
+ports:
+  rport:
+    type: r
+    clk: clkA
+    addr: addrA
+    dout: doutA
+    csb: csbA
+  wport:
+    type: w
+    clk: clkB
+    addr: addrB
+    din: dinB
+    csb: csbB
+    we: webB
+```
+
+Generate and simulate it like any other memory, selecting `--algo march-1r1w`:
+
+```bash
+autombist generate --config config.yml --out out --algo march-1r1w
+autombist simulate --out out/sram_1r1w_64x32
+```
+
+In addition to `stuck-at`/`transition-up`/`transition-down`, march-1r1w configs support a
+`port-coupling` fault type — an aggressor write on the write port disturbing a victim
+read on the read port, sensitized only by a genuine same-cycle, same-address concurrent
+access:
+
+```bash
+autombist generate --config config.yml --out out --test --faults 20 --algo march-1r1w --fault-type port-coupling
+autombist simulate --out out/sram_1r1w_64x32
+```
+
+The legacy flat single-port `ports:` form (`{clk, addr, din, dout, we, csb}`) still works
+unchanged and renders byte-identical output — no existing config needs to change.
+
+A further generalization, `march-2rw` (two fully symmetric read/write ports), exists as a
+verified standalone RTL family (`rtl/march_2rw/`) proving write/write-to-different-
+addresses and read/read-to-the-same-address concurrency, but is not yet wired into
+`generate`/`simulate` — a future release.
 
 ## Functional Fault-Primitive Grading (`test` / `algo`)
 
