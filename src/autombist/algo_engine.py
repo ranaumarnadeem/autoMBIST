@@ -45,6 +45,7 @@ class MemoryParams:
     data_width: int
     num_wmasks: int = 1
     init_val: int = 1
+    num_ports: int = 1
 
     @property
     def depth(self) -> int:
@@ -60,9 +61,20 @@ class FaultRecord:
     abit: int = 0
     p0: int = 0
     p1: int = 0
+    vport: int = 0          # victim port. Meaningful only for the coupling-class
+    aport: int = 0          # primitives (CFIN/CFID/CFST/CFDS): vport==aport is
+                             # today's only mode (same-port coupling); vport!=aport
+                             # means the aggressor op (on aport) disturbs a victim
+                             # reachable via a different port (aport).
 
     def to_line(self) -> str:
-        return f"{self.type} {self.vaddr} {self.vbit} {self.aaddr} {self.abit} {self.p0} {self.p1}"
+        base = f"{self.type} {self.vaddr} {self.vbit} {self.aaddr} {self.abit} {self.p0} {self.p1}"
+        if self.vport == 0 and self.aport == 0:
+            # Byte-identical to the pre-multi-port on-disk format when both
+            # ports are the default -- every existing fixture/generated file
+            # stays exactly as it was.
+            return base
+        return f"{base} {self.vport} {self.aport}"
 
 
 @dataclass(slots=True)
@@ -146,28 +158,40 @@ class BuildArtifact:
 # --------------------------------------------------------------------------- #
 # Fault-list I/O
 # --------------------------------------------------------------------------- #
-_FAULT_LINE_RE = re.compile(
-    r"^\s*(?P<type>[A-Za-z0-9_]+)\s+(?P<va>-?\d+)\s+(?P<vb>-?\d+)\s+"
-    r"(?P<aa>-?\d+)\s+(?P<ab>-?\d+)\s+(?P<p0>-?\d+)\s+(?P<p1>-?\d+)\s*$"
-)
+_FAULT_TYPE_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 def parse_fault_list(text: str) -> list[FaultRecord]:
+    """Each non-comment/non-blank line is 7, 8, or 9 whitespace-separated
+    fields: ``TYPE VADDR VBIT AADDR ABIT P0 P1 [VPORT [APORT]]``. The two
+    trailing port fields are optional and default to 0 when absent, so every
+    pre-multi-port fault-list file (always exactly 7 fields) parses unchanged.
+    """
     records: list[FaultRecord] = []
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        m = _FAULT_LINE_RE.match(line)
-        if not m:
+        fields = line.split()
+        if len(fields) not in (7, 8, 9):
             raise CampaignError(f"fault list line {lineno}: cannot parse '{raw}'")
-        g = m.groupdict()
+        fault_type = fields[0]
+        if not _FAULT_TYPE_RE.match(fault_type):
+            raise CampaignError(f"fault list line {lineno}: cannot parse '{raw}'")
+        try:
+            nums = [int(x) for x in fields[1:]]
+        except ValueError:
+            raise CampaignError(f"fault list line {lineno}: cannot parse '{raw}'") from None
+        va, vb, aa, ab, p0, p1, *ports = nums
+        vport = ports[0] if len(ports) >= 1 else 0
+        aport = ports[1] if len(ports) >= 2 else 0
         records.append(
             FaultRecord(
-                type=g["type"],
-                vaddr=int(g["va"]), vbit=int(g["vb"]),
-                aaddr=int(g["aa"]), abit=int(g["ab"]),
-                p0=int(g["p0"]), p1=int(g["p1"]),
+                type=fault_type,
+                vaddr=va, vbit=vb,
+                aaddr=aa, abit=ab,
+                p0=p0, p1=p1,
+                vport=vport, aport=aport,
             )
         )
     return records

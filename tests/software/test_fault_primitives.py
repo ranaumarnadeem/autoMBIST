@@ -128,3 +128,57 @@ def test_validate_rejects_read_effect_with_bad_kind() -> None:
     prim = _prim(category="read_effect", sensitize=Sensitize(on="victim"), effect=Effect(kind="force", value="0"))
     with pytest.raises(FaultPrimitiveError, match="read_effect primitives must use corrupt_read or force_read"):
         validate(prim, existing_names=set())
+
+
+# --------------------------------------------------------------------------- #
+# Multi-port generalization (Phase: additive Sensitize.port field)
+# --------------------------------------------------------------------------- #
+def test_sensitize_port_defaults_to_x_wildcard() -> None:
+    assert Sensitize().port == "x"
+
+
+def test_default_registry_all_primitives_have_wildcard_port() -> None:
+    # Every existing built-in must implicitly mean "port not part of the
+    # sensitizing condition" -- i.e. zero behavior change from this phase.
+    for prim in default_registry():
+        assert prim.sensitize.port == "x"
+
+
+@pytest.mark.parametrize("port", ["0", "1", "x"])
+def test_validate_accepts_each_valid_port_token(port: str) -> None:
+    prim = _prim(sensitize=Sensitize(port=port))
+    validate(prim, existing_names=set())  # must not raise
+
+
+def test_validate_rejects_bad_port_token() -> None:
+    prim = _prim(sensitize=Sensitize(port="2"))
+    with pytest.raises(FaultPrimitiveError, match="sensitize.port must be one of"):
+        validate(prim, existing_names=set())
+
+
+def test_to_dict_includes_port_field() -> None:
+    prim = _prim(sensitize=Sensitize(port="1"))
+    payload = to_dict(prim)
+    assert payload["sensitize"]["port"] == "1"
+
+
+def test_from_dict_defaults_port_to_x_when_absent() -> None:
+    prim = from_dict({"name": "MYNEW", "category": "static_clamp", "effect": {"kind": "force", "value": "1"}})
+    assert prim.sensitize.port == "x"
+
+
+def test_to_dict_from_dict_roundtrip_with_explicit_port() -> None:
+    original = FaultPrimitive(
+        "MYPORTF", "write_effect",
+        Sensitize(pre="0", written="1", on="aggressor", port="1"),
+        Effect(kind="invert"),
+    )
+    restored = from_dict(to_dict(original))
+    assert restored == original
+
+
+def test_default_registry_to_dict_roundtrip_unaffected_by_port_field() -> None:
+    # Strongest backward-compat proof: every built-in must still round-trip
+    # to an identical object after adding the port field.
+    for prim in default_registry():
+        assert from_dict(to_dict(prim)) == prim

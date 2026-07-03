@@ -97,3 +97,89 @@ def test_find_pkg_subdir_handles_importlib_resources_exception(monkeypatch: pyte
     monkeypatch.setattr(alg_spec_mod.importlib.resources, "files", boom)
     with pytest.raises(AlgSpecError, match="directory not found"):
         _find_pkg_subdir("no_such_asset_dir_xyz", "no_such_marker.txt")
+
+
+# --------------------------------------------------------------------------- #
+# Multi-port generalization (Phase: additive port-tagged op tokens)
+# --------------------------------------------------------------------------- #
+def test_port_tagged_element_parses_ops_and_ports() -> None:
+    spec = parse_alg("up r0.1 w1.0\n", "t")
+    elem = spec.elements[0]
+    assert elem.ops == [0, 3]      # base op values unaffected by port suffix
+    assert elem.ports == [1, 0]
+
+
+def test_untagged_ops_default_all_ports_to_zero() -> None:
+    spec = parse_alg("up r0 w1\n", "t")
+    assert spec.elements[0].ports == [0, 0]
+
+
+def test_port_tagged_element_human_roundtrip() -> None:
+    spec = parse_alg("up r0.1 w1.0\n", "t")
+    # port 0 is never printed (implicit/default); only the non-zero tag is.
+    assert spec.elements[0].human() == "up r0.1 w1"
+
+
+def test_bad_port_suffix_raises() -> None:
+    with pytest.raises(AlgSpecError, match="bad port suffix"):
+        parse_alg("up r0.x\n", "t")
+
+
+def test_out_of_range_port_suffix_raises() -> None:
+    # Only ports 0 and 1 exist (2-port scope) -- a numeric but out-of-range
+    # suffix like .99 must be rejected, not silently accepted.
+    with pytest.raises(AlgSpecError, match="bad port suffix"):
+        parse_alg("up r0.99\n", "t")
+    with pytest.raises(AlgSpecError, match="bad port suffix"):
+        parse_alg("up r0.2\n", "t")
+
+
+def test_bad_op_with_port_suffix_still_raises_bad_op() -> None:
+    with pytest.raises(AlgSpecError, match="bad op"):
+        parse_alg("up r9.1\n", "t")
+
+
+def test_numeric_line_extended_when_port_nonzero() -> None:
+    spec = parse_alg("up r0.1 w1\n", "t")
+    # DIR NOPS OP0..OP7 PORT0..PORT7 (extended form only when a port != 0 present)
+    assert spec.elements[0].numeric_line() == "0 2 0 3 0 0 0 0 0 0 1 0 0 0 0 0 0 0"
+
+
+def test_numeric_line_unaffected_when_all_ports_zero() -> None:
+    # Byte-identical to the pre-multi-port format.
+    spec = parse_alg("up r0 w1\n", "t")
+    assert spec.elements[0].numeric_line() == "0 2 0 3 0 0 0 0 0 0"
+
+
+def test_to_numeric_extended_header_when_port_present() -> None:
+    spec = parse_alg("up r0.1 w1\n", "test_ext")
+    text = spec.to_numeric()
+    assert text.startswith("# test_ext  (2n)  DIR NOPS OP0..OP7  PORT0..PORT7\n")
+
+
+# Golden strings captured from to_numeric() BEFORE any multi-port change was
+# made to alg_spec.py (see the task's verification requirement) -- the
+# strongest proof that every existing built-in .alg file's numeric
+# serialization is byte-identical to its pre-phase value.
+_GOLDEN_TO_NUMERIC = {
+    "march_c": "# march_c  (10n)  DIR NOPS OP0..OP7\n2 1 2 0 0 0 0 0 0 0\n0 2 0 3 0 0 0 0 0 0\n0 2 1 2 0 0 0 0 0 0\n1 2 0 3 0 0 0 0 0 0\n1 2 1 2 0 0 0 0 0 0\n2 1 0 0 0 0 0 0 0 0\n",
+    "march_ss": "# march_ss  (22n)  DIR NOPS OP0..OP7\n2 1 2 0 0 0 0 0 0 0\n0 5 0 0 2 0 3 0 0 0\n0 5 1 1 3 1 2 0 0 0\n1 5 0 0 2 0 3 0 0 0\n1 5 1 1 3 1 2 0 0 0\n2 1 0 0 0 0 0 0 0 0\n",
+    "march_x": "# march_x  (6n)  DIR NOPS OP0..OP7\n2 1 2 0 0 0 0 0 0 0\n0 2 0 3 0 0 0 0 0 0\n1 2 1 2 0 0 0 0 0 0\n2 1 0 0 0 0 0 0 0 0\n",
+    "mats_plus": "# mats_plus  (5n)  DIR NOPS OP0..OP7\n2 1 2 0 0 0 0 0 0 0\n0 2 0 3 0 0 0 0 0 0\n1 2 1 2 0 0 0 0 0 0\n",
+}
+
+# Golden length_n values, likewise pinned before any change (mirrors the
+# reference lengths already asserted in test_builtins_resolve_and_match_reference_lengths).
+_GOLDEN_LENGTH_N = {"march_c": 10, "march_ss": 22, "march_x": 6, "mats_plus": 5}
+
+
+@pytest.mark.parametrize("algo_name", sorted(_GOLDEN_TO_NUMERIC))
+def test_builtin_alg_to_numeric_byte_identical_to_pre_phase_golden(algo_name: str) -> None:
+    spec = resolve_algo(algo_name)
+    assert spec.to_numeric() == _GOLDEN_TO_NUMERIC[algo_name]
+
+
+@pytest.mark.parametrize("algo_name", sorted(_GOLDEN_LENGTH_N))
+def test_builtin_alg_length_n_byte_identical_to_pre_phase_golden(algo_name: str) -> None:
+    spec = resolve_algo(algo_name)
+    assert spec.length_n == _GOLDEN_LENGTH_N[algo_name]
