@@ -13,11 +13,17 @@ blank lines are ignored. Example (March C-)::
 
 autombist parses this to an :class:`AlgSpec` and serializes the *numeric* form the
 SystemVerilog ``march_engine`` reads via ``+ALG_FILE`` (``DIR NOPS OP0..OP7``).
+
+An op token may carry an OPTIONAL port suffix, ``.PORT`` (e.g. ``r0.1``, ``w1.0``),
+meaning "same base op, issued on port PORT" -- for multi-port memories. The suffix
+is a dot, chosen because it cannot collide with anything else in this grammar (``#``
+starts a comment, whitespace tokenizes, and base op tokens are exactly ``r0|r1|w0|
+w1``). Omitting the suffix (every existing built-in `.alg` file) means port 0.
 """
 from __future__ import annotations
 
 import importlib.resources
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 DIR_MAP = {"up": 0, "down": 1, "either": 2}
@@ -37,13 +43,32 @@ class AlgSpecError(ValueError):
 class Element:
     direction: int          # 0=up, 1=down, 2=either
     ops: list[int]          # each 0=r0, 1=r1, 2=w0, 3=w1
+    ports: list[int] = field(default_factory=list)   # parallel to ops; 0 = port 0 (default)
+
+    def __post_init__(self) -> None:
+        if not self.ports:
+            self.ports = [0] * len(self.ops)
 
     def human(self) -> str:
-        return " ".join([DIR_NAME[self.direction], *(OP_NAME[o] for o in self.ops)])
+        toks = []
+        for op, port in zip(self.ops, self.ports):
+            tok = OP_NAME[op]
+            if port:
+                tok = f"{tok}.{port}"
+            toks.append(tok)
+        return " ".join([DIR_NAME[self.direction], *toks])
 
     def numeric_line(self) -> str:
+        """Byte-identical to the pre-multi-port format (``DIR NOPS OP0..OP7``)
+        when every op in this element is on port 0. Only when a non-zero port
+        is actually present does this emit an extended format with additional
+        trailing PORT0..PORT7 columns."""
         padded = (self.ops + [0] * MAX_OPS)[:MAX_OPS]
-        return " ".join(str(x) for x in (self.direction, len(self.ops), *padded))
+        base = " ".join(str(x) for x in (self.direction, len(self.ops), *padded))
+        if not any(self.ports):
+            return base
+        padded_ports = (self.ports + [0] * MAX_OPS)[:MAX_OPS]
+        return base + " " + " ".join(str(x) for x in padded_ports)
 
 
 @dataclass(slots=True)
@@ -57,7 +82,13 @@ class AlgSpec:
         return sum(len(e.ops) for e in self.elements)
 
     def to_numeric(self) -> str:
-        header = f"# {self.name}  ({self.length_n}n)  DIR NOPS OP0..OP7\n"
+        """Byte-identical to the pre-multi-port serialization when every
+        element's ports are all zero (true of every existing built-in `.alg`
+        file). Only emits the extended ``...PORT0..PORT7`` header/columns when
+        a non-zero port tag is actually present somewhere in the spec."""
+        extended = any(any(e.ports) for e in self.elements)
+        suffix = "  PORT0..PORT7" if extended else ""
+        header = f"# {self.name}  ({self.length_n}n)  DIR NOPS OP0..OP7{suffix}\n"
         return header + "".join(e.numeric_line() + "\n" for e in self.elements)
 
     def write_numeric(self, path: Path) -> Path:
@@ -86,14 +117,25 @@ def parse_alg(text: str, name: str) -> AlgSpec:
                 f"{name}:{lineno}: {len(op_toks)} ops exceeds engine max {MAX_OPS}"
             )
         ops: list[int] = []
+        ports: list[int] = []
         for tok in op_toks:
             key = tok.lower()
+            port = 0
+            if "." in key:
+                key, _, port_tok = key.partition(".")
+                if not port_tok.isdigit() or int(port_tok) not in (0, 1):
+                    raise AlgSpecError(
+                        f"{name}:{lineno}: bad port suffix in '{tok}' (use r0|r1|w0|w1, "
+                        "optionally suffixed '.PORT' with PORT in {0, 1}, e.g. r0.1)"
+                    )
+                port = int(port_tok)
             if key not in OP_MAP:
                 raise AlgSpecError(
                     f"{name}:{lineno}: bad op '{tok}' (use r0|r1|w0|w1)"
                 )
             ops.append(OP_MAP[key])
-        elements.append(Element(direction=DIR_MAP[direction_tok], ops=ops))
+            ports.append(port)
+        elements.append(Element(direction=DIR_MAP[direction_tok], ops=ops, ports=ports))
 
     if not elements:
         raise AlgSpecError(f"{name}: no march elements found")

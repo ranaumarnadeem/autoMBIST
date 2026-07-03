@@ -40,6 +40,7 @@ _VALID_BIT_TOKENS = ("0", "1", "p0", "p1", "x")
 _VALID_TRANSITIONS = ("up", "down", "either", "p0", "x")
 _VALID_ON = ("victim", "aggressor")
 _VALID_EFFECT_KINDS = ("force", "invert", "block_write", "corrupt_read", "force_read")
+_VALID_PORTS = ("0", "1", "x")
 _NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
@@ -53,6 +54,9 @@ class Sensitize:
     written: str = "x"      # required written value (write_effect/victim only): same tokens
     transition: str = "x"   # write_effect/aggressor only: "up"|"down"|"either"|"p0"|"x"
     on: str = "victim"      # whose site gates the arm: "victim" | "aggressor"
+    port: str = "x"         # which port the sensitizing op must occur on: "0"|"1"|"x" (wildcard;
+                             # "x" means "not part of the sensitizing condition, matches on address
+                             # alone" -- what every existing built-in implicitly means today)
 
 
 @dataclass(slots=True)
@@ -93,6 +97,8 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
 
     if prim.sensitize.on not in _VALID_ON:
         raise FaultPrimitiveError(f"sensitize.on must be one of {_VALID_ON}")
+    if prim.sensitize.port not in _VALID_PORTS:
+        raise FaultPrimitiveError(f"sensitize.port must be one of {_VALID_PORTS}")
     if prim.sensitize.pre not in _VALID_BIT_TOKENS:
         raise FaultPrimitiveError(f"sensitize.pre must be one of {_VALID_BIT_TOKENS}")
     if prim.sensitize.written not in _VALID_BIT_TOKENS:
@@ -131,6 +137,7 @@ def to_dict(prim: FaultPrimitive) -> dict[str, Any]:
         "sensitize": {
             "pre": prim.sensitize.pre, "written": prim.sensitize.written,
             "transition": prim.sensitize.transition, "on": prim.sensitize.on,
+            "port": prim.sensitize.port,
         },
         "effect": {
             "kind": prim.effect.kind, "value": prim.effect.value,
@@ -150,6 +157,7 @@ def from_dict(data: dict[str, Any]) -> FaultPrimitive:
         sensitize=Sensitize(
             pre=str(sens.get("pre", "x")), written=str(sens.get("written", "x")),
             transition=str(sens.get("transition", "x")), on=str(sens.get("on", "victim")),
+            port=str(sens.get("port", "x")),
         ),
         effect=Effect(
             kind=str(eff.get("kind", "force")), value=eff.get("value"),
