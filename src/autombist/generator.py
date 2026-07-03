@@ -316,7 +316,7 @@ def _find_rtl_dir() -> Path:
     )
 
 
-_ALGO_DIRS = {"march_c", "march_raw", "march_1r1w"}
+_ALGO_DIRS = {"march_c", "march_raw", "march_1r1w", "march_2rw"}
 
 
 def copy_mbist_rtl(outdir: Path, algo_dir: str | None = None) -> None:
