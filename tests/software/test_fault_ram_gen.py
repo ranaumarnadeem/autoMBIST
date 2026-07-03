@@ -115,3 +115,81 @@ def test_render_and_write_writes_a_file(tmp_path: Path) -> None:
     out = render_and_write(default_registry(), tmp_path / "fault_ram.sv")
     assert out.exists()
     assert "module fault_ram" in out.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# Multi-port (P4 of the fault-DSL generalization): num_ports=1 must remain
+# byte-identical to the pre-multi-port template; num_ports=2 renders a second,
+# explicit-suffix port bus and threads port-matching through the fault struct.
+# --------------------------------------------------------------------------- #
+def test_render_fault_ram_num_ports_1_implicit_and_explicit_are_identical() -> None:
+    """The num_ports parameter is purely additive: omitting it and passing
+    num_ports=1 explicitly must render byte-for-byte identical text."""
+    implicit = render_fault_ram(default_registry())
+    explicit = render_fault_ram(default_registry(), num_ports=1)
+    assert implicit == explicit
+
+
+def test_render_fault_ram_num_ports_1_is_byte_identical_to_pre_phase_golden() -> None:
+    """Pins render_fault_ram(default_registry()) to its exact sha256 captured
+    from the template BEFORE this phase's num_ports work began (see the P4
+    multi-port-DSL phase report). Any future edit that changes a single byte
+    of the num_ports=1 (default) rendering -- the backward-compat guarantee
+    every existing caller (algo_shell.py, cli.py, the e2e reference-coverage
+    gate) depends on -- must fail this test."""
+    import hashlib
+
+    text = render_fault_ram(default_registry())
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    assert len(text) == 10870
+    assert digest == "1cafaeb8240d9d90d7b574ee716c99c82646c93c8c9c968d1f67b676d0931f1a"
+
+
+def test_render_fault_ram_num_ports_1_has_unsuffixed_single_port_bus() -> None:
+    text = render_fault_ram(default_registry(), num_ports=1)
+    assert "input  logic                    clk,\n" in text
+    assert "input  logic                    csb,    // active low chip select\n" in text
+    assert "clk0" not in text
+    assert "clk1" not in text
+    assert " vp, ap" not in text
+    assert "input int port" not in text
+
+
+def test_render_fault_ram_num_ports_2_has_dual_explicit_suffix_port_buses() -> None:
+    text = render_fault_ram(default_registry(), num_ports=2)
+    # Two independent csb/web/addr/dout buses, explicit-suffix naming (matches
+    # rtl/sram_model_2rw.sv's convention), not SV unpacked-array ports.
+    for sig in ("clk0", "csb0", "web0", "wmask0", "addr0", "din0", "dout0"):
+        assert sig in text
+    for sig in ("clk1", "csb1", "web1", "wmask1", "addr1", "din1", "dout1"):
+        assert sig in text
+    # Unsuffixed single-port names must not leak into the two-port render.
+    assert "logic                    clk,\n" not in text
+    assert "logic                    csb,    // active low chip select\n" not in text
+
+
+def test_render_fault_ram_num_ports_2_fault_struct_has_vp_ap_fields() -> None:
+    text = render_fault_ram(default_registry(), num_ports=2)
+    assert "int vp, ap;" in text
+
+
+def test_render_fault_ram_num_ports_2_threads_port_param() -> None:
+    text = render_fault_ram(default_registry(), num_ports=2)
+    assert "input int port" in text
+    # Aggressor-side coupling match (CFIN/CFID via the registry, CFDS fixed)
+    # gates on the accessing port.
+    assert "FQ[i].ap != port" in text
+    assert text.count("FQ[i].ap != port") >= 2  # write-aggressor loop + read CFDS loop
+
+
+def test_render_fault_ram_rejects_invalid_num_ports() -> None:
+    with pytest.raises(ValueError, match="num_ports must be 1 or 2"):
+        render_fault_ram(default_registry(), num_ports=3)
+
+
+def test_render_and_write_num_ports_2(tmp_path: Path) -> None:
+    from autombist.fault_ram_gen import render_and_write
+
+    out = render_and_write(default_registry(), tmp_path / "fault_ram_2p.sv", num_ports=2)
+    text = out.read_text(encoding="utf-8")
+    assert "clk0" in text and "clk1" in text

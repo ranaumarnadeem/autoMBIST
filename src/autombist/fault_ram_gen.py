@@ -125,7 +125,23 @@ def build_type_table(registry: list[FaultPrimitive]) -> list[tuple[str, int]]:
     return [(name, code) for code, name in enumerate(names)]
 
 
-def render_fault_ram(registry: list[FaultPrimitive]) -> str:
+def render_fault_ram(registry: list[FaultPrimitive], num_ports: int = 1) -> str:
+    """Render fault_ram.sv from a fault-primitive registry.
+
+    num_ports=1 (the default, used by every existing caller) renders a
+    byte-for-byte identical single-port module to the pre-multi-port
+    template: unsuffixed clk/csb/web/wmask/addr/din/dout, no vp/ap fields in
+    the fault struct, no port parameter on write_op()/read_op(). num_ports=2
+    renders a second, explicit-suffix port bus (clk0/csb0/.../clk1/csb1/...,
+    mirroring rtl/sram_model_2rw.sv's naming convention) and threads a `port`
+    parameter through write_op()/read_op() so the aggressor side of the
+    coupling-class primitives (CFIN/CFID/CFST/CFDS) can match against the
+    accessing port via the fault struct's new vp/ap fields. Only num_ports 1
+    and 2 are supported.
+    """
+    if num_ports not in (1, 2):
+        raise ValueError(f"num_ports must be 1 or 2, got {num_ports!r}")
+
     seen: set[str] = set()
     for p in registry:
         if p.name in seen:
@@ -148,13 +164,14 @@ def render_fault_ram(registry: list[FaultPrimitive]) -> str:
         "write_victim_arms": sites["write_victim"],
         "write_aggressor_arms": sites["write_aggressor"],
         "read_victim_arms": sites["read_victim"],
+        "num_ports": num_ports,
     }
     return _render_template(context, "fault_ram_template.sv.j2")
 
 
-def render_and_write(registry: list[FaultPrimitive], path: Path) -> Path:
+def render_and_write(registry: list[FaultPrimitive], path: Path, num_ports: int = 1) -> Path:
     path = Path(path)
-    path.write_text(render_fault_ram(registry), encoding="utf-8")
+    path.write_text(render_fault_ram(registry, num_ports=num_ports), encoding="utf-8")
     return path
 
 
