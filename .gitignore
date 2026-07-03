@@ -35,6 +35,8 @@ results.xml
 *.lxt2
 *.wlf
 *.vvp
+obj_dir/
+campaign_*.csv
 
 # Generated outputs
 out/

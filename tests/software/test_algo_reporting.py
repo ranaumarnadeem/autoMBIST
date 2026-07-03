@@ -82,6 +82,57 @@ def test_write_campaign_report_writes_file(tmp_path: Path) -> None:
     assert path.exists() and "march_c" in path.read_text()
 
 
+def _mp_result(algo_name: str, outcomes: list[tuple[str, int, int, int, int, bool]]) -> CampaignResult:
+    """Like _result, but 2-port memory and records carry explicit vport/aport."""
+    mem = MemoryParams(addr_width=8, data_width=8, num_ports=2)
+    faults = [
+        FaultRecord(t, va, vb, 0, 0, 0, 0, vport, aport)
+        for (t, va, vb, vport, aport, _det) in outcomes
+    ]
+    results = [
+        FaultResult(index=i, record=faults[i], detected=det)
+        for i, (*_rest, det) in enumerate(outcomes)
+    ]
+    detected = sum(1 for f in results if f.detected)
+    total = len(results)
+    return CampaignResult(
+        algo_name=algo_name, mem=mem, golden_clean=True, faults=results,
+        detected=detected, total=total,
+        coverage_percent=100.0 if total == 0 else detected / total * 100.0,
+        build_seconds=1.0, run_seconds=0.5, sim="verilator",
+    )
+
+
+def test_matrix_row_disambiguates_same_site_different_ports_when_multi_port() -> None:
+    r = _mp_result("march_c", [
+        ("CFIN", 5, 1, 0, 0, True),   # same-port coupling
+        ("CFIN", 5, 1, 0, 1, False),  # cross-port coupling, same site -- must not collide
+    ])
+    row = r.matrix_row()
+    assert row == {"CFIN@5.1#0.0": "D", "CFIN@5.1#0.1": "E"}
+
+
+def test_matrix_row_single_port_key_unchanged() -> None:
+    r = _result("march_c", [("SA0", 1, 0, True)])
+    assert r.matrix_row() == {"SA0@1.0": "D"}
+
+
+def test_campaign_csv_gains_port_columns_only_when_multi_port() -> None:
+    r = _mp_result("march_c", [("CFIN", 5, 1, 0, 1, True)])
+    csv = render_campaign_csv(r)
+    lines = csv.strip().splitlines()
+    assert lines[0] == "idx,type,vaddr.vbit,aaddr.abit,p0,p1,result,elem,op,addr,activations,vport,aport"
+    assert lines[1].endswith(",0,1")
+
+
+def test_campaign_json_always_carries_port_fields() -> None:
+    r = _result("march_c", [("SA0", 1, 0, True)])
+    payload = json.loads(render_campaign_json(r))
+    assert payload["mem"]["num_ports"] == 1
+    assert payload["faults"][0]["vport"] == 0
+    assert payload["faults"][0]["aport"] == 0
+
+
 def test_comparison_matrix_across_algos() -> None:
     a = _result("march_c", [("SA0", 1, 0, True), ("WDF0", 5, 0, False)])
     b = _result("march_ss", [("SA0", 1, 0, True), ("WDF0", 5, 0, True)])

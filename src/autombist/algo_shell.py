@@ -163,8 +163,12 @@ class AlgoShell(cmd.Cmd):
         """Render fault_ram.sv from the session's registry into workdir. The
         registry starts as the 19 built-ins (default_registry() + the 4 fixed
         types the template always includes); add_fault_type appends to it, so
-        this always reflects any custom types the researcher has defined."""
-        return render_and_write(self.session.registry, workdir / "fault_ram.sv")
+        this always reflects any custom types the researcher has defined.
+        num_ports follows the configured memory (set_memory --ports) so a
+        2-port session gets a fault_ram.sv shaped for march_engine_mp.sv,
+        matching what _resolve_engine_sources dispatches to."""
+        num_ports = self.session.mem.num_ports if self.session.mem is not None else 1
+        return render_and_write(self.session.registry, workdir / "fault_ram.sv", num_ports=num_ports)
 
     # -- cmd.Cmd overrides ---------------------------------------------------
     def emptyline(self) -> bool:
@@ -185,17 +189,28 @@ class AlgoShell(cmd.Cmd):
 
     # -- commands -------------------------------------------------------
     def do_set_memory(self, arg: str) -> None:
-        """set_memory <addr_width> <data_width> [--wmasks N] [--init 0|1]
-        Configure the memory under test."""
-        pos, flags = _parse_flags(_tokenize(arg), {"wmasks": int, "init": int})
+        """set_memory <addr_width> <data_width> [--wmasks N] [--init 0|1] [--ports 1|2]
+        Configure the memory under test. --ports selects how many physical
+        ports the fault engine models (default 1); 2 enables genuine
+        cross-port coupling faults (see add_fault's vport/aport args) via
+        march_engine_mp.sv (see MemoryParams.num_ports)."""
+        pos, flags = _parse_flags(_tokenize(arg), {"wmasks": int, "init": int, "ports": int})
         if len(pos) < 2:
-            raise ValueError("usage: set_memory <addr_width> <data_width> [--wmasks N] [--init 0|1]")
+            raise ValueError(
+                "usage: set_memory <addr_width> <data_width> [--wmasks N] [--init 0|1] [--ports 1|2]"
+            )
         aw, dw = int(pos[0]), int(pos[1])
+        num_ports = int(flags.get("ports", 1))
+        if num_ports not in (1, 2):
+            raise ValueError(f"--ports must be 1 or 2, got {num_ports}")
         self.session.mem = MemoryParams(
             addr_width=aw, data_width=dw,
             num_wmasks=int(flags.get("wmasks", 1)), init_val=int(flags.get("init", 1)),
+            num_ports=num_ports,
         )
-        self._out(f"memory set: {aw}x{dw}, init={self.session.mem.init_val}")
+        self._out(
+            f"memory set: {aw}x{dw}, init={self.session.mem.init_val}, ports={num_ports}"
+        )
 
     def do_add_algo(self, arg: str) -> None:
         """add_algo <path.alg> [--name NAME]
@@ -268,15 +283,21 @@ class AlgoShell(cmd.Cmd):
         self._out(f"fault type '{prim.name}' registered ({prim.category}); takes effect on the next run")
 
     def do_add_fault(self, arg: str) -> None:
-        """add_fault TYPE VADDR VBIT [AADDR ABIT P0 P1]
-        Append one fault instance to the current fault list."""
+        """add_fault TYPE VADDR VBIT [AADDR ABIT P0 P1 [VPORT APORT]]
+        Append one fault instance to the current fault list. VPORT/APORT
+        (default 0) select which physical port the victim/aggressor access is
+        on -- meaningful only for the coupling-class primitives (CFIN/CFID/
+        CFST/CFDS) in a 2-port memory (see set_memory --ports); a VPORT !=
+        APORT defines a genuine cross-port coupling fault."""
         tokens = _tokenize(arg)
-        if len(tokens) not in (3, 7):
-            raise ValueError("usage: add_fault TYPE VADDR VBIT [AADDR ABIT P0 P1]")
+        if len(tokens) not in (3, 7, 9):
+            raise ValueError("usage: add_fault TYPE VADDR VBIT [AADDR ABIT P0 P1 [VPORT APORT]]")
         fault_type, va, vb = tokens[0], int(tokens[1]), int(tokens[2])
-        aa, ab, p0, p1 = (int(x) for x in tokens[3:7]) if len(tokens) == 7 else (0, 0, 0, 0)
-        self.session.faults.append(FaultRecord(fault_type, va, vb, aa, ab, p0, p1))
-        self._out(f"fault added: {fault_type} v={va}.{vb} (total {len(self.session.faults)})")
+        aa, ab, p0, p1 = (int(x) for x in tokens[3:7]) if len(tokens) >= 7 else (0, 0, 0, 0)
+        vport, aport = (int(x) for x in tokens[7:9]) if len(tokens) == 9 else (0, 0)
+        self.session.faults.append(FaultRecord(fault_type, va, vb, aa, ab, p0, p1, vport, aport))
+        suffix = f" ports={vport}/{aport}" if (vport, aport) != (0, 0) else ""
+        self._out(f"fault added: {fault_type} v={va}.{vb}{suffix} (total {len(self.session.faults)})")
 
     def do_load_faults(self, arg: str) -> None:
         """load_faults <path> [--append]
@@ -432,7 +453,13 @@ class AlgoShell(cmd.Cmd):
         """status
         Print a one-screen summary of the current session."""
         mem = self.session.mem
-        self._out(f"memory: {f'{mem.addr_width}x{mem.data_width} init={mem.init_val}' if mem else '(not set)'}")
+        if mem is None:
+            mem_line = "(not set)"
+        else:
+            mem_line = f"{mem.addr_width}x{mem.data_width} init={mem.init_val}"
+            if mem.num_ports > 1:
+                mem_line += f" ports={mem.num_ports}"
+        self._out(f"memory: {mem_line}")
         self._out(f"sim: {self.session.sim}")
         self._out(f"algos: {len(self.session.algos)} ({', '.join(sorted(self.session.algos))})")
         self._out(f"fsms: {len(self.session.fsms)} ({', '.join(sorted(self.session.fsms))})")
