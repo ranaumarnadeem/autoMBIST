@@ -539,6 +539,42 @@ def run_algo_campaign(
             own_tmp.cleanup()
 
 
+def _resolve_fsm_engine_sources(
+    mem: MemoryParams, engine_dir: Path, workdir: Path, fault_ram_sv: Path | None,
+) -> tuple[Path, Path]:
+    """Dispatch on mem.num_ports for the FSM front (mirrors
+    _resolve_engine_sources's dispatch pattern for the algo front).
+
+    num_ports==1 (every existing caller's default): the EXISTING, UNTOUCHED
+    openram_shim.sv, paired with the hand-written single-port fault_ram.sv
+    (or a caller-supplied override) -- byte-identical dispatch to before this
+    phase, zero risk to any single-port FSM campaign.
+
+    num_ports==2: openram_shim_mp.sv (new; never touches openram_shim.sv),
+    paired with a fault_ram.sv rendered with num_ports=2. A caller-supplied
+    fault_ram_sv is trusted as already being num_ports=2 shaped; otherwise the
+    default registry is rendered fresh into workdir. Returns
+    (fault_ram_sv, shim_sv).
+    """
+    if mem.num_ports == 1:
+        resolved_fault_ram = fault_ram_sv or (engine_dir / "fault_ram.sv")
+        shim_sv = engine_dir / "openram_shim.sv"
+        return resolved_fault_ram, shim_sv
+    if mem.num_ports == 2:
+        if fault_ram_sv is not None:
+            resolved_fault_ram = fault_ram_sv
+        else:
+            from .fault_primitives import default_registry
+            from .fault_ram_gen import render_and_write
+
+            resolved_fault_ram = render_and_write(
+                default_registry(), workdir / "fault_ram.sv", num_ports=2
+            )
+        shim_sv = engine_dir / "openram_shim_mp.sv"
+        return resolved_fault_ram, shim_sv
+    raise CampaignError(f"unsupported mem.num_ports={mem.num_ports!r}: only 1 or 2 are supported")
+
+
 def run_fsm_campaign(
     mem: MemoryParams,
     fsm_sources: list[Path],
@@ -552,8 +588,14 @@ def run_fsm_campaign(
     """Compile FSM + openram_shim + fault_ram (via a generated harness) once,
     golden-gate, then one run per fault. Detection is bist_fail only -- no
     elem/op attribution, since a black-box controller has no step counter.
+
+    Dispatches on mem.num_ports (see _resolve_fsm_engine_sources): num_ports==1
+    (default) uses the existing openram_shim.sv + single-port harness template
+    unmodified; num_ports==2 uses the new openram_shim_mp.sv (wrapping ONE
+    fault_ram core rendered with num_ports=2) + the new 2-port harness
+    template, and validates the FSM against REQUIRED_PORTS_MP.
     """
-    from .fsm_harness import HARNESS_TOP, parse_ports, render_harness
+    from .fsm_harness import HARNESS_TOP, check_ports, parse_ports, render_harness, render_harness_mp
 
     own_tmp: tempfile.TemporaryDirectory[str] | None = None
     if workdir is None:
@@ -565,8 +607,7 @@ def run_fsm_campaign(
 
     try:
         engine_dir = find_engine_dir()
-        fault_ram_sv = fault_ram_sv or (engine_dir / "fault_ram.sv")
-        shim_sv = engine_dir / "openram_shim.sv"
+        resolved_fault_ram, shim_sv = _resolve_fsm_engine_sources(mem, engine_dir, workdir, fault_ram_sv)
 
         # bist_busy is optional in the FSM port contract; only wire it up if
         # this FSM actually declares it, or Verilator errors on a named
@@ -575,17 +616,22 @@ def run_fsm_campaign(
         has_bist_busy = parse_ports(top_text, module_name=fsm_module_name).ports.get("bist_busy") == "output"
 
         harness_path = workdir / f"{HARNESS_TOP}.sv"
-        harness_path.write_text(
-            render_harness(
+        if mem.num_ports == 2:
+            check_ports(top_text, module_name=fsm_module_name, num_ports=2)
+            harness_text = render_harness_mp(
                 addr_width=mem.addr_width, data_width=mem.data_width,
                 fsm_module_name=fsm_module_name, has_bist_busy=has_bist_busy,
-            ),
-            encoding="utf-8",
-        )
+            )
+        else:
+            harness_text = render_harness(
+                addr_width=mem.addr_width, data_width=mem.data_width,
+                fsm_module_name=fsm_module_name, has_bist_busy=has_bist_busy,
+            )
+        harness_path.write_text(harness_text, encoding="utf-8")
 
         artifact = compile_engine(
             mem,
-            sources=[fault_ram_sv, shim_sv, *fsm_sources, harness_path],
+            sources=[resolved_fault_ram, shim_sv, *fsm_sources, harness_path],
             top_module=HARNESS_TOP,
             workdir=workdir,
             sim=sim,
