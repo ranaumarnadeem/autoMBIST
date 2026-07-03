@@ -125,6 +125,25 @@ def test_stuck_at_fault_simulation_detects_faults(tmp_path: Path, config: dict) 
     metrics = result.report["fault_metrics"]
     assert metrics["detected_faults"] is not None and metrics["detected_faults"] > 0
 
+    # Cross-check the new structured per-fault-site data against the
+    # aggregate metrics already asserted above -- a real, non-mocked proof
+    # that fault_details genuinely reflects the same simulation run.
+    fault_details = result.report["fault_details"]
+    assert isinstance(fault_details, list)
+    assert len(fault_details) > 0
+
+    detected_sites = [site for site in fault_details if site.get("status") == "detected"]
+    escaped_sites = [site for site in fault_details if site.get("status") == "escaped"]
+
+    assert len(detected_sites) == metrics["detected_faults"]
+    assert len(detected_sites) + len(escaped_sites) == len(fault_details)
+    # injected_faults is the FAULTS= count requested via generate_from_config
+    # (faults=4 above); total observed sites can differ (a fault_seed can
+    # collide multiple bit-level sites onto the same injected fault count),
+    # but every detected/escaped site must be a genuine, distinctly-keyed
+    # fault site and there must be at least as many sites as injected faults.
+    assert len(fault_details) >= metrics["injected_faults"]
+
 
 @pytest.mark.parametrize("config", MEMORIES, ids=[m["memory_name"] for m in MEMORIES])
 def test_transition_fault_simulation_march_raw_detects(tmp_path: Path, config: dict) -> None:

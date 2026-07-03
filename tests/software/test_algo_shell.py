@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
-from autombist.algo_engine import MemoryParams
+from autombist.algo_engine import CampaignResult, FaultRecord, FaultResult, MemoryParams
 from autombist.algo_shell import AlgoShell, Session
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -177,6 +177,55 @@ def test_write_report_without_run_errors() -> None:
     shell = _shell()
     shell.onecmd("write_report /tmp/x.md")
     assert "nothing to report yet" in _output(shell)
+
+
+def _fake_campaign_result(algo_name: str) -> CampaignResult:
+    mem = MemoryParams(addr_width=8, data_width=8)
+    faults = [
+        FaultResult(
+            index=0, record=FaultRecord(type="SA0", vaddr=1, vbit=0, aaddr=0, abit=0, p0=0, p1=0),
+            detected=True, elem=0, op=0, addr=1, xor="00000001",
+        ),
+    ]
+    return CampaignResult(
+        algo_name=algo_name, mem=mem, golden_clean=True, faults=faults,
+        detected=1, total=1, coverage_percent=100.0,
+        build_seconds=1.0, run_seconds=0.5, sim="verilator",
+    )
+
+
+def test_write_diagnosis_without_run_errors() -> None:
+    shell = _shell()
+    shell.onecmd("write_diagnosis /tmp/x.md")
+    assert "nothing to diagnose yet" in _output(shell)
+
+
+def test_write_diagnosis_after_run_produces_file(tmp_path: Path) -> None:
+    shell = _shell()
+    result = _fake_campaign_result("march_c")
+    shell.session.last_results["march_c"] = result
+    shell.session.last_op = ("run", "march_c")
+    out_path = tmp_path / "diag.md"
+    shell.onecmd(f"write_diagnosis {out_path} --fmt md")
+    assert out_path.exists()
+    assert "march_c" in out_path.read_text()
+    assert "diagnosis written" in _output(shell)
+
+
+def test_write_diagnosis_after_compare_algo_raises_clear_error(tmp_path: Path) -> None:
+    shell = _shell()
+    a = _fake_campaign_result("march_c")
+    b = _fake_campaign_result("march_ss")
+    shell.session.last_results["march_c"] = a
+    shell.session.last_results["march_ss"] = b
+    shell.session.last_matrix = [a, b]
+    shell.session.last_op = ("matrix", None)
+    out_path = tmp_path / "diag.md"
+    shell.onecmd(f"write_diagnosis {out_path}")
+    assert not out_path.exists()
+    out = _output(shell)
+    assert "error:" in out
+    assert "diagnosis only applies to a single 'run' result" in out
 
 
 def test_list_and_status_do_not_crash() -> None:
