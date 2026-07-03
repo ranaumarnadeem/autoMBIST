@@ -119,18 +119,18 @@ module {{ wrapper_module_name }} #(
     {% set suffix = algo_port_suffixes[pname] %}
     logic                  mbist_sram_clk{{ suffix }};
     logic                  mbist_sram_csb{{ suffix }};
-    {% if pdata.type == "w" %}
+    {% if pdata.type in ("w", "rw") %}
     logic                  mbist_sram_web{{ suffix }};
     {% endif %}
     logic [ADDR_WIDTH-1:0] mbist_sram_addr{{ suffix }};
-    {% if pdata.type == "w" %}
+    {% if pdata.type in ("w", "rw") %}
     logic [DATA_WIDTH-1:0] mbist_sram_din{{ suffix }};
     {% endif %}
-    {% if pdata.type == "r" %}
+    {% if pdata.type in ("r", "rw") %}
     logic [DATA_WIDTH-1:0] sram_dout{{ suffix }};
     {% endif %}
     logic [ADDR_WIDTH-1:0] sram_addr{{ suffix }};
-    {% if pdata.type == "w" %}
+    {% if pdata.type in ("w", "rw") %}
     logic [DATA_WIDTH-1:0] sram_din{{ suffix }};
     logic                  sram_we{{ suffix }};
     logic                  selected_write_req{{ suffix }};
@@ -140,7 +140,8 @@ module {{ wrapper_module_name }} #(
     {% endfor %}
 
     {% for pname, pdata in normalized_ports.items() %}
-    {% if pdata.type == "r" %}
+    {% set suffix = algo_port_suffixes[pname] %}
+    {% if pdata.type == "r" or (pdata.type == "rw" and suffix == "0") %}
     logic [DATA_WIDTH-1:0] sram_dbg_actual_word;
     logic [DATA_WIDTH-1:0] sram_dbg_fault_word;
     logic [DATA_WIDTH-1:0] sram_dbg_intended_word;
@@ -175,6 +176,13 @@ module {{ wrapper_module_name }} #(
         .sram_web{{ suffix }}(mbist_sram_web{{ suffix }}),
         .sram_addr{{ suffix }}(mbist_sram_addr{{ suffix }}),
         .sram_din{{ suffix }}(mbist_sram_din{{ suffix }}){{ "," if not loop.last }}
+        {% elif pdata.type == "rw" %}
+        .sram_clk{{ suffix }}(mbist_sram_clk{{ suffix }}),
+        .sram_csb{{ suffix }}(mbist_sram_csb{{ suffix }}),
+        .sram_web{{ suffix }}(mbist_sram_web{{ suffix }}),
+        .sram_addr{{ suffix }}(mbist_sram_addr{{ suffix }}),
+        .sram_din{{ suffix }}(mbist_sram_din{{ suffix }}),
+        .sram_dout{{ suffix }}(sram_dout{{ suffix }}){{ "," if not loop.last }}
         {% endif %}
         {% endfor %}
     );
@@ -194,6 +202,27 @@ module {{ wrapper_module_name }} #(
     assign sram_addr{{ suffix }} = test_mode ? mbist_sram_addr{{ suffix }} : func_addr;
     assign sram_din{{ suffix }}  = test_mode ? mbist_sram_din{{ suffix }} : func_din;
     assign sram_csb{{ suffix }}  = test_mode ? mbist_sram_csb{{ suffix }} : func_csb;
+    {% elif pdata.type == "rw" %}
+    assign mbist_write_req{{ suffix }}    = ~mbist_sram_web{{ suffix }};
+    assign selected_write_req{{ suffix }} = test_mode ? mbist_write_req{{ suffix }} : func_we;
+
+    {% if we_active_low %}
+    assign sram_we{{ suffix }} = ~selected_write_req{{ suffix }};
+    {% else %}
+    assign sram_we{{ suffix }} = selected_write_req{{ suffix }};
+    {% endif %}
+
+    assign sram_addr{{ suffix }} = test_mode ? mbist_sram_addr{{ suffix }} : func_addr;
+    assign sram_din{{ suffix }}  = test_mode ? mbist_sram_din{{ suffix }} : func_din;
+    assign sram_csb{{ suffix }}  = test_mode ? mbist_sram_csb{{ suffix }} : func_csb;
+    {% if suffix == "0" %}
+    // march-2rw's functional boundary is inherently single-port: only the
+    // port assigned suffix "0" drives func_dout in functional (test_mode=0)
+    // mode. The second port exists for the MBIST algorithm's internal
+    // concurrency (e.g. concurrent read+write to different/same addresses),
+    // not for external dual-port functional access.
+    assign func_dout = sram_dout{{ suffix }};
+    {% endif %}
     {% else %}
     assign sram_addr{{ suffix }} = test_mode ? mbist_sram_addr{{ suffix }} : func_addr;
     assign sram_csb{{ suffix }}  = test_mode ? mbist_sram_csb{{ suffix }} : func_csb;
@@ -219,6 +248,13 @@ module {{ wrapper_module_name }} #(
         .{{ pdata.we }}(sram_we{{ suffix }}),
         .{{ pdata.addr }}(sram_addr{{ suffix }}),
         .{{ pdata.din }}(sram_din{{ suffix }}),
+        {% elif pdata.type == "rw" %}
+        .{{ pdata.clk }}(mbist_sram_clk{{ suffix }}),
+        .{{ pdata.csb }}(sram_csb{{ suffix }}),
+        .{{ pdata.we }}(sram_we{{ suffix }}),
+        .{{ pdata.addr }}(sram_addr{{ suffix }}),
+        .{{ pdata.din }}(sram_din{{ suffix }}),
+        .{{ pdata.dout }}(sram_dout{{ suffix }}),
         {% endif %}
     {% endfor %}
         .dbg_actual_word(sram_dbg_actual_word),
@@ -247,6 +283,13 @@ module {{ wrapper_module_name }} #(
         .{{ pdata.we }}(sram_we{{ suffix }}),
         .{{ pdata.addr }}(sram_addr{{ suffix }}),
         .{{ pdata.din }}(sram_din{{ suffix }}){{ "," if not loop.last }}
+        {% elif pdata.type == "rw" %}
+        .{{ pdata.clk }}(mbist_sram_clk{{ suffix }}),
+        .{{ pdata.csb }}(sram_csb{{ suffix }}),
+        .{{ pdata.we }}(sram_we{{ suffix }}),
+        .{{ pdata.addr }}(sram_addr{{ suffix }}),
+        .{{ pdata.din }}(sram_din{{ suffix }}),
+        .{{ pdata.dout }}(sram_dout{{ suffix }}){{ "," if not loop.last }}
         {% endif %}
     {% endfor %}
     );

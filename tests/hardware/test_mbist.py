@@ -320,6 +320,7 @@ async def _run_mbist_once(
         "march-c": "u_march_c_fsm",
         "march-raw": "u_march_raw_fsm",
         "march-1r1w": "u_march_1r1w_fsm",
+        "march-2rw": "u_march_2rw_fsm",
     }.get(algo_name, "u_march_raw_fsm")
     read_latency = int(os.getenv("READ_LATENCY", "1"))
     data_width = int(os.getenv("DATA_WIDTH", "32"))
@@ -475,6 +476,22 @@ async def _run_mbist_once(
                     addr = 0
                     mem_en = 0
                     mem_we = 0
+            elif algo_name == "march-2rw":
+                # march_2rw_fsm drives two FULLY symmetric read/write ports
+                # (mem_en0/mem_we0/mem_addr0 and mem_en1/mem_we1/mem_addr1),
+                # unlike march-1r1w's asymmetric read-only/write-only split.
+                # The saboteur's debug taps (dbg_actual_word etc., used by
+                # this attribution loop for stuck-at/transition detection)
+                # are scoped to PORT 0 ONLY (see saboteur_template.j2's
+                # march-2rw branch), so only port 0's accesses are
+                # attributable here -- port 1's concurrent activity is real
+                # (and covered by bist_fail itself) but not separately
+                # observable through these debug taps. This is the same
+                # single-port-visibility limitation already documented for
+                # march-2rw's functional func_dout boundary.
+                addr = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_addr0")
+                mem_en = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_en0")
+                mem_we = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_we0")
             else:
                 addr = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_addr")
                 mem_en = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_en")

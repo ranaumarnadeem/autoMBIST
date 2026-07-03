@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.resources
 import re
 import shutil
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -58,18 +59,24 @@ def _normalize_algo(algo: str) -> tuple[str, str]:
         "march-c": ("march_c", "march_c_top"),
         "march-raw": ("march_raw", "march_raw_top"),
         "march-1r1w": ("march_1r1w", "march_1r1w_top"),
+        "march-2rw": ("march_2rw", "march_2rw_top"),
     }
     if algo_value not in algo_map:
-        raise ValueError("algo must be one of: march-c, march-raw, march-1r1w")
+        raise ValueError("algo must be one of: march-c, march-raw, march-1r1w, march-2rw")
     return algo_map[algo_value]
 
 
-# Algorithms that require the (currently only) supported 2-port shape: exactly
-# one read-only ("r") port and one write-only ("w") port. Every other algo
+# Algorithms that require a specific multi-port shape. Every other algo
 # (march-c, march-raw) is still restricted to exactly 1 port.
-_MULTI_PORT_ALGOS = {"march-1r1w"}
-_MULTI_PORT_ROLE_REQUIREMENTS = {
-    "march-1r1w": frozenset({"r", "w"}),
+_MULTI_PORT_ALGOS = {"march-1r1w", "march-2rw"}
+
+# Per-algo required port-type COUNTS (type -> how many ports of that type),
+# not merely a set of allowed types -- this is what lets march-2rw require
+# two ports of the SAME type ("rw") while march-1r1w still requires exactly
+# one of each of two DIFFERENT types ("r" and "w").
+_MULTI_PORT_ROLE_REQUIREMENTS: dict[str, dict[str, int]] = {
+    "march-1r1w": {"r": 1, "w": 1},
+    "march-2rw": {"rw": 2},
 }
 
 
@@ -79,8 +86,11 @@ def _validate_port_topology(normalized_ports: dict[str, dict[str, Any]], algo: s
 
     march-c / march-raw (and any future single-port algo) require exactly one
     port (any type). march-1r1w requires exactly two ports whose types are
-    exactly {"r", "w"} -- one read-only and one write-only port, not two of
-    the same type.
+    exactly one "r" and one "w". march-2rw requires exactly two ports whose
+    type is "rw" (both fully read/write) -- unlike march-1r1w, its two ports
+    are the SAME type, so this comparison is done on a per-type count
+    (Counter), not the plain "types form the right set" check used before
+    march-2rw existed.
     """
     algo_value = algo.strip().lower()
 
@@ -88,22 +98,41 @@ def _validate_port_topology(normalized_ports: dict[str, dict[str, Any]], algo: s
         if len(normalized_ports) != 1:
             raise ConfigError(
                 f"algo {algo_value!r} requires exactly 1 port; got {len(normalized_ports)}. "
-                "multi-port configs are only supported by algo=march-1r1w"
+                "multi-port configs are only supported by algo=march-1r1w, march-2rw"
             )
         return
 
-    required_roles = _MULTI_PORT_ROLE_REQUIREMENTS[algo_value]
-    if len(normalized_ports) != len(required_roles):
+    required_counts = _MULTI_PORT_ROLE_REQUIREMENTS[algo_value]
+    required_total = sum(required_counts.values())
+    required_roles_sorted = sorted(required_counts)
+    all_counts_are_one = required_total == len(required_counts)
+
+    if len(normalized_ports) != required_total:
+        if all_counts_are_one:
+            # march-1r1w-style requirement (one of each of N distinct types):
+            # byte-identical to the original pre-march-2rw wording.
+            raise ConfigError(
+                f"algo {algo_value!r} requires exactly {required_total} ports "
+                f"(one of each of {required_roles_sorted}); got {len(normalized_ports)}"
+            )
         raise ConfigError(
-            f"algo {algo_value!r} requires exactly {len(required_roles)} ports "
-            f"(one of each of {sorted(required_roles)}); got {len(normalized_ports)}"
+            f"algo {algo_value!r} requires exactly {required_total} ports "
+            f"({dict(sorted(required_counts.items()))}); got {len(normalized_ports)}"
         )
 
-    port_types = sorted(pdata["type"] for pdata in normalized_ports.values())
-    if frozenset(port_types) != required_roles or len(port_types) != len(set(port_types)):
+    actual_counts = Counter(pdata["type"] for pdata in normalized_ports.values())
+    if actual_counts != Counter(required_counts):
+        port_types = sorted(pdata["type"] for pdata in normalized_ports.values())
+        if all_counts_are_one:
+            # Preserve march-1r1w's original wording byte-for-byte (existing
+            # tests assert this exact substring).
+            raise ConfigError(
+                f"algo {algo_value!r} requires exactly one port of each type in "
+                f"{required_roles_sorted}; got port types {port_types}"
+            )
         raise ConfigError(
-            f"algo {algo_value!r} requires exactly one port of each type in "
-            f"{sorted(required_roles)}; got port types {port_types}"
+            f"algo {algo_value!r} requires port types {dict(sorted(required_counts.items()))}; "
+            f"got port types {port_types}"
         )
 
 
@@ -203,11 +232,25 @@ def _algo_port_suffixes(normalized_ports: dict[str, dict[str, Any]], algo: str) 
     write-only ("w") port -- matching march_1r1w_top exactly. This mapping is
     keyed on port *type*, not on ports-map iteration order, so it is immune to
     however the user happened to order/name their ports: mapping.
+
+    march-2rw is different and IMPORTANT to get right: both of its ports are
+    the SAME type ("rw"), so there is no type-based way to tell them apart.
+    Instead, march-2rw suffixes are assigned by ITERATION ORDER of
+    normalized_ports: the first port encountered (dict insertion order) gets
+    suffix "0" (-> sram_*0, matching march_2rw_top's port-0 pins) and the
+    second gets suffix "1" (-> sram_*1). This means, UNLIKE march-1r1w,
+    reordering the two entries in the config's ``ports:`` map changes which
+    named port maps to sram_*0 vs sram_*1 -- swap the two entries and the
+    suffixes swap too. Callers relying on a stable port-0/port-1 assignment
+    must control their YAML's key order.
     """
     algo_value = algo.strip().lower()
     if algo_value not in _MULTI_PORT_ALGOS:
         (only_name,) = normalized_ports.keys()
         return {only_name: "0"}
+
+    if algo_value == "march-2rw":
+        return {name: str(index) for index, name in enumerate(normalized_ports.keys())}
 
     type_to_suffix = {"r": "0", "w": "1"}
     return {name: type_to_suffix[pdata["type"]] for name, pdata in normalized_ports.items()}
