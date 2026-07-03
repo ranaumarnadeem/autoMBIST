@@ -413,6 +413,41 @@ def _common_plusargs(mem: MemoryParams) -> list[str]:
     return [f"+INIT={mem.init_val}"]
 
 
+def _resolve_engine_sources(mem: MemoryParams, engine_dir: Path, workdir: Path,
+                             fault_ram_sv: Path | None) -> tuple[list[Path], str]:
+    """Dispatch on mem.num_ports for the algo front.
+
+    num_ports==1 (every existing caller's default): the EXISTING, UNTOUCHED
+    march_engine.sv, paired with the hand-written single-port fault_ram.sv
+    (or a caller-supplied override, e.g. a DSL-rendered registry render --
+    always num_ports=1 shaped) -- byte-identical dispatch to before this
+    phase, zero risk to any single-port campaign.
+
+    num_ports==2: march_engine_mp.sv (new; never touches march_engine.sv),
+    paired with a fault_ram.sv rendered with num_ports=2. A caller-supplied
+    fault_ram_sv is trusted as already being num_ports=2 shaped (e.g. a
+    researcher's custom fault-type registry rendered accordingly); otherwise
+    the default registry is rendered fresh into workdir.
+    """
+    if mem.num_ports == 1:
+        resolved_fault_ram = fault_ram_sv or (engine_dir / "fault_ram.sv")
+        march_sv = engine_dir / "march_engine.sv"
+        return [resolved_fault_ram, march_sv], "march_engine"
+    if mem.num_ports == 2:
+        if fault_ram_sv is not None:
+            resolved_fault_ram = fault_ram_sv
+        else:
+            from .fault_primitives import default_registry
+            from .fault_ram_gen import render_and_write
+
+            resolved_fault_ram = render_and_write(
+                default_registry(), workdir / "fault_ram.sv", num_ports=2
+            )
+        march_mp_sv = engine_dir / "march_engine_mp.sv"
+        return [resolved_fault_ram, march_mp_sv], "march_engine_mp"
+    raise CampaignError(f"unsupported mem.num_ports={mem.num_ports!r}: only 1 or 2 are supported")
+
+
 def run_algo_campaign(
     mem: MemoryParams,
     alg: AlgSpec,
@@ -423,7 +458,12 @@ def run_algo_campaign(
     verbose: bool = False,
     fault_ram_sv: Path | None = None,
 ) -> CampaignResult:
-    """Compile march_engine once, run a golden pass, then one run per fault."""
+    """Compile march_engine once, run a golden pass, then one run per fault.
+
+    Dispatches on mem.num_ports (see _resolve_engine_sources): num_ports==1
+    (default) uses the existing march_engine.sv unmodified; num_ports==2
+    uses the new march_engine_mp.sv against a num_ports=2 fault_ram.sv.
+    """
     own_tmp: tempfile.TemporaryDirectory[str] | None = None
     if workdir is None:
         own_tmp = tempfile.TemporaryDirectory(prefix="autombist-algo-")
@@ -434,11 +474,10 @@ def run_algo_campaign(
 
     try:
         engine_dir = find_engine_dir()
-        fault_ram_sv = fault_ram_sv or (engine_dir / "fault_ram.sv")
-        march_sv = engine_dir / "march_engine.sv"
+        sources, top_module = _resolve_engine_sources(mem, engine_dir, workdir, fault_ram_sv)
 
         artifact = compile_engine(
-            mem, sources=[fault_ram_sv, march_sv], top_module="march_engine",
+            mem, sources=sources, top_module=top_module,
             workdir=workdir, sim=sim,
         )
 

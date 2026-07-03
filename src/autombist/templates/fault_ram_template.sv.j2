@@ -122,9 +122,21 @@ module fault_ram #(
       idx = 0;
       while ($fgets(line, fd) != 0) begin
 {% if num_ports == 2 %}
+        // Try the extended 9-field format (with trailing VPORT/APORT) first;
+        // fall back to the plain 7-field format when the line doesn't carry
+        // them. Verilator's $sscanf returns -1 (not a partial match count)
+        // when the format string requests more items than the line has, so
+        // a single 9-item scan cannot parse a plain 7-field line -- every
+        // pre-multi-port fault file (and every FaultRecord serialized with
+        // vport==aport==0, the default) uses that plain 7-field shape.
         f.vp = 0; f.ap = 0;   // defaults when the trailing port fields are absent
         n = $sscanf(line, "%s %d %d %d %d %d %d %d %d",
                     ts, f.va, f.vb, f.aa, f.ab, f.p0, f.p1, f.vp, f.ap);
+        if (n < 7) begin
+          f.vp = 0; f.ap = 0;
+          n = $sscanf(line, "%s %d %d %d %d %d %d",
+                      ts, f.va, f.vb, f.aa, f.ab, f.p0, f.p1);
+        end
 {% else %}
         n = $sscanf(line, "%s %d %d %d %d %d %d",
                     ts, f.va, f.vb, f.aa, f.ab, f.p0, f.p1);
