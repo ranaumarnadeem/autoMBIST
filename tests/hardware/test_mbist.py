@@ -81,6 +81,8 @@ def _fault_mask_paths(memory_name: str, fault_type: str) -> tuple[Path, Path | N
         return fault_dir / "tf_up_faults.hex", None
     if fault_type == "transition-down":
         return fault_dir / "tf_down_faults.hex", None
+    if fault_type == "port-coupling":
+        return fault_dir / "pc_mask.hex", None
     raise ValueError(f"Unsupported FAULT_TYPE: {fault_type}")
 
 
@@ -108,6 +110,11 @@ def _selected_fault_sites(*, fault_type: str, memory_name: str, addr_width: int,
                 )
         return sites
 
+    if fault_type == "port-coupling":
+        kind = "PC"
+    else:
+        kind = "TF-UP" if fault_type == "transition-up" else "TF-DOWN"
+
     tf_words = _read_words(file1)
     for addr, tf_word in enumerate(tf_words):
         for bit in range(data_width):
@@ -117,7 +124,7 @@ def _selected_fault_sites(*, fault_type: str, memory_name: str, addr_width: int,
                         "addr": addr,
                         "bit": bit,
                         "fault_value": -1,
-                        "kind": "TF-UP" if fault_type == "transition-up" else "TF-DOWN",
+                        "kind": kind,
                     }
                 )
     return sites
@@ -131,7 +138,7 @@ def _detect_fault_rows(*, observations: list[dict[str, int]], selected_sites: li
 
     for observation in observations:
         addr = observation["addr"]
-        if fault_type == "stuck-at":
+        if fault_type in {"stuck-at", "port-coupling"}:
             actual_word = observation["actual_word"]
             fault_word = observation["fault_word"]
             read_word = observation["read_word"]
@@ -271,6 +278,7 @@ def _prepare_fault_files() -> None:
         "stuck-at": FaultType.STUCK_AT,
         "transition-up": FaultType.TRANSITION_UP,
         "transition-down": FaultType.TRANSITION_DOWN,
+        "port-coupling": FaultType.PORT_COUPLING,
     }
     if fault_type_raw not in fault_type_map:
         raise ValueError(f"Unsupported FAULT_TYPE: {fault_type_raw}")
@@ -406,7 +414,7 @@ async def _run_mbist_once(
                 )
             pending_read_checks = next_checks
 
-        if fault_type == "stuck-at" and pending_sa_checks and use_saboteur:
+        if fault_type in {"stuck-at", "port-coupling"} and pending_sa_checks and use_saboteur:
             next_sa_checks: list[dict[str, int]] = []
             for check in pending_sa_checks:
                 check["cycles_left"] -= 1
@@ -433,6 +441,7 @@ async def _run_mbist_once(
             pending_sa_checks = next_sa_checks
 
         if int(dut.rst_n.value) == 1 and int(dut.test_mode.value) == 1:
+            is_concurrent_rw = False
             if algo_name == "march-1r1w":
                 # march_1r1w_fsm has no single mem_addr/mem_en/mem_we -- it
                 # drives two independent port buses (mem_addr0/mem_en0 for the
@@ -443,7 +452,18 @@ async def _run_mbist_once(
                 # and a read-port enable always means a read.
                 en0 = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_en0")
                 en1 = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_en1")
-                if en1 == 1:
+                if en0 == 1 and en1 == 1:
+                    # Genuine same-cycle read(port0) + write(port1) issue --
+                    # exactly the coincidence port-coupling needs. Both ports
+                    # share the single addr_q register (see march_1r1w_fsm.sv),
+                    # so mem_addr0 == mem_addr1 here by construction, but read
+                    # via mem_addr1 (the write side) to mirror the RTL's own
+                    # same-address equality check.
+                    addr = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_addr1")
+                    mem_en = 1
+                    mem_we = 1
+                    is_concurrent_rw = True
+                elif en1 == 1:
                     addr = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_addr1")
                     mem_en = 1
                     mem_we = 1
@@ -465,6 +485,17 @@ async def _run_mbist_once(
                     # Defer sampling until the faulted read data for this address is
                     # valid (the same point the MBIST FSM checks it). Sampling at the
                     # issue cycle reads stale/X data and misses every fault.
+                    pending_sa_checks.append(
+                        {"addr": addr, "cycles_left": max(read_latency + 1, 1)}
+                    )
+            elif fault_type == "port-coupling":
+                if use_saboteur and is_concurrent_rw:
+                    # port-coupling is only sensitized by a genuinely
+                    # concurrent same-address read+write issue cycle. The
+                    # saboteur's real_dout comes from the same registered-read
+                    # memory macro instance as stuck-at, so the faulted read
+                    # data for this address becomes valid on the same timing
+                    # stuck-at already waits for.
                     pending_sa_checks.append(
                         {"addr": addr, "cycles_left": max(read_latency + 1, 1)}
                     )
@@ -576,3 +607,35 @@ async def test_transition_faults(dut):
         assert int(dut.bist_fail.value) == 1, "MBIST did not detect transition faults in March RAW"
     elif total_sites > 0 and pulse_width_cycles > 1:
         assert detected_count < total_sites, "March C unexpectedly detected 100% transition-delay faults"
+
+
+@cocotb.test()
+async def test_port_coupling_faults(dut):
+    """A genuinely concurrent 1R1W march (march-1r1w) must detect an
+    inter-port bridging defect that only manifests on a same-address,
+    same-cycle read+write coincidence -- the whole reason multi-port MBIST
+    exists as a discipline over "test each port separately" algorithms."""
+    if os.getenv("FAULT_MODE", "clean").strip().lower() != "faults":
+        return
+    if os.getenv("FAULT_TYPE", "stuck-at").strip().lower() != "port-coupling":
+        return
+
+    observations: list[dict[str, int]] = []
+    await _run_mbist_once(dut, "port-coupling", observations)
+    _detected_count, total_sites, _coverage = _report_fault_summary(
+        observations=observations,
+        fault_type="port-coupling",
+        memory_name=os.getenv("MEMORY_NAME", "sram_1rw").strip() or "sram_1rw",
+        addr_width=int(os.getenv("ADDR_WIDTH", "10")),
+        data_width=int(os.getenv("DATA_WIDTH", "32")),
+        fault_count=int(os.getenv("FAULTS", "0")),
+    )
+    # Golden gate: an all-zero pc_mask (FAULTS=0, e.g. use_saboteur=True with
+    # no faults injected) must be a genuine no-op -- the coupling XOR
+    # mechanism itself must not introduce a false positive. Only require
+    # bist_fail==1 when there is actually at least one injected fault site to
+    # detect (mirrors test_transition_faults' total_sites > 0 gating below).
+    if total_sites > 0:
+        assert int(dut.bist_fail.value) == 1, "MBIST did not detect injected port-coupling faults"
+    else:
+        assert int(dut.bist_fail.value) == 0, "MBIST reported fail with zero injected port-coupling faults (false positive)"

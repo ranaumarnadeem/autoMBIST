@@ -107,6 +107,29 @@ def _validate_port_topology(normalized_ports: dict[str, dict[str, Any]], algo: s
         )
 
 
+def _validate_port_coupling_topology(normalized_ports: dict[str, dict[str, Any]], algo: str) -> None:
+    """fault_type="port-coupling" models an inter-port bridging defect (an
+    aggressor write disturbing a victim read on a genuinely concurrent same-
+    address access) and is only meaningful -- and only implemented -- for the
+    march-1r1w topology: exactly one read-only ("r") port and one write-only
+    ("w") port. Reject it for single-port configs or any other port topology;
+    a future phase may generalize this to march-2rw.
+    """
+    algo_value = algo.strip().lower()
+    if algo_value != "march-1r1w":
+        raise ConfigError(
+            "fault_type=port-coupling requires algo=march-1r1w (exactly one "
+            f"read-only port + one write-only port); got algo={algo_value!r}"
+        )
+
+    port_types = sorted(pdata["type"] for pdata in normalized_ports.values())
+    if port_types != ["r", "w"]:
+        raise ConfigError(
+            "fault_type=port-coupling requires exactly one read-only ('r') port "
+            f"and one write-only ('w') port; got port types {port_types}"
+        )
+
+
 class ConfigError(ValueError):
     """Raised when config.yml is missing required values or has invalid types."""
 
@@ -355,14 +378,17 @@ def generate_from_config(
     if faults < 0:
         raise ValueError("faults must be a non-negative integer")
 
-    if fault_type not in {"stuck-at", "transition-up", "transition-down"}:
+    if fault_type not in {"stuck-at", "transition-up", "transition-down", "port-coupling"}:
         raise ValueError(
-            f"Invalid fault_type: {fault_type}. Must be one of: stuck-at, transition-up, transition-down"
+            f"Invalid fault_type: {fault_type}. Must be one of: stuck-at, transition-up, transition-down, port-coupling"
         )
 
     config = load_config(config_path)
 
     _validate_port_topology(config["normalized_ports"], algo)
+
+    if fault_type == "port-coupling":
+        _validate_port_coupling_topology(config["normalized_ports"], algo)
 
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -395,11 +421,15 @@ def generate_from_config(
             "stuck-at": FaultType.STUCK_AT,
             "transition-up": FaultType.TRANSITION_UP,
             "transition-down": FaultType.TRANSITION_DOWN,
+            "port-coupling": FaultType.PORT_COUPLING,
         }
-        
+
         if fault_type not in fault_type_map:
-            raise ValueError(f"Invalid fault_type: {fault_type}. Must be one of: stuck-at, transition-up, transition-down")
-        
+            raise ValueError(
+                f"Invalid fault_type: {fault_type}. Must be one of: "
+                "stuck-at, transition-up, transition-down, port-coupling"
+            )
+
         fault_enum = fault_type_map[fault_type]
 
         fault_dir = module_outdir / "faults"
@@ -420,6 +450,8 @@ def generate_from_config(
             render_config["tf_up_faults_file"] = file1_path.resolve().as_posix()
         elif fault_enum == FaultType.TRANSITION_DOWN:
             render_config["tf_down_faults_file"] = file1_path.resolve().as_posix()
+        elif fault_enum == FaultType.PORT_COUPLING:
+            render_config["pc_faults_file"] = file1_path.resolve().as_posix()
 
         saboteur_text = render_saboteur(render_config)
         saboteur_path = module_outdir / f"{config['memory_name']}_saboteur.v"
