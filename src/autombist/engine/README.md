@@ -6,9 +6,15 @@ Runs unmodified under Xcelium (xrun) and Verilator 5.x.
 
 ## Files
 
-    fault_ram.sv          fault-injectable single-port RAM (the model)
-    openram_shim.sv       drop-in wrapper matching the OpenRAM 1rw pinout
-    march_tb.sv           MATS+, March C-, March SS runner with detection attribution
+    fault_ram.sv          fault-injectable RAM (the model); num_ports=1 (single-port,
+                           default) or num_ports=2 (rendered via fault_ram_gen.py --
+                           see "Multi-port" below)
+    openram_shim.sv        drop-in wrapper matching the OpenRAM 1rw pinout
+    march_engine.sv        MATS+, March C-, March SS runner with detection attribution
+                           (single-port only; never touched by the multi-port work)
+    march_engine_mp.sv     num_ports=2 counterpart of march_engine.sv -- same file-driven
+                           .alg + fault-list grammar, extended with a port-suffix/column
+                           for genuine cross-port coupling (see "Multi-port" below)
     faults.example.txt    one instance of every implemented fault primitive
     run_campaign.sh       serial campaign: one sim per fault, CSV out
 
@@ -16,14 +22,14 @@ Runs unmodified under Xcelium (xrun) and Verilator 5.x.
 
 Xcelium, single fault:
 
-    xrun -64bit -sv fault_ram.sv march_tb.sv \
+    xrun -64bit -sv fault_ram.sv march_engine.sv \
         +ALG=MARCHCM +FAULTS=faults.example.txt +FAULT_INDEX=6
 
 Verilator:
 
     verilator --binary --timing -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
-        --top-module march_tb fault_ram.sv march_tb.sv -o march_tb_sim
-    ./obj_dir/march_tb_sim +ALG=MARCHSS +FAULTS=faults.example.txt +FAULT_INDEX=8
+        --top-module march_engine fault_ram.sv march_engine.sv -o march_engine_sim
+    ./obj_dir/march_engine_sim +ALG=MARCHSS +FAULTS=faults.example.txt +FAULT_INDEX=8
 
 Full campaign (auto-detects xrun, else Verilator; force with SIM=):
 
@@ -41,11 +47,76 @@ which gives you exact detection attribution per fault.
 
 One fault per line, all fields decimal, `#` comments:
 
-    TYPE  VADDR VBIT  AADDR ABIT  P0 P1
+    TYPE  VADDR VBIT  AADDR ABIT  P0 P1  [VPORT APORT]
 
 Victim = the cell whose stored value or read value is corrupted.
 Aggressor = the acting cell (coupling faults) or the alias target (AF_ALIAS).
 Unused fields must still be present; write 0.
+
+The trailing `VPORT APORT` columns are optional (9 fields total instead of
+7) and only meaningful against a `num_ports=2` `fault_ram.sv` / `march_engine_mp.sv`
+-- see "Multi-port" below. Omitting them (every pre-multi-port fault list,
+including `faults.example.txt`) means `VPORT=APORT=0`, so every existing
+7-field fault-list file parses unchanged under either engine.
+
+## Multi-port (`march_engine_mp.sv`, `num_ports=2`)
+
+Everything above (files, quick start, fault list format, semantics table)
+describes the default, single-port engine (`march_engine.sv` + a
+`num_ports=1` `fault_ram.sv`), which is untouched by the multi-port work and
+remains every existing caller's default. `march_engine_mp.sv` is a second,
+independent testbench for a `num_ports=2` `fault_ram.sv` (rendered via
+`fault_ram_gen.render_and_write(..., num_ports=2)`), used only when
+`MemoryParams.num_ports == 2` (`autombist algo`'s `set_memory --ports 2`, or
+`run_algo_campaign`/`run_fsm_campaign`'s dispatch in `algo_engine.py`).
+
+### Port-tagged `.alg` op syntax
+
+An op token in a `.alg` file may carry an optional `.PORT` suffix -- `r0.1`,
+`w1.0`, etc. -- meaning "issue this op on port `PORT`" (`PORT` in `{0, 1}`).
+Omitting the suffix (every built-in `.alg` file, and every op in a
+single-port campaign) means port 0, so a plain `.alg` file's meaning is
+unchanged under `num_ports=2`:
+
+    either w0            # init, port 0 (implicit)
+    up   w1.1             # up-transition write to every word, on port 1
+    up   r1               # read every word, on port 0 (implicit)
+
+`AlgSpec.to_numeric()`/`Element.numeric_line()` emit the plain `DIR NOPS
+OP0..OP7` numeric format (byte-identical to pre-multi-port output) when
+every op in the spec is on port 0, and only switch to the extended format
+(additional trailing `PORT0..PORT7` columns, with a `PORT0..PORT7` header
+suffix) when a non-zero port is actually used somewhere in the spec.
+
+### 9-field fault-list format and coupling semantics
+
+The `VPORT`/`APORT` columns select which physical port the victim/aggressor
+side of a fault is sensed/triggered on. They are meaningful only for the
+four coupling-class primitives (CFIN, CFID, CFST, CFDS) -- every other
+primitive's semantics are unaffected by which port is used (a static clamp,
+transition fault, etc. is the same fault regardless of access port).
+
+- **Same-port coupling** (`VPORT == APORT`, or both omitted/0): the
+  aggressor's sensitizing op and the victim's disturbance are both
+  evaluated against the same physical port -- today's only pre-multi-port
+  mode, reproduced unchanged through `march_engine_mp.sv` in its degenerate
+  single-port use.
+- **Cross-port coupling** (`VPORT != APORT`): the aggressor op is issued on
+  a *different* physical port than the one used to sense the victim -- e.g.
+  a write on port 1 disturbing a cell later read back via port 0. This is
+  the genuinely new capability `march_engine_mp.sv` adds: the aggressor-side
+  match in `write_op()`'s aggressor loop checks the fault's `ap` (aport)
+  field against the *actual issuing port* of the current op, so a fault
+  only fires when the algorithm really does drive the claimed aggressor
+  port -- a fault list that *says* cross-port but whose algorithm never
+  issues on that port correctly ESCAPES rather than firing. See
+  `tests/integration/test_march_engine_mp_cross_port_coupling.py` for the
+  full differential proof (same-port detected, cross-port detected, and the
+  escape control).
+
+`autombist algo`'s `add_fault` command exposes `VPORT`/`APORT` directly
+(`add_fault CFIN 5 1 6 1 2 0 0 1` defines a cross-port CFIN with aport=1),
+and `set_memory --ports 2` configures the session for `march_engine_mp.sv`.
 
 ## Fault primitive semantics
 
@@ -115,8 +186,8 @@ textbook escape/detect pattern.
 
 Word background is solid 0 / solid 1. Intra-word coupling (aggressor and
 victim bits in the same word) requires data backgrounds and is not
-exercised by march_tb; put coupled pairs in different words on the same bit
-lane, as the example list does. Adding a background loop over
+exercised by march_engine; put coupled pairs in different words on the same
+bit lane, as the example list does. Adding a background loop over
 log2(W)+1 patterns is the natural extension if you need intra-word CFs.
 
 Read fault evaluation uses the pre-read cell state; destructive read

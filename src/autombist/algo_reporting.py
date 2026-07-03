@@ -31,11 +31,22 @@ _FAULT_COLUMNS = (
     "idx", "type", "vaddr.vbit", "aaddr.abit", "p0", "p1",
     "result", "elem", "op", "addr", "activations",
 )
+# Appended after _FAULT_COLUMNS only when result.mem.num_ports > 1 (see
+# _fault_columns_for/_fault_row) -- single-port reports (num_ports == 1, the
+# default) keep the exact column set/order above, byte-identical to every
+# pre-multi-port report.
+_PORT_COLUMNS = ("vport", "aport")
 
 
-def _fault_row(index: int, r) -> tuple[str, ...]:
+def _fault_columns_for(result: CampaignResult) -> tuple[str, ...]:
+    if result.mem.num_ports > 1:
+        return _FAULT_COLUMNS + _PORT_COLUMNS
+    return _FAULT_COLUMNS
+
+
+def _fault_row(index: int, r, *, with_ports: bool = False) -> tuple[str, ...]:
     rec = r.record
-    return (
+    row = (
         str(index),
         rec.type,
         f"{rec.vaddr}.{rec.vbit}",
@@ -48,16 +59,21 @@ def _fault_row(index: int, r) -> tuple[str, ...]:
         "" if r.addr is None else str(r.addr),
         "" if r.activations is None else str(r.activations),
     )
+    if with_ports:
+        row = row + (str(rec.vport), str(rec.aport))
+    return row
 
 
 def render_campaign_csv(result: CampaignResult) -> str:
-    lines = [",".join(_FAULT_COLUMNS)]
+    with_ports = result.mem.num_ports > 1
+    lines = [",".join(_fault_columns_for(result))]
     for r in result.faults:
-        lines.append(",".join(_fault_row(r.index, r)))
+        lines.append(",".join(_fault_row(r.index, r, with_ports=with_ports)))
     return "\n".join(lines) + "\n"
 
 
 def render_campaign_md(result: CampaignResult) -> str:
+    with_ports = result.mem.num_ports > 1
     header = (
         f"# autombist test — {result.algo_name}\n\n"
         f"Memory: {result.mem.addr_width}x{result.mem.data_width}, init={result.mem.init_val}  \n"
@@ -65,8 +81,9 @@ def render_campaign_md(result: CampaignResult) -> str:
         f"Golden run: {'clean' if result.golden_clean else 'FAILED'}  \n"
         f"Build: {result.build_seconds:.2f}s, run: {result.run_seconds:.2f}s, sim: {result.sim}\n\n"
     )
-    rows = [list(_FAULT_COLUMNS)] + [list(_fault_row(r.index, r)) for r in result.faults]
-    widths = [max(len(row[i]) for row in rows) for i in range(len(_FAULT_COLUMNS))]
+    columns = _fault_columns_for(result)
+    rows = [list(columns)] + [list(_fault_row(r.index, r, with_ports=with_ports)) for r in result.faults]
+    widths = [max(len(row[i]) for row in rows) for i in range(len(columns))]
 
     def fmt_row(cells: list[str]) -> str:
         return "| " + " | ".join(cell.ljust(w) for cell, w in zip(cells, widths)) + " |"

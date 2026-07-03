@@ -39,6 +39,27 @@ def test_set_memory_missing_args_reports_error() -> None:
     assert "error:" in _output(shell)
 
 
+def test_set_memory_defaults_to_one_port() -> None:
+    shell = _shell()
+    shell.onecmd("set_memory 8 8")
+    assert shell.session.mem.num_ports == 1
+    assert "ports=" not in _output(shell) or "ports=1" in _output(shell)
+
+
+def test_set_memory_ports_flag_sets_two_port_memory() -> None:
+    shell = _shell()
+    shell.onecmd("set_memory 8 8 --ports 2")
+    assert shell.session.mem == MemoryParams(addr_width=8, data_width=8, num_ports=2)
+    assert "ports=2" in _output(shell)
+
+
+def test_set_memory_rejects_invalid_ports() -> None:
+    shell = _shell()
+    shell.onecmd("set_memory 8 8 --ports 3")
+    assert shell.session.mem is None
+    assert "error:" in _output(shell)
+
+
 def test_add_algo_from_file(tmp_path: Path) -> None:
     algfile = tmp_path / "custom.alg"
     algfile.write_text("either w0\nup r0 w1\n", encoding="utf-8")
@@ -55,6 +76,23 @@ def test_add_fault_short_and_long_forms() -> None:
     assert len(shell.session.faults) == 2
     assert shell.session.faults[0].type == "SA0" and shell.session.faults[0].aaddr == 0
     assert shell.session.faults[1].p0 == 2
+    assert shell.session.faults[0].vport == 0 and shell.session.faults[0].aport == 0
+
+
+def test_add_fault_with_explicit_cross_port() -> None:
+    shell = _shell()
+    shell.onecmd("add_fault CFIN 5 1 6 1 2 0 0 1")
+    assert len(shell.session.faults) == 1
+    fault = shell.session.faults[0]
+    assert fault.vport == 0 and fault.aport == 1
+    assert "ports=0/1" in _output(shell)
+
+
+def test_add_fault_rejects_bad_arg_count() -> None:
+    shell = _shell()
+    shell.onecmd("add_fault SA0 10 3 0 0")  # 5 tokens: not 3, 7, or 9
+    assert shell.session.faults == []
+    assert "error:" in _output(shell)
 
 
 def test_load_faults_replace_and_append(tmp_path: Path) -> None:
@@ -151,6 +189,40 @@ def test_list_and_status_do_not_crash() -> None:
     out = _output(shell)
     assert "march_c" in out
     assert "SA0" in out  # from `list types`
+
+
+def test_status_shows_ports_only_when_multi_port() -> None:
+    single = _shell()
+    single.onecmd("set_memory 8 8")
+    single.stdout = io.StringIO()  # discard the `set_memory` confirmation line
+    single.onecmd("status")
+    assert "ports=" not in _output(single)
+
+    multi = _shell()
+    multi.onecmd("set_memory 8 8 --ports 2")
+    multi.stdout = io.StringIO()
+    multi.onecmd("status")
+    assert "ports=2" in _output(multi)
+
+
+def test_render_fault_ram_for_follows_session_num_ports(tmp_path: Path) -> None:
+    # 1-port session (default): rendered fault_ram.sv has no per-port bus suffix.
+    shell1 = _shell()
+    shell1.onecmd("set_memory 8 8")
+    workdir1 = tmp_path / "one_port"
+    workdir1.mkdir()
+    path1 = shell1._render_fault_ram_for(workdir1)
+    text1 = path1.read_text(encoding="utf-8")
+    assert "clk0" not in text1 and "clk1" not in text1
+
+    # 2-port session: rendered fault_ram.sv exposes the dual port bus.
+    shell2 = _shell()
+    shell2.onecmd("set_memory 8 8 --ports 2")
+    workdir2 = tmp_path / "two_port"
+    workdir2.mkdir()
+    path2 = shell2._render_fault_ram_for(workdir2)
+    text2 = path2.read_text(encoding="utf-8")
+    assert "clk0" in text2 and "clk1" in text2
 
 
 def test_set_sim_rejects_icarus() -> None:

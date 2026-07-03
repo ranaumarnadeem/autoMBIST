@@ -103,10 +103,18 @@ class CampaignResult:
     sim: str
 
     def matrix_row(self) -> dict[str, str]:
-        """{fault label: 'D'/'E'}, keyed by 'TYPE@vaddr.vbit' to disambiguate repeats."""
+        """{fault label: 'D'/'E'}, keyed by 'TYPE@vaddr.vbit' to disambiguate
+        repeats. When mem.num_ports > 1, the key also carries '#vport.aport'
+        so two otherwise-identical-site faults that only differ by which
+        physical port the victim/aggressor access uses (e.g. a same-port vs.
+        cross-port coupling variant of the same CFIN@addr.bit) get distinct
+        rows instead of colliding; single-port sessions (num_ports == 1, the
+        default) keep the original, unsuffixed key unchanged."""
         row: dict[str, str] = {}
         for r in self.faults:
             key = f"{r.record.type}@{r.record.vaddr}.{r.record.vbit}"
+            if self.mem.num_ports > 1:
+                key = f"{key}#{r.record.vport}.{r.record.aport}"
             row[key] = "D" if r.detected else "E"
         return row
 
@@ -117,6 +125,7 @@ class CampaignResult:
                 "addr_width": self.mem.addr_width,
                 "data_width": self.mem.data_width,
                 "init_val": self.mem.init_val,
+                "num_ports": self.mem.num_ports,
             },
             "sim": self.sim,
             "golden_clean": self.golden_clean,
@@ -135,6 +144,8 @@ class CampaignResult:
                     "abit": r.record.abit,
                     "p0": r.record.p0,
                     "p1": r.record.p1,
+                    "vport": r.record.vport,
+                    "aport": r.record.aport,
                     "detected": r.detected,
                     "elem": r.elem,
                     "op": r.op,

@@ -236,6 +236,13 @@ autombist algo --script session.algo   # or '-' for stdin
 
 Run `help` inside the shell for the full command list.
 
+Multi-port campaigns (genuine cross-port coupling faults, not just single-port) are also
+supported: `set_memory --ports 2` in the shell (or `MemoryParams(num_ports=2)` via the
+Python API) switches to the `march_engine_mp.sv` engine, and `add_fault`'s optional
+trailing `VPORT APORT` arguments define which physical port the victim/aggressor side of
+a fault uses. See `src/autombist/engine/README.md`'s "Multi-port" section for the full
+`.alg`/fault-list syntax and same-port-vs-cross-port semantics.
+
 ## Controller Structural Grading (`grade-controller`)
 
 Grade the MBIST controller logic itself (not the memory array) with FaultFlow's scan

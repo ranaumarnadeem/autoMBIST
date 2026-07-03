@@ -20,10 +20,10 @@ fi
 
 if [ "$SIM" = "verilator" ]; then
   verilator --binary --timing -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
-    --top-module march_tb fault_ram.sv march_tb.sv -o march_tb_sim >/dev/null
-  RUN() { ./obj_dir/march_tb_sim "$@" 2>/dev/null; }
+    --top-module march_engine fault_ram.sv march_engine.sv -o march_engine_sim >/dev/null
+  RUN() { ./obj_dir/march_engine_sim "$@" 2>/dev/null; }
 else
-  RUN() { xrun -64bit -q -sv fault_ram.sv march_tb.sv "$@" 2>/dev/null; }
+  RUN() { xrun -64bit -q -sv fault_ram.sv march_engine.sv "$@" 2>/dev/null; }
 fi
 
 NF=$(grep -cv '^[[:space:]]*\(#\|$\)' "$FAULTS")
