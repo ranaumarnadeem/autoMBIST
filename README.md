@@ -140,10 +140,69 @@ autombist simulate --out out/sram_1r1w_64x32
 The legacy flat single-port `ports:` form (`{clk, addr, din, dout, we, csb}`) still works
 unchanged and renders byte-identical output — no existing config needs to change.
 
-A further generalization, `march-2rw` (two fully symmetric read/write ports), exists as a
-verified standalone RTL family (`rtl/march_2rw/`) proving write/write-to-different-
-addresses and read/read-to-the-same-address concurrency, but is not yet wired into
-`generate`/`simulate` — a future release.
+## Multi-Port Memories (`march-2rw`)
+
+`march-2rw` generalizes further: two *fully symmetric* read/write ports (both ports can
+independently read or write on any cycle), rather than march-1r1w's one-read-only +
+one-write-only split. This lets the march-2rw algorithm exercise access patterns
+march-1r1w structurally cannot express — concurrent write/write to two *different*
+addresses, and concurrent read/read to the *same* address — on top of the same
+read(one port)/write(other port) same-address forwarding case march-1r1w already covers.
+
+Describe it with a named `ports:` map where **both** entries use `type: rw`:
+
+```yaml
+memory_name: "sram_2rw_64x32"
+wrapper_module_name: "sram_2rw_64x32_mbist"
+addr_width: 6
+data_width: 32
+we_active_low: true
+ports:
+  porta:
+    type: rw
+    clk: clkA
+    addr: addrA
+    din: dinA
+    dout: doutA
+    csb: csbA
+    we: webA
+  portb:
+    type: rw
+    clk: clkB
+    addr: addrB
+    din: dinB
+    dout: doutB
+    csb: csbB
+    we: webB
+```
+
+Generate and simulate it like any other memory, selecting `--algo march-2rw`:
+
+```bash
+autombist generate --config config.yml --out out --algo march-2rw
+autombist simulate --out out/sram_2rw_64x32
+```
+
+**Port-ordering rule (important, and different from march-1r1w):** since both march-2rw
+ports share the same `type: rw`, there is no type-based way to tell them apart, unlike
+march-1r1w where the "r" port always maps to `sram_*0` and the "w" port always maps to
+`sram_*1` regardless of YAML key order. For march-2rw, the **first entry** in the `ports:`
+map (YAML/dict insertion order) is always wired to the algorithm's `sram_*0` pins, and the
+**second entry** to `sram_*1`. Swapping the two entries' order in the YAML swaps which
+named port is "port 0" vs "port 1" — the config above wires `porta` to `sram_*0` and
+`portb` to `sram_*1`; reversing their order in the file would reverse that mapping.
+
+march-2rw supports `stuck-at`, `transition-up`, and `transition-down` fault types (not
+`port-coupling`, which is specific to march-1r1w's asymmetric read/write-port split):
+
+```bash
+autombist generate --config config.yml --out out --test --faults 20 --algo march-2rw --fault-type stuck-at
+autombist simulate --out out/sram_2rw_64x32
+```
+
+march-2rw's functional (`test_mode=0`) boundary is inherently single-port: only the port
+wired to `sram_*0` drives `func_dout` in functional mode. The second port exists for the
+MBIST algorithm's internal concurrency, not for external dual-port functional access.
 
 ## Functional Fault-Primitive Grading (`test` / `algo`)
 

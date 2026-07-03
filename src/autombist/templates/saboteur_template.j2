@@ -238,6 +238,252 @@ module {{ memory_name }}_saboteur #(
 {% endif %}
 
 endmodule
+{% elif algo == "march-2rw" %}
+{% set _port_names = normalized_ports.keys() | list %}
+{% set _p0 = normalized_ports[_port_names[0]] %}
+{% set _p1 = normalized_ports[_port_names[1]] %}
+// 2RW (2x full read/write port) saboteur: models stuck-at / transition
+// faults over a SINGLE shared array indexed by BOTH ports, mirroring
+// sram_model_2rw.sv's shared mem[] architecture with a fault-mask layer on
+// top -- NOT two independent single-port saboteurs. Port order (and hence
+// which named config port is "port 0" vs "port 1" below) is determined by
+// ORDERED ITERATION of normalized_ports, matching _algo_port_suffixes'
+// march-2rw rule in generator.py: the first port in the config's ``ports:``
+// map is port 0, the second is port 1. Debug taps (dbg_actual_word etc.)
+// are scoped to port 0 ONLY, matching the 1R1W branch's documented
+// convention above.
+//
+// port-coupling is NOT supported for march-2rw (see
+// _validate_port_coupling_topology in generator.py, which rejects any algo
+// other than march-1r1w) -- only stuck-at and transition-up/down are
+// generated here.
+module {{ memory_name }}_saboteur #(
+    parameter integer ADDR_WIDTH = {{ addr_width }},
+    parameter integer DATA_WIDTH = {{ data_width }}
+) (
+    // Port 0: full read/write.
+    input  logic                  {{ _p0.clk }},
+    input  logic                  {{ _p0.csb }},
+    input  logic                  {{ _p0.we }},
+    input  logic [ADDR_WIDTH-1:0] {{ _p0.addr }},
+    input  logic [DATA_WIDTH-1:0] {{ _p0.din }},
+    output logic [DATA_WIDTH-1:0] {{ _p0.dout }},
+
+    // Port 1: full read/write.
+    input  logic                  {{ _p1.clk }},
+    input  logic                  {{ _p1.csb }},
+    input  logic                  {{ _p1.we }},
+    input  logic [ADDR_WIDTH-1:0] {{ _p1.addr }},
+    input  logic [DATA_WIDTH-1:0] {{ _p1.din }},
+    output logic [DATA_WIDTH-1:0] {{ _p1.dout }},
+
+    output logic [DATA_WIDTH-1:0] dbg_actual_word,
+    output logic [DATA_WIDTH-1:0] dbg_fault_word,
+    output logic [DATA_WIDTH-1:0] dbg_intended_word,
+    output logic [DATA_WIDTH-1:0] dbg_prior_value,
+    output logic [DATA_WIDTH-1:0] dbg_attempted_write,
+    output logic [DATA_WIDTH-1:0] dbg_actual_read,
+    output logic [DATA_WIDTH-1:0] dbg_blocked_bits
+);
+
+    logic [DATA_WIDTH-1:0] real_dout0;
+    logic [DATA_WIDTH-1:0] real_dout1;
+    logic [DATA_WIDTH-1:0] real_din0;
+    logic [DATA_WIDTH-1:0] real_din1;
+    logic write_cycle0;
+    logic write_cycle1;
+    logic read_cycle0;
+    logic read_cycle1;
+
+    assign write_cycle0 = (~{{ _p0.csb }}) & (~{{ _p0.we }});
+    assign write_cycle1 = (~{{ _p1.csb }}) & (~{{ _p1.we }});
+    assign read_cycle0  = (~{{ _p0.csb }}) & ({{ _p0.we }});
+    assign read_cycle1  = (~{{ _p1.csb }}) & ({{ _p1.we }});
+
+{% if fault_type == "stuck-at" %}
+    // Shared across both ports: each port's dout is independently masked by
+    // its OWN address, matching sram_model_2rw.sv's single shared mem[].
+    logic [DATA_WIDTH-1:0] sa0_mask [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] sa1_mask [0:(1<<ADDR_WIDTH)-1];
+
+    initial begin
+        $readmemh("{{ sa0_faults_file }}", sa0_mask);
+        $readmemh("{{ sa1_faults_file }}", sa1_mask);
+    end
+
+    {{ memory_name }} #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .DATA_WIDTH(DATA_WIDTH)
+    ) u_sram (
+        .{{ _p0.clk }}({{ _p0.clk }}),
+        .{{ _p0.csb }}({{ _p0.csb }}),
+        .{{ _p0.we }}({{ _p0.we }}),
+        .{{ _p0.addr }}({{ _p0.addr }}),
+        .{{ _p0.din }}(real_din0),
+        .{{ _p0.dout }}(real_dout0),
+        .{{ _p1.clk }}({{ _p1.clk }}),
+        .{{ _p1.csb }}({{ _p1.csb }}),
+        .{{ _p1.we }}({{ _p1.we }}),
+        .{{ _p1.addr }}({{ _p1.addr }}),
+        .{{ _p1.din }}(real_din1),
+        .{{ _p1.dout }}(real_dout1)
+    );
+
+    assign real_din0 = {{ _p0.din }};
+    assign real_din1 = {{ _p1.din }};
+    assign {{ _p0.dout }} = (real_dout0 & sa0_mask[{{ _p0.addr }}]) | sa1_mask[{{ _p0.addr }}];
+    assign {{ _p1.dout }} = (real_dout1 & sa0_mask[{{ _p1.addr }}]) | sa1_mask[{{ _p1.addr }}];
+    assign dbg_actual_word = real_dout0;
+    assign dbg_fault_word = {{ _p0.dout }};
+    assign dbg_intended_word = {{ _p0.din }};
+    assign dbg_prior_value = '0;
+    assign dbg_attempted_write = '0;
+    assign dbg_actual_read = real_dout0;
+    assign dbg_blocked_bits = '0;
+{% elif fault_type in ("transition-up", "transition-down") %}
+    // Shared shadow array across both ports (mirrors sram_model_2rw.sv's
+    // single mem[]). Each port's write path independently computes its own
+    // prior_word/blocked_bits/real_din from its own addr/din. The pending-
+    // write delay list is sized for TWO potentially-concurrent in-flight
+    // writes (one per port) rather than one, since either port -- or both,
+    // on different addresses the same cycle -- can be mid-delay at once.
+    logic [DATA_WIDTH-1:0] tf_mask [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] shadow_mem [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] blocked_bits_q [0:(1<<ADDR_WIDTH)-1];
+    logic [DATA_WIDTH-1:0] read_data_q0;
+    logic [DATA_WIDTH-1:0] read_data_q1;
+    logic [DATA_WIDTH-1:0] prior_word0;
+    logic [DATA_WIDTH-1:0] prior_word1;
+    logic [DATA_WIDTH-1:0] blocked0;
+    logic [DATA_WIDTH-1:0] blocked1;
+    localparam integer DELAY_CYCLES = ({{ pulse_width_ns }} < 1) ? 1 : {{ pulse_width_ns }};
+    localparam integer DELAY_CNT_W = (DELAY_CYCLES < 2) ? 1 : $clog2(DELAY_CYCLES + 1);
+    // Active-pending list (sim only): commit delayed transitions without
+    // scanning the whole address space every clock. At most one write per
+    // port per cycle (2 ports), each pending for DELAY_CYCLES cycles, so
+    // MAX_PEND = 2*DELAY_CYCLES + 4 always has a free slot for both ports.
+    // Cost is O(DELAY_CYCLES)/clock, independent of memory depth.
+    localparam integer MAX_PEND = 2 * DELAY_CYCLES + 4;
+    logic [ADDR_WIDTH-1:0]  pend_addr [0:MAX_PEND-1];
+    logic [DATA_WIDTH-1:0]  pend_bits [0:MAX_PEND-1];
+    logic [DATA_WIDTH-1:0]  pend_tgt  [0:MAX_PEND-1];
+    logic [DELAY_CNT_W-1:0] pend_cnt  [0:MAX_PEND-1];
+    logic                   pend_val  [0:MAX_PEND-1];
+    integer idx;
+    integer p;
+    integer free_slot;
+    integer slot0_claimed;
+
+    initial begin
+        $readmemh("{{ tf_up_faults_file if fault_type == "transition-up" else tf_down_faults_file }}", tf_mask);
+        for (idx = 0; idx < (1<<ADDR_WIDTH); idx = idx + 1) begin
+            shadow_mem[idx] = '0;
+            blocked_bits_q[idx] = '0;
+        end
+        for (p = 0; p < MAX_PEND; p = p + 1) begin
+            pend_val[p] = 1'b0;
+            pend_cnt[p] = '0;
+        end
+        read_data_q0 = '0;
+        read_data_q1 = '0;
+    end
+
+    always_comb begin
+        prior_word0 = shadow_mem[{{ _p0.addr }}];
+        prior_word1 = shadow_mem[{{ _p1.addr }}];
+    {% if fault_type == "transition-up" %}
+        blocked0 = (~prior_word0) & {{ _p0.din }} & tf_mask[{{ _p0.addr }}];
+        blocked1 = (~prior_word1) & {{ _p1.din }} & tf_mask[{{ _p1.addr }}];
+    {% else %}
+        blocked0 = prior_word0 & (~{{ _p0.din }}) & tf_mask[{{ _p0.addr }}];
+        blocked1 = prior_word1 & (~{{ _p1.din }}) & tf_mask[{{ _p1.addr }}];
+    {% endif %}
+        real_din0 = ({{ _p0.din }} & ~blocked0) | (prior_word0 & blocked0);
+        real_din1 = ({{ _p1.din }} & ~blocked1) | (prior_word1 & blocked1);
+    end
+
+    always_ff @(posedge {{ _p0.clk }}) begin
+        for (p = 0; p < MAX_PEND; p = p + 1) begin
+            if (pend_val[p]) begin
+                if (pend_cnt[p] <= 1) begin
+                    shadow_mem[pend_addr[p]] <= (shadow_mem[pend_addr[p]] & ~pend_bits[p]) | (pend_tgt[p] & pend_bits[p]);
+                    blocked_bits_q[pend_addr[p]] <= '0;
+                    pend_val[p] <= 1'b0;
+                end else begin
+                    pend_cnt[p] <= pend_cnt[p] - 1'b1;
+                end
+            end
+        end
+
+        // NOTE: both write_cycle0 and write_cycle1 can fire THIS SAME
+        // always_ff invocation (clk0/clk1 tied together, both ports writing
+        // different addresses the same cycle). Port 0's free-slot claim uses
+        // a blocking assignment to a scratch reg (slot0_claimed) so port 1's
+        // scan below can see it and avoid double-allocating the same slot --
+        // the pend_val[] array itself is only ever updated non-blocking, so
+        // without this the two scans (both reading pend_val[] as it stood at
+        // the top of this edge) could otherwise pick the same free_slot.
+        slot0_claimed = -1;
+        if (write_cycle0) begin
+            shadow_mem[{{ _p0.addr }}] <= real_din0;
+            blocked_bits_q[{{ _p0.addr }}] <= blocked0;
+            if (blocked0 != '0) begin
+                free_slot = -1;
+                for (p = MAX_PEND - 1; p >= 0; p = p - 1) begin
+                    if (!pend_val[p]) free_slot = p;
+                end
+                if (free_slot >= 0) begin
+                    slot0_claimed = free_slot;
+                    pend_addr[free_slot] <= {{ _p0.addr }};
+                    pend_bits[free_slot] <= blocked0;
+                    pend_tgt[free_slot]  <= {{ _p0.din }};
+                    pend_cnt[free_slot]  <= DELAY_CYCLES;
+                    pend_val[free_slot]  <= 1'b1;
+                end
+            end
+        end
+
+        if (write_cycle1) begin
+            shadow_mem[{{ _p1.addr }}] <= real_din1;
+            blocked_bits_q[{{ _p1.addr }}] <= blocked1;
+            if (blocked1 != '0) begin
+                free_slot = -1;
+                for (p = MAX_PEND - 1; p >= 0; p = p - 1) begin
+                    if (!pend_val[p] && p != slot0_claimed) free_slot = p;
+                end
+                if (free_slot >= 0) begin
+                    pend_addr[free_slot] <= {{ _p1.addr }};
+                    pend_bits[free_slot] <= blocked1;
+                    pend_tgt[free_slot]  <= {{ _p1.din }};
+                    pend_cnt[free_slot]  <= DELAY_CYCLES;
+                    pend_val[free_slot]  <= 1'b1;
+                end
+            end
+        end
+
+        if (read_cycle0) begin
+            read_data_q0 <= shadow_mem[{{ _p0.addr }}];
+        end
+    end
+
+    always_ff @(posedge {{ _p1.clk }}) begin
+        if (read_cycle1) begin
+            read_data_q1 <= shadow_mem[{{ _p1.addr }}];
+        end
+    end
+
+    assign {{ _p0.dout }} = read_data_q0;
+    assign {{ _p1.dout }} = read_data_q1;
+    assign dbg_actual_word = prior_word0;
+    assign dbg_fault_word = real_din0;
+    assign dbg_intended_word = {{ _p0.din }};
+    assign dbg_prior_value = prior_word0;
+    assign dbg_attempted_write = {{ _p0.din }};
+    assign dbg_actual_read = read_data_q0;
+    assign dbg_blocked_bits = write_cycle0 ? blocked0 : blocked_bits_q[{{ _p0.addr }}];
+{% endif %}
+
+endmodule
 {% else %}
 {% set _rport = (normalized_ports.values() | selectattr("type", "equalto", "r") | list)[0] %}
 {% set _wport = (normalized_ports.values() | selectattr("type", "equalto", "w") | list)[0] %}

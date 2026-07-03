@@ -265,9 +265,9 @@ def generate(
     test: bool = typer.Option(False, "--test/--no-test", help="Generate fault-injection saboteur wrapper and fault masks (use with --faults)"),
     faults: int = typer.Option(50, "-r", "--faults", help="Number of random faults to inject (only with --test)"),
     seed: int | None = typer.Option(None, "--seed", help="Random seed for reproducible fault injection (optional)"),
-    fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at (SA0/SA1), transition-up, transition-down, or port-coupling (march-1r1w only)"),
+    fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at (SA0/SA1), transition-up, transition-down, or port-coupling (march-1r1w only; march-2rw supports stuck-at/transition only)"),
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
-    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c or march-raw"),
+    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, or march-2rw"),
 ) -> None:
     """Generate MBIST wrapper, RTL, and optionally fault masks.
 
@@ -343,9 +343,9 @@ def run(
     test: bool = typer.Option(False, "--test/--no-test", help="Generate and run fault injection simulation"),
     faults: int = typer.Option(50, "-r", "--faults", help="Number of faults to inject"),
     seed: int | None = typer.Option(None, "--seed", help="Random seed for reproducible fault injection"),
-    fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at, transition-up, transition-down, or port-coupling (march-1r1w only)"),
+    fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at, transition-up, transition-down, or port-coupling (march-1r1w only; march-2rw supports stuck-at/transition only)"),
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
-    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c or march-raw"),
+    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, or march-2rw"),
     verbose: bool = typer.Option(False, "--verbose", help="Print full simulator console output and detailed logs"),
     faultflow: bool = typer.Option(False, "--faultflow/--no-faultflow", help="After sim, grade the MBIST controller logic with FaultFlow (Linux/WSL)"),
     faultflow_repo: Path | None = typer.Option(None, "--faultflow-repo", envvar="FAULTFLOW_HOME", help="FaultFlow repo path (or set FAULTFLOW_HOME)"),
