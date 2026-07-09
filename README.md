@@ -1,20 +1,62 @@
-# autombist
+# autoMBIST
 
-autombist automatically generates MBIST integration artifacts for OpenRAM-generated SRAM macros.
-It builds a selectable MBIST wrapper around your memory interface, emits the required MBIST RTL files, and creates outputs under `out/` by default.
+autoMBIST is a CLI for testing memory macros for manufacturing defects, and for
+researching the march algorithms used to do it. It is two independent
+subsystems bundled behind one command:
 
-The generated artifacts can be synthesized with Yosys or other synthesis tools.
-autombist also supports fault simulation by injecting stuck-at faults (`SA0` and `SA1`), transition faults (`transition-up` and `transition-down`), or (for multi-port memories) inter-port coupling faults, and validating behavior through Cocotb with Icarus Verilog.
+1. **MBIST wrapper generation + array fault simulation** (`generate`, `simulate`,
+   `run`, `grade-controller`) — takes an OpenRAM-style SRAM macro and a config
+   file describing its pins, and emits a production-style, synthesizable MBIST
+   wrapper plus march-algorithm controller RTL around it. It can also inject
+   stuck-at, transition, or (for multi-port memories) inter-port coupling
+   faults into a saboteur copy of the memory and run the generated controller
+   against it through cocotb + Icarus Verilog to measure fault coverage.
+2. **Functional fault-primitive research platform** (`test`, `algo`) — an
+   independent, Verilator-driven toolchain built around a 19-primitive
+   functional fault-model DSL and a programmable march-algorithm engine. It
+   lets you grade a march algorithm (or an actual controller FSM) against a
+   fault list, and ships an interactive shell (`autombist algo`) for
+   registering custom algorithms/faults, running campaigns, and exporting
+   reports or standalone testbenches.
 
-## What It Generates
+These two subsystems don't share RTL, a simulator, or a fault format — see
+["Which subsystem do I want?"](#which-subsystem-do-i-want) before you start.
+`generate`/`simulate` is Icarus + cocotb and speaks array-level fault masks;
+`test`/`algo` is Verilator-only and speaks the 19-primitive functional DSL.
 
-For each memory in your config, autombist generates a module directory under `out/<memory_name>/` with:
+## Table of Contents
 
-- MBIST wrapper Verilog
-- Required MBIST RTL support files
-- Optional saboteur wrapper for fault injection (`--test` mode)
-- Optional fault masks and a local simulation Makefile (`--test` mode)
-- Algorithm-specific RTL for the selected `--algo` family
+- [Which subsystem do I want?](#which-subsystem-do-i-want)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [What It Generates](#what-it-generates)
+- [Fault Simulation Flow](#fault-simulation-flow)
+- [Multi-Port Memories (march-1r1w)](#multi-port-memories-march-1r1w)
+- [Multi-Port Memories (march-2rw)](#multi-port-memories-march-2rw)
+- [Functional Fault-Primitive Grading (test / algo)](#functional-fault-primitive-grading-test--algo)
+- [Controller Structural Grading (grade-controller)](#controller-structural-grading-grade-controller)
+- [OpenRAM Synthesis + Starter Scaffolding](#openram-synthesis--starter-scaffolding)
+- [CLI Help](#cli-help)
+- [Further Documentation](#further-documentation)
+
+## Which subsystem do I want?
+
+**I have a real memory macro and want to MBIST-test it (or grade the
+controller against manufacturing faults):**
+use the classic path — `autombist generate` → `autombist simulate` (or
+`autombist run` to do both), and optionally `autombist grade-controller` for
+the controller's own scan-ATPG structural coverage. Start at
+[Quick Start](#quick-start).
+
+**I want to design or validate a march algorithm, measure its functional fault
+coverage, or check a controller FSM's behavior against a fault library — with
+no real memory macro required:** use the research path — `autombist test` for
+one-shot grading, or `autombist algo` for the interactive shell. Start at
+[Functional Fault-Primitive Grading](#functional-fault-primitive-grading-test--algo).
+
+Both paths are documented in full below; the config format, simulators, and
+fault vocabulary are not interchangeable between them.
 
 ## Prerequisites
 
@@ -23,48 +65,88 @@ For each memory in your config, autombist generates a module directory under `ou
 > synthesis tool — `simulate`, `run`, `test`, `algo`'s `run`/`compare_algo` commands, and
 > `grade-controller --run` — needs the Unix EDA toolchain (Icarus Verilog, Verilator,
 > Yosys, OpenRAM, and the optional FaultFlow flow) and only works on Linux or WSL. Use a
-> venv created inside WSL/Linux for any of those.
+> venv created inside WSL/Linux for any of those — a Windows-side Python/venv cannot see
+> the WSL-installed toolchain.
 
 1. Python 3.10+
-2. OpenRAM-generated memory and matching config file
+2. OpenRAM-generated memory and matching config file (classic path only)
 3. For fault simulation:
 	- Icarus Verilog (`iverilog`) installed system-wide (array-fault `simulate`/`run`)
 	- Verilator installed system-wide (functional fault-primitive `test`/`algo` commands)
 	- Cocotb installed in your Python environment
+4. For controller structural grading (`grade-controller`): Yosys and a built
+   [FaultFlow](https://github.com/ranaumarnadeem/faultflow) repo
 
 ## Installation
 
-Install from the repository root:
+**All of the following must be run from inside WSL or a native Linux shell** —
+a Windows-native Python install will not see `iverilog`/`verilator`/`yosys`
+even if they're on the WSL side.
 
-```bash
-python -m pip install .
-```
-
-For development:
-
-```bash
-python -m pip install -e .
-```
-
-Or you can install directly with Pypi:
+Install directly from PyPI:
 
 ```bash
 python -m pip install autombist
 ```
 
+Or from the repository root:
+
+```bash
+python -m pip install .
+```
+
+For development (editable install):
+
+```bash
+python -m pip install -e .
+```
+
 ## Quick Start
 
-Generate MBIST outputs using the default output directory (`out`):
+This gets you from a fresh WSL/Linux venv to a first generate + simulate run.
 
 ```bash
+# 1. Inside WSL/Linux, with iverilog, verilator, and cocotb already on PATH:
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install autombist
+
+# 2. Scaffold a starter config in the current directory
+autombist init --out .
+
+# 3. Generate the MBIST wrapper + RTL for the memory described in config.yml
 autombist generate --config config.yml --out out
-```
 
-Run generation + simulation in one step:
+# 4. Simulate the generated design with cocotb + Icarus
+autombist simulate --out out/<memory_name>
 
-```bash
+# ...or do steps 3+4 in one shot:
 autombist run --config config.yml --out out
 ```
+
+`<memory_name>` is the `memory_name` field from your config file — each memory
+gets its own subdirectory under `out/`.
+
+Sanity-check your whole install (generation + OpenRAM config parse + optional
+small fault simulations) with:
+
+```bash
+autombist smoke
+```
+
+## What It Generates
+
+For each memory in your config, `autombist generate` produces a module
+directory under `out/<memory_name>/` with:
+
+- MBIST wrapper Verilog
+- Required MBIST RTL support files
+- Optional saboteur wrapper for fault injection (`--test` mode)
+- Optional fault masks and a local simulation Makefile (`--test` mode)
+- Algorithm-specific RTL for the selected `--algo` family
+
+The generated artifacts are plain synthesizable Verilog and can be fed into
+Yosys or any other synthesis tool.
 
 ## Fault Simulation Flow
 
@@ -206,10 +288,11 @@ MBIST algorithm's internal concurrency, not for external dual-port functional ac
 
 ## Functional Fault-Primitive Grading (`test` / `algo`)
 
-Beyond the array-level stuck-at/transition masks above, autombist ships a richer
-functional fault library (19 primitives: stuck-at, transition, write/read disturb,
-address-decoder, and all four coupling classes) and a programmable march-algorithm
-engine, driven through Verilator instead of Icarus.
+This is the research platform — it does not require an OpenRAM memory or a
+`config.yml`. Beyond the array-level stuck-at/transition masks above, autombist
+ships a richer functional fault library (19 primitives: stuck-at, transition,
+write/read disturb, address-decoder, and all four coupling classes) and a
+programmable march-algorithm engine, driven through Verilator instead of Icarus.
 
 Grade a memory + march algorithm against a fault list in one shot:
 
@@ -240,8 +323,9 @@ Multi-port campaigns (genuine cross-port coupling faults, not just single-port) 
 supported: `set_memory --ports 2` in the shell (or `MemoryParams(num_ports=2)` via the
 Python API) switches to the `march_engine_mp.sv` engine, and `add_fault`'s optional
 trailing `VPORT APORT` arguments define which physical port the victim/aggressor side of
-a fault uses. See `src/autombist/engine/README.md`'s "Multi-port" section for the full
-`.alg`/fault-list syntax and same-port-vs-cross-port semantics.
+a fault uses. See [`docs/multi-port-guide.md`](docs/multi-port-guide.md) and
+`src/autombist/engine/README.md`'s "Multi-port" section for the full `.alg`/fault-list
+syntax and same-port-vs-cross-port semantics.
 
 ## Controller Structural Grading (`grade-controller`)
 
@@ -283,13 +367,32 @@ autombist smoke
 autombist smoke --no-sim
 ```
 
-## Synthesis
-
-Use the generated wrapper and MBIST RTL files in your synthesis flow (for example, Yosys or equivalent EDA tools).
-
 ## CLI Help
 
 ```bash
 autombist --help
 autombist --version
 ```
+
+## Further Documentation
+
+This README covers install and the common day-to-day commands. For deeper
+detail, see:
+
+- [`docs/architecture.md`](docs/architecture.md) — how the two subsystems
+  (wrapper/generator + fault-primitive engine) are structured internally, and
+  how the pieces (generator, saboteur, march engines, shell) fit together.
+- [`docs/cli-reference.md`](docs/cli-reference.md) — full flag-by-flag
+  reference for every command (`generate`, `simulate`, `run`,
+  `grade-controller`, `test`, `algo`, `ram-synth`, `init`, `smoke`).
+- [`docs/algo-shell-guide.md`](docs/algo-shell-guide.md) — full walkthrough of
+  the `autombist algo` interactive shell: registering algorithms and fault
+  instances, running campaigns, comparing marches, exporting reports/testbenches.
+- [`docs/multi-port-guide.md`](docs/multi-port-guide.md) — full reference for
+  `march-1r1w` and `march-2rw` config shapes, port-coupling faults, and
+  multi-port fault-campaign syntax in both the classic and algo-shell paths.
+- [`docs/diagnosis-reports.md`](docs/diagnosis-reports.md) — how to read
+  generated coverage/diagnosis reports (fail-bitmap, fault_details, JSON/CSV/MD
+  formats) from both subsystems.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — development setup, test markers, and
+  how to submit changes.
