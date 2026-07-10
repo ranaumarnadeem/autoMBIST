@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -8,6 +9,15 @@ from typing import cast
 import pytest
 import yaml
 from typer.testing import CliRunner
+
+# Strip ANSI/rich escape sequences so help-text assertions don't depend on
+# whether the CLI is rendering colored output (a real difference between an
+# interactive local TTY and CI's non-TTY environment).
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
@@ -172,16 +182,23 @@ def test_negative_faults_raises(tmp_path: Path, base_config: dict[str, object]) 
 
 
 def test_cli_help_mentions_version_and_options() -> None:
-    result = runner.invoke(app, ["--help"])
+    # Force a wide, uncolored render so rich/typer doesn't wrap option names
+    # across lines or interleave ANSI codes -- CI runs without a TTY at a
+    # narrow default width, which used to split "--version" and fail the
+    # substring checks even though the help text was correct.
+    result = runner.invoke(
+        app, ["--help"], env={"COLUMNS": "200", "NO_COLOR": "1", "TERM": "dumb"}
+    )
 
     assert result.exit_code == 0
-    assert "--version" in result.output
-    assert "generate" in result.output
-    assert "simulate" in result.output
-    assert "run" in result.output
-    assert "ram-synth" in result.output
-    assert "init" in result.output
-    assert "smoke" in result.output
+    output = _plain(result.output)
+    assert "--version" in output
+    assert "generate" in output
+    assert "simulate" in output
+    assert "run" in output
+    assert "ram-synth" in output
+    assert "init" in output
+    assert "smoke" in output
 
 
 def test_cli_version() -> None:
