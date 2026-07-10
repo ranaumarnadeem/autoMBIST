@@ -68,6 +68,11 @@ Thumbs.db
 # VS Code
 .vscode/
 
+# Nix
+result
+result-*
+.direnv/
+
 prompt.md
 
 OpenRAM/*

@@ -106,7 +106,18 @@ module march_engine #(
       if (n < 2) continue;
       prog[nelem].dir  = d;
       prog[nelem].nops = nops;
-      prog[nelem].ops  = '{o0, o1, o2, o3, o4, o5, o6, o7};
+      // Element-wise, not a '{...} assignment pattern: Verilator 5.020 (the
+      // version Ubuntu 24.04's apt package ships) rejects an assignment
+      // pattern targeting an unpacked array that is itself a struct field
+      // (STRUCTSEL error), even though newer Verilator accepts it.
+      prog[nelem].ops[0] = o0;
+      prog[nelem].ops[1] = o1;
+      prog[nelem].ops[2] = o2;
+      prog[nelem].ops[3] = o3;
+      prog[nelem].ops[4] = o4;
+      prog[nelem].ops[5] = o5;
+      prog[nelem].ops[6] = o6;
+      prog[nelem].ops[7] = o7;
       nelem++;
     end
     $fclose(fd);
