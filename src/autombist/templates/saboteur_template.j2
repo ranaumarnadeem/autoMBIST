@@ -192,6 +192,42 @@ module {{ memory_name }}_saboteur #(
         end
     end
 {% endif %}
+{% if fault_type in ("transition-up", "transition-down") %}
+{% set _tfmask = "tf_up_mask" if fault_type == "transition-up" else "tf_down_mask" %}
+    // Phase 3 -- transition write-transparency invariant. The transition
+    // saboteur is a shadow model rather than a wrapper around the real memory
+    // macro (unlike stuck-at / port-coupling, which DO wrap and validate the
+    // real macro): it needs the pre-write cell value to decide whether a
+    // 0->1 / 1->0 transition is blocked, plus a delay queue to model the
+    // transition time -- neither expressible by masking a black-box macro's
+    // dout. The real macro is therefore validated by the stuck-at / port-
+    // coupling paths, not this one.
+    //
+    // A cycle-accurate read cross-check against a parallel real-macro instance
+    // was tried and is intentionally NOT shipped: the shadow and a real macro
+    // have legitimately different write-to-read visibility timing, so comparing
+    // their reads cycle-by-cycle yields spurious mismatches even when both
+    // models are correct. What IS robust and worth guarding is transparency:
+    // at any address carrying NO transition-fault mask bit, the value actually
+    // committed (real_din) must equal the intended write (din). This holds by
+    // construction today; the assertion locks it against a future change to the
+    // masking logic that might corrupt fault-free data. NON-FATAL -- it drives
+    // neither {{ _rw.dout }} nor bist_fail, so it can never change a pass/fail
+    // result; it only prints GOLDEN_CHECK_ACTIVE / GOLDEN_MISMATCH.
+    logic gchk_active;
+    initial gchk_active = 1'b0;
+    always_ff @(posedge {{ _rw.clk }}) begin
+        if (write_cycle && {{ _tfmask }}[{{ _rw.addr }}] == '0) begin
+            if (!gchk_active) begin
+                gchk_active <= 1'b1;
+                $display("GOLDEN_CHECK_ACTIVE transition write-transparency invariant running");
+            end
+            if (real_din !== {{ _rw.din }})
+                $display("GOLDEN_MISMATCH addr=%0d intended=%h committed=%h",
+                         {{ _rw.addr }}, {{ _rw.din }}, real_din);
+        end
+    end
+{% endif %}
 
 {% if fault_type == "stuck-at" %}
     {{ memory_name }} #(
@@ -472,6 +508,33 @@ module {{ memory_name }}_saboteur #(
         end
     end
 
+    // Phase 3 -- transition write-transparency invariant (2RW, per port). Same
+    // rationale as the single-port branch: transition uses a shadow model (the
+    // real macro is validated by the stuck-at / port-coupling paths), and a
+    // cycle-accurate read cross-check vs a parallel real-macro instance is
+    // precluded by the two models' different write-to-read timing. At any
+    // address with no transition-fault mask bit, each port's committed value
+    // (real_dinN) must equal its intended write. Non-fatal: prints
+    // GOLDEN_CHECK_ACTIVE / GOLDEN_MISMATCH, never drives dout or bist_fail.
+    logic gchk_active;
+    initial gchk_active = 1'b0;
+    always_ff @(posedge {{ _p0.clk }}) begin
+        if (write_cycle0 && tf_mask[{{ _p0.addr }}] == '0) begin
+            if (!gchk_active) begin
+                gchk_active <= 1'b1;
+                $display("GOLDEN_CHECK_ACTIVE transition write-transparency invariant running");
+            end
+            if (real_din0 !== {{ _p0.din }})
+                $display("GOLDEN_MISMATCH port=0 addr=%0d intended=%h committed=%h",
+                         {{ _p0.addr }}, {{ _p0.din }}, real_din0);
+        end
+        if (write_cycle1 && tf_mask[{{ _p1.addr }}] == '0) begin
+            if (real_din1 !== {{ _p1.din }})
+                $display("GOLDEN_MISMATCH port=1 addr=%0d intended=%h committed=%h",
+                         {{ _p1.addr }}, {{ _p1.din }}, real_din1);
+        end
+    end
+
     assign {{ _p0.dout }} = read_data_q0;
     assign {{ _p1.dout }} = read_data_q1;
     assign dbg_actual_word = prior_word0;
@@ -738,6 +801,30 @@ module {{ memory_name }}_saboteur #(
         if (write_cycle) begin
             coupling_bits_q[{{ _wport.addr }}] <=
                 (read_cycle && ({{ _rport.addr }} == {{ _wport.addr }})) ? pc_mask[{{ _wport.addr }}] : '0;
+        end
+    end
+{% endif %}
+{% if fault_type in ("transition-up", "transition-down") %}
+{% set _tfmask = "tf_up_mask" if fault_type == "transition-up" else "tf_down_mask" %}
+    // Phase 3 -- transition write-transparency invariant (1R1W write port). Same
+    // rationale as the single-port branch: transition uses a shadow model (the
+    // real macro is validated by the stuck-at / port-coupling paths), and a
+    // cycle-accurate read cross-check vs a parallel real-macro instance is
+    // precluded by the two models' different write-to-read timing. At any
+    // address with no transition-fault mask bit, the committed value (real_din)
+    // must equal the intended write. Non-fatal: prints GOLDEN_CHECK_ACTIVE /
+    // GOLDEN_MISMATCH, never drives {{ _rport.dout }} or bist_fail.
+    logic gchk_active;
+    initial gchk_active = 1'b0;
+    always_ff @(posedge {{ _wport.clk }}) begin
+        if (write_cycle && {{ _tfmask }}[{{ _wport.addr }}] == '0) begin
+            if (!gchk_active) begin
+                gchk_active <= 1'b1;
+                $display("GOLDEN_CHECK_ACTIVE transition write-transparency invariant running");
+            end
+            if (real_din !== {{ _wport.din }})
+                $display("GOLDEN_MISMATCH addr=%0d intended=%h committed=%h",
+                         {{ _wport.addr }}, {{ _wport.din }}, real_din);
         end
     end
 {% endif %}
