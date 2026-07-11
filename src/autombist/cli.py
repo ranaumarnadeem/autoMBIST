@@ -437,6 +437,7 @@ def test(
     min_coverage: float | None = typer.Option(None, "--min-coverage", help="Fail (exit 1) if coverage is below this percent"),
     diagnosis: Path | None = typer.Option(None, "--diagnosis", help="Write a per-cell (addr, bit) diagnosis/fail-bitmap report to this path"),
     diagnosis_fmt: str = typer.Option("md", "--diagnosis-fmt", help="Diagnosis report format: md, csv, or json"),
+    check_sequence: bool = typer.Option(False, "--check-sequence", help="With --fsm: also verify the controller drives the exact march sequence of --algo (address order, ops, write data, port), independent of fault detection. Exits 1 on a sequence mismatch."),
 ) -> None:
     """Grade a memory against a functional fault library with an MBIST algorithm.
 
@@ -492,9 +493,22 @@ def test(
         if fsm is not None:
             sources = gather_sibling_sources(fsm)
             ports = check_ports(fsm.read_text(encoding="utf-8"))
-            result = run_fsm_campaign(mem, sources, ports.module_name, records, sim=sim, fault_ram_sv=fault_ram_sv)
+            # Pass expected_spec ONLY when a sequence check was requested, so the
+            # default call is byte-identical to before this feature existed.
+            fsm_kwargs: dict[str, object] = {}
+            if check_sequence:
+                fsm_kwargs["expected_spec"] = resolve_algo(algo)
+            result = run_fsm_campaign(
+                mem, sources, ports.module_name, records,
+                sim=sim, fault_ram_sv=fault_ram_sv, **fsm_kwargs,
+            )
             label = f"FSM:{ports.module_name} ({len(sources)} source file(s))"
         else:
+            if check_sequence:
+                raise ValueError(
+                    "--check-sequence requires --fsm (it validates a controller against its "
+                    "algorithm spec; the algorithm front IS the reference sequence)"
+                )
             spec = resolve_algo(algo)
             result = run_algo_campaign(mem, spec, records, sim=sim, verbose=verbose, fault_ram_sv=fault_ram_sv)
             label = f"{spec.name} ({spec.length_n}n)"
@@ -513,6 +527,25 @@ def test(
         typer.echo(f"  report: {report}")
     if diagnosis is not None:
         typer.echo(f"  diagnosis: {diagnosis}")
+    if result.sequence is not None:
+        seq = result.sequence
+        if seq.matches:
+            typer.echo(
+                f"  sequence: OK ({seq.observed_count} ops match {algo})"
+            )
+        else:
+            typer.secho(f"  sequence: MISMATCH vs {algo}", fg=typer.colors.RED)
+            for line in seq.message().splitlines()[1:]:
+                typer.secho(line, fg=typer.colors.RED)
+
+    if result.sequence is not None and not result.sequence.matches:
+        typer.secho(
+            "autombist: controller does not implement its specified march sequence "
+            "(see sequence MISMATCH above)",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
 
     if not coverage_meets_threshold(result, min_coverage):
         typer.secho(

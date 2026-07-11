@@ -167,7 +167,14 @@ def gather_sibling_sources(top_path: Path) -> list[Path]:
     return [top_path, *siblings]
 
 
-def render_harness(*, addr_width: int, data_width: int, fsm_module_name: str, has_bist_busy: bool = False) -> str:
+def render_harness(
+    *, addr_width: int, data_width: int, fsm_module_name: str,
+    has_bist_busy: bool = False, emit_seq_trace: bool = False,
+) -> str:
+    """Render the single-port FSM harness. ``emit_seq_trace`` is opt-in and
+    defaults to False: when False the rendered text is byte-identical to before
+    the sequence-checker feature existed (the observer block is elided by
+    Jinja)."""
     return _render_template(
         {
             "harness_top": HARNESS_TOP,
@@ -175,16 +182,21 @@ def render_harness(*, addr_width: int, data_width: int, fsm_module_name: str, ha
             "data_width": data_width,
             "fsm_module_name": fsm_module_name,
             "has_bist_busy": has_bist_busy,
+            "emit_seq_trace": emit_seq_trace,
         },
         "fsm_harness_template.sv.j2",
     )
 
 
-def render_harness_mp(*, addr_width: int, data_width: int, fsm_module_name: str, has_bist_busy: bool = False) -> str:
+def render_harness_mp(
+    *, addr_width: int, data_width: int, fsm_module_name: str,
+    has_bist_busy: bool = False, emit_seq_trace: bool = False,
+) -> str:
     """2-port sibling of render_harness -- same parameters, wires a 2-port
     researcher FSM (REQUIRED_PORTS_MP contract) through openram_shim_mp.sv
     (which wraps ONE fault_ram core rendered with num_ports=2) instead of
-    openram_shim.sv."""
+    openram_shim.sv. ``emit_seq_trace`` is opt-in (default False = byte-identical
+    render)."""
     return _render_template(
         {
             "harness_top": HARNESS_TOP,
@@ -192,6 +204,7 @@ def render_harness_mp(*, addr_width: int, data_width: int, fsm_module_name: str,
             "data_width": data_width,
             "fsm_module_name": fsm_module_name,
             "has_bist_busy": has_bist_busy,
+            "emit_seq_trace": emit_seq_trace,
         },
         "fsm_harness_mp_template.sv.j2",
     )

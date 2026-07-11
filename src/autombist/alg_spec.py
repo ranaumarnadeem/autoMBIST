@@ -71,6 +71,39 @@ class Element:
         return base + " " + " ".join(str(x) for x in padded_ports)
 
 
+@dataclass(slots=True, frozen=True)
+class AccessStep:
+    """One memory operation a correct controller must drive, as expanded from a
+    march spec. ``op`` uses the same 0=r0/1=r1/2=w0/3=w1 encoding as
+    :data:`OP_MAP`."""
+    elem_idx: int
+    op_idx: int
+    addr: int
+    op: int
+    port: int
+
+    @property
+    def is_write(self) -> bool:
+        return self.op in (2, 3)
+
+    @property
+    def write_value(self) -> int | None:
+        """0 for w0, 1 for w1, ``None`` for a read (whose expected data is not
+        visible on the memory bus -- it is validated instead by the golden pass
+        succeeding)."""
+        if self.op == 2:
+            return 0
+        if self.op == 3:
+            return 1
+        return None
+
+    def human(self) -> str:
+        tok = OP_NAME[self.op]
+        if self.port:
+            tok = f"{tok}.{self.port}"
+        return f"e{self.elem_idx}o{self.op_idx} {tok}@{self.addr}"
+
+
 @dataclass(slots=True)
 class AlgSpec:
     name: str
@@ -144,6 +177,68 @@ def parse_alg(text: str, name: str) -> AlgSpec:
             f"{name}: {len(elements)} elements exceeds engine max {MAX_ELEMENTS}"
         )
     return AlgSpec(name=name, elements=elements)
+
+
+def _expand_element(elem: Element, elem_idx: int, depth: int, direction: int) -> list[AccessStep]:
+    """Expand one element with an explicit address direction (0=up, 1=down)."""
+    addr_iter: range = range(depth - 1, -1, -1) if direction == 1 else range(0, depth)
+    steps: list[AccessStep] = []
+    for addr in addr_iter:
+        for o_idx, op in enumerate(elem.ops):
+            port = elem.ports[o_idx] if o_idx < len(elem.ports) else 0
+            steps.append(AccessStep(elem_idx=elem_idx, op_idx=o_idx, addr=addr, op=op, port=port))
+    return steps
+
+
+def expand_expected_trace(spec: AlgSpec, depth: int) -> list[AccessStep]:
+    """Expand a march spec into a single flat per-address memory-operation
+    sequence (``either`` treated as up, matching ``engine/march_engine.sv``'s
+    reference traversal). This is the canonical linear form; the *comparison*
+    against a real controller uses :func:`expand_expected_blocks` instead, which
+    additionally accepts a reversed traversal for ``either`` elements.
+    """
+    if depth <= 0:
+        raise AlgSpecError(f"depth must be a positive number of words, got {depth}")
+    steps: list[AccessStep] = []
+    for e_idx, elem in enumerate(spec.elements):
+        steps.extend(_expand_element(elem, e_idx, depth, 1 if elem.direction == 1 else 0))
+    return steps
+
+
+@dataclass(slots=True, frozen=True)
+class ElementBlock:
+    """One march element's expected memory operations, with every address
+    ordering a correct controller is allowed to use. A fixed-direction element
+    (``up``/``down``) has exactly one acceptable ordering; an ``either`` (↕)
+    element has two -- ascending OR descending -- because the march definition
+    leaves the address order of an ``either`` element free (a controller like
+    ``march_c_fsm`` legitimately runs one ``either`` element up and another
+    down). The comparison accepts the observed block if it matches ANY ordering.
+    """
+    elem_idx: int
+    orderings: tuple[tuple[AccessStep, ...], ...]
+
+    @property
+    def size(self) -> int:
+        return len(self.orderings[0])
+
+
+def expand_expected_blocks(spec: AlgSpec, depth: int) -> list[ElementBlock]:
+    """Expand a march spec into per-element blocks for sequence comparison,
+    encoding the ``either``-direction freedom (see :class:`ElementBlock`)."""
+    if depth <= 0:
+        raise AlgSpecError(f"depth must be a positive number of words, got {depth}")
+    blocks: list[ElementBlock] = []
+    for e_idx, elem in enumerate(spec.elements):
+        if elem.direction == 2:  # either -> ascending or descending both valid
+            orderings = (
+                tuple(_expand_element(elem, e_idx, depth, 0)),
+                tuple(_expand_element(elem, e_idx, depth, 1)),
+            )
+        else:
+            orderings = (tuple(_expand_element(elem, e_idx, depth, elem.direction)),)
+        blocks.append(ElementBlock(elem_idx=e_idx, orderings=orderings))
+    return blocks
 
 
 def load_alg_file(path: Path, name: str | None = None) -> AlgSpec:

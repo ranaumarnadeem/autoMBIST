@@ -45,6 +45,24 @@ module {{ harness_top }} #(
       $finish;
     end
   end
+{% if emit_seq_trace %}
+  // Sequence-correctness observer (opt-in). When +SEQ_TRACE is passed, print one
+  // ACCESS line per committed memory operation on EACH port (chip-select active
+  // at a clock edge). The campaign parses these from the GOLDEN pass and
+  // compares each port's stream against the expected march trace, independent of
+  // fault detection (see autombist.seq_check). Emits nothing unless +SEQ_TRACE
+  // is set, so a fault run's output is unchanged.
+  bit seq_trace = 0;
+  initial seq_trace = ($test$plusargs("SEQ_TRACE") != 0);
+  always @(posedge clk) begin
+    if (seq_trace) begin
+      if (sram_csb0 == 1'b0)
+        $display("ACCESS port=0 we=%0d addr=%0d din=%0h", ~sram_web0, sram_addr0, sram_din0);
+      if (sram_csb1 == 1'b0)
+        $display("ACCESS port=1 we=%0d addr=%0d din=%0h", ~sram_web1, sram_addr1, sram_din1);
+    end
+  end
+{% endif %}
 
   {{ fsm_module_name }} #(
     .ADDR_WIDTH(AW),
