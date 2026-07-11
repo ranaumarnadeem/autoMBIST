@@ -158,6 +158,16 @@ class AlgoShell(cmd.Cmd):
             f"{result.algo_name}: {result.detected}/{result.total} detected "
             f"({result.coverage_percent:.2f}%)  build={result.build_seconds:.2f}s run={result.run_seconds:.2f}s"
         )
+        # Sequence-correctness line only appears when a --check was requested
+        # (result.sequence populated); ordinary runs are unchanged.
+        if result.sequence is not None:
+            seq = result.sequence
+            if seq.matches:
+                self._out(f"  sequence: OK ({seq.observed_count} ops match spec)")
+            else:
+                self._out(f"  sequence: MISMATCH ({seq.observed_count} observed vs {seq.expected_count} expected)")
+                for line in seq.message().splitlines()[1:]:
+                    self._out(line)
 
     def _render_fault_ram_for(self, workdir: Path) -> Path:
         """Render fault_ram.sv from the session's registry into workdir. The
@@ -332,26 +342,37 @@ class AlgoShell(cmd.Cmd):
         self._out(f"generated {len(records)} faults")
 
     def do_run(self, arg: str) -> None:
-        """run <algo_name|fsm_name> [--verbose]
+        """run <algo_name|fsm_name> [--verbose] [--check ALGO]
         Run a fault campaign for one algorithm, or a registered FSM (from
         add_fsm), against the current fault list. FSM runs report detect/
-        escape only (--verbose has no effect for them)."""
+        escape only (--verbose has no effect for them).
+        --check ALGO (FSM targets only): also verify the controller drives the
+        exact march sequence of ALGO (a built-in name or a .alg path), address
+        order / ops / write data / port -- independent of fault detection."""
         mem = self._require_memory()
-        pos, flags = _parse_flags(_tokenize(arg), {"verbose": None})
+        pos, flags = _parse_flags(_tokenize(arg), {"verbose": None, "check": str})
         if not pos:
-            raise ValueError("usage: run <algo_name|fsm_name> [--verbose]")
+            raise ValueError("usage: run <algo_name|fsm_name> [--verbose] [--check ALGO]")
         name = pos[0]
 
         if name in self.session.fsms:
             entry = self.session.fsms[name]
             workdir = self.session.next_run_dir(f"run_fsm_{name}")
             fault_ram_sv = self._render_fault_ram_for(workdir)
+            # Pass expected_spec ONLY when --check was given, so a plain FSM run
+            # calls run_fsm_campaign byte-identically to before this feature.
+            fsm_kwargs: dict[str, object] = {}
+            if flags.get("check"):
+                fsm_kwargs["expected_spec"] = self._resolve_algo(str(flags["check"]))
             result = run_fsm_campaign(
                 mem, entry.sources, entry.module_name, self.session.faults,
                 sim=self.session.sim, workdir=workdir, fault_ram_sv=fault_ram_sv,
+                **fsm_kwargs,
             )
             result.algo_name = name
         else:
+            if flags.get("check"):
+                raise ValueError("--check applies only to a registered FSM target (an algorithm IS its own reference sequence)")
             spec = self._resolve_algo(name)
             workdir = self.session.next_run_dir(f"run_{spec.name}")
             fault_ram_sv = self._render_fault_ram_for(workdir)

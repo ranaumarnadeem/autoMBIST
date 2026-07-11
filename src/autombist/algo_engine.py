@@ -22,7 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .alg_spec import AlgSpec, find_engine_dir
+from .alg_spec import AlgSpec, expand_expected_blocks, find_engine_dir
+from .seq_check import SequenceResult, compare_trace, parse_observed_trace
 
 # The 19 functional fault primitives fault_ram.sv implements natively (see
 # engine/README.md). P6 (add_fault_type) will let researchers extend this set.
@@ -101,6 +102,8 @@ class CampaignResult:
     build_seconds: float
     run_seconds: float
     sim: str
+    sequence: SequenceResult | None = None   # populated only when a sequence
+                                             # check was requested (FSM front)
 
     def matrix_row(self) -> dict[str, str]:
         """{fault label: 'D'/'E'}, keyed by 'TYPE@vaddr.vbit' to disambiguate
@@ -119,7 +122,7 @@ class CampaignResult:
         return row
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "algo_name": self.algo_name,
             "mem": {
                 "addr_width": self.mem.addr_width,
@@ -156,6 +159,25 @@ class CampaignResult:
                 for r in self.faults
             ],
         }
+        # Sequence-correctness result is present only when a check was requested
+        # (FSM front with an expected spec); omitted entirely otherwise so
+        # existing consumers see a byte-identical dict.
+        if self.sequence is not None:
+            d["sequence"] = {
+                "matches": self.sequence.matches,
+                "expected_count": self.sequence.expected_count,
+                "observed_count": self.sequence.observed_count,
+                "divergences": [
+                    {
+                        "port": dv.port,
+                        "index": dv.index,
+                        "expected": dv.expected,
+                        "observed": dv.observed,
+                    }
+                    for dv in self.sequence.divergences
+                ],
+            }
+        return d
 
 
 @dataclass(slots=True)
@@ -584,6 +606,7 @@ def run_fsm_campaign(
     sim: str = "verilator",
     workdir: Path | None = None,
     fault_ram_sv: Path | None = None,
+    expected_spec: AlgSpec | None = None,
 ) -> CampaignResult:
     """Compile FSM + openram_shim + fault_ram (via a generated harness) once,
     golden-gate, then one run per fault. Detection is bist_fail only -- no
@@ -594,6 +617,15 @@ def run_fsm_campaign(
     unmodified; num_ports==2 uses the new openram_shim_mp.sv (wrapping ONE
     fault_ram core rendered with num_ports=2) + the new 2-port harness
     template, and validates the FSM against REQUIRED_PORTS_MP.
+
+    ``expected_spec`` is opt-in: when given, the harness is rendered with an
+    ACCESS observer and the GOLDEN pass is traced with ``+SEQ_TRACE`` so the
+    controller's actual memory-operation sequence can be checked against the
+    march sequence ``expected_spec`` requires (see :mod:`autombist.seq_check`),
+    independent of fault detection. The result is attached to
+    ``CampaignResult.sequence``. When None (the default) NOTHING about this path
+    changes: the harness renders byte-identically and no ``+SEQ_TRACE`` is
+    passed, so every existing FSM campaign is unaffected.
     """
     from .fsm_harness import HARNESS_TOP, check_ports, parse_ports, render_harness, render_harness_mp
 
@@ -605,6 +637,7 @@ def run_fsm_campaign(
         workdir = Path(workdir)
         workdir.mkdir(parents=True, exist_ok=True)
 
+    check_sequence = expected_spec is not None
     try:
         engine_dir = find_engine_dir()
         resolved_fault_ram, shim_sv = _resolve_fsm_engine_sources(mem, engine_dir, workdir, fault_ram_sv)
@@ -621,11 +654,13 @@ def run_fsm_campaign(
             harness_text = render_harness_mp(
                 addr_width=mem.addr_width, data_width=mem.data_width,
                 fsm_module_name=fsm_module_name, has_bist_busy=has_bist_busy,
+                emit_seq_trace=check_sequence,
             )
         else:
             harness_text = render_harness(
                 addr_width=mem.addr_width, data_width=mem.data_width,
                 fsm_module_name=fsm_module_name, has_bist_busy=has_bist_busy,
+                emit_seq_trace=check_sequence,
             )
         harness_path.write_text(harness_text, encoding="utf-8")
 
@@ -642,12 +677,25 @@ def run_fsm_campaign(
 
         start = time.time()
 
-        golden_out = run_one(artifact, extra_plusargs=plusargs)
+        # Only the golden run carries +SEQ_TRACE (the observer emits nothing
+        # without it), so per-fault runs stay identical whether or not a
+        # sequence check was requested.
+        golden_plusargs = plusargs + ["+SEQ_TRACE"] if check_sequence else plusargs
+        golden_out = run_one(artifact, extra_plusargs=golden_plusargs)
         golden_detected, *_ = parse_result_line(golden_out)
         if golden_detected:
             raise CampaignError(
                 f"golden run for FSM '{fsm_module_name}' unexpectedly reported DETECTED "
                 f"(no faults were injected). The FSM or harness wiring is broken.\n{golden_out}"
+            )
+
+        sequence: SequenceResult | None = None
+        if check_sequence:
+            assert expected_spec is not None  # for type checkers; guarded by check_sequence
+            observed = parse_observed_trace(golden_out)
+            blocks = expand_expected_blocks(expected_spec, mem.depth)
+            sequence = compare_trace(
+                blocks, observed, data_width=mem.data_width, num_ports=mem.num_ports,
             )
 
         results: list[FaultResult] = []
@@ -667,6 +715,7 @@ def run_fsm_campaign(
             algo_name=f"FSM:{fsm_module_name}", mem=mem, golden_clean=True, faults=results,
             detected=detected_count, total=total, coverage_percent=coverage,
             build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
+            sequence=sequence,
         )
     finally:
         if own_tmp is not None:
