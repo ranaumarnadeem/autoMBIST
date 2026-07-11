@@ -24,6 +24,13 @@ TRANSITION_MAX_PENDING_RE = re.compile(r"Max pending depth:\s*(\d+)")
 TRANSITION_TOP_BLOCKED_RE = re.compile(r"Top blocked addresses \(addr:bits\):\s*(.+)")
 TRANSITION_TOP_DETECTED_RE = re.compile(r"Top detected addresses \(addr:bits\):\s*(.+)")
 FAULT_SITE_RE = re.compile(r"^FAULT_SITE (.+)$", re.MULTILINE)
+# The opt-in functional-port fail scan (test_mbist.test_fail_scan) emits one
+# FAIL_CELL {json} line per OBSERVED-failing cell, then a FAIL_SCAN_COMPLETE
+# marker. The marker lets the report distinguish "scanned, found nothing"
+# (fail_bitmap present but empty) from "no scan ran" (key absent) -- so every
+# non-fail-scan run's report stays byte-identical.
+FAIL_CELL_RE = re.compile(r"^FAIL_CELL (.+)$", re.MULTILINE)
+FAIL_SCAN_DONE_RE = re.compile(r"^FAIL_SCAN_COMPLETE\b", re.MULTILINE)
 
 
 @dataclass(slots=True)
@@ -138,6 +145,56 @@ def parse_fault_site_lines(stdout: str, stderr: str) -> list[dict[str, Any]]:
             continue
         sites.append(payload)
     return sites
+
+
+def parse_fail_bitmap_lines(stdout: str, stderr: str) -> list[dict[str, int]]:
+    """Extract the observation-derived fail-bitmap emitted by the functional-port
+    fail scan as ``FAIL_CELL {json}`` lines -- one per cell the scan OBSERVED
+    reading wrong, independent of any injected fault list.
+
+    Each payload is ``{"addr": int, "bit": int}``. The result is deduplicated
+    and sorted by ``(addr, bit)`` for a stable report. Lines that fail to parse
+    as JSON, are not objects, or lack integer ``addr``/``bit`` are skipped
+    defensively -- captured stdout can be interleaved or truncated (e.g. on a
+    timeout), and a partial fail-bitmap is still useful to a repair-analysis
+    (BIRA) consumer.
+    """
+    combined = "\n".join(part for part in (stdout, stderr) if part)
+    seen: set[tuple[int, int]] = set()
+    cells: list[dict[str, int]] = []
+    for match in FAIL_CELL_RE.finditer(combined):
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        addr = payload.get("addr")
+        bit = payload.get("bit")
+        # bool is an int subclass; reject it so a stray true/false can't become
+        # a coordinate.
+        if not isinstance(addr, int) or isinstance(addr, bool):
+            continue
+        if not isinstance(bit, int) or isinstance(bit, bool):
+            continue
+        key = (addr, bit)
+        if key in seen:
+            continue
+        seen.add(key)
+        cells.append({"addr": addr, "bit": bit})
+    cells.sort(key=lambda cell: (cell["addr"], cell["bit"]))
+    return cells
+
+
+def fail_scan_ran(stdout: str, stderr: str) -> bool:
+    """True iff the opt-in functional fail scan emitted its completion marker.
+
+    Used to decide whether to attach ``fail_bitmap`` to the report at all: a run
+    that never scanned must produce a byte-identical report (no key), while a
+    clean scan that found nothing must still report an *empty* ``fail_bitmap``
+    (present, ``[]``) so a consumer can tell "scanned, clean" from "not scanned".
+    """
+    return bool(FAIL_SCAN_DONE_RE.search(stdout) or FAIL_SCAN_DONE_RE.search(stderr))
 
 
 def parse_junit_xml(results_xml_path: Path) -> dict[str, Any]:
@@ -292,6 +349,13 @@ def build_simulation_report(
     if fault_type in {"transition-up", "transition-down"}:
         report["transition_metrics"] = parse_transition_metrics(stdout, stderr)
     report["fault_details"] = parse_fault_site_lines(stdout, stderr)
+    # Opt-in, additive: attach the observation-derived fail-bitmap ONLY when a
+    # functional fail scan actually ran (marker present). Every ordinary run
+    # omits the key entirely, keeping the report byte-identical -- this is why
+    # schema_version is not bumped. The fail-bitmap is the load-bearing input a
+    # future BIRA step consumes (see bira_input.fail_cells).
+    if fail_scan_ran(stdout, stderr):
+        report["fail_bitmap"] = parse_fail_bitmap_lines(stdout, stderr)
     report["summary"] = format_simulation_summary(report)
     return report
 

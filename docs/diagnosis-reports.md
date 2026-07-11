@@ -337,6 +337,48 @@ If no `FAULT_SITE` lines appear in the captured stdout/stderr at all (e.g. a run
 that produced no fault summary), `fault_details` is simply `[]` — an empty list,
 still present, never an absent key.
 
+### `fail_bitmap` — the observation-derived fail scan (opt-in)
+
+`fault_details` is **injection-gated**: it only ever reports the cells the
+saboteur was told to fault (`selected_by_location`), and its detected/escaped
+verdicts come from the saboteur's own debug taps. That is the right shape for
+*coverage measurement*, but it cannot report a defect the saboteur did not
+inject — so it is not, by itself, the fail map a repair flow needs for a memory
+with an *unknown* defect.
+
+`fail_bitmap` closes that gap. When a simulation is run in fail-scan mode
+(`run_simulation(fail_scan=True)`, which selects `FAULT_MODE=failscan` and runs
+`test_mbist.test_fail_scan`), the harness walks **every** cell through the
+wrapper's functional port — writing a solid-0 then solid-1 pattern and reading
+it back — and prints one `FAIL_CELL {json}` line per cell whose read-back
+differs from what was written, followed by a `FAIL_SCAN_COMPLETE` marker:
+
+```
+FAIL_CELL {"addr": 3, "bit": 0}
+FAIL_CELL {"addr": 15, "bit": 3}
+FAIL_SCAN_COMPLETE cells=2
+```
+
+`reporting.parse_fail_bitmap_lines()` decodes these into
+`report["fail_bitmap"]` — a deduplicated, `(addr, bit)`-sorted list of
+`{"addr": int, "bit": int}`. Because `func_dout` comes straight off the memory's
+read path (and the macro is always clocked), this observes the memory's **real**
+output — so it reports a hard defect in the memory itself, not only injected
+saboteur faults, and it is **ungated** (no injected-fault-list filter). That is
+exactly the input a Built-In Redundancy Analysis (BIRA) step consumes.
+
+Two properties matter for consumers:
+
+- The key is **present only when a scan actually ran** (the marker was seen). A
+  clean scan that found nothing reports `"fail_bitmap": []` (present, empty); a
+  run that never scanned omits the key entirely. This keeps every ordinary
+  (non-fail-scan) report byte-identical — which is why `schema_version` is not
+  bumped for this addition.
+- `bira_input.fail_cells(report)` is the uniform adapter: it unions `fail_bitmap`
+  with the DETECTED entries of `fault_details` (escapes excluded) and returns a
+  single integer-keyed `set[(addr, bit)]`, so a repair-analysis consumer never
+  has to branch on report provenance or decode the hex-string `ADDR`/`BIT` form.
+
 ---
 
 ## 4. Address-decoder vs. coupling faults: a non-obvious distinction
