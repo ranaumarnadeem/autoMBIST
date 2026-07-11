@@ -289,7 +289,10 @@ def _prepare_fault_files() -> None:
 
     if mode == "clean":
         faults = 0
-    elif mode != "faults":
+    elif mode not in ("faults", "failscan"):
+        # "failscan" (the opt-in functional fail scan, test_fail_scan) reuses the
+        # exact same saboteur masks as "faults" -- it just observes them through
+        # the functional port instead of running the march detection test.
         raise ValueError(f"Unsupported FAULT_MODE: {mode}")
 
     fault_type_map = {
@@ -674,3 +677,105 @@ async def test_port_coupling_faults(dut):
         assert int(dut.bist_fail.value) == 1, "MBIST did not detect injected port-coupling faults"
     else:
         assert int(dut.bist_fail.value) == 0, "MBIST reported fail with zero injected port-coupling faults (false positive)"
+
+
+async def _functional_fail_scan(dut, addr_width: int, data_width: int, read_latency: int) -> list[tuple[int, int]]:
+    """Observation-derived fail-bitmap via the functional port.
+
+    In functional mode (test_mode=0) drive ONLY the wrapper's functional
+    boundary -- func_csb/func_we/func_addr/func_din/func_dout -- and write a
+    solid pattern to every cell, then read it back, twice: all-0s then all-1s.
+    Any bit that reads back different from what was written is a defective cell.
+    Solid-0 exposes stuck-at-1; solid-1 exposes stuck-at-0; the union is every
+    stuck-at cell in the array.
+
+    Crucially this observes the memory's REAL output: ``func_dout`` comes
+    straight off the macro read path (``assign func_dout = sram_dout`` in the
+    wrapper, with ``sram_clk0 = clk`` so the macro is always clocked), so a hard
+    defect *in the memory itself* is reported -- not only injected saboteur
+    faults. It is UNGATED (no injected-fault-list filter), which is exactly what
+    a redundancy-repair (BIRA) flow needs. Each access is held for several
+    cycles so the result is robust to the macro's registered-read latency (0/1/2)
+    rather than depending on one exact sampling edge.
+
+    Returns the sorted list of failing ``(addr, bit)`` coordinates.
+    """
+    depth = 1 << addr_width
+    data_mask = (1 << data_width) - 1
+    hold = read_latency + 4  # generous: dout re-latches mem[addr] every held cycle
+
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+
+    dut.rst_n.value = 0
+    dut.test_mode.value = 0          # functional mode: func_* drives the macro
+    dut.bist_start.value = 0
+    dut.func_csb.value = 1
+    dut.func_we.value = 0
+    dut.func_addr.value = 0
+    dut.func_din.value = 0
+    await ClockCycles(dut.clk, 4)
+    dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)
+
+    fails: set[tuple[int, int]] = set()
+    for pattern in (0, data_mask):
+        # Phase 1: write the solid pattern to every cell.
+        for addr in range(depth):
+            dut.func_csb.value = 0
+            dut.func_we.value = 1        # 1 = write request; wrapper adapts we polarity
+            dut.func_addr.value = addr
+            dut.func_din.value = pattern
+            await ClockCycles(dut.clk, 2)
+        dut.func_csb.value = 1
+        dut.func_we.value = 0
+        await ClockCycles(dut.clk, 2)
+
+        # Phase 2: read every cell back and diff against the written pattern.
+        for addr in range(depth):
+            dut.func_csb.value = 0
+            dut.func_we.value = 0        # 0 = read
+            dut.func_addr.value = addr
+            await ClockCycles(dut.clk, hold)
+            await Timer(1, unit="ns")    # let NBA read data settle before sampling
+            read_word = _safe_int(dut.func_dout)
+            if read_word is None:
+                continue
+            diff = (read_word ^ pattern) & data_mask
+            bit = 0
+            while diff:
+                if diff & 1:
+                    fails.add((addr, bit))
+                diff >>= 1
+                bit += 1
+        dut.func_csb.value = 1
+        await ClockCycles(dut.clk, 2)
+
+    return sorted(fails)
+
+
+@cocotb.test()
+async def test_fail_scan(dut):
+    """Opt-in observation-derived fail-bitmap (FAULT_MODE=failscan).
+
+    Probe every cell through the functional port and emit one
+    ``FAIL_CELL {"addr":A,"bit":B}`` line per cell that reads wrong, then a
+    ``FAIL_SCAN_COMPLETE`` marker. This is the ungated, memory-observing input a
+    future BIRA step consumes -- it reports the real defect set regardless of any
+    injected fault list. Gated on FAULT_MODE=="failscan" so it is the ONLY test
+    that runs in a fail-scan invocation (one clock, no interference); every
+    other test early-returns for that mode, leaving them byte-identical."""
+    if os.getenv("FAULT_MODE", "clean").strip().lower() != "failscan":
+        return
+
+    addr_width = int(os.getenv("ADDR_WIDTH", "10"))
+    data_width = int(os.getenv("DATA_WIDTH", "32"))
+    read_latency = int(os.getenv("READ_LATENCY", "1"))
+
+    fails = await with_timeout(
+        _functional_fail_scan(dut, addr_width, data_width, read_latency),
+        500_000,
+        "ns",
+    )
+    for addr, bit in fails:
+        print("FAIL_CELL " + json.dumps({"addr": addr, "bit": bit}))
+    print(f"FAIL_SCAN_COMPLETE cells={len(fails)}")

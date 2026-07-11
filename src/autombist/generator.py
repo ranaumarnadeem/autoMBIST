@@ -299,6 +299,64 @@ def _normalize_ports(ports: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return normalized
 
 
+# Wrapper boundary pin names that a repair-passthrough pin must never shadow
+# (plus the two module parameters), or the generated wrapper's own interface
+# would break.
+_WRAPPER_RESERVED_PINS = frozenset({
+    "clk", "rst_n", "test_mode", "bist_start", "bist_done", "bist_fail",
+    "func_csb", "func_addr", "func_din", "func_we", "func_dout",
+    "ADDR_WIDTH", "DATA_WIDTH",
+})
+
+
+def _validate_repair_ports(loaded: dict[str, Any]) -> None:
+    """Validate and normalise the OPTIONAL ``repair_ports:`` block.
+
+    ``repair_ports`` is the passthrough seam for a redundant/repairable memory
+    macro's extra pins (e.g. ``repair_valid``/``repair_addr`` driven by BISR):
+    the wrapper surfaces each on its boundary and binds it straight through to
+    the (non-saboteur) memory instance. This is the explicit hook that stops the
+    port normaliser from silently dropping such pins. Absent -> nothing changes
+    (byte-identical output). Each entry is ``{name, width=1, dir=input|output}``.
+    """
+    if "repair_ports" not in loaded:
+        return
+
+    entries = loaded["repair_ports"]
+    if not isinstance(entries, list) or not entries:
+        raise ConfigError("repair_ports must be a non-empty list when present")
+
+    seen: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        where = f"repair_ports[{index}]"
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{where} must be a mapping")
+
+        name = entry.get("name")
+        if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
+            raise ConfigError(f"{where}.name must be a valid identifier")
+        if name in _WRAPPER_RESERVED_PINS:
+            raise ConfigError(
+                f"{where}.name {name!r} collides with a reserved wrapper pin"
+            )
+        if name in seen:
+            raise ConfigError(f"{where}: duplicate repair pin name {name!r}")
+        seen.add(name)
+
+        width = entry.get("width", 1)
+        if isinstance(width, bool) or not isinstance(width, int) or width < 1:
+            raise ConfigError(f"{where}.width must be a positive integer")
+
+        direction = entry.get("dir", "input")
+        if direction not in ("input", "output"):
+            raise ConfigError(f"{where}.dir must be 'input' or 'output'")
+
+        normalized.append({"name": name, "width": width, "dir": direction})
+
+    loaded["repair_ports"] = normalized
+
+
 def load_config(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -330,6 +388,8 @@ def load_config(config_path: Path) -> dict[str, Any]:
     loaded["normalized_ports"] = _normalize_ports(ports)
     if not _is_legacy_flat_ports(ports):
         loaded["ports"] = loaded["normalized_ports"]
+
+    _validate_repair_ports(loaded)
 
     return loaded
 

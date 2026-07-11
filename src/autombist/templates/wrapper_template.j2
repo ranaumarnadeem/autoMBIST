@@ -17,6 +17,11 @@ module {{ wrapper_module_name }} #(
     input  logic [DATA_WIDTH-1:0] func_din,
     input  logic                  func_we,
     output logic [DATA_WIDTH-1:0] func_dout
+{% if repair_ports %}
+{% for rp in repair_ports %}
+  , {{ rp.dir }} logic [{{ rp.width }}-1:0] {{ rp.name }}
+{% endfor %}
+{% endif %}
 );
 
 {% if normalized_ports|length == 1 %}
@@ -109,6 +114,11 @@ module {{ wrapper_module_name }} #(
         .{{ pdata.din }}(sram_din),
         .{{ pdata.we }}(sram_we),
         .{{ pdata.dout }}(sram_dout)
+{% if repair_ports %}
+{% for rp in repair_ports %}
+      , .{{ rp.name }}({{ rp.name }})
+{% endfor %}
+{% endif %}
     );
     {% endfor %}
 {% endif %}

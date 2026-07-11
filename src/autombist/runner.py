@@ -178,10 +178,19 @@ def _build_fault_command(
     pulse_width_ns: int,
     algo: str,
     project_root: Path | None = None,
+    fail_scan: bool = False,
 ) -> list[str]:
     if project_root is None:
         project_root = Path(__file__).resolve().parents[2]
-    
+
+    # fail_scan swaps the run into the opt-in functional fail-scan mode: the
+    # saboteur still injects its faults, but instead of the march detection test
+    # (FAULT_MODE=faults) only test_mbist.test_fail_scan runs -- probing every
+    # cell through the functional port and emitting the ungated fail-bitmap
+    # (FAIL_CELL lines) a BIRA step consumes. Every other cocotb test
+    # early-returns for FAULT_MODE=failscan, so exactly one runs.
+    fault_mode = "failscan" if fail_scan else "faults"
+
     command = [
         "make",
         "-C",
@@ -192,7 +201,7 @@ def _build_fault_command(
         f"MEMORY_NAME={config['memory_name']}",
         f"WRAPPER_MODULE={config['wrapper_module_name']}",
         "USE_SABOTEUR=1",
-        "FAULT_MODE=faults",
+        f"FAULT_MODE={fault_mode}",
         f"FAULTS={faults}",
         f"FAULT_TYPE={fault_type}",
         f"PULSE_WIDTH_NS={pulse_width_ns}",
@@ -212,7 +221,17 @@ def run_simulation(
     module_outdir: Path,
     *,
     verbose: bool = False,
+    fail_scan: bool = False,
 ) -> SimulationResult:
+    """Run the generated MBIST simulation and build its JSON report.
+
+    ``fail_scan`` (opt-in) runs the functional-port fail scan instead of the
+    march detection test: it probes every cell and attaches an observation-
+    derived ``fail_bitmap`` to the report (the input a redundancy-analysis step
+    consumes). It requires the saboteur build (``use_saboteur``); on a clean,
+    no-saboteur build it is ignored. Default False keeps every existing caller
+    byte-identical.
+    """
     start_time = time.time()
     config = _load_simulation_config(module_outdir)
     wrapper_path = module_outdir / f"{config['memory_name']}_mbist.v"
@@ -264,6 +283,7 @@ def run_simulation(
             pulse_width_ns=pulse_width_ns,
             algo=algo,
             project_root=project_root,
+            fail_scan=fail_scan,
         )
     else:
         command = _build_clean_command(
