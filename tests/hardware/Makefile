@@ -6,6 +6,7 @@ WRAPPER_FILE ?= $(MODULE_OUTDIR)/$(MEMORY_NAME)_mbist.v
 SRAM_SOURCE ?= $(abspath ./$(MEMORY_NAME).v)
 WRAPPER_MODULE ?= $(MEMORY_NAME)_mbist
 USE_SABOTEUR ?= 0
+USE_REPAIR_REMAP ?= 0
 FAULT_MODE ?= clean
 FAULTS ?= 0
 FAULT_SEED ?=
@@ -48,6 +49,14 @@ else
 SABOTEUR_SOURCE :=
 endif
 
+# External row-repair remap RTL (redundancy builds only). copy_mbist_rtl copies
+# rtl/repair_remap_row.sv into MODULE_OUTDIR alongside the algo RTL.
+ifeq ($(USE_REPAIR_REMAP),1)
+REMAP_SOURCE := $(MODULE_OUTDIR)/repair_remap_row.sv
+else
+REMAP_SOURCE :=
+endif
+
 ifeq ($(ALGO_TEST),1)
 VERILOG_SOURCES := $(SRAM_SOURCE) \
                    $(ALGO_PROBE_SOURCE) \
@@ -62,6 +71,7 @@ endif
 else
 VERILOG_SOURCES := $(WRAPPER_FILE) \
                    $(SABOTEUR_SOURCE) \
+                   $(REMAP_SOURCE) \
                    $(SRAM_SOURCE) \
                    $(MODULE_OUTDIR)/$(ALGO_DIR)/$(ALGO_DIR)_algo.sv \
                    $(MODULE_OUTDIR)/$(ALGO_DIR)/$(ALGO_DIR)_fsm.sv \
@@ -76,6 +86,7 @@ COMPILE_ARGS += -g2012
 export PYTHONPATH := $(PROJECT_ROOT)/src:$(PYTHONPATH)
 export PYTHON_BIN
 export FAULT_MODE
+export REPAIR_PHASE
 export FAULTS
 export FAULT_SEED
 export FAULT_TYPE

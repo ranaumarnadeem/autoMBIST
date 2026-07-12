@@ -1,5 +1,15 @@
 # Redundancy & Repair (BIRA/BISR) — design roadmap
 
+> ⚠️ **Superseded in part by [redundancy-repair-plan.md](redundancy-repair-plan.md)**
+> (synthesized from LibreLane/OpenRAM/BISR research + internal analysis). Key
+> revisions there: the remap lives in **external standard-cell logic around a stock,
+> spare-augmented OpenRAM macro** (OpenRAM's spares are already *addressable* — spare
+> rows = top addresses, spare cols = extra `din`/`dout` bits + `spare_wen`), **not**
+> as repair pins inside a hand-written macro (Step A below); and the MBIST controller
+> needs `fail_addr` outputs added for on-chip repair. Read the plan for the current
+> architecture; this roadmap remains useful for the BIRA-algorithm and step-sequencing
+> detail.
+
 > Status: **design roadmap for unbuilt work.** Nothing here is implemented yet.
 > This is a handoff/build guide, not product documentation. It assumes the
 > current codebase (multi-port fault modeling + the validation-hardening layer:
@@ -46,10 +56,16 @@ A memory RTL family with **spare rows and/or columns** plus a **remap layer**
 that redirects a faulty address/column to a spare, controlled by a repair
 configuration (fuses or repair registers).
 
-**Honest dependency:** OpenRAM emits *no* redundancy (confirmed: a repo-wide grep
-of its generated `.lib`/`.v` finds zero spare/redundancy/repair constructs). So
-this is a **hand-written/templated RTL family**, modeled on the existing
-`rtl/sram_model*.sv` and `rtl/march_*` families — not OpenRAM output. Put it at
+**Honest dependency (refined):** OpenRAM's sky130 flow *does* accept
+`num_spare_rows`/`num_spare_cols` (see `scripts/synthesize_sram.py:76-86`), but
+those add only **physical** spare rows/columns — it generates **no repair logic
+and no repair pins in any view**, so the spares are invisible to behavioral
+simulation and to P&R-level repair. See
+[openroad-macro-integration.md](openroad-macro-integration.md) §6 for the full
+Tier-1 (behavioral, buildable now) vs Tier-2 (abstract views for tapeout,
+deferred) split and how the macro contract / repair pins propagate through the
+flow. So this step is a **hand-written/templated RTL family**, modeled on the
+existing `rtl/sram_model*.sv` and `rtl/march_*` families — not OpenRAM output. Put it at
 e.g. `rtl/sram_model_redundant.sv` (+ a `tests/hardware/sram_redundant_dut.v`
 test copy, mirroring how `sram_2rw_dut.v` mirrors `sram_model_2rw.sv`).
 

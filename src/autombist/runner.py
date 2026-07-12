@@ -222,6 +222,7 @@ def run_simulation(
     *,
     verbose: bool = False,
     fail_scan: bool = False,
+    extra_make_vars: dict[str, str] | None = None,
 ) -> SimulationResult:
     """Run the generated MBIST simulation and build its JSON report.
 
@@ -231,6 +232,13 @@ def run_simulation(
     consumes). It requires the saboteur build (``use_saboteur``); on a clean,
     no-saboteur build it is ignored. Default False keeps every existing caller
     byte-identical.
+
+    ``extra_make_vars`` (opt-in) appends arbitrary ``KEY=VALUE`` overrides to the
+    make command -- used by the redundancy repair-row test to select its cocotb
+    module (``COCOTB_TEST_MODULES=test_repair_row``) and phase
+    (``REPAIR_PHASE=off|on``). Default None keeps every existing caller's command
+    line byte-identical. A redundancy build additionally auto-adds
+    ``USE_REPAIR_REMAP=1`` so the external remap RTL is compiled in.
     """
     start_time = time.time()
     config = _load_simulation_config(module_outdir)
@@ -293,6 +301,16 @@ def run_simulation(
             algo=algo,
             project_root=project_root,
         )
+
+    # Redundancy builds add the external row-repair remap RTL to the compile.
+    if config.get("redundancy"):
+        command.append("USE_REPAIR_REMAP=1")
+    # Caller-supplied Make overrides (e.g. COCOTB_TEST_MODULES / REPAIR_PHASE for
+    # the repair-row test). Appended as KEY=VALUE; make treats them as variable
+    # overrides regardless of position relative to the `sim` goal.
+    if extra_make_vars:
+        for key, value in extra_make_vars.items():
+            command.append(f"{key}={value}")
 
     completed = subprocess.run(
         command,
