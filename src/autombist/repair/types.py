@@ -9,7 +9,7 @@ here, but nothing here ever reaches back. See
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # Bump only on an INCOMPATIBLE change to the shapes below (mirrors reporting.py's
 # report-level ``schema_version``; there is no per-instance version field -- the
@@ -48,7 +48,11 @@ class SpareGeometry:
     base_words: int
     word_size: int
     num_spare_rows: int = 0
-    num_spare_cols: int = 0  # reserved for phase 2 (column repair); 0 this phase
+    # BIRA's analyze() fully supports num_spare_cols > 0 (2D row+column allocation).
+    # generator.py's config validation still REJECTS a nonzero value, because the
+    # RTL-side column-remap module (spare_wen, widened din/dout) is not built yet
+    # ("Phase 2 RTL") -- so this field is algorithm-ready before it is wrapper-ready.
+    num_spare_cols: int = 0
 
     def __post_init__(self) -> None:
         if self.base_words <= 0 or self.word_size <= 0:
@@ -81,14 +85,18 @@ class SpareGeometry:
 
 @dataclass(slots=True, frozen=True)
 class RepairSolution:
-    """A valid, computed repair: which spare row replaces which faulty row.
+    """A valid, computed repair: which spares replace which faulty rows/columns.
 
     Consumed by a future BISR step to program the remap's
-    ``row_repair_en``/``faulty_row_addr``. A plain, immutable record crossing the
-    module boundary -- it never reaches back into ``generator.py``/``runner.py``.
+    ``row_repair_en``/``faulty_row_addr`` (and, once the RTL column-remap exists,
+    the column-repair equivalents). A plain, immutable record crossing the module
+    boundary -- it never reaches back into ``generator.py``/``runner.py``.
     """
 
     row_map: dict[int, int]  # faulty (logical) row address -> spare row index (0-based)
+    # faulty (logical) column/bit index -> spare column index (0-based). Empty for
+    # a row-only repair (num_spare_cols == 0) -- the default row-only callers get.
+    col_map: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True, frozen=True)
@@ -98,6 +106,12 @@ class Unrepairable:
     faulty_rows: tuple[int, ...]  # sorted distinct faulty row addresses
     num_spare_rows: int  # spares available (the geometry's budget)
     reason: str = "distinct faulty row count exceeds available spare rows"
+    # Column-side diagnostics, populated ONLY when the geometry actually has spare
+    # columns (num_spare_cols > 0) -- with none, "which columns are implicated"
+    # isn't a meaningful dimension, so leaving these at their defaults is the
+    # semantically correct behaviour, not merely a row-only compatibility shim.
+    faulty_cols: tuple[int, ...] = ()
+    num_spare_cols: int = 0
 
 
 # What analyze() returns: a solution, or a verdict that no repair fits.

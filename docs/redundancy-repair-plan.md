@@ -208,15 +208,27 @@ Row-only + soft-repair + SW-BIRA MVP first, then generalize.
   only). Proven e2e (`tests/integration/test_repair_row_e2e.py`): repair-off → the forced
   defect at (3,3) is visible in the fail-bitmap and `bist_fail`; repair-on → row 3 steered to
   a spare, fail-bitmap empty, BIST passes. (Column repair + `spare_wen`/widened data is Phase 2.)
-- **Step B — BIRA in Python. ✅ FOUNDATION BUILT** as an *extractable* subpackage
+- **Step B — BIRA in Python. ✅ BUILT** as an *extractable* subpackage
   `src/autombist/repair/` (not a flat `bira.py`): `repair/types.py` holds the shared
   `SpareGeometry`/`RepairSolution`/`Unrepairable` dataclasses (zero imports from the rest of
   autombist — the generator imports `SpareGeometry` one-way; an AST guard,
   `test_repair_package_boundary.py`, enforces it); `repair/bira.py` is the pure
-  `analyze(fail_cells, spare_geometry) -> RepairSolution | Unrepairable` (row-only 1D done,
-  unit-tested in `test_bira.py`). **Still to do:** 2D (must-repair → branch-and-bound),
-  and wiring `analyze` into the Step-D loop. Account for the inflated address space and
-  per-row-group column granularity when column repair lands.
+  `analyze(fail_cells, spare_geometry) -> RepairSolution | Unrepairable`, now **2D** (row
+  *and* column allocation): a must-repair fixed point (forces a row/column whose remaining
+  fault count exceeds the *other* side's *current remaining* budget — checked against the
+  live budget, not the original one, so one forced dimension can cascade a force onto the
+  other purely via shrunk budget) followed by real backtracking over the residual (proven
+  necessary, not just a greedy shortcut, by the `test_independent_faults_use_one_row_and_
+  one_column` scenario). Correctness verified two ways: named hand-traced scenarios in
+  `test_bira.py` (cascading must-repair, full-block infeasibility, independent-row+column
+  faults) documenting *why*, plus a 300-instance brute-force oracle cross-check in
+  `test_bira_2d_property.py` for broad correctness on an NP-complete problem (Kuo & Fuchs,
+  1987) where one hand-picked example is a weak substitute. The row-only case
+  (`num_spare_cols=0`) is proven to degenerate to byte-identical results — all 8 original
+  `test_bira.py` assertions pass unmodified. **`generator.py`'s config validation still
+  rejects `num_spare_cols != 0`** — the algorithm is ready; the RTL-side column-remap module
+  (Phase 2 RTL, `spare_wen`/widened `din`/`dout`, the per-row-group column-mux granularity)
+  is not yet built, and wiring `analyze` into the Step-D e2e loop needs Step C (BISR) first.
 - **Step C — BISR.** Repair registers (soft) + load path (tester/parallel MVP; serial
   chain later) driving the external remap. Get the **boot order** right (repair before the
   post-repair scan).
