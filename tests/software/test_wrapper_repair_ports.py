@@ -1,13 +1,15 @@
-"""Pin the optional `repair_ports:` passthrough seam in the wrapper generator.
+"""Pin the `repair_ports:` -> external-remap wiring in the wrapper generator.
 
-`repair_ports` lets a redundant/repairable memory macro's extra pins (e.g.
-repair_valid/repair_addr, driven by a future BISR) survive port normalisation --
-they used to be silently dropped -- and be surfaced on the wrapper boundary and
-bound straight through to the (non-saboteur) memory instance. The load-bearing
-guarantees these tests fix:
-  * a config WITHOUT repair_ports renders byte-identically (the block is opt-in),
-  * with it, the pins appear on the boundary AND the u_sram binding,
-  * malformed / colliding repair_ports are rejected loudly, not dropped.
+Under the redundancy architecture, `repair_ports` no longer bind into the memory
+instance; they drive an EXTERNAL `repair_remap_row` block that sits between the
+address mux and a stock spare-augmented memory. `repair_ports` therefore requires
+a `redundancy:` block (its own rules live in test_redundancy_config.py). The
+guarantees fixed here:
+  * a config with NEITHER block renders the original memory instantiation (opt-in
+    isolation -- existing memories are untouched),
+  * with both, the repair pins appear on the boundary AND bind to u_repair_remap
+    (not u_sram), and the memory takes the remapped physical address,
+  * malformed repair_ports are still rejected loudly by _validate_repair_ports.
 """
 from __future__ import annotations
 
@@ -32,21 +34,11 @@ BASE_CONFIG = {
     "we_active_low": True,
     "ports": {"clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "we": "web0", "csb": "csb0"},
 }
+REDUNDANCY = {"num_spare_rows": 2, "num_spare_cols": 0}
+# Names match repair_remap_row's ports (the pins bind to the remap by name).
 REPAIR_PORTS = [
-    {"name": "repair_valid", "width": 2, "dir": "input"},
-    {"name": "repair_addr", "width": 8, "dir": "input"},
-]
-
-# The exact lines the passthrough injects (boundary, leading-comma style, and
-# the u_sram binding). Removing these from the with-repair render must reproduce
-# the without-repair render byte-for-byte.
-BOUNDARY_LINES = [
-    "  , input logic [2-1:0] repair_valid\n",
-    "  , input logic [8-1:0] repair_addr\n",
-]
-BINDING_LINES = [
-    "      , .repair_valid(repair_valid)\n",
-    "      , .repair_addr(repair_addr)\n",
+    {"name": "row_repair_en", "width": 2, "dir": "input"},
+    {"name": "faulty_row_addr", "width": 4, "dir": "input"},
 ]
 
 
@@ -57,63 +49,63 @@ def _render(tmp_path: Path, config: dict, subdir: str) -> str:
     return wrapper.read_text(encoding="utf-8")
 
 
-def test_absent_repair_ports_renders_without_repair(tmp_path: Path) -> None:
+def _redundant() -> dict:
+    return {**BASE_CONFIG, "redundancy": REDUNDANCY, "repair_ports": REPAIR_PORTS}
+
+
+def test_absent_blocks_render_original_memory(tmp_path: Path) -> None:
+    """Opt-in isolation: no redundancy/repair_ports -> the original memory
+    instantiation, no remap, no spare params."""
     text = _render(tmp_path, BASE_CONFIG, "base")
-    assert "repair_" not in text
-    # sanity: the boundary and binding are intact
+    assert "repair_remap_row" not in text
+    assert "row_repair_en" not in text
+    assert "sram_addr_phys" not in text
+    assert "NUM_SPARE_ROWS" not in text
+    assert ".addr0(sram_addr)" in text          # memory sees the un-remapped address
     assert "output logic [DATA_WIDTH-1:0] func_dout\n);" in text
-    assert ".dout0(sram_dout)\n    );" in text
 
 
-def test_repair_ports_appear_on_boundary_and_binding(tmp_path: Path) -> None:
-    config = {**BASE_CONFIG, "repair_ports": REPAIR_PORTS}
-    text = _render(tmp_path, config, "with_rp")
-    for line in BOUNDARY_LINES:
-        assert line in text, f"missing boundary pin: {line!r}"
-    for line in BINDING_LINES:
-        assert line in text, f"missing u_sram binding: {line!r}"
+def test_repair_pins_on_boundary(tmp_path: Path) -> None:
+    text = _render(tmp_path, _redundant(), "with_rd")
+    assert "  , input logic [2-1:0] row_repair_en\n" in text
+    assert "  , input logic [4-1:0] faulty_row_addr\n" in text
 
 
-def test_repair_ports_are_byte_identical_except_the_injected_lines(tmp_path: Path) -> None:
-    """The strongest guard: the ONLY difference between the with-repair and
-    without-repair renders is exactly the injected repair lines. This proves the
-    opt-in block perturbs nothing else in the wrapper."""
-    base = _render(tmp_path, BASE_CONFIG, "base")
-    with_rp = _render(tmp_path, {**BASE_CONFIG, "repair_ports": REPAIR_PORTS}, "with_rp")
-
-    stripped = with_rp
-    for line in BOUNDARY_LINES + BINDING_LINES:
-        assert stripped.count(line) == 1, f"expected exactly one {line!r}"
-        stripped = stripped.replace(line, "", 1)
-    assert stripped == base
-
-
-def test_output_direction_is_honored(tmp_path: Path) -> None:
-    config = {**BASE_CONFIG, "repair_ports": [{"name": "repair_ack", "width": 1, "dir": "output"}]}
-    text = _render(tmp_path, config, "out_rp")
-    assert "  , output logic [1-1:0] repair_ack\n" in text
+def test_repair_pins_bind_to_remap_and_memory_uses_phys_addr(tmp_path: Path) -> None:
+    text = _render(tmp_path, _redundant(), "with_rd")
+    # The external remap is instantiated and driven by the repair pins.
+    assert "repair_remap_row #(" in text
+    assert ") u_repair_remap (" in text
+    assert "      , .row_repair_en(row_repair_en)\n" in text
+    assert "      , .faulty_row_addr(faulty_row_addr)\n" in text
+    # The memory takes the REMAPPED physical address + the spare count.
+    assert ".addr0(sram_addr_phys)" in text
+    assert ".NUM_SPARE_ROWS(2)" in text
+    # ceil(log2(4 + 2)) = 3 -> the physical-address wire is [3-1:0].
+    assert "logic [3-1:0] sram_addr_phys;" in text
 
 
 # --------------------------------------------------------------------------- #
-# Validation teeth: bad repair_ports must be rejected, never silently dropped.
+# Validation teeth: malformed repair_ports still rejected in _validate_repair_ports
+# (which runs BEFORE the redundancy biconditional, so these fire regardless).
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "bad",
     [
-        [],                                                    # empty list
-        [{"width": 2}],                                        # missing name
-        [{"name": "1bad", "width": 2}],                        # invalid identifier
-        [{"name": "func_dout", "width": 2}],                   # reserved boundary pin
-        [{"name": "clk", "width": 1}],                         # reserved pin
-        [{"name": "r", "width": 0}],                           # non-positive width
-        [{"name": "r", "width": True}],                        # bool width
-        [{"name": "r", "dir": "inout"}],                       # bad direction
-        [{"name": "dup"}, {"name": "dup"}],                    # duplicate name
-        "notalist",                                            # wrong type
+        [],
+        [{"width": 2}],
+        [{"name": "1bad", "width": 2}],
+        [{"name": "func_dout", "width": 2}],
+        [{"name": "clk", "width": 1}],
+        [{"name": "r", "width": 0}],
+        [{"name": "r", "width": True}],
+        [{"name": "r", "dir": "inout"}],
+        [{"name": "dup"}, {"name": "dup"}],
+        "notalist",
     ],
 )
 def test_bad_repair_ports_rejected(tmp_path: Path, bad) -> None:
-    config = {**BASE_CONFIG, "repair_ports": bad}
+    config = {**BASE_CONFIG, "redundancy": REDUNDANCY, "repair_ports": bad}
     config_path = tmp_path / "bad.yml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     with pytest.raises(ConfigError):

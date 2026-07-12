@@ -10,6 +10,11 @@ from typing import Any
 import yaml
 from jinja2 import Environment, PackageLoader, TemplateNotFound
 
+# One-way import: the generator sizes the RTL from the shared spare-geometry
+# type. `autombist.repair` never imports back (enforced by
+# tests/software/test_repair_package_boundary.py), keeping it extractable.
+from .repair.types import SpareGeometry, SpareGeometryError
+
 REQUIRED_TOP_KEYS = (
     "memory_name",
     "wrapper_module_name",
@@ -357,6 +362,83 @@ def _validate_repair_ports(loaded: dict[str, Any]) -> None:
     loaded["repair_ports"] = normalized
 
 
+def _validate_redundancy(loaded: dict[str, Any]) -> None:
+    """Validate the OPTIONAL ``redundancy:`` block and derive its spare geometry.
+
+    ``redundancy: {num_spare_rows: N, num_spare_cols: 0}`` declares a spare-
+    augmented memory whose spares are steered by an EXTERNAL row-repair remap in
+    the wrapper (``repair_remap_row``), driven by the ``repair_ports`` pins -- not
+    by pins on the memory itself. Absent -> nothing changes (byte-identical).
+
+    ``redundancy`` and ``repair_ports`` are a required pair: spares need repair
+    pins to drive the remap, and (now that repair pins bind to the remap, not a
+    macro) repair pins are meaningless without spares. Stores a plain dict -- not
+    a ``SpareGeometry`` dataclass, which ``yaml.safe_dump`` cannot serialise for
+    the config snapshot -- in ``loaded["redundancy"]``.
+    """
+    block = loaded.get("redundancy")
+    has_repair_ports = bool(loaded.get("repair_ports"))
+
+    if block is None:
+        # No redundancy: repair_ports has nothing to bind to (the external-remap
+        # architecture retired the old bind-straight-to-macro mode).
+        if has_repair_ports:
+            raise ConfigError(
+                "repair_ports requires a redundancy: block -- the pins drive the "
+                "external row-repair remap, which only exists when num_spare_rows > 0"
+            )
+        return
+
+    if not isinstance(block, dict):
+        raise ConfigError("redundancy must be a mapping")
+
+    num_spare_rows = block.get("num_spare_rows", 0)
+    num_spare_cols = block.get("num_spare_cols", 0)
+    for key, value in (
+        ("num_spare_rows", num_spare_rows),
+        ("num_spare_cols", num_spare_cols),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ConfigError(f"redundancy.{key} must be a non-negative integer")
+
+    if num_spare_rows < 1:
+        raise ConfigError(
+            "redundancy.num_spare_rows must be >= 1 (omit the redundancy: block "
+            "entirely for a memory with no redundancy)"
+        )
+    if num_spare_cols != 0:
+        raise ConfigError(
+            "redundancy.num_spare_cols must be 0 -- column repair is not "
+            "implemented yet (row repair only in this phase)"
+        )
+    if len(loaded["normalized_ports"]) != 1:
+        raise ConfigError("redundancy is only supported for single-port memories")
+    if not has_repair_ports:
+        raise ConfigError(
+            "redundancy requires a repair_ports: block to drive the external remap "
+            "(e.g. row_repair_en and faulty_row_addr)"
+        )
+
+    try:
+        geometry = SpareGeometry(
+            base_words=1 << int(loaded["addr_width"]),
+            word_size=int(loaded["data_width"]),
+            num_spare_rows=num_spare_rows,
+            num_spare_cols=num_spare_cols,
+        )
+    except SpareGeometryError as exc:
+        raise ConfigError(f"redundancy: {exc}") from exc
+
+    # Plain dict (YAML- and Jinja-safe); the SpareGeometry dataclass is transient.
+    loaded["redundancy"] = {
+        "base_words": geometry.base_words,
+        "word_size": geometry.word_size,
+        "num_spare_rows": geometry.num_spare_rows,
+        "num_spare_cols": geometry.num_spare_cols,
+        "mem_addr_width": geometry.mem_addr_width,
+    }
+
+
 def load_config(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -390,6 +472,7 @@ def load_config(config_path: Path) -> dict[str, Any]:
         loaded["ports"] = loaded["normalized_ports"]
 
     _validate_repair_ports(loaded)
+    _validate_redundancy(loaded)
 
     return loaded
 
@@ -492,6 +575,12 @@ def generate_from_config(
 
     if fault_type == "port-coupling":
         _validate_port_coupling_topology(config["normalized_ports"], algo)
+
+    if config.get("redundancy") and use_saboteur:
+        raise ConfigError(
+            "redundancy: cannot be combined with use_saboteur=True -- the saboteur "
+            "models its own storage and has no concept of spare rows"
+        )
 
     outdir.mkdir(parents=True, exist_ok=True)
 

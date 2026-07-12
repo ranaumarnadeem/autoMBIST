@@ -85,3 +85,5 @@ changelog.md
 promptphase3.md
 *plan*.md
 plan-trans*.md
+# ...but the committed redundancy-repair design plan is a real, linked doc, not scratch.
+!docs/redundancy-repair-plan.md
