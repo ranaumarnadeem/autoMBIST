@@ -228,16 +228,29 @@ Row-only + soft-repair + SW-BIRA MVP first, then generalize.
   `test_bira.py` assertions pass unmodified. **`generator.py`'s config validation still
   rejects `num_spare_cols != 0`** — the algorithm is ready; the RTL-side column-remap module
   (Phase 2 RTL, `spare_wen`/widened `din`/`dout`, the per-row-group column-mux granularity)
-  is not yet built, and wiring `analyze` into the Step-D e2e loop needs Step C (BISR) first.
-- **Step C — BISR.** Repair registers (soft) + load path (tester/parallel MVP; serial
-  chain later) driving the external remap. Get the **boot order** right (repair before the
-  post-repair scan).
-- **Step D — e2e repair loop.** inject repairable defect → `run_simulation(fail_scan=True)`
-  → `fail_cells` → `bira.analyze` → BISR loads → re-scan → **clean**; plus the
-  **unrepairable** case (more faulty rows than spares → flagged, not silently passed).
-  Adopt the DVCon verification recipe: **negative test** (null signature must still fail),
-  **connectivity check** (repair-register contents == injected signature), **post-repair
-  BIST passes**, and (if power-gating is modeled) a **retention check**.
+  is not yet built (that's Step C).
+- **Step C — BISR. ✅ BUILT.** `repair/bisr.py`'s pure
+  `encode_row_repair(solution, spare_geometry) -> RepairSignature` translates a
+  `RepairSolution.row_map` into the exact packed `row_repair_en`/`faulty_row_addr` integers
+  `repair_remap_row.sv` expects (bit `i` / slice `i` per spare, matching the RTL's own
+  slicing). For the tester-driven MVP this is genuinely the whole of BISR: Step A's remap
+  reads its config on plain combinational input pins (no serial scan chain, no clock), so
+  there is no boot-sequencing race yet — that only becomes real once the config is loaded
+  through a clocked chain (a later, on-chip phase). Rejects an `Unrepairable` input with a
+  `TypeError` (a caller must check `isinstance(result, RepairSolution)` first) — proven not
+  just at the unit level (`test_bisr.py`) but against a REAL `Unrepairable` produced by an
+  actual simulation, in the Step D e2e suite.
+- **Step D — e2e repair loop. ✅ BUILT** (`tests/integration/test_repair_loop_e2e.py`,
+  `tests/hardware/test_repair_loop.py`). The full loop with nothing hardcoded on the Python
+  side: inject → `run_simulation` (repair off) → `fail_cells` → `bira.analyze` →
+  `bisr.encode_row_repair` → drive the computed signature → re-run → **clean**. Covers the
+  DVCon recipe: the **unrepairable** case (`sram_spares_tiny_2defect.v`, 2 distinct faulty
+  rows vs. 1 spare — flagged via `Unrepairable`, and `encode_row_repair` provably can't be
+  called on it), a **negative/teeth test** (a signature targeting the *wrong* address leaves
+  the real defect fully visible — proves the remap steers on an exact match, not just "is
+  repair mode on"), and a **connectivity check** (the computed signature's bits, decoded,
+  equal the real injected defect's address). Retention/power-gating is out of scope (no
+  power domains modeled).
 - **Step E (optional, for on-chip self-repair) — controller fail-address outputs** (§2)
   and an on-chip BIRA/BISR FSM. Not needed for the tester-driven MVP.
 
@@ -247,8 +260,8 @@ Row-only + soft-repair + SW-BIRA MVP first, then generalize.
 
 | Layer | Proves | How / where | Status |
 |---|---|---|---|
-| **0. Python** | BIRA allocation correct (repairable / unrepairable / must-repair) | `tests/software/test_bira.py`, hand-built fail maps, no sim | ✅ **built** (row-only 1D; 2D pending) |
-| **1. RTL sim** *(the heart)* | Functional repair: defect→spare works; full loop scan→BIRA→BISR→re-scan clean; unrepairable flagged; DVCon negative/connectivity checks | cocotb/Icarus in the Nix devShell, tool-gated, **per-commit** | ✅ **built** for the defect→spare step (`test_repair_row_e2e.py`); full BIRA→BISR loop pending |
+| **0. Python** | BIRA allocation correct (repairable / unrepairable / must-repair, row+column 2D); BISR signature encoding correct | `tests/software/test_bira.py`, `test_bira_2d_property.py`, `test_bisr.py`, hand-built fail maps + brute-force oracle, no sim | ✅ **built** |
+| **1. RTL sim** *(the heart)* | Functional repair: defect→spare works; full loop scan→BIRA→BISR→re-scan clean; unrepairable flagged; DVCon negative/connectivity checks | cocotb/Icarus in the Nix devShell, tool-gated, **per-commit** | ✅ **built** — both the defect→spare RTL proof (`test_repair_row_e2e.py`) and the full computed-signature loop with unrepairable/negative/connectivity coverage (`test_repair_loop_e2e.py`) |
 | **2. Synthesis** | Remap logic maps to gates; macro black-boxes; repair regs synthesize | Yosys (extend the FaultFlow `(* blackbox *)` path) | partly exists |
 | **3. LibreLane harden** | `[MBIST + remap + stock OpenRAM macro]` → GDS, DRC/LVS clean, timing met | `python3 -m librelane config.yaml` via Nix, **tool-gated**, occasional/nightly (heavy) | **greenfield; now fully viable** (stock macro + std-cell remap) |
 

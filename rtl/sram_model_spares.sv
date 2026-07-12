@@ -14,6 +14,12 @@
 //     defect to detect and steer around. DEFECT_ADDR < 0 disables it. A stock
 //     OpenRAM macro cannot expose such a knob, which is exactly why it is a
 //     parameter (baked into a test DUT copy), never a port.
+//
+//   * a SECOND, independent defect knob (DEFECT2_ADDR/BIT/SA1) exists purely to
+//     let a test DUT force TWO simultaneous distinct-row defects -- e.g. to
+//     prove BIRA correctly reports Unrepairable when the defect count exceeds
+//     the spare budget. Disabled by default (DEFECT2_ADDR < 0), so every
+//     existing single-defect instantiation is byte-for-byte unaffected.
 module sram_model_spares #(
     parameter integer ADDR_WIDTH     = 10,   // LOGICAL address width (matches the wrapper)
     parameter integer DATA_WIDTH     = 32,
@@ -23,7 +29,10 @@ module sram_model_spares #(
     parameter integer MEM_ADDR_WIDTH = $clog2((1 << ADDR_WIDTH) + NUM_SPARE_ROWS),
     parameter integer DEFECT_ADDR    = -1,   // -1 disables the hard-defect knob
     parameter integer DEFECT_BIT     = 0,
-    parameter integer DEFECT_SA1     = 1     // 1 = stuck-at-1, 0 = stuck-at-0
+    parameter integer DEFECT_SA1     = 1,    // 1 = stuck-at-1, 0 = stuck-at-0
+    parameter integer DEFECT2_ADDR   = -1,   // -1 disables the second defect knob
+    parameter integer DEFECT2_BIT    = 0,
+    parameter integer DEFECT2_SA1    = 1
 ) (
     input  logic                        clk0,
     input  logic                        csb0,
@@ -34,7 +43,8 @@ module sram_model_spares #(
 );
 
     localparam integer DEPTH = (1 << MEM_ADDR_WIDTH);
-    localparam logic [DATA_WIDTH-1:0] DEFECT_MASK = (1 << DEFECT_BIT);
+    localparam logic [DATA_WIDTH-1:0] DEFECT_MASK  = (1 << DEFECT_BIT);
+    localparam logic [DATA_WIDTH-1:0] DEFECT2_MASK = (1 << DEFECT2_BIT);
 
     logic [DATA_WIDTH-1:0]     mem [0:DEPTH-1];
 
@@ -53,6 +63,12 @@ module sram_model_spares #(
                 // the STORED word, so every later read returns the stuck value.
                 // SA1 -> OR the bit high; SA0 -> AND the bit low.
                 mem[addr0] <= DEFECT_SA1 ? (din0 | DEFECT_MASK) : (din0 & ~DEFECT_MASK);
+            end else if (DEFECT2_ADDR >= 0 && addr0 == DEFECT2_ADDR) begin
+                // The second, independent defect (disabled by default -- see the
+                // module header). Only reachable at all when DEFECT2_ADDR differs
+                // from DEFECT_ADDR, since the first branch already claims a match
+                // on DEFECT_ADDR.
+                mem[addr0] <= DEFECT2_SA1 ? (din0 | DEFECT2_MASK) : (din0 & ~DEFECT2_MASK);
             end else begin
                 mem[addr0] <= din0;
             end

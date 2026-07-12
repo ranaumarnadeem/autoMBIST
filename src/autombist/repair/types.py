@@ -23,6 +23,7 @@ __all__ = [
     "RepairSolution",
     "Unrepairable",
     "AnalysisResult",
+    "RepairSignature",
 ]
 
 
@@ -66,6 +67,20 @@ class SpareGeometry:
     def total_words(self) -> int:
         """Physical word count including spare rows."""
         return self.base_words + self.num_spare_rows
+
+    @property
+    def addr_width(self) -> int:
+        """LOGICAL (pre-repair) address width: ``ceil(log2(base_words))``.
+
+        This is ``repair_remap_row.sv``'s ``ADDR_WIDTH`` parameter -- the width of
+        each packed slice of ``faulty_row_addr`` -- and the one place that
+        derivation lives, mirroring ``mem_addr_width`` below for the physical
+        (post-spare) width. Deliberately distinct from ``mem_addr_width``: a
+        faulty address a repair signature names is always a LOGICAL address (a
+        real spare's address is never itself "faulty"), so encoding a signature
+        must pack at this width, not the physical one.
+        """
+        return max(1, (self.base_words - 1).bit_length())
 
     @property
     def mem_addr_width(self) -> int:
@@ -116,3 +131,17 @@ class Unrepairable:
 
 # What analyze() returns: a solution, or a verdict that no repair fits.
 AnalysisResult = RepairSolution | Unrepairable
+
+
+@dataclass(slots=True, frozen=True)
+class RepairSignature:
+    """A ``RepairSolution`` encoded into the exact packed integers
+    ``repair_remap_row.sv`` expects on its ``row_repair_en``/``faulty_row_addr``
+    ports (or the matching ``ROW_REPAIR_EN``/``FAULTY_ROW_ADDR`` plusargs/env
+    vars a cocotb testbench reads). This is BISR's output: what actually gets
+    driven/loaded, as opposed to ``RepairSolution``, which is BIRA's abstract
+    "which spare replaces which row" verdict.
+    """
+
+    row_repair_en: int      # one bit per spare, bit i set iff spare i is in use
+    faulty_row_addr: int    # packed: ADDR_WIDTH bits per spare, LSB-first by index
