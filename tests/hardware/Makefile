@@ -50,9 +50,14 @@ SABOTEUR_SOURCE :=
 endif
 
 # External row-repair remap RTL (redundancy builds only). copy_mbist_rtl copies
-# rtl/repair_remap_row.sv into MODULE_OUTDIR alongside the algo RTL.
+# rtl/*.sv into MODULE_OUTDIR alongside the algo RTL, including the Step-E
+# on-chip analyzer/sequencer -- harmless to compile-but-not-instantiate for a
+# tester-driven (non-onchip_selfrepair) redundancy build, same as every other
+# option in this file that coexists unused in VERILOG_SOURCES.
 ifeq ($(USE_REPAIR_REMAP),1)
-REMAP_SOURCE := $(MODULE_OUTDIR)/repair_remap_row.sv
+REMAP_SOURCE := $(MODULE_OUTDIR)/repair_remap_row.sv \
+                $(MODULE_OUTDIR)/onchip_row_repair_analyzer.sv \
+                $(MODULE_OUTDIR)/onchip_selfrepair_ctrl.sv
 else
 REMAP_SOURCE :=
 endif
