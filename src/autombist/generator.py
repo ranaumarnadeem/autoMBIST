@@ -311,6 +311,7 @@ _WRAPPER_RESERVED_PINS = frozenset({
     "clk", "rst_n", "test_mode", "bist_start", "bist_done", "bist_fail",
     "func_csb", "func_addr", "func_din", "func_we", "func_dout",
     "ADDR_WIDTH", "DATA_WIDTH",
+    "self_repair_start", "self_repair_done", "self_repair_fail", "self_repair_busy",
 })
 
 
@@ -392,6 +393,10 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
     if not isinstance(block, dict):
         raise ConfigError("redundancy must be a mapping")
 
+    onchip_selfrepair = block.get("onchip_selfrepair", False)
+    if not isinstance(onchip_selfrepair, bool):
+        raise ConfigError("redundancy.onchip_selfrepair must be a boolean")
+
     num_spare_rows = block.get("num_spare_rows", 0)
     num_spare_cols = block.get("num_spare_cols", 0)
     for key, value in (
@@ -413,7 +418,14 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         )
     if len(loaded["normalized_ports"]) != 1:
         raise ConfigError("redundancy is only supported for single-port memories")
-    if not has_repair_ports:
+
+    if onchip_selfrepair:
+        if has_repair_ports:
+            raise ConfigError(
+                "redundancy.onchip_selfrepair is mutually exclusive with repair_ports -- "
+                "the repair signature is computed on-chip, not driven by boundary pins"
+            )
+    elif not has_repair_ports:
         raise ConfigError(
             "redundancy requires a repair_ports: block to drive the external remap "
             "(e.g. row_repair_en and faulty_row_addr)"
@@ -430,12 +442,17 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         raise ConfigError(f"redundancy: {exc}") from exc
 
     # Plain dict (YAML- and Jinja-safe); the SpareGeometry dataclass is transient.
+    # onchip_selfrepair MUST be threaded through here explicitly -- this dict is
+    # a full rebuild from a fixed key list, not an update of the input block, so
+    # any new field the template needs to read has to be added here too, or it
+    # silently reads as undefined in Jinja regardless of what the user set.
     loaded["redundancy"] = {
         "base_words": geometry.base_words,
         "word_size": geometry.word_size,
         "num_spare_rows": geometry.num_spare_rows,
         "num_spare_cols": geometry.num_spare_cols,
         "mem_addr_width": geometry.mem_addr_width,
+        "onchip_selfrepair": onchip_selfrepair,
     }
 
 
@@ -580,6 +597,15 @@ def generate_from_config(
         raise ConfigError(
             "redundancy: cannot be combined with use_saboteur=True -- the saboteur "
             "models its own storage and has no concept of spare rows"
+        )
+
+    redundancy_cfg = config.get("redundancy")
+    if redundancy_cfg and redundancy_cfg.get("onchip_selfrepair") and algo != "march-c":
+        # algo is a generate_from_config keyword, never seen by load_config /
+        # _validate_redundancy -- this gate has to live here instead.
+        raise ConfigError(
+            "redundancy.onchip_selfrepair requires algo='march-c' in this phase "
+            f"(fail_valid/fail_addr are only wired up for march-c); got algo={algo!r}"
         )
 
     outdir.mkdir(parents=True, exist_ok=True)

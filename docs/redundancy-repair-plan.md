@@ -251,8 +251,68 @@ Row-only + soft-repair + SW-BIRA MVP first, then generalize.
   repair mode on"), and a **connectivity check** (the computed signature's bits, decoded,
   equal the real injected defect's address). Retention/power-gating is out of scope (no
   power domains modeled).
-- **Step E (optional, for on-chip self-repair) — controller fail-address outputs** (§2)
-  and an on-chip BIRA/BISR FSM. Not needed for the tester-driven MVP.
+- **Step E (optional, fully autonomous on-chip self-repair). ✅ BUILT** (branch
+  `bisr-dev`). No tester, no Python, no separate simulator invocations: one
+  `self_repair_start` level and the chip repairs itself. Two new RTL modules, both
+  additive and only instantiated when the config sets `redundancy.onchip_selfrepair:
+  true` (mutually exclusive with `repair_ports` — validated in `generator.py`; the
+  signature is computed on-chip, not driven by boundary pins):
+  - **`rtl/onchip_row_repair_analyzer.sv`** — a CAM-style registrar, the hardware
+    equivalent of `repair.bira.analyze()` + `repair.bisr.encode_row_repair()`, *scoped
+    to the row-only degenerate case*: with `num_spare_cols=0`, `analyze()`'s must-repair
+    phase alone (no backtracking) already forces every distinct faulty row — there is no
+    combinatorial ambiguity left for a search to resolve, so a simple first-come/
+    lowest-free-slot registrar is provably equivalent to the full algorithm in this
+    case. (A hardware analog of the general 2D backtracking search would only be
+    justified once column-repair RTL exists, which it doesn't yet — `generator.py`
+    still hard-rejects `num_spare_cols != 0`.) It tracks fails streamed live from the
+    controller — new `fail_valid`/`fail_addr` outputs added to `march_c_fsm.sv`/
+    `march_c_top.sv`, purely additive and mirroring the existing sticky `fail_q`
+    compare at `ST_CHECK` — and freezes a signature into `row_repair_en`/
+    `faulty_row_addr` on demand: the *exact* packed layout `repair_remap_row.sv` and
+    `bisr.py::encode_row_repair` already use, no new convention.
+  - **`rtl/onchip_selfrepair_ctrl.sv`** — an 8-state sequencer (`S_IDLE →
+    S_ANALYZE_KICK → S_ANALYZE_WAIT → S_ANALYZE_LATCH → S_DECIDE → {S_VERIFY_KICK →
+    S_VERIFY_WAIT | (skip, if unrepairable)} → S_DONE → S_IDLE`) that runs march-C
+    twice — once to analyze, once to independently re-verify — composing *additively*
+    with the wrapper's existing tester-driven `test_mode`/`bist_start` pins rather than
+    replacing them: `S_IDLE` only starts a self-repair run when `!mbist_busy` (won't
+    hijack an in-progress tester run), and the tester's own `bist_start` is likewise
+    ignored while the sequencer owns the algo FSM. `self_repair_done`/`self_repair_fail`
+    are sticky (cleared only at the next run's kickoff or reset), so a caller can query
+    the outcome long after `self_repair_start` is dropped.
+
+  **Load-bearing design decision, found the hard way (via simulation, not static
+  reasoning alone):** the analyzer's known-defect state must **accumulate for the life
+  of the chip**, cleared only by `rst_n`, never by re-triggering `self_repair_start`.
+  The repair remap is *always active* once any repair is applied, so any later analyze
+  pass — including a deliberate re-trigger — runs the march algorithm *through* the
+  already-repaired memory and, correctly from its own point of view, finds nothing
+  wrong there. An earlier draft cleared the analyzer's live state at the start of every
+  pass (an `analyze_start` pulse); that "nothing wrong here" result then overwrote the
+  previously-correct repair with an empty one, silently re-exposing a real,
+  already-fixed defect. Since a hard defect never "un-happens," only a genuine reset —
+  not a re-trigger — is the correct point to forget one. Proven by
+  `test_retrigger_gives_the_same_result_both_times`: running the full sequence twice in
+  one simulation with no reset in between must reach the identical verdict both times.
+
+  **Scope, deliberately bounded:** row-only repair (no column-repair RTL exists, see
+  §6), and `algo=="march-c"` only — `fail_valid`/`fail_addr` are wired up only on
+  `march_c_fsm`/`march_c_top` in this phase; `generate_from_config` rejects
+  `onchip_selfrepair: true` for any other algo.
+
+  **Reset-persistence limitation** (also §6): there is no fuse/NVM path in this design —
+  after *any* reset, repair state reverts to unrepaired passthrough until
+  `self_repair_start` completes again, and nothing *enforces* gating functional access
+  on the new `self_repair_busy` output; that is left to the system integrator.
+
+  Tests: `tests/software/test_onchip_selfrepair_config.py` (config validation, and a
+  byte-identical render when the flag is absent — the regression-critical case),
+  `tests/hardware/test_onchip_selfrepair.py` (self-contained cocotb: repairable,
+  re-trigger, and partial-repair-on-unrepairable scenarios, each independently
+  re-verified via the functional-port fail scan, never trusting the chip's own status
+  outputs alone), `tests/integration/test_onchip_selfrepair_e2e.py` (4 full-stack e2e
+  scenarios via `run_simulation`).
 
 ---
 
@@ -262,6 +322,7 @@ Row-only + soft-repair + SW-BIRA MVP first, then generalize.
 |---|---|---|---|
 | **0. Python** | BIRA allocation correct (repairable / unrepairable / must-repair, row+column 2D); BISR signature encoding correct | `tests/software/test_bira.py`, `test_bira_2d_property.py`, `test_bisr.py`, hand-built fail maps + brute-force oracle, no sim | ✅ **built** |
 | **1. RTL sim** *(the heart)* | Functional repair: defect→spare works; full loop scan→BIRA→BISR→re-scan clean; unrepairable flagged; DVCon negative/connectivity checks | cocotb/Icarus in the Nix devShell, tool-gated, **per-commit** | ✅ **built** — both the defect→spare RTL proof (`test_repair_row_e2e.py`) and the full computed-signature loop with unrepairable/negative/connectivity coverage (`test_repair_loop_e2e.py`) |
+| **1b. On-chip autonomy** | Fully autonomous self-repair (no tester): on-chip analyze→decide→apply→verify, including the accumulate-across-retriggers invariant and partial-repair-on-unrepairable | cocotb/Icarus in the Nix devShell, tool-gated, **per-commit** | ✅ **built** — `test_onchip_selfrepair.py` (cocotb: repairable/re-trigger/partial) + `test_onchip_selfrepair_e2e.py` (4 full-stack scenarios) |
 | **2. Synthesis** | Remap logic maps to gates; macro black-boxes; repair regs synthesize | Yosys (extend the FaultFlow `(* blackbox *)` path) | partly exists |
 | **3. LibreLane harden** | `[MBIST + remap + stock OpenRAM macro]` → GDS, DRC/LVS clean, timing met | `python3 -m librelane config.yaml` via Nix, **tool-gated**, occasional/nightly (heavy) | **greenfield; now fully viable** (stock macro + std-cell remap) |
 
@@ -275,16 +336,21 @@ not a gap in the approach: sim covers the function, Layer 3 covers buildability.
 (mirror `fail_scan=False`, the conditional `fail_bitmap` key, the `repair_ports` byte-identity
 guard — do **not** bump `schema_version` for additive keys); three test tiers with
 `shutil.which` tool-gating; everything under `nix develop --command pytest tests/software
-tests/integration --cov=autombist --cov-fail-under=90`, holding the **563-test / ≥90%**
-baseline; docs in this file + `diagnosis-reports.md` (repair I/O) + `cli-reference.md` (any
-new command).
+tests/integration --cov=autombist --cov-fail-under=90`, holding the **676-test / ≥90%**
+baseline (676 passed, 2 skipped, 94.80% coverage as of Step E); docs in this file +
+`diagnosis-reports.md` (repair I/O) + `cli-reference.md` (any new command).
 
 ---
 
 ## 6. What we're still missing / open risks
 
-- **Controller fail-address outputs** — required only for on-chip self-repair (Step E);
-  the MVP sidesteps it via the functional-port scan.
+- **Controller fail-address outputs — ✅ done for `march-c`** (Step E), via additive
+  `fail_valid`/`fail_addr` outputs on `march_c_fsm.sv`/`march_c_top.sv`. Not yet wired up
+  for `march-1r1w`/`march-2rw`; `onchip_selfrepair: true` is rejected at config time for
+  any algo other than `march-c`.
+- **On-chip repair persistence** — no fuse/NVM path (Step E); a reset reverts the chip to
+  unrepaired passthrough until `self_repair_start` completes again, and nothing enforces
+  gating functional access on `self_repair_busy` — that's left to the system integrator.
 - **Fix 4 retarget** — repair config must drive wrapper remap logic, not the macro
   instance (§2).
 - **Multi-corner macro Liberty** — OpenRAM is TT-only; decide `STA_MACRO_PRIORITIZE_NL`

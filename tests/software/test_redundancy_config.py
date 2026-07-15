@@ -61,7 +61,22 @@ def test_valid_redundancy_derives_geometry(tmp_path: Path) -> None:
         "num_spare_rows": 2,
         "num_spare_cols": 0,
         "mem_addr_width": 3,    # ceil(log2(4 + 2))
+        "onchip_selfrepair": False,
     }
+
+
+def test_onchip_selfrepair_flows_through_the_rebuilt_dict(tmp_path: Path) -> None:
+    """`_validate_redundancy` REBUILDS `loaded['redundancy']` from a fixed key
+    list rather than updating the input block -- so a field read from the input
+    but not ALSO added to that rebuilt dict would silently read as undefined in
+    Jinja regardless of what the user set. This pins that `onchip_selfrepair`
+    genuinely survives the rebuild (not just defaults correctly, per the test
+    above)."""
+    loaded = _load(
+        tmp_path,
+        {**BASE, "redundancy": {"num_spare_rows": 2, "onchip_selfrepair": True}},
+    )
+    assert loaded["redundancy"]["onchip_selfrepair"] is True
 
 
 def test_absent_redundancy_leaves_no_key(tmp_path: Path) -> None:

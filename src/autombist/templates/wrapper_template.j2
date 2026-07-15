@@ -1,5 +1,9 @@
 `timescale 1ns/1ps
 
+{% set has_redundancy = redundancy is defined and redundancy.num_spare_rows > 0 %}
+{% set has_onchip_selfrepair = has_redundancy and redundancy.onchip_selfrepair %}
+{% set mode_signal = "effective_test_mode" if has_onchip_selfrepair else "test_mode" %}
+{% set start_signal = "effective_bist_start" if has_onchip_selfrepair else "bist_start && test_mode" %}
 module {{ wrapper_module_name }} #(
     parameter integer ADDR_WIDTH = {{ addr_width }},
     parameter integer DATA_WIDTH = {{ data_width }}
@@ -21,6 +25,12 @@ module {{ wrapper_module_name }} #(
 {% for rp in repair_ports %}
   , {{ rp.dir }} logic [{{ rp.width }}-1:0] {{ rp.name }}
 {% endfor %}
+{% endif %}
+{% if has_onchip_selfrepair %}
+  , input  logic self_repair_start
+  , output logic self_repair_done
+  , output logic self_repair_fail
+  , output logic self_repair_busy
 {% endif %}
 );
 
@@ -48,6 +58,27 @@ module {{ wrapper_module_name }} #(
     logic selected_write_req;
     logic mbist_write_req;
 
+{% if has_onchip_selfrepair %}
+    // Declared here (not alongside their instantiations below) because Icarus
+    // requires a wire's declaration to textually precede its use, and these
+    // are read by u_algo_top's instantiation and the test_mode mux immediately
+    // below -- both ahead of where the modules that drive them are instantiated.
+    logic                  algo_fail_valid;
+    logic [ADDR_WIDTH-1:0] algo_fail_addr;
+    logic                  effective_test_mode;
+    logic                  effective_bist_start;
+    logic                  ctrl_test_mode_override;
+    logic                  ctrl_bist_start;
+    logic                  registrar_enable;
+    logic                  latch_result;
+    logic                  unrepairable;
+    logic [{{ redundancy.num_spare_rows }}-1:0]            row_repair_en;
+    logic [{{ redundancy.num_spare_rows }}*ADDR_WIDTH-1:0] faulty_row_addr;
+
+    assign effective_test_mode  = test_mode || ctrl_test_mode_override;
+    assign effective_bist_start = (bist_start && test_mode && !self_repair_busy) || ctrl_bist_start;
+{% endif %}
+
     {{ algo_top_module }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
@@ -55,10 +86,14 @@ module {{ wrapper_module_name }} #(
     ) u_algo_top (
         .clk(clk),
         .rst_n(rst_n),
-        .bist_start(bist_start && test_mode),
+        .bist_start({{ start_signal }}),
         .bist_busy(mbist_busy),
         .bist_done(bist_done),
         .bist_fail(bist_fail),
+{% if has_onchip_selfrepair %}
+        .bist_fail_valid(algo_fail_valid),
+        .bist_fail_addr(algo_fail_addr),
+{% endif %}
         .sram_clk0(mbist_sram_clk),
         .sram_csb0(mbist_sram_csb),
         .sram_web0(mbist_sram_web),
@@ -68,7 +103,7 @@ module {{ wrapper_module_name }} #(
     );
 
     assign mbist_write_req    = ~mbist_sram_web;
-    assign selected_write_req = test_mode ? mbist_write_req : func_we;
+    assign selected_write_req = {{ mode_signal }} ? mbist_write_req : func_we;
 
 {% if we_active_low %}
     assign sram_we = ~selected_write_req;
@@ -76,9 +111,9 @@ module {{ wrapper_module_name }} #(
     assign sram_we = selected_write_req;
 {% endif %}
 
-    assign sram_addr = test_mode ? mbist_sram_addr : func_addr;
-    assign sram_din  = test_mode ? mbist_sram_din : func_din;
-    assign sram_csb  = test_mode ? mbist_sram_csb : func_csb;
+    assign sram_addr = {{ mode_signal }} ? mbist_sram_addr : func_addr;
+    assign sram_din  = {{ mode_signal }} ? mbist_sram_din : func_din;
+    assign sram_csb  = {{ mode_signal }} ? mbist_sram_csb : func_csb;
     assign func_dout = sram_dout;
 
 {% if use_saboteur %}
@@ -103,9 +138,61 @@ module {{ wrapper_module_name }} #(
     );
     {% endfor %}
 {% else %}
-    {% set has_redundancy = redundancy is defined and redundancy.num_spare_rows > 0 %}
     {% for pname, pdata in normalized_ports.items() %}
 {% if has_redundancy %}
+{% if has_onchip_selfrepair %}
+    // Row redundancy (on-chip self-repair): an EXTERNAL repair remap sits between
+    // the address mux and a stock spare-augmented memory. An on-chip analyzer +
+    // sequencer compute and apply the repair signature autonomously -- no
+    // repair_ports/tester involvement (mutually exclusive by config validation).
+    // (algo_fail_valid/algo_fail_addr/effective_test_mode/effective_bist_start/
+    // row_repair_en/faulty_row_addr etc. are declared earlier, alongside
+    // mbist_busy -- Icarus needs the declaration to precede u_algo_top's
+    // instantiation and the test_mode mux, both of which come before this.)
+    logic [{{ redundancy.mem_addr_width }}-1:0] sram_addr_phys;
+
+    onchip_row_repair_analyzer #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
+    ) u_onchip_analyzer (
+        .clk(clk),
+        .rst_n(rst_n),
+        .enable(registrar_enable),
+        .fail_valid(algo_fail_valid),
+        .fail_addr(algo_fail_addr),
+        .latch_result(latch_result),
+        .row_repair_en(row_repair_en),
+        .faulty_row_addr(faulty_row_addr),
+        .unrepairable(unrepairable)
+    );
+
+    onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl (
+        .clk(clk),
+        .rst_n(rst_n),
+        .self_repair_start(self_repair_start),
+        .self_repair_done(self_repair_done),
+        .self_repair_fail(self_repair_fail),
+        .self_repair_busy(self_repair_busy),
+        .ctrl_test_mode_override(ctrl_test_mode_override),
+        .ctrl_bist_start(ctrl_bist_start),
+        .mbist_busy(mbist_busy),
+        .bist_done(bist_done),
+        .bist_fail(bist_fail),
+        .registrar_enable(registrar_enable),
+        .latch_result(latch_result),
+        .unrepairable(unrepairable)
+    );
+
+    repair_remap_row #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
+    ) u_repair_remap (
+        .addr_in(sram_addr),
+        .addr_out(sram_addr_phys)
+      , .row_repair_en(row_repair_en)
+      , .faulty_row_addr(faulty_row_addr)
+    );
+{% else %}
     // Row redundancy: an EXTERNAL repair remap sits between the address mux and a
     // stock spare-augmented memory. The repair_ports pins drive the remap (not the
     // memory, which has no repair pins); the memory just sees the remapped address.
@@ -121,6 +208,7 @@ module {{ wrapper_module_name }} #(
       , .{{ rp.name }}({{ rp.name }})
 {% endfor %}
     );
+{% endif %}
 
     {{ memory_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
