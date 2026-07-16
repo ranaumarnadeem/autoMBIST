@@ -73,10 +73,28 @@ spare-row address above each logical top), cross-slot isolation at a shared bus
 address, and back-to-back reads switching `mem_sel` every cycle (the read-latency
 mux alignment).
 
-## Known blocker for hardening
+## Hardening — SOLVED (2026-07-16), recipe in `librelane-config.json`
 
-The OpenRAM-emitted LEF/GDS use **2000 dbu/µm**; LibreLane's sky130A tech uses
-**1000**. A LEF-only rewrite is NOT sufficient (the placed macro GDS then lands at
-2× scale → massive DRC/XOR). The views must be made consistent at 1000 dbu
-(regenerate with magic's output scale fixed, or rescale GDS+LEF together) before
-the LibreLane harden of this subsystem.
+The subsystem hardens **clean** in LibreLane 3.0.5: detailed routing 0
+violations, **LVS clean including power**, antenna/overlap clear, 43.5 MB GDS,
+die 784,000 µm² (0.78 mm², ~51% macro area, 4,158 std cells). The four fixes
+that got there (each independently necessary — full war story in the repo
+memory notes):
+
+1. **LEF units declaration**: OpenRAM's LEF says `DATABASE MICRONS 2000` but
+   every coordinate — and the GDS — is already on the 1 nm grid. Sed the LEF
+   line to `1000`; do NOT rescale the GDS (it never needed it).
+2. **Hard-IP signoff**: `MAGIC_DRC_USE_GDS: false` + `RUN_KLAYOUT_XOR: false` —
+   macro internals are the memory generator's signoff, not the integrator's.
+   (Owed: an OpenRAM `--run-drc-lvs` pass on each macro; generation used `-n`.)
+3. **Power-domain hookup**: `PDN_MACRO_CONNECTIONS` takes *design nets then
+   macro pins* — on sky130 that's `"u_m\d+ VPWR VGND vccd1 vssd1"`. Getting the
+   nets wrong makes pdngen treat macros as anonymous blockages.
+4. **PDN halos** (`PDN_HORIZONTAL_HALO`/`PDN_VERTICAL_HALO` = 15 µm — distinct
+   from the placement-only `FP_MACRO_*_HALO`): keeps core met4 straps clear of
+   the macros' bottom-edge met4 signal pins. Without this, DRT freezes on a
+   handful of unfixable met4 shorts in the 1 µm pin-access band.
+
+Residual caveats: macro-internal DRC counts (magic-abstract 529 / klayout 3194)
+are advisory and macro-dominated; the macros ship no `.lib` (characterization
+skipped), so STA black-boxes them.

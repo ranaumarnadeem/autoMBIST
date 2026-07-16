@@ -1,0 +1,44 @@
+{
+  "//": "Proven LibreLane 3.0.5 config that hardened mem_subsystem CLEAN (2026-07-16):",
+  "//1": "DRT 0 violations, LVS clean incl. power, antenna clean, 43.5MB GDS, die 784k um2.",
+  "//2": "Macro GDS/LEF are the units-normalized views (LEF 'DATABASE MICRONS' 2000->1000;",
+  "//3": "GDS was already 1nm) -- regenerate per README, then update the paths below.",
+  "//4": "Invoke: nix --extra-experimental-features 'nix-command flakes' run github:librelane/librelane -- --pdk-root ~/.ciel librelane-config.json",
+  "DESIGN_NAME": "mem_subsystem",
+  "VERILOG_FILES": [
+    "dir::mem_subsystem.sv",
+    "dir::sky130_srams_bb.v"
+  ],
+  "CLOCK_PORT": "clk",
+  "CLOCK_PERIOD": 20,
+  "FP_SIZING": "absolute",
+  "DIE_AREA": [0, 0, 1120, 700],
+  "PL_TARGET_DENSITY_PCT": 30,
+  "MACROS": {
+    "sky130_sram_32b256w": {
+      "gds": ["/home/potato/macros_1000/sky130_sram_32b256w.gds"],
+      "lef": ["/home/potato/macros_1000/sky130_sram_32b256w.lef"],
+      "instances": { "u_m0": { "location": [50, 60], "orientation": "N" } }
+    },
+    "sky130_sram_32b512w": {
+      "gds": ["/home/potato/macros_1000/sky130_sram_32b512w.gds"],
+      "lef": ["/home/potato/macros_1000/sky130_sram_32b512w.lef"],
+      "instances": { "u_m1": { "location": [580, 60], "orientation": "N" } }
+    },
+    "sky130_sram_8b1024w": {
+      "gds": ["/home/potato/macros_1000/sky130_sram_8b1024w.gds"],
+      "lef": ["/home/potato/macros_1000/sky130_sram_8b1024w.lef"],
+      "instances": { "u_m2": { "location": [50, 340], "orientation": "N" } }
+    }
+  },
+  "PDN_MACRO_CONNECTIONS": [
+    "u_m\\d+ VPWR VGND vccd1 vssd1"
+  ],
+  "MAGIC_DRC_USE_GDS": false,
+  "RUN_KLAYOUT_XOR": false,
+  "DRT_OPT_ITERS": 20,
+  "FP_MACRO_HORIZONTAL_HALO": 15,
+  "FP_MACRO_VERTICAL_HALO": 15,
+  "PDN_HORIZONTAL_HALO": 15,
+  "PDN_VERTICAL_HALO": 15
+}
