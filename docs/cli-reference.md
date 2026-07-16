@@ -369,6 +369,66 @@ At the end it prints the workspace path and `[smoke] All checks passed`.
 
 ---
 
+## harden
+
+Emit (and optionally run) a LibreLane RTL-to-GDS config for a design plus its
+OpenRAM sky130 macros, with the proven macro-integration recipe baked in:
+hard-IP signoff flags (`MAGIC_DRC_USE_GDS=false`, `RUN_KLAYOUT_XOR=false`),
+placement + PDN halos (15 µm), and the `PDN_MACRO_CONNECTIONS` net-vs-pin format
+(`<instance> VPWR VGND vccd1 vssd1`). See
+[`flow/multimem/`](../flow/multimem) for the design this was proven on.
+
+### Syntax
+
+```bash
+autombist harden [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--config PATH` | `harden.yml` | Compact harden config (design + macros); see [`flow/multimem/harden.yml`](../flow/multimem/harden.yml) |
+| `--out PATH` | `librelane-config.json` | Where to write the generated LibreLane config |
+| `--pdk-root PATH` | `~/.ciel` | ciel-managed PDK root (used with `--run`) |
+| `--run` | off | Actually invoke LibreLane (needs nix + PDK). Default only writes the config. |
+
+The config maps a `design_name`, `verilog_files`, `clock_port`/`clock_period`,
+optional `die_area`, and a list of `macros` (each `{name, gds, lef, instance,
+location}`) into a full LibreLane config. Point `gds`/`lef` at the
+**units-normalized** LEF (run `fix-lef-units` first; the GDS needs no change).
+
+```bash
+autombist harden --config flow/multimem/harden.yml            # emit config only
+autombist harden --config flow/multimem/harden.yml --run      # emit + run LibreLane
+```
+
+## fix-lef-units
+
+Normalize an OpenRAM LEF's `DATABASE MICRONS` declaration to the sky130A grid
+(1000). OpenRAM declares 2000 dbu even though its coordinates — and the GDS — are
+already on the 1 nm grid, which LibreLane's sky130A tech rejects/mis-scales. This
+is a declaration-only fix (plus a defensive snap of any ≥4-decimal coordinate);
+**the GDS is left untouched.**
+
+```bash
+autombist fix-lef-units macro.lef                  # overwrite in place
+autombist fix-lef-units macro.lef --out fixed.lef  # write a copy
+```
+
+## macro-signoff
+
+Run magic DRC + netgen LVS on generated OpenRAM macros — the macro-internal
+signoff owed when a macro was compiled with `-n` (no inline DRC/LVS). Wraps
+[`flow/multimem/signoff/run_macro_signoff.sh`](../flow/multimem/signoff/run_macro_signoff.sh);
+requires `magic`/`netgen` on `PATH` and the sky130 PDK.
+
+```bash
+autombist macro-signoff                          # the multimem macro set
+autombist macro-signoff sky130_sram_32b256w      # a specific macro dir
+autombist macro-signoff --show-command           # print, don't run
+```
+
+---
+
 ## JSON report schema (`reports/latest.json` / `reports/results.json`)
 
 Both `simulate` and `run` write the same structured report via

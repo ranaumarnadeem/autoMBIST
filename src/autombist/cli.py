@@ -19,6 +19,13 @@ if __package__ in {None, ""}:
         run_openram_synthesis,
     )
     from autombist.runner import SimulationError, run_simulation
+    from autombist.signoff import (
+        SignoffConfigError,
+        build_librelane_command,
+        build_librelane_config,
+        build_macro_signoff_command,
+        normalize_lef_units,
+    )
 else:
     from . import __version__
     from .generator import ConfigError, generate_from_config
@@ -30,6 +37,13 @@ else:
         run_openram_synthesis,
     )
     from .runner import SimulationError, run_simulation
+    from .signoff import (
+        SignoffConfigError,
+        build_librelane_command,
+        build_librelane_config,
+        build_macro_signoff_command,
+        normalize_lef_units,
+    )
 
 
 app = typer.Typer(
@@ -615,6 +629,100 @@ def ram_synth(
         typer.echo(result.stdout, nl=False)
     if result.stderr:
         typer.echo(result.stderr, err=True, nl=False)
+    if result.returncode != 0:
+        raise typer.Exit(code=result.returncode)
+
+
+@app.command()
+def harden(
+    config: Path = typer.Option("harden.yml", "--config", help="Harden config (design + macros); see docs/cli-reference.md"),
+    out: Path = typer.Option("librelane-config.json", "--out", help="Where to write the generated LibreLane config"),
+    pdk_root: Path = typer.Option(Path.home() / ".ciel", "--pdk-root", help="ciel PDK root"),
+    run: bool = typer.Option(False, "--run", help="Actually run LibreLane (needs nix + PDK); default only emits the config"),
+) -> None:
+    """Emit (and optionally run) a LibreLane config for a design + OpenRAM macros.
+
+    Bakes in the proven macro-integration recipe (hard-IP signoff flags, PDN
+    halos, PDN_MACRO_CONNECTIONS net-vs-pin format). Without --run it just writes
+    the LibreLane config JSON, so you can inspect it or feed it to LibreLane
+    yourself -- a quick way to verify the integration wiring.
+    """
+    import json
+    import subprocess
+
+    try:
+        resolved = config if config.is_absolute() else (Path.cwd() / config).resolve()
+        loaded = yaml.safe_load(resolved.read_text(encoding="utf-8"))
+        ll_config = build_librelane_config(loaded)
+    except FileNotFoundError:
+        typer.secho(f"autombist: harden config not found: {config}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    except (SignoffConfigError, yaml.YAMLError) as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    out.write_text(json.dumps(ll_config, indent=2) + "\n", encoding="utf-8")
+    typer.echo(f"Wrote LibreLane config: {out}")
+
+    if not run:
+        typer.echo("(config only; pass --run to invoke LibreLane)")
+        return
+
+    cmd = build_librelane_command(out, pdk_root)
+    typer.echo("$ " + " ".join(cmd))
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        raise typer.Exit(code=result.returncode)
+
+
+@app.command("fix-lef-units")
+def fix_lef_units(
+    lef: Path = typer.Argument(..., help="LEF file to normalize"),
+    out: Path = typer.Option(None, "--out", help="Output path (default: overwrite in place)"),
+    target_dbu: int = typer.Option(1000, "--target-dbu", help="Target DATABASE MICRONS value"),
+) -> None:
+    """Normalize an OpenRAM LEF's DATABASE MICRONS to the sky130A grid (1000).
+
+    OpenRAM declares 2000 dbu though the coordinates (and GDS) are already on the
+    1nm grid; LibreLane's sky130A tech needs 1000. Declaration-only fix, plus a
+    defensive snap of any >=4-decimal coordinate.
+    """
+    try:
+        text = lef.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        typer.secho(f"autombist: LEF not found: {lef}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    fixed, snapped = normalize_lef_units(text, target_dbu=target_dbu)
+    dest = out or lef
+    dest.write_text(fixed, encoding="utf-8")
+    typer.echo(f"Wrote {dest} (DATABASE MICRONS -> {target_dbu}, {snapped} coords snapped)")
+
+
+@app.command("macro-signoff")
+def macro_signoff(
+    macros: list[str] = typer.Argument(None, help="Macro dir names to check (default: all in the multimem set)"),
+    script: Path = typer.Option(
+        Path(__file__).resolve().parents[2] / "flow" / "multimem" / "signoff" / "run_macro_signoff.sh",
+        "--script",
+        help="Path to run_macro_signoff.sh",
+    ),
+    show_command: bool = typer.Option(False, "--show-command", help="Print the command instead of running it"),
+) -> None:
+    """Run magic DRC + netgen LVS on generated OpenRAM macros (owed when a macro
+    was generated with -n). Requires magic/netgen on PATH and the sky130 PDK.
+    """
+    import subprocess
+
+    if not script.is_file():
+        typer.secho(f"autombist: signoff script not found: {script}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    cmd = build_macro_signoff_command(script, list(macros) if macros else None)
+    if show_command:
+        typer.echo("$ " + " ".join(cmd))
+        return
+    result = subprocess.run(cmd)
     if result.returncode != 0:
         raise typer.Exit(code=result.returncode)
 
