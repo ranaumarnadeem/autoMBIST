@@ -71,6 +71,12 @@ def build_config_text(args: argparse.Namespace, output_name: str) -> str:
         f"supply_voltages = [{args.supply_voltage}]",
         "temperatures = [25]",
         f"check_lvsdrc = {args.run_drc_lvs}",
+        # Spare rows/cols are a generic OpenRAM sram_config.py feature, not a
+        # sky130-specific one (bank.py's num_rows = num_rows_temp +
+        # num_spare_rows has no tech branching) -- must be emitted for every
+        # tech, or --num-spare-rows/--num-spare-cols silently become no-ops.
+        f"num_spare_rows = {args.num_spare_rows}",
+        f"num_spare_cols = {args.num_spare_cols}",
     ]
 
     if args.tech == "sky130":
@@ -80,8 +86,6 @@ def build_config_text(args: argparse.Namespace, output_name: str) -> str:
                 "route_supplies = \"ring\"",
                 "uniquify = True",
                 f"write_size = {args.write_size}",
-                f"num_spare_rows = {args.num_spare_rows}",
-                f"num_spare_cols = {args.num_spare_cols}",
             ]
         )
     else:

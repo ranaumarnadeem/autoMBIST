@@ -323,14 +323,21 @@ Row-only + soft-repair + SW-BIRA MVP first, then generalize.
 | **0. Python** | BIRA allocation correct (repairable / unrepairable / must-repair, row+column 2D); BISR signature encoding correct | `tests/software/test_bira.py`, `test_bira_2d_property.py`, `test_bisr.py`, hand-built fail maps + brute-force oracle, no sim | ✅ **built** |
 | **1. RTL sim** *(the heart)* | Functional repair: defect→spare works; full loop scan→BIRA→BISR→re-scan clean; unrepairable flagged; DVCon negative/connectivity checks | cocotb/Icarus in the Nix devShell, tool-gated, **per-commit** | ✅ **built** — both the defect→spare RTL proof (`test_repair_row_e2e.py`) and the full computed-signature loop with unrepairable/negative/connectivity coverage (`test_repair_loop_e2e.py`) |
 | **1b. On-chip autonomy** | Fully autonomous self-repair (no tester): on-chip analyze→decide→apply→verify, including the accumulate-across-retriggers invariant and partial-repair-on-unrepairable | cocotb/Icarus in the Nix devShell, tool-gated, **per-commit** | ✅ **built** — `test_onchip_selfrepair.py` (cocotb: repairable/re-trigger/partial) + `test_onchip_selfrepair_e2e.py` (4 full-stack scenarios) |
+| **1c. Real macro** | The Step-A remap genuinely redirects physical storage on a REAL OpenRAM-compiled macro (not the toy behavioral models) — a steering-distinctness proof, since a real macro has no defect-injection knob to reuse the inject→repair pattern | cocotb/Icarus, tool-gated, generated via `scripts/synthesize_sram.sh --tech scn4m_subm` (no PDK/magic needed) | ✅ **built** — `test_repair_row_real_macro.py` + `test_repair_row_real_macro_e2e.py` against `tests/hardware/sram_bisr_real_8x16.v` (see below) |
 | **2. Synthesis** | Remap logic maps to gates; macro black-boxes; repair regs synthesize | Yosys (extend the FaultFlow `(* blackbox *)` path) | partly exists |
 | **3. LibreLane harden** | `[MBIST + remap + stock OpenRAM macro]` → GDS, DRC/LVS clean, timing met | `python3 -m librelane config.yaml` via Nix, **tool-gated**, occasional/nightly (heavy) | **greenfield; now fully viable** (stock macro + std-cell remap) |
 
 **The honest boundary:** Layer 1 proves *functional* repair (with the behavioral model's
-defect knob). Layer 3 proves the design *builds and integrates* — it **cannot** prove
-physical repair of a real silicon defect (you can't force a defect into a stock macro
-pre-silicon; that needs silicon or the fault-injected behavioral model). This is inherent,
-not a gap in the approach: sim covers the function, Layer 3 covers buildability.
+defect knob). Layer 1c narrows that boundary a little further — it proves the remap
+genuinely redirects a REAL compiled macro's physical storage (write-then-toggle-repair-
+then-readback: the pre-repair marker is still sitting, untouched, in the original physical
+row after the repaired write went to the spare instead), not just the toy model's. But it
+still **cannot** inject a genuine defect into that real macro (there is no fault-injection
+knob on compiled OpenRAM output) — only a hand-written behavioral model can simulate a
+stuck-at bit pre-silicon. Layer 3 proves the design *builds and integrates* — it also
+**cannot** prove physical repair of a real silicon defect (you can't force a defect into a
+stock macro pre-silicon; that needs silicon or the fault-injected behavioral model). This is
+inherent, not a gap in the approach: sim covers the function, Layer 3 covers buildability.
 
 **Discipline (unchanged project rules):** additions-only / opt-in / byte-identical when off
 (mirror `fail_scan=False`, the conditional `fail_bitmap` key, the `repair_ports` byte-identity
@@ -353,6 +360,25 @@ baseline (676 passed, 2 skipped, 94.80% coverage as of Step E); docs in this fil
   gating functional access on `self_repair_busy` — that's left to the system integrator.
 - **Fix 4 retarget** — repair config must drive wrapper remap logic, not the macro
   instance (§2).
+- **Real-macro parameter interface (Layer 1c finding)** — the wrapper's generic redundancy
+  memory instantiation (`wrapper_template.j2`) assumes `memory_name`'s module takes
+  `(ADDR_WIDTH=logical, DATA_WIDTH, NUM_SPARE_ROWS)` and derives its own physical port
+  width internally, because that is the only shape that existed until now (the toy
+  `sram_model_spares.sv`/`sram_spares_tiny.v` models). A REAL OpenRAM-compiled macro has
+  **no** `NUM_SPARE_ROWS` parameter at all — its physical `ADDR_WIDTH` is baked in
+  permanently at compile time, matching real silicon (confirmed by actually driving
+  `scripts/synthesize_sram.sh`'s raw output through the wrapper and hitting an elaboration
+  error). The fix used here — a thin per-DUT compatibility shim
+  (`tests/hardware/sram_bisr_real_8x16.v`) that exposes the expected parameter shape and
+  derives `MEM_ADDR_WIDTH` internally before instantiating the real (renamed) macro
+  underneath — works but is manual and per-macro; a future real-macro integration (sky130
+  or another OpenRAM target) will need either the same shim pattern repeated, or the
+  wrapper template generalized to accept a memory module with no spare-count parameter at
+  all. `scripts/synthesize_sram.py` also had a related pre-existing bug fixed alongside
+  this: `build_config_text()` only emitted `num_spare_rows`/`num_spare_cols` for
+  `tech=="sky130"`, silently dropping `--num-spare-rows`/`--num-spare-cols` for
+  `scn4m_subm`/`freepdk45` (both are generic OpenRAM `sram_config.py` fields, not
+  sky130-specific).
 - **Multi-corner macro Liberty** — OpenRAM is TT-only; decide `STA_MACRO_PRIORITIZE_NL`
   vs. characterization before Layer 3 signoff.
 - **Column repair granularity** — per-row-group under column muxing; row-only first.
