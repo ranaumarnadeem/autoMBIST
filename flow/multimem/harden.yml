@@ -1,0 +1,38 @@
+# Compact harden config for `autombist harden` -- consumed to emit the LibreLane
+# config that hardened mem_subsystem clean (the macro-integration recipe is baked
+# in by the tool: hard-IP signoff flags, PDN halos, PDN_MACRO_CONNECTIONS format).
+#
+#   autombist harden --config flow/multimem/harden.yml --out librelane-config.json
+#   autombist harden --config flow/multimem/harden.yml --run    # also invoke LibreLane
+#
+# Macro gds/lef point at the UNITS-NORMALIZED views (run `autombist fix-lef-units`
+# on each OpenRAM LEF first; the GDS needs no change). Absolute paths shown for a
+# typical WSL run -- edit to your layout.
+design_name: mem_subsystem
+verilog_files:
+  - flow/multimem/mem_subsystem.sv
+  - flow/multimem/sky130_srams_bb.v
+clock_port: clk
+clock_period: 20
+die_area: [0, 0, 1120, 700]
+pl_target_density_pct: 30
+
+# Defaults suit sky130 OpenRAM macros; override under `power:` if needed
+# (vdd_net/gnd_net are the DESIGN nets VPWR/VGND, macro_vdd_pin/macro_gnd_pin are
+# the macro PIN names vccd1/vssd1).
+macros:
+  - name: sky130_sram_32b256w
+    gds: /home/potato/macros_1000/sky130_sram_32b256w.gds
+    lef: /home/potato/macros_1000/sky130_sram_32b256w.lef
+    instance: u_m0
+    location: [50, 60]
+  - name: sky130_sram_32b512w
+    gds: /home/potato/macros_1000/sky130_sram_32b512w.gds
+    lef: /home/potato/macros_1000/sky130_sram_32b512w.lef
+    instance: u_m1
+    location: [580, 60]
+  - name: sky130_sram_8b1024w
+    gds: /home/potato/macros_1000/sky130_sram_8b1024w.gds
+    lef: /home/potato/macros_1000/sky130_sram_8b1024w.lef
+    instance: u_m2
+    location: [50, 340]
