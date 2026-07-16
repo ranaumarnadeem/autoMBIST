@@ -7,6 +7,22 @@
 #   * magic GDS->spice extraction, then netgen LVS extracted-layout vs .lvs.sp
 # using the ciel-managed sky130A PDK's own magicrc / netgen setup.
 #
+# ┌── IMPORTANT: raw-GDS DRC here is INDICATIVE ONLY ─────────────────────────┐
+# │ Loading an OpenRAM GDS into ciel's STANDARD-flow magicrc (not OpenRAM's   │
+# │ own tech/cif setup) flags ~1M spurious violations -- a layer/cif-style    │
+# │ mismatch, NOT real defects (OpenRAM sky130 macros are DRC-clean by        │
+# │ construction). The AUTHORITATIVE macro DRC/LVS is OpenRAM's OWN flow,     │
+# │ which uses its exact tech setup:                                          │
+# │                                                                           │
+# │   python3 scripts/synthesize_sram.py --tech sky130 --run-drc-lvs \        │
+# │       --word-size W --num-words N --num-spare-rows 1 --num-spare-cols 1 \  │
+# │       --pdk-root ~/.ciel --output-name <name>                             │
+# │                                                                           │
+# │ (regenerates the macro WITH inline DRC/LVS; slower). Use this script's    │
+# │ LVS (extracted-vs-schematic) as a quick netlist cross-check; treat its    │
+# │ DRC count as a smoke signal, not signoff.                                 │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
 # Requires magic + netgen on PATH (available in the LibreLane nix closure) and
 # the sky130 PDK at $PDK_ROOT (default ~/.ciel).
 #
