@@ -1,0 +1,31 @@
+# Harden config for the self-repair-wrapped subsystem (`autombist harden`).
+# EDIT the absolute paths to your generated wrappers (autombist generate output)
+# and your units-normalized macros (`autombist fix-lef-units`). Instance paths
+# are hierarchical: <wrapper_inst>.u_sram.u_macro.
+design_name: mem_subsystem_mbist
+verilog_files:
+  # shared, parameterized RTL -- ONE copy (from any wrapper's gen dir)
+  - gen_a/sram_wrap_a/march_c/march_c_algo.sv
+  - gen_a/sram_wrap_a/march_c/march_c_fsm.sv
+  - gen_a/sram_wrap_a/march_c/march_c_top.sv
+  - gen_a/sram_wrap_a/onchip_row_repair_analyzer.sv
+  - gen_a/sram_wrap_a/onchip_selfrepair_ctrl.sv
+  - gen_a/sram_wrap_a/repair_remap_row.sv
+  # the three generated wrappers
+  - gen_a/sram_wrap_a/sram_wrap_a_mbist.v
+  - gen_b/sram_wrap_b/sram_wrap_b_mbist.v
+  - gen_c/sram_wrap_c/sram_wrap_c_mbist.v
+  # adapters (this dir) + macro blackboxes + top
+  - flow/multimem/mbist/sram_wrap_a.sv
+  - flow/multimem/mbist/sram_wrap_b.sv
+  - flow/multimem/mbist/sram_wrap_c.sv
+  - flow/multimem/sky130_srams_bb.v
+  - flow/multimem/mbist/mem_subsystem_mbist.sv
+clock_port: clk
+clock_period: 20
+die_area: [0, 0, 1200, 760]
+pl_target_density_pct: 28
+macros:
+  - {name: sky130_sram_32b256w, gds: macros_1000/sky130_sram_32b256w.gds, lef: macros_1000/sky130_sram_32b256w.lef, instance: u0.u_sram.u_macro, location: [55, 60]}
+  - {name: sky130_sram_32b512w, gds: macros_1000/sky130_sram_32b512w.gds, lef: macros_1000/sky130_sram_32b512w.lef, instance: u1.u_sram.u_macro, location: [600, 60]}
+  - {name: sky130_sram_8b1024w, gds: macros_1000/sky130_sram_8b1024w.gds, lef: macros_1000/sky130_sram_8b1024w.lef, instance: u2.u_sram.u_macro, location: [55, 420]}
