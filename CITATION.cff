@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use autoMBIST in academic or professional work, please cite it as below."
+title: autoMBIST
+abstract: >-
+  An open-source, OpenRAM-integrated Memory Built-In Self-Test (MBIST) generator
+  with built-in redundancy analysis (BIRA) and self-repair (BISR), plus a
+  programmable march-algorithm and functional-fault-model research platform.
+  Proven through open RTL-to-GDS closure on sky130 via the LibreLane flow.
+type: software
+authors:
+  - given-names: Rana Umar
+    family-names: Nadeem
+    email: rana.umar.nadeem21@gmail.com
+    orcid: "https://orcid.org/0009-0008-9880-0116"
+version: 1.1.2
+license: Apache-2.0
+repository-code: "https://github.com/ranaumarnadeem/autoMBIST"
+url: "https://github.com/ranaumarnadeem/autoMBIST"
+keywords:
+  - MBIST
+  - memory built-in self-test
+  - BIRA
+  - BISR
+  - redundancy repair
+  - march algorithm
+  - fault model
+  - OpenRAM
+  - sky130
+  - LibreLane
+  - open-source EDA
+# doi: 10.5281/zenodo.XXXXXXX   # add after minting a Zenodo DOI from a tagged GitHub release
