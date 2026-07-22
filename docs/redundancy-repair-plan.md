@@ -143,12 +143,12 @@ from the **functional-port software scan** (`test_mbist.test_fail_scan`) that ru
 4. `src/autombist/generator.py` — if fail-data becomes wrapper outputs, add their names to
    `_WRAPPER_RESERVED_PINS` (:305-309) so a user `repair_ports` entry can't collide.
 
-**Fix 4 repurpose (important):** Fix 4's `repair_ports` currently binds the repair pins
-*through to the memory instance* (`.repair_valid(repair_valid)` on `u_sram`) — that fit the
-*inside-the-macro* model we've now rejected. Under external remap, the repair config is
-still a wrapper-boundary **input**, but it should drive the **wrapper's repair
-registers/remap logic**, not pass through to the (stock, repair-pin-less) macro. Keep the
-boundary-pin machinery; **retarget the binding** from `u_sram` to the new remap block.
+**Fix 4 repurpose — ✅ done (Step A, §4).** Fix 4's `repair_ports` originally bound the
+repair pins *through to the memory instance* (`.repair_valid(repair_valid)` on `u_sram`) —
+that fit the *inside-the-macro* model rejected above. Under external remap, the repair
+config is still a wrapper-boundary **input**, but it now drives the **wrapper's
+`repair_remap_row.sv` remap block**, not the (stock, repair-pin-less) macro. The
+boundary-pin machinery was kept; only the binding target changed.
 
 ---
 
@@ -173,23 +173,38 @@ special views. Declare the macro in the **`MACROS`** dict (`gds`+`lef` required;
 `EXTRA_GDS_FILES` → **`EXTRA_GDS`**, `FILL_CELL`/`DECAP_CELL` → **`FILL_CELLS`/
 `DECAP_CELLS`** (lists), `VIAS_RC` → `VIAS_R`. `Macro` gained `vh`/`pnl`.
 
-**Gotchas we'd otherwise underestimate** (budget iteration here):
+**Gotchas anticipated here vs. what actually bit (✅ harden done, `flow/multimem/`,
+2026-07-16 — see that dir's README for the full recipe):** none of the four gotchas
+originally speculated below turned out to be the real blockers. Left in place as a record
+of the pre-harden guesswork; the **actual** four fixes, each independently necessary, were:
+1. **LEF units declaration mismatch** — OpenRAM's LEF says `DATABASE MICRONS 2000` but
+   every coordinate (and the GDS) is already on the 1nm grid LibreLane's sky130A tech
+   expects. Fix is declaration-only (`2000`→`1000`); never rescale the GDS.
+2. **Hard-IP signoff flags** — `MAGIC_DRC_USE_GDS: false` + `RUN_KLAYOUT_XOR: false`.
+   Macro internals are the memory generator's signoff, not the integrator's.
+3. **`PDN_MACRO_CONNECTIONS` format** — takes *design nets then macro pins*
+   (`"<instance> VPWR VGND vccd1 vssd1"` for sky130), not macro pin names alone; getting
+   this wrong makes pdngen treat macros as anonymous blockages.
+4. **PDN halos** (`PDN_HORIZONTAL_HALO`/`PDN_VERTICAL_HALO`, distinct from the
+   placement-only `FP_MACRO_*_HALO`) — without them, core met4 power straps land on the
+   macros' bottom-edge met4 signal pins, freezing detailed routing on unfixable shorts.
+
+Originally-speculated gotchas, none of which were the actual blockers found:
 - **Multi-corner Liberty:** OpenRAM ships **TT-only** `.lib`; LibreLane runs multi-corner
   signoff STA. Either supply only `nom_*` (reduced corner coverage), characterize ss/ff,
-  or set **`STA_MACRO_PRIORITIZE_NL=true`** to use `.nl.v`+`.spef` instead.
-- **Macro power rails to the top PDN** (the #1 recurring SRAM complaint) — if the macro's
-  supplies are on higher metals than the top grid, hand-tune `define_pdn_grid`/
-  `add_pdn_connect`.
-- **Gated/muxed macro clock:** if the remap gates the memory clock, CTS + hold closure
-  need a custom SDC (`create_generated_clock`/`set_clock_groups`).
-- **Escaped instance names** (`\submodule.sram0` vs `submodule.sram0`) silently drop
-  placement/PDN hookups.
-- Ensure the PDK config populates tie/decap/tap/**fill**/diode cells (3.0 skips them
-  silently if unset) — else LVS/antenna/DRC surprises.
+  or set **`STA_MACRO_PRIORITIZE_NL=true`** to use `.nl.v`+`.spef` instead. (Still an open
+  item — see §6 — but it never blocked the harden itself.)
+- **Macro power rails to the top PDN** (the #1 *commonly cited* SRAM complaint) — not what
+  bit us; the real power issue was `PDN_MACRO_CONNECTIONS`'s exact format, above.
+- **Gated/muxed macro clock:** not applicable — `sram_clk0` is unconditionally `clk`
+  (confirmed in `march_c_top.sv`), no clock gating in this design.
+- **Escaped instance names** — not encountered; plain instance names worked throughout.
+- Tie/decap/tap/fill/diode cell population — not what bit us; LibreLane's sky130 default
+  PDK config handled this without intervention.
 
-**Worked examples to copy:** the IHP-SG13G2 AMS chip template (best current LibreLane-3.x
-macro example) and the OpenLane sky130+OpenRAM tutorial (closest to our stack, OL2-lineage
-config keys that map onto `MACROS`/`PDN_MACRO_CONNECTIONS`).
+**Worked examples originally flagged as references** (IHP-SG13G2 AMS template, OpenLane
+sky130+OpenRAM tutorial) — superseded in practice by just doing the harden and iterating on
+the four real fixes above; no longer needed as a starting point.
 
 ---
 
@@ -325,7 +340,7 @@ Row-only + soft-repair + SW-BIRA MVP first, then generalize.
 | **1b. On-chip autonomy** | Fully autonomous self-repair (no tester): on-chip analyze→decide→apply→verify, including the accumulate-across-retriggers invariant and partial-repair-on-unrepairable | cocotb/Icarus in the Nix devShell, tool-gated, **per-commit** | ✅ **built** — `test_onchip_selfrepair.py` (cocotb: repairable/re-trigger/partial) + `test_onchip_selfrepair_e2e.py` (4 full-stack scenarios) |
 | **1c. Real macro** | The Step-A remap genuinely redirects physical storage on a REAL OpenRAM-compiled macro (not the toy behavioral models) — a steering-distinctness proof, since a real macro has no defect-injection knob to reuse the inject→repair pattern | cocotb/Icarus, tool-gated, generated via `scripts/synthesize_sram.sh --tech scn4m_subm` (no PDK/magic needed) | ✅ **built** — `test_repair_row_real_macro.py` + `test_repair_row_real_macro_e2e.py` against `tests/hardware/sram_bisr_real_8x16.v` (see below) |
 | **2. Synthesis** | Remap logic maps to gates; macro black-boxes; repair regs synthesize | Yosys (extend the FaultFlow `(* blackbox *)` path) | partly exists |
-| **3. LibreLane harden** | `[MBIST + remap + stock OpenRAM macro]` → GDS, DRC/LVS clean, timing met | `python3 -m librelane config.yaml` via Nix, **tool-gated**, occasional/nightly (heavy) | **greenfield; now fully viable** (stock macro + std-cell remap) |
+| **3. LibreLane harden** | `[MBIST + remap + stock OpenRAM macro]` → GDS, DRC/LVS clean, timing met | `python3 -m librelane config.yaml` via Nix, **tool-gated**, occasional/nightly (heavy) | ✅ **built** — `flow/multimem/` (plain 3-macro subsystem) and `flow/multimem/mbist/` (self-repair-wrapped) both harden clean: 0 detailed-routing violations, LVS-clean incl. power. Real gotchas found + fixed documented in §3 above. |
 
 **The honest boundary:** Layer 1 proves *functional* repair (with the behavioral model's
 defect knob). Layer 1c narrows that boundary a little further — it proves the remap
@@ -343,8 +358,9 @@ inherent, not a gap in the approach: sim covers the function, Layer 3 covers bui
 (mirror `fail_scan=False`, the conditional `fail_bitmap` key, the `repair_ports` byte-identity
 guard — do **not** bump `schema_version` for additive keys); three test tiers with
 `shutil.which` tool-gating; everything under `nix develop --command pytest tests/software
-tests/integration --cov=autombist --cov-fail-under=90`, holding the **676-test / ≥90%**
-baseline (676 passed, 2 skipped, 94.80% coverage as of Step E); docs in this file +
+tests/integration --cov=autombist --cov-fail-under=90`, holding the **683-test / ≥90%**
+baseline (683 passed, 2 skipped, 94.80% coverage as of Layer 1c — the number moves as work
+lands; treat this as a point-in-time citation, not a current live count); docs in this file +
 `diagnosis-reports.md` (repair I/O) + `cli-reference.md` (any new command).
 
 ---
@@ -358,8 +374,6 @@ baseline (676 passed, 2 skipped, 94.80% coverage as of Step E); docs in this fil
 - **On-chip repair persistence** — no fuse/NVM path (Step E); a reset reverts the chip to
   unrepaired passthrough until `self_repair_start` completes again, and nothing enforces
   gating functional access on `self_repair_busy` — that's left to the system integrator.
-- **Fix 4 retarget** — repair config must drive wrapper remap logic, not the macro
-  instance (§2).
 - **Real-macro parameter interface (Layer 1c finding)** — the wrapper's generic redundancy
   memory instantiation (`wrapper_template.j2`) assumes `memory_name`'s module takes
   `(ADDR_WIDTH=logical, DATA_WIDTH, NUM_SPARE_ROWS)` and derives its own physical port
@@ -384,10 +398,17 @@ baseline (676 passed, 2 skipped, 94.80% coverage as of Step E); docs in this fil
 - **Column repair granularity** — per-row-group under column muxing; row-only first.
 - **Retention / power-gating** (`safe_rr`-style reset-inhibit on repair registers) — an
   advanced detail; only if we model power domains.
-- **OpenRAM spare intent** *(lower confidence)* — the "external BIST/BISR programs the
-  repair" intent is evident from source (OpenRAM's own verifier `FIXME: ignore spare
-  columns`, `functional.py:300-302`) but **not** documented as a protocol; we define our
-  own remap convention.
+- **OpenRAM spare intent** *(confidence raised since this was first written)* — the
+  "external BIST/BISR programs the repair" intent was originally inferred only from source
+  (OpenRAM's own verifier `FIXME: ignore spare columns`, `functional.py:300-302`), not
+  documented as a protocol, so we defined our own remap convention on that inference alone.
+  It's now empirically corroborated, not just inferred: Layer 1c's real-macro proof
+  (`test_repair_row_real_macro_e2e.py`) confirms our remap convention's physical
+  spare-row address genuinely matches what a real compiled OpenRAM macro exposes — a write
+  under our remap's "repair on" steering lands at the real macro's actual spare row, byte-
+  verified in the simulation trace, not just inferred from the source comment. Still our own
+  convention (OpenRAM documents no protocol), but no longer resting on the FIXME comment
+  alone.
 
 ---
 

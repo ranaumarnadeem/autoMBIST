@@ -1,20 +1,25 @@
-# Redundancy & Repair (BIRA/BISR) — design roadmap
+# Redundancy & Repair (BIRA/BISR) — design roadmap (historical)
 
-> ⚠️ **Superseded in part by [redundancy-repair-plan.md](redundancy-repair-plan.md)**
-> (synthesized from LibreLane/OpenRAM/BISR research + internal analysis). Key
-> revisions there: the remap lives in **external standard-cell logic around a stock,
-> spare-augmented OpenRAM macro** (OpenRAM's spares are already *addressable* — spare
-> rows = top addresses, spare cols = extra `din`/`dout` bits + `spare_wen`), **not**
-> as repair pins inside a hand-written macro (Step A below); and the MBIST controller
-> needs `fail_addr` outputs added for on-chip repair. Read the plan for the current
-> architecture; this roadmap remains useful for the BIRA-algorithm and step-sequencing
-> detail.
+> ⚠️ **Fully superseded — this whole roadmap describes work that is now built,
+> via a different architecture than the one proposed below.** The remap lives
+> in **external standard-cell logic around a stock, spare-augmented OpenRAM
+> macro** (OpenRAM's spares are already *addressable* — spare rows = top
+> addresses, spare cols = extra `din`/`dout` bits + `spare_wen`), **not** as
+> repair pins inside a hand-written macro (Step A below). Steps A–D as
+> described here, PLUS work this document doesn't even anticipate — a fully
+> autonomous on-chip self-repair FSM (no tester), real-OpenRAM-macro
+> integration, LibreLane hardening to GDS, and a real RV32I CPU booting
+> through repaired memory — are all built and tested. See
+> [redundancy-repair-plan.md](redundancy-repair-plan.md) for current
+> architecture and status. This document is kept only as a historical record
+> of the original design thinking (the BIRA-algorithm shape and step
+> sequencing below are still a reasonable read) — do not treat anything on
+> this page as a description of current status.
 
-> Status: **design roadmap for unbuilt work.** Nothing here is implemented yet.
-> This is a handoff/build guide, not product documentation. It assumes the
-> current codebase (multi-port fault modeling + the validation-hardening layer:
-> controller sequence-correctness checking, cross-engine parity, transition
-> write-transparency invariant, Nix-pinned CI).
+> Status (as of when this was written): **design roadmap for unbuilt work.**
+> This was a handoff/build guide, not product documentation, written against
+> the codebase as it stood *before* any of Steps A–D existed (multi-port
+> fault modeling + the validation-hardening layer only).
 
 ## 0. Goal and why now
 
