@@ -2,7 +2,6 @@
 
 [![CI](https://github.com/ranaumarnadeem/autoMBIST/actions/workflows/test.yml/badge.svg)](https://github.com/ranaumarnadeem/autoMBIST/actions/workflows/test.yml)
 [![Docs](https://github.com/ranaumarnadeem/autoMBIST/actions/workflows/docs.yml/badge.svg)](https://ranaumarnadeem.github.io/autoMBIST/)
-[![PyPI](https://img.shields.io/pypi/v/autombist.svg)](https://pypi.org/project/autombist/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **[📖 Full documentation](https://ranaumarnadeem.github.io/autoMBIST/)** — quickstart,
@@ -139,33 +138,33 @@ a dedicated top-level CLI surface is in progress.
 a Windows-native Python install will not see `iverilog`/`verilator`/`yosys`
 even if they're on the WSL side.
 
-Install directly from PyPI:
+Recommended — [Nix](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flake.nix)
+pins the exact toolchain CI uses (Icarus 13.0, Verilator 5.048, Yosys 0.62,
+Python 3.11, cocotb 2.x) and puts the `autombist` CLI on `PATH` immediately,
+no separate `pip install` step:
 
 ```bash
-python -m pip install autombist
+nix develop
 ```
 
-Or from the repository root:
+Without Nix, from the repository root:
 
 ```bash
-python -m pip install .
-```
-
-For development (editable install):
-
-```bash
+sudo apt-get install iverilog verilator yosys
 python -m pip install -e .
 ```
 
+Full details, including the physical/signoff toolchain: see
+[Installation](https://ranaumarnadeem.github.io/autoMBIST/installation.html)
+in the docs.
+
 ## Quick Start
 
-This gets you from a fresh WSL/Linux venv to a first generate + simulate run.
+This gets you from a fresh checkout to a first generate + simulate run.
 
 ```bash
-# 1. Inside WSL/Linux, with iverilog, verilator, and cocotb already on PATH:
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install autombist
+# 1. Inside WSL/Linux, from the repo root:
+nix develop
 
 # 2. Scaffold a starter config in the current directory
 autombist init --out .

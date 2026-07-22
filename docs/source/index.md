@@ -23,8 +23,8 @@ autoMBIST is:
   violations, LVS-clean including power.
 
 - **Reproducible** — simulation and coverage-gated CI run inside a Nix flake
-  (pinned Icarus/Verilator/Yosys/cocotb); Apache-2.0 licensed; published on PyPI
-  as `autombist`.
+  (pinned Icarus/Verilator/Yosys/cocotb) that also puts the CLI on `PATH` with
+  no separate install step; Apache-2.0 licensed.
 
 Follow the navigation below (or the sidebar) to get started.
 

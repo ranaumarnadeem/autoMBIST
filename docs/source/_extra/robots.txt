@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://ranaumarnadeem.github.io/autoMBIST/sitemap.xml

@@ -8,9 +8,9 @@ simulators/PDK toolchain are not visible to a Windows-native Python).
 ## 0. Install + sanity check
 
 ```bash
-python -m pip install autombist
-autombist --help        # 12 commands
-autombist smoke         # generation + OpenRAM config parse + small fault sims
+nix develop              # from the repo root; puts autombist on PATH
+autombist --help         # 12 commands
+autombist smoke          # generation + OpenRAM config parse + small fault sims
 ```
 
 ## 1. Classic path — generate an MBIST wrapper and measure fault coverage
