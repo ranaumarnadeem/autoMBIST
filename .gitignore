@@ -11,6 +11,9 @@ venv/
 env/
 ENV/
 
+# Sphinx docs build output
+docs/_build/
+
 # Python tooling caches
 .pytest_cache/
 .mypy_cache/
@@ -40,6 +43,7 @@ campaign_*.csv
 
 # Generated outputs
 out/
+flow/soc/firmware.hex
 
 # OpenRAM reference docs (local guidance only)
 openram_doc/

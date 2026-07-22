@@ -1,0 +1,42 @@
+# Harden config for soc_top_hw (`autombist harden`) -- a real RV32I CPU
+# (PicoRV32) plus the same two self-repair-wrapped real OpenRAM macros
+# already proven clean in flow/multimem/mbist/harden.yml (selfrepair_a over
+# sky130_sram_32b256w, selfrepair_b over sky130_sram_32b512w). This adds a
+# real CPU driving them through real fetch/load/store traffic instead of the
+# plain functional bus mem_subsystem_mbist.sv uses -- see flow/soc/hardened/
+# soc_top_hw.sv's header for the full story (including the READ_LATENCY=0
+# fix this design needed that mem_subsystem_mbist.sv doesn't have yet).
+#
+# EDIT the absolute paths below to your generated wrappers (autombist
+# generate output, via tests/hardware/run_soc_hw_selfrepair_tb.py's
+# _generate() calls -- SAME config as flow/multimem/mbist/README.md's
+# "Reproduce" section, PLUS read_latency: 0) and your units-normalized
+# macros (`autombist fix-lef-units`). Instance paths are hierarchical:
+# <wrapper_inst>.u_sram.u_macro.
+design_name: soc_top_hw
+verilog_files:
+  # vendored RV32I core (unmodified)
+  - flow/soc/vendor/picorv32/picorv32.v
+  # shared, parameterized self-repair RTL -- ONE copy (from either wrapper's gen dir)
+  - gen_a/sram_wrap_a/march_c/march_c_algo.sv
+  - gen_a/sram_wrap_a/march_c/march_c_fsm.sv
+  - gen_a/sram_wrap_a/march_c/march_c_top.sv
+  - gen_a/sram_wrap_a/onchip_row_repair_analyzer.sv
+  - gen_a/sram_wrap_a/onchip_selfrepair_ctrl.sv
+  - gen_a/sram_wrap_a/repair_remap_row.sv
+  # the two generated wrappers (same module names as flow/multimem/mbist/,
+  # regenerated here with read_latency: 0 -- see this dir's soc_top_hw.sv header)
+  - gen_a/sram_wrap_a/sram_wrap_a_mbist.v
+  - gen_b/sram_wrap_b/sram_wrap_b_mbist.v
+  # adapters + macro blackboxes + this top
+  - flow/multimem/mbist/sram_wrap_a.sv
+  - flow/multimem/mbist/sram_wrap_b.sv
+  - flow/multimem/sky130_srams_bb.v
+  - flow/soc/hardened/soc_top_hw.sv
+clock_port: clk
+clock_period: 20
+die_area: [0, 0, 1400, 900]
+pl_target_density_pct: 25
+macros:
+  - {name: sky130_sram_32b256w, gds: macros_1000/sky130_sram_32b256w.gds, lef: macros_1000/sky130_sram_32b256w.lef, instance: u_instr_mem.u_sram.u_macro, location: [55, 60]}
+  - {name: sky130_sram_32b512w, gds: macros_1000/sky130_sram_32b512w.gds, lef: macros_1000/sky130_sram_32b512w.lef, instance: u_data_mem.u_sram.u_macro, location: [700, 60]}
