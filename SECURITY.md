@@ -3,20 +3,23 @@
 autoMBIST is an open-source EDA research/generator tool: it emits SystemVerilog,
 runs simulators, and drives open-source physical-design flows. It does not run
 as a network service and handles no user credentials, so its security surface is
-small. The most relevant concerns are supply-chain integrity (the published
-`autombist` wheel and its dependencies) and safe handling of user-supplied
-config/RTL by the generator.
+small. The most relevant concerns are supply-chain integrity (the Nix flake and
+its pinned dependencies) and safe handling of user-supplied config/RTL by the
+generator.
 
 ## Supported versions
 
-Security fixes are applied to the latest released version on PyPI (the current
-`1.x` line) and to the `main` branch. Older versions are not maintained.
+The `main` branch is the only maintained, supported version — install via the
+Nix flake (`nix develop`), which is what CI and this policy both track. A
+pre-BIRA/BISR `1.x` release remains published on PyPI from before this project
+moved to Nix as its packaging path; it is **not** maintained and does not
+receive security fixes.
 
 | Version | Supported |
 |---------|-----------|
-| latest `1.x` (PyPI) | ✅ |
-| `main` (git)        | ✅ |
-| anything older      | ❌ |
+| `main` (git, via Nix) | ✅ |
+| `1.x` (legacy, PyPI)  | ❌ |
+| anything else         | ❌ |
 
 ## Reporting a vulnerability
 

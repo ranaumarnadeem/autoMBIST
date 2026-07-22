@@ -3,11 +3,8 @@
 This gets you from a fresh environment to a first generate + simulate run.
 
 ```bash
-# 1. Inside WSL/Linux, with iverilog, verilator, and cocotb already on PATH
-#    (see Installation):
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install autombist
+# 1. Inside WSL/Linux, from the repo root (see Installation):
+nix develop
 
 # 2. Scaffold a starter config in the current directory
 autombist init --out .

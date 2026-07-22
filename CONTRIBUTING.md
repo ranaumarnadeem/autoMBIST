@@ -34,7 +34,20 @@ Concretely:
 
 ## Dev Environment Setup
 
-From a WSL (or native Linux) shell:
+**Recommended — Nix (matches CI exactly):**
+
+```bash
+git clone https://github.com/ranaumarnadeem/autoMBIST.git
+cd autoMBIST
+nix develop
+```
+
+This pins the exact toolchain CI uses (Icarus 13.0, Verilator 5.048, Yosys
+0.62, Python 3.11, cocotb 2.x) and puts the `autombist` CLI on `PATH` with no
+separate `pip install` step. Everything below (`pytest ...`) runs the same way
+inside this shell.
+
+**Without Nix**, from a WSL (or native Linux) shell:
 
 ```bash
 # 1. Clone
@@ -48,17 +61,21 @@ source ~/cocotb/bin/activate
 # 3. Install the package editable, with the dev extras
 python -m pip install -e ".[dev,hardware-test]"
 
-# 4. Install the system EDA toolchain (Debian/Ubuntu shown; matches CI)
+# 4. Install the system EDA toolchain (Debian/Ubuntu shown)
 sudo apt-get update
 sudo apt-get install -y iverilog verilator yosys
 ```
+
+You're responsible for keeping these tool versions compatible with what the
+codebase expects yourself — this is exactly the "passes locally, fails in CI"
+drift Nix exists to eliminate, so if you hit that, switch to the Nix path above.
 
 `pip install -e ".[dev,hardware-test]"` installs:
 
 - Core dependencies: `Jinja2`, `PyYAML`, `typer[all]`, `cocotb`, `cocotb-tools`
 - `dev` extra: `pytest`, `pytest-cov`
 - `hardware-test` extra: `cocotb`, `cocotb-tools` (already core deps; this extra
-  exists mainly so `pip install autombist[hardware-test]` is a documented,
+  exists mainly so `pip install ".[hardware-test]"` is a documented,
   self-contained install target for consumers who only need the hardware-test bits)
 
 OpenRAM and FaultFlow are not pip-installable dependencies of this repo — they're
@@ -108,21 +125,28 @@ source tree.
 
 ### What CI actually runs
 
-`.github/workflows/test.yml` runs on every push/PR to `main` (Ubuntu, Python 3.12):
+`.github/workflows/test.yml` runs on every push/PR to `main` (Ubuntu):
 
-1. `apt-get install -y iverilog verilator yosys` (best-effort — tool-gated tests
-   skip cleanly if a tool is somehow still absent)
-2. `pip install -e ".[hardware-test]" pytest pytest-cov`
-3. `pytest tests/software tests/integration --cov=autombist --cov-report=term-missing --cov-fail-under=90`
+1. Install Nix (`DeterminateSystems/nix-installer-action`), with the FOSSi
+   Foundation binary cache enabled so pinned tools come prebuilt rather than
+   being rebuilt from source.
+2. `nix develop --command pytest tests/software tests/integration --cov=autombist --cov-report=term-missing --cov-fail-under=90`
+
+This replaced an earlier plain `apt-get install iverilog verilator yosys` +
+`pip install` setup, whose drifting tool versions caused exactly the
+"passes locally, fails in CI" breakage the Nix migration exists to prevent —
+if you're on the non-Nix setup above and see that kind of mismatch, it's the
+first thing to suspect.
 
 Note CI enforces a **90% coverage gate** (`--cov-fail-under=90`) and does **not**
-run `tests/hardware` at all. A separate `.github/workflows/publish.yml` builds and
-publishes to PyPI on tagged releases/GitHub Releases — it doesn't run tests, only
-`python -m build` + `twine check`.
+run `tests/hardware` at all. A separate `.github/workflows/publish.yml` still
+exists and would fire on a new tagged release (`python -m build` + `twine
+check`, no tests) — it hasn't run since the last PyPI upload; Nix, not PyPI,
+is the documented/supported way to get autoMBIST (see [SECURITY.md](SECURITY.md)).
 
-Keep your local `pytest tests/software tests/integration --cov=autombist
---cov-report=term-missing` run passing at 90%+ coverage before opening a PR, since
-that's the exact gate CI applies.
+Keep your local `nix develop --command pytest tests/software tests/integration
+--cov=autombist --cov-report=term-missing` run passing at 90%+ coverage before
+opening a PR, since that's the exact gate CI applies.
 
 ## Project Layout
 
