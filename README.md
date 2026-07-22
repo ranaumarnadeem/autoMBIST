@@ -1,8 +1,13 @@
 # autoMBIST
 
 [![CI](https://github.com/ranaumarnadeem/autoMBIST/actions/workflows/test.yml/badge.svg)](https://github.com/ranaumarnadeem/autoMBIST/actions/workflows/test.yml)
+[![Docs](https://github.com/ranaumarnadeem/autoMBIST/actions/workflows/docs.yml/badge.svg)](https://ranaumarnadeem.github.io/autoMBIST/)
 [![PyPI](https://img.shields.io/pypi/v/autombist.svg)](https://pypi.org/project/autombist/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
+**[📖 Full documentation](https://ranaumarnadeem.github.io/autoMBIST/)** — quickstart,
+installation, a worked example, the flow architecture, configuration
+reference, the LibreLane hardening recipe, challenges, and the roadmap.
 
 **An open-source, OpenRAM-integrated MBIST + BIRA + BISR generator and
 march-algorithm research platform — proven through open RTL-to-GDS closure on
