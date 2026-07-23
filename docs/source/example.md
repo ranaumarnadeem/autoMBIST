@@ -43,6 +43,18 @@ redundancy:
 autombist generate --config config.yml --out out --algo march-c
 ```
 
+:::{note}
+**Two build views, one config.** This config is used two ways. For
+*simulation* (below), a defect-injectable behavioral model of the macro is
+swapped in — that's what lets a real defect be injected to repair against —
+and the generator's default `read_latency: 1` matches its timing. For
+*hardening* (further below), the real OpenRAM macro is used instead. If you
+simulate self-repair directly against that **real** macro model (rather than
+the behavioral one), generate with `read_latency: 0`: the real macro's `dout`
+timing differs, and the default would make the controller sample a cycle too
+late. See {doc}`configuration` for the full `read_latency` guidance.
+:::
+
 This produces a wrapper that instantiates:
 
 - the march-C MBIST controller (`march_c_top.sv`),
@@ -77,6 +89,20 @@ Result, as of this writing: **DRT 0 violations, LVS-clean including power**,
 die 0.91 mm², 7,189 standard cells (the self-repair logic across all three
 memories) plus the three macros at their fixed area. Full recipe and the four
 gotchas it took to get there: {doc}`librelane`.
+
+## Under a real CPU
+
+The subsystem above proves self-repair on a memory bus driven by a testbench.
+A companion example
+([`flow/soc/`](https://github.com/ranaumarnadeem/autoMBIST/tree/main/flow/soc))
+goes one step further: an unmodified RV32I core (PicoRV32) boots and runs a
+real program through the same self-repair-wrapped memories. Repair completes at
+power-on — gated so the CPU is held in reset until every memory reports done —
+and then the processor's own `lw`/`sw` traffic round-trips correctly through
+the repaired path. It runs both against defect-injectable behavioral memories
+(proving repair genuinely fixes a defect the CPU would otherwise read wrong)
+and against the real hardened OpenRAM macros
+([`flow/soc/hardened/`](https://github.com/ranaumarnadeem/autoMBIST/tree/main/flow/soc/hardened)).
 
 ## Where to go from here
 
