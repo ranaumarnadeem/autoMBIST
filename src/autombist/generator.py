@@ -181,6 +181,12 @@ def _validate_positive_int(data: dict[str, Any], key: str) -> None:
         raise ConfigError(f"{key} must be a positive integer")
 
 
+def _validate_non_negative_int(data: dict[str, Any], key: str) -> None:
+    value = data[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigError(f"{key} must be a non-negative integer")
+
+
 def _validate_non_empty_str(data: dict[str, Any], key: str) -> None:
     value = data[key]
     if not isinstance(value, str) or not value.strip():
@@ -475,6 +481,13 @@ def load_config(config_path: Path) -> dict[str, Any]:
 
     if not isinstance(loaded["we_active_low"], bool):
         raise ConfigError("we_active_low must be a boolean")
+
+    # Optional: default 1 applied downstream (generator/runner). Validate only
+    # when present so existing configs stay byte-identical, but catch a bad
+    # value here with a clean error instead of an opaque Verilog compile
+    # failure (0 is legal -- it's what a real OpenRAM macro needs).
+    if "read_latency" in loaded:
+        _validate_non_negative_int(loaded, "read_latency")
 
     ports = loaded["ports"]
     if not isinstance(ports, dict):

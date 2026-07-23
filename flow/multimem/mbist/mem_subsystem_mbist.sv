@@ -8,9 +8,16 @@
 // (onchip_row_repair_analyzer) + on-chip BISR sequencer (onchip_selfrepair_ctrl)
 // + external row remap, around a spare-augmented memory. For hardening, the
 // memory inside each wrapper is the sram_wrap_<x> adapter over the real OpenRAM
-// macro; for the self-repair LOOP simulation, autombist's generated build swaps
-// in sram_model_spares (with a forced defect) -- that inject->detect->repair->
-// re-pass loop is covered per-memory by the Step E onchip tests.
+// macro; for the self-repair LOOP simulation (inject->detect->repair->re-pass),
+// autombist's generated build swaps in sram_model_spares with a forced defect,
+// covered per-memory by the Step E onchip tests.
+//
+// Self-repair running on THIS assembled subsystem, against the real macro
+// models, is covered by tests/hardware/test_mem_subsystem_mbist.py -- which is
+// how we learned the wrappers must be generated with `read_latency: 0` here:
+// the real OpenRAM macro's dout decays to X after each edge (unlike the toy
+// sram_model_spares), so the generator's default READ_LATENCY=1 makes march-C
+// sample a cycle too late and phantom-fail. See that test + this dir's README.
 //
 //   slot 0 : selfrepair_a  32b x 256  (sky130_sram_32b256w)
 //   slot 1 : selfrepair_b  32b x 512  (sky130_sram_32b512w)

@@ -27,7 +27,10 @@ A single broadcast `self_repair_start` runs all three; the top reports aggregate
   (here) over the real OpenRAM macro — bridges the wrapper's plain interface to
   the macro's 33-bit word (spare col tied off) and drives `wmask0` for the
   32-bit macros. Elaboration verified (`yosys hierarchy -check` clean: 3
-  wrappers + 3 real macros).
+  wrappers + 3 real macros), and now also **functionally** verified with
+  self-repair actually running against the real macro models
+  (`tests/hardware/test_mem_subsystem_mbist.py`, `read_latency: 0` — see the
+  caveats below).
 
 ## Reproduce
 
@@ -39,6 +42,9 @@ wrapper_module_name: "selfrepair_a"
 addr_width: 8
 data_width: 32
 we_active_low: true
+read_latency: 0          # REQUIRED for the real OpenRAM macro (see caveats below);
+                         # the default of 1 is for this project's toy fixtures and
+                         # would make self-repair phantom-fail on the real macro.
 ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
 redundancy: {num_spare_rows: 1, num_spare_cols: 0, onchip_selfrepair: true}
 YAML
@@ -74,19 +80,21 @@ blackboxes, and `mem_subsystem_mbist.sv`.
   `magic` 8.3.363 (the version OpenRAM's own CI pins) against the identical
   GDS gives zero violations, reliably. Top-level integration P&Rs LVS-clean;
   see [../signoff](../signoff) for the per-macro scripts.
-- **Self-repair against the real macros has never actually been simulated
-  here** — only elaboration-checked (see "Two build views" above). When it
-  finally was, on a sibling design (`flow/soc/hardened/soc_top_hw.sv`, same
-  `selfrepair_a`/`selfrepair_b` wrappers over these same real macros), it
-  found a real bug: the generator's default `READ_LATENCY=1` for the
-  internal march-C engine is tuned for this project's toy behavioral
-  fixtures and is *wrong* for OpenRAM's real macro model, whose `dout0` is
-  forced back to X shortly after every clock edge and only refreshed by an
-  actual read (a realistic narrow-output-valid-window model). With the
-  default, march-C samples one cycle too late and spuriously declares a
-  defect-free macro unrepairable. `read_latency: 0` (an existing but
-  previously-unused generator option) fixes it — confirmed by actually
-  running self-repair against these macros in simulation. This file's own
-  `harden.yml`/"Reproduce" config above does **not** set it, so regenerating
-  these exact wrappers today would carry the same bug. Not yet updated here;
-  tracked as a follow-up.
+- **Self-repair timing against the real macros — `read_latency: 0` required,
+  now fixed and tested.** This subsystem was originally only
+  elaboration-checked (see "Two build views" above), never simulated with
+  self-repair actually running. When it finally was, it exposed a real bug:
+  the generator's default `READ_LATENCY=1` for the internal march-C engine is
+  tuned for this project's toy behavioral fixtures (whose `dout` stays
+  registered indefinitely once set) and is *wrong* for OpenRAM's real macro
+  model, whose `dout0` is forced back to X shortly after every clock edge and
+  only refreshed by an actual read (a realistic narrow-output-valid-window
+  model). With the default, march-C samples one cycle too late and spuriously
+  declares a defect-free macro unrepairable. `read_latency: 0` samples at the
+  correct edge; the "Reproduce" config above now sets it. Verified end-to-end
+  by `tests/hardware/test_mem_subsystem_mbist.py` (self-repair runs clean on
+  all three real macros, no phantom fail/repair, and functional bus access
+  still round-trips post-repair) — which also carries a negative control
+  confirming it *does* fail at `read_latency: 1`, so the fix can't silently
+  regress. Run it with `tests/hardware/run_mem_subsystem_mbist_tb.py`
+  (Icarus-only, no LibreLane needed).
