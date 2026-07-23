@@ -2,6 +2,12 @@
 # EDIT the absolute paths to your generated wrappers (autombist generate output)
 # and your units-normalized macros (`autombist fix-lef-units`). Instance paths
 # are hierarchical: <wrapper_inst>.u_sram.u_macro.
+#
+# Generate the wrappers referenced below with read_latency: 0 (see the README's
+# "Reproduce" section) -- the default of 1 is wrong for the real OpenRAM macro
+# timing and makes self-repair phantom-fail. Hardening is timing-agnostic so a
+# wrong read_latency won't break the harden, but it WILL ship a self-repair
+# engine that never works against the real macro.
 design_name: mem_subsystem_mbist
 verilog_files:
   # shared, parameterized RTL -- ONE copy (from any wrapper's gen dir)

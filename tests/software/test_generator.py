@@ -129,6 +129,46 @@ def test_invalid_boolean_type_raises(tmp_path: Path, base_config: dict[str, obje
         load_config(config_path)
 
 
+@pytest.mark.parametrize("bad_value", [-1, "0", 1.0, True])
+def test_invalid_read_latency_raises(
+    tmp_path: Path, base_config: dict[str, object], bad_value: object
+) -> None:
+    invalid = dict(base_config)
+    invalid["read_latency"] = bad_value
+
+    config_path = tmp_path / "invalid_read_latency.yml"
+    _write_yaml(config_path, invalid)
+
+    with pytest.raises(ConfigError, match="read_latency"):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize("good_value", [0, 1, 2])
+def test_valid_read_latency_accepted(
+    tmp_path: Path, base_config: dict[str, object], good_value: int
+) -> None:
+    valid = dict(base_config)
+    valid["read_latency"] = good_value
+
+    config_path = tmp_path / "valid_read_latency.yml"
+    _write_yaml(config_path, valid)
+
+    # 0 (real OpenRAM macro), 1 (default/toy fixture), and higher are all legal.
+    assert load_config(config_path)["read_latency"] == good_value
+
+
+def test_read_latency_omitted_is_unset(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    # Omitting read_latency must leave the loaded config untouched -- the
+    # default (1) is applied downstream, not injected here, so existing
+    # configs stay byte-identical.
+    config_path = tmp_path / "no_read_latency.yml"
+    _write_yaml(config_path, dict(base_config))
+
+    assert "read_latency" not in load_config(config_path)
+
+
 def test_generate_with_saboteur_creates_fault_assets(
     tmp_path: Path, base_config: dict[str, object]
 ) -> None:

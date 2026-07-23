@@ -79,6 +79,35 @@ ports:
     we: webB
 ```
 
+## Read latency
+
+```yaml
+read_latency: 1   # optional, default 1
+```
+
+`read_latency` tells the generated MBIST controller how many clock cycles to
+wait, after issuing a read, before sampling the memory's `dout`. **It must
+match the read timing of your specific memory model, or the controller samples
+`dout` at the wrong moment and reports failures on a perfectly good memory.**
+
+- **`read_latency: 1`** (default) suits a memory that registers the address on
+  one clock edge and presents `dout` on the next, holding it stable — this
+  project's behavioral fixtures (`rtl/sram_model_spares.sv` and friends) work
+  this way, which is why 1 is the default.
+- **`read_latency: 0`** suits a memory whose `dout` is valid the same cycle the
+  address is presented and then decays (e.g. an X, or a hold value) shortly
+  after — **this is how OpenRAM's own behavioral macro models behave** (`dout0`
+  is driven on the clock's negedge and forced back to `x` shortly after the
+  next posedge). Generating self-repair wrappers around a **real OpenRAM
+  macro** therefore needs `read_latency: 0`; leaving it at the default makes
+  the on-chip self-repair engine sample a cycle too late and declare a
+  defect-free macro unrepairable.
+
+If you see MBIST or self-repair reporting failures you don't believe are real —
+especially a "phantom" unrepairable on a known-good memory — a mismatched
+`read_latency` is the first thing to check. `flow/multimem/mbist/` (the real
+sky130 macro subsystem) sets `read_latency: 0` for exactly this reason.
+
 ## Redundancy repair (BIRA/BISR)
 
 Opt-in via a `redundancy:` block, paired with either `repair_ports:`

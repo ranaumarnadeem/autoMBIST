@@ -49,6 +49,23 @@ autombist generate [OPTIONS]
 If `--config` is omitted, autombist looks for `config.yml` in the current working
 directory and errors out if it isn't found there.
 
+### Config-file keys
+
+The `--config` YAML file carries the memory parameters (`memory_name`,
+`wrapper_module_name`, `addr_width`, `data_width`, `we_active_low`, `ports:`, and
+the optional `redundancy:`/`repair_ports:` blocks). One easy-to-miss key:
+
+- **`read_latency`** (integer, default `1`) — how many cycles the controller
+  waits after issuing a read before sampling `dout`. It **must match your memory
+  model's read timing**: `1` for this project's 2-stage-registered behavioral
+  fixtures, **`0` for a real OpenRAM macro** (whose `dout` decays shortly after
+  each edge). A mismatch makes MBIST/self-repair report failures on a good
+  memory — the usual symptom is a "phantom" unrepairable during on-chip
+  self-repair against a real macro.
+
+See the [Configuration reference](https://ranaumarnadeem.github.io/autoMBIST/configuration.html)
+on the docs site for the full key-by-key reference.
+
 ### Examples
 
 ```bash
