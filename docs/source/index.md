@@ -22,6 +22,13 @@ autoMBIST is:
   self-repair included, hardens clean in LibreLane 3.0.5: zero detailed-routing
   violations, LVS-clean including power.
 
+- **Proven under a real CPU** — an unmodified RV32I core (PicoRV32) boots and
+  runs a real program through self-repaired memory: repair completes at
+  power-on, then the CPU's own load/store traffic round-trips correctly through
+  the repaired path. See the {doc}`introduction` and the
+  [`flow/soc/`](https://github.com/ranaumarnadeem/autoMBIST/tree/main/flow/soc)
+  walkthrough in {doc}`example`.
+
 - **Reproducible** — simulation and coverage-gated CI run inside a Nix flake
   (pinned Icarus/Verilator/Yosys/cocotb) that also puts the CLI on `PATH` with
   no separate install step; Apache-2.0 licensed.

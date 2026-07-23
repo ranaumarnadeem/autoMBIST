@@ -15,6 +15,9 @@ progress, and what's further out.
   self-repair FSM
 - A proven LibreLane hardening recipe for real OpenRAM sky130 macros,
   including the self-repair-wrapped variant
+- An SoC-level demonstration: an unmodified RV32I core (PicoRV32) booting and
+  running a real program through self-repaired memory, both against
+  defect-injectable behavioral models and the real hardened OpenRAM macros
 
 ## In progress
 

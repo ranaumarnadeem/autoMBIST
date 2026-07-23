@@ -40,6 +40,21 @@ other logic and needs no special macro views.
     `rtl/onchip_selfrepair_ctrl.sv` run analyze → decide → verify entirely in
     silicon from a single `self_repair_start` pulse, no tester involved.
 
+## Proven under a real CPU
+
+Self-repair isn't only tested in isolation. An unmodified RV32I core
+(PicoRV32, vendored as-is) boots and runs a real hand-assembled program
+entirely through two self-repair-wrapped memories
+([`flow/soc/`](https://github.com/ranaumarnadeem/autoMBIST/tree/main/flow/soc)):
+repair runs to completion at power-on, in its own reset domain, before the CPU
+is ever released — then the CPU's own `lw`/`sw` traffic round-trips correctly
+through the repaired path. It's demonstrated two ways: against
+defect-injectable behavioral memories (proving repair genuinely *fixes* a
+defect the CPU would otherwise read wrong), and against the real hardened
+OpenRAM sky130 macros (proving it works on the actual macros that close to
+GDS). This is the difference between "the repair FSM passes its own testbench"
+and "a processor doesn't notice the memory was ever broken."
+
 ## Why this exists
 
 Open-source EDA has mature flows for synthesis, place-and-route, and PDK
