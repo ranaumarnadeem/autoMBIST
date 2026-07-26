@@ -84,7 +84,7 @@ module march_engine_mp #(
   function automatic void load_alg(string a);
     // Built-in fallback programs predate multi-port: every op is on port 0.
     case (a)
-      "MATSP": begin // {either(w0); up(r0,w1); down(r1,w0)}   4n
+      "MATSP": begin // {either(w0); up(r0,w1); down(r1,w0)}   5n
         nelem = 3;
         prog[0] = '{dir:2, nops:1, ops:'{2,0,0,0,0,0,0,0}, ports:'{default:0}};
         prog[1] = '{dir:0, nops:2, ops:'{0,3,0,0,0,0,0,0}, ports:'{default:0}};
