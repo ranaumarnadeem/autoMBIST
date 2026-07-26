@@ -17,7 +17,15 @@ module march_raw_fsm #(
 
     output logic                  busy,
     output logic                  done,
-    output logic                  fail
+    output logic                  fail,
+
+    // On-chip BIRA streaming interface (Step E): fires the SAME cycle/condition
+    // that already sets fail_q below, but exposes it as a live per-cell strobe
+    // instead of only a sticky aggregate -- an on-chip analyzer can register
+    // every distinct failing row as the march passes over it, not just "some
+    // row failed." Purely additive: no existing signal's timing changes.
+    output logic                  fail_valid,
+    output logic [ADDR_WIDTH-1:0] fail_addr
 );
 
     localparam logic [2:0] LAST_PHASE = 3'd5;
@@ -74,6 +82,11 @@ module march_raw_fsm #(
     assign busy = (state_q != ST_IDLE) && (state_q != ST_DONE);
     assign done = (state_q == ST_DONE);
     assign fail = fail_q;
+
+    // Exactly the ST_CHECK compare condition below (fail_q's own trigger),
+    // just also exposed live instead of only latched into a sticky bit.
+    assign fail_valid = (state_q == ST_CHECK) && do_read && (mem_rdata !== expected_q);
+    assign fail_addr  = addr_q;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
