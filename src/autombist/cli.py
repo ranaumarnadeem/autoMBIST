@@ -10,6 +10,7 @@ import yaml
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from autombist import __version__
+    from autombist.cli_render import fault_progress, print_status_table, spinner
     from autombist.generator import ConfigError, generate_from_config
     from autombist.openram_flow import (
         OpenRAMConfigError,
@@ -28,6 +29,7 @@ if __package__ in {None, ""}:
     )
 else:
     from . import __version__
+    from .cli_render import fault_progress, print_status_table, spinner
     from .generator import ConfigError, generate_from_config
     from .openram_flow import (
         OpenRAMConfigError,
@@ -177,18 +179,36 @@ def _generate(
         raise typer.Exit(code=1)
 
 
-def _simulate(module_outdir: Path, verbose: bool, min_coverage: float | None = None) -> None:
+def _simulate(
+    module_outdir: Path,
+    verbose: bool,
+    min_coverage: float | None = None,
+    json_output: bool = False,
+) -> None:
     try:
-        result = run_simulation(module_outdir, verbose=verbose)
+        with spinner("Running MBIST simulation..."):
+            result = run_simulation(module_outdir, verbose=verbose)
     except (ConfigError, FileNotFoundError, OSError, ValueError, yaml.YAMLError, SimulationError) as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     from autombist.reporting import coverage_meets_threshold, format_simulation_summary
 
-    typer.echo(format_simulation_summary(result.report))
-    if verbose and result.stdout:
-        typer.echo(result.stdout, nl=False)
+    if json_output:
+        import json
+
+        typer.echo(json.dumps(result.report, indent=2, sort_keys=True))
+        # --verbose's raw simulator console output still has to go SOMEWHERE --
+        # it can't join stdout without corrupting the JSON document, so it
+        # goes to stderr instead (same stream result.stderr already always
+        # uses below), rather than silently vanishing.
+        if verbose and result.stdout:
+            typer.echo(result.stdout, err=True, nl=False)
+    else:
+        if not _is_quiet():
+            typer.echo(format_simulation_summary(result.report))
+        if verbose and result.stdout:
+            typer.echo(result.stdout, nl=False)
     if verbose and result.stderr:
         typer.echo(result.stderr, err=True, nl=False)
 
@@ -220,7 +240,9 @@ def _build_faultflow_options(
     )
 
 
-def _grade_controller(module_outdir: Path, opts, run: bool) -> None:
+def _grade_controller(
+    module_outdir: Path, opts, run: bool, *, quiet: bool = False, json_output: bool = False,
+) -> None:
     import json
 
     from autombist.faultflow_flow import FaultFlowError
@@ -234,9 +256,15 @@ def _grade_controller(module_outdir: Path, opts, run: bool) -> None:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
+    # quiet/json_output suppress the routine status echoes below -- notably
+    # json_output, since `run --faultflow --json` must keep stdout as ONE
+    # parseable JSON document (this ran after _simulate already printed it).
+    silent = quiet or json_output
+
     if not run:
-        typer.echo(f"Emitted FaultFlow bundle: {bundle}")
-        typer.echo(f"  Run on Linux/WSL:  FAULTFLOW_HOME=<path> bash {bundle / 'run_faultflow.sh'}")
+        if not silent:
+            typer.echo(f"Emitted FaultFlow bundle: {bundle}")
+            typer.echo(f"  Run on Linux/WSL:  FAULTFLOW_HOME=<path> bash {bundle / 'run_faultflow.sh'}")
         return
 
     report_path = module_outdir / "reports" / "latest.json"
@@ -247,6 +275,9 @@ def _grade_controller(module_outdir: Path, opts, run: bool) -> None:
             write_simulation_report(report, module_outdir / "reports")
         except (OSError, ValueError):
             pass
+
+    if silent:
+        return
 
     coverage_percent = coverage.get("coverage_percent") if coverage else None
     if isinstance(coverage_percent, (int, float)):
@@ -259,6 +290,20 @@ def _grade_controller(module_outdir: Path, opts, run: bool) -> None:
         typer.echo(f"Controller grading complete. Bundle: {bundle}")
 
 
+_CLI_STATE: dict[str, bool] = {"verbose": False, "quiet": False}
+
+
+def _effective_verbose(local_verbose: bool) -> bool:
+    """OR a command's own --verbose with the global -v flag -- additive, so
+    every existing --verbose call site keeps working unchanged whether or not
+    the global flag is ever touched."""
+    return local_verbose or _CLI_STATE["verbose"]
+
+
+def _is_quiet() -> bool:
+    return _CLI_STATE["quiet"]
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(
@@ -268,8 +313,30 @@ def main(
         is_eager=True,
         help="Show version and exit",
     ),
+    verbose: bool = typer.Option(
+        False, "-v", "--verbose",
+        help="Enable verbose output for every command (ORed with each command's own --verbose)",
+    ),
+    quiet: bool = typer.Option(
+        False, "-q", "--quiet",
+        help="Suppress routine status lines (results and errors still print); mutually exclusive with -v",
+    ),
 ) -> None:
-    return None
+    if verbose and quiet:
+        typer.secho("autombist: -v/--verbose and -q/--quiet are mutually exclusive", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    _CLI_STATE["verbose"] = verbose
+    _CLI_STATE["quiet"] = quiet
+    # Only touch the (process-global) root logger when the caller actually
+    # asked for a non-default verbosity -- an ordinary invocation with
+    # neither flag must not reconfigure logging out from under anything
+    # embedding autombist.cli in-process.
+    if verbose or quiet:
+        import logging
+
+        level = logging.DEBUG if verbose else logging.ERROR
+        logging.basicConfig(level=level, format="%(levelname)s: %(message)s", force=True)
 
 
 @app.command()
@@ -281,7 +348,7 @@ def generate(
     seed: int | None = typer.Option(None, "--seed", help="Random seed for reproducible fault injection (optional)"),
     fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at (SA0/SA1), transition-up, transition-down, or port-coupling (march-1r1w only; march-2rw supports stuck-at/transition only)"),
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
-    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, or march-2rw"),
+    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, march-2rw, march-x, or mats-plus"),
 ) -> None:
     """Generate MBIST wrapper, RTL, and optionally fault masks.
 
@@ -306,10 +373,11 @@ def generate(
 
     config = _resolve_config_path(config)
     wrapper_path = _generate(config, out, test, faults, seed, fault_type, pulse_width_ns, algo)
-    typer.echo(f"Generated MBIST wrapper: {wrapper_path}")
-    if test:
-        typer.echo(f"Generated fault masks in: {wrapper_path.parent / 'faults'}")
-        typer.echo(f"Generated fault-sim Makefile: {wrapper_path.parent / 'Makefile'}")
+    if not _is_quiet():
+        typer.echo(f"Generated MBIST wrapper: {wrapper_path}")
+        if test:
+            typer.echo(f"Generated fault masks in: {wrapper_path.parent / 'faults'}")
+            typer.echo(f"Generated fault-sim Makefile: {wrapper_path.parent / 'Makefile'}")
 
 
 @app.command()
@@ -317,6 +385,7 @@ def simulate(
     out: Path = typer.Option("out", "--out", help="Output directory containing generated autombist output"),
     verbose: bool = typer.Option(False, "--verbose", help="Print full simulator console output and detailed logs"),
     min_coverage: float | None = typer.Option(None, "--min-coverage", help="Fail (exit 1) if array fault coverage is below this percent"),
+    json_output: bool = typer.Option(False, "--json", help="Print the structured report as JSON to stdout instead of the human summary"),
 ) -> None:
     """Run MBIST simulation using Cocotb and Icarus Verilog.
 
@@ -333,12 +402,13 @@ def simulate(
       - out/<memory_name>/simulate.log (full simulator output)
       - out/<memory_name>/reports/latest.json (structured results)
             - out/<memory_name>/reports/report.txt (plain-text human report)
-      - Terminal summary with coverage metrics
+      - Terminal summary with coverage metrics (or the same report as JSON with --json)
 
     Examples:
       autombist simulate --out out
       autombist simulate --out out --verbose
       autombist simulate --out out/input_demo_8x16_scn4m
+      autombist simulate --out out --json | jq .fault_metrics
     """
 
     try:
@@ -347,7 +417,7 @@ def simulate(
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    _simulate(module_outdir, verbose, min_coverage)
+    _simulate(module_outdir, _effective_verbose(verbose), min_coverage, json_output)
 
 
 @app.command()
@@ -359,13 +429,14 @@ def run(
     seed: int | None = typer.Option(None, "--seed", help="Random seed for reproducible fault injection"),
     fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at, transition-up, transition-down, or port-coupling (march-1r1w only; march-2rw supports stuck-at/transition only)"),
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
-    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, or march-2rw"),
+    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, march-2rw, march-x, or mats-plus"),
     verbose: bool = typer.Option(False, "--verbose", help="Print full simulator console output and detailed logs"),
     faultflow: bool = typer.Option(False, "--faultflow/--no-faultflow", help="After sim, grade the MBIST controller logic with FaultFlow (Linux/WSL)"),
     faultflow_repo: Path | None = typer.Option(None, "--faultflow-repo", envvar="FAULTFLOW_HOME", help="FaultFlow repo path (or set FAULTFLOW_HOME)"),
     cell_lib: str = typer.Option("sky130", "--cell-lib", help="FaultFlow standard-cell library: sky130 or osu035"),
     scan_chains: int = typer.Option(1, "--scan-chains", help="Scan chains for controller grading"),
     min_coverage: float | None = typer.Option(None, "--min-coverage", help="Fail (exit 1) if array fault coverage is below this percent"),
+    json_output: bool = typer.Option(False, "--json", help="Print the structured report as JSON to stdout instead of the human summary"),
 ) -> None:
     """Generate wrapper AND run simulation in one command (convenience mode).
 
@@ -386,18 +457,20 @@ def run(
       autombist run --config config.yml --test --faults 200 --algo march-raw --seed 999
       autombist run --config config.yml --test --fault-type transition-up --verbose
       autombist run  # uses ./config.yml when present
+      autombist run --config config.yml --json | jq .fault_metrics
     """
 
     config = _resolve_config_path(config)
     wrapper_path = _generate(config, out, test, faults, seed, fault_type, pulse_width_ns, algo)
-    typer.echo(f"Generated MBIST wrapper: {wrapper_path}")
-    if test:
-        typer.echo(f"Generated fault masks in: {wrapper_path.parent / 'faults'}")
-        typer.echo(f"Generated fault-sim Makefile: {wrapper_path.parent / 'Makefile'}")
-    _simulate(wrapper_path.parent, verbose)
+    if not json_output and not _is_quiet():
+        typer.echo(f"Generated MBIST wrapper: {wrapper_path}")
+        if test:
+            typer.echo(f"Generated fault masks in: {wrapper_path.parent / 'faults'}")
+            typer.echo(f"Generated fault-sim Makefile: {wrapper_path.parent / 'Makefile'}")
+    _simulate(wrapper_path.parent, _effective_verbose(verbose), min_coverage, json_output)
     if faultflow:
         opts = _build_faultflow_options(faultflow_repo, cell_lib, scan_chains, 90.0, 20)
-        _grade_controller(wrapper_path.parent, opts, run=True)
+        _grade_controller(wrapper_path.parent, opts, run=True, quiet=_is_quiet(), json_output=json_output)
 
 
 @app.command("grade-controller")
@@ -452,6 +525,7 @@ def test(
     diagnosis: Path | None = typer.Option(None, "--diagnosis", help="Write a per-cell (addr, bit) diagnosis/fail-bitmap report to this path"),
     diagnosis_fmt: str = typer.Option("md", "--diagnosis-fmt", help="Diagnosis report format: md, csv, or json"),
     check_sequence: bool = typer.Option(False, "--check-sequence", help="With --fsm: also verify the controller drives the exact march sequence of --algo (address order, ops, write data, port), independent of fault detection. Exits 1 on a sequence mismatch."),
+    json_output: bool = typer.Option(False, "--json", help="Print the full campaign result (same shape as --report json) as JSON to stdout instead of the human summary"),
 ) -> None:
     """Grade a memory against a functional fault library with an MBIST algorithm.
 
@@ -478,7 +552,12 @@ def test(
 
     from autombist.alg_spec import AlgSpecError, resolve_algo
     from autombist.algo_engine import CampaignError, MemoryParams, load_fault_list, run_algo_campaign, run_fsm_campaign
-    from autombist.algo_reporting import coverage_meets_threshold, write_campaign_report, write_diagnosis_report
+    from autombist.algo_reporting import (
+        coverage_meets_threshold,
+        render_campaign_json,
+        write_campaign_report,
+        write_diagnosis_report,
+    )
     from autombist.fault_primitives import FaultPrimitiveError
     from autombist.fault_primitives import default_registry as fp_default_registry
     from autombist.fault_primitives import from_dict as fp_from_dict
@@ -512,10 +591,11 @@ def test(
             fsm_kwargs: dict[str, object] = {}
             if check_sequence:
                 fsm_kwargs["expected_spec"] = resolve_algo(algo)
-            result = run_fsm_campaign(
-                mem, sources, ports.module_name, records,
-                sim=sim, fault_ram_sv=fault_ram_sv, **fsm_kwargs,
-            )
+            with fault_progress(len(records)) as progress_cb:
+                result = run_fsm_campaign(
+                    mem, sources, ports.module_name, records,
+                    sim=sim, fault_ram_sv=fault_ram_sv, progress_callback=progress_cb, **fsm_kwargs,
+                )
             label = f"FSM:{ports.module_name} ({len(sources)} source file(s))"
         else:
             if check_sequence:
@@ -524,7 +604,11 @@ def test(
                     "algorithm spec; the algorithm front IS the reference sequence)"
                 )
             spec = resolve_algo(algo)
-            result = run_algo_campaign(mem, spec, records, sim=sim, verbose=verbose, fault_ram_sv=fault_ram_sv)
+            with fault_progress(len(records)) as progress_cb:
+                result = run_algo_campaign(
+                    mem, spec, records, sim=sim, verbose=_effective_verbose(verbose),
+                    fault_ram_sv=fault_ram_sv, progress_callback=progress_cb,
+                )
             label = f"{spec.name} ({spec.length_n}n)"
         if report is not None:
             write_campaign_report(result, report, fmt=fmt)
@@ -534,25 +618,29 @@ def test(
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    typer.echo(f"autombist test: {label} on {addr_width}x{data_width} memory, init={init}")
-    typer.echo(f"  faults: {result.total}   detected: {result.detected}   coverage: {result.coverage_percent:.2f}%")
-    typer.echo(f"  build: {result.build_seconds:.2f}s   run: {result.run_seconds:.2f}s   sim: {result.sim}")
-    if report is not None:
-        typer.echo(f"  report: {report}")
-    if diagnosis is not None:
-        typer.echo(f"  diagnosis: {diagnosis}")
-    if result.sequence is not None:
-        seq = result.sequence
-        if seq.matches:
+    if json_output:
+        typer.echo(render_campaign_json(result))
+    elif not _is_quiet():
+        typer.echo(f"autombist test: {label} on {addr_width}x{data_width} memory, init={init}")
+        typer.echo(f"  faults: {result.total}   detected: {result.detected}   coverage: {result.coverage_percent:.2f}%")
+        typer.echo(f"  build: {result.build_seconds:.2f}s   run: {result.run_seconds:.2f}s   sim: {result.sim}")
+        if report is not None:
+            typer.echo(f"  report: {report}")
+        if diagnosis is not None:
+            typer.echo(f"  diagnosis: {diagnosis}")
+        if result.sequence is not None and result.sequence.matches:
             typer.echo(
-                f"  sequence: OK ({seq.observed_count} ops match {algo})"
+                f"  sequence: OK ({result.sequence.observed_count} ops match {algo})"
             )
-        else:
-            typer.secho(f"  sequence: MISMATCH vs {algo}", fg=typer.colors.RED)
-            for line in seq.message().splitlines()[1:]:
-                typer.secho(line, fg=typer.colors.RED)
 
     if result.sequence is not None and not result.sequence.matches:
+        # Always printed (stderr, regardless of -q/--json) -- this is the
+        # failure DIAGNOSIS the message below references as "above", not a
+        # routine status line, so -q must not delete it and --json must not
+        # push it onto stdout where it would corrupt the JSON document.
+        typer.secho(f"  sequence: MISMATCH vs {algo}", err=True, fg=typer.colors.RED)
+        for line in result.sequence.message().splitlines()[1:]:
+            typer.secho(line, err=True, fg=typer.colors.RED)
         typer.secho(
             "autombist: controller does not implement its specified march sequence "
             "(see sequence MISMATCH above)",
@@ -648,6 +736,7 @@ def harden(
     yourself -- a quick way to verify the integration wiring.
     """
     import json
+    import shutil
     import subprocess
 
     try:
@@ -667,6 +756,16 @@ def harden(
     if not run:
         typer.echo("(config only; pass --run to invoke LibreLane)")
         return
+
+    if shutil.which("nix") is None:
+        typer.secho(
+            "autombist: 'nix' not found on PATH. --run invokes LibreLane via "
+            "`nix run github:librelane/librelane`; install Nix "
+            "(https://nixos.org/download) or omit --run to only emit the config.",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
 
     cmd = build_librelane_command(out, pdk_root)
     typer.echo("$ " + " ".join(cmd))
@@ -712,6 +811,7 @@ def macro_signoff(
     """Run magic DRC + netgen LVS on generated OpenRAM macros (owed when a macro
     was generated with -n). Requires magic/netgen on PATH and the sky130 PDK.
     """
+    import shutil
     import subprocess
 
     if not script.is_file():
@@ -722,6 +822,18 @@ def macro_signoff(
     if show_command:
         typer.echo("$ " + " ".join(cmd))
         return
+
+    if shutil.which("bash") is None:
+        typer.secho(
+            "autombist: 'bash' not found on PATH. macro-signoff runs "
+            f"{script.name} via bash (which in turn needs magic + netgen on "
+            "PATH); on Windows use WSL/Git Bash, or pass --show-command to "
+            "inspect the command without running it.",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
+
     result = subprocess.run(cmd)
     if result.returncode != 0:
         raise typer.Exit(code=result.returncode)
@@ -1015,3 +1127,128 @@ def smoke(
     finally:
         if temp_ctx is not None:
             temp_ctx.cleanup()
+
+
+def _cocotb_available() -> bool:
+    """A separate, trivially-monkeypatchable seam -- avoids tests having to
+    patch importlib's own machinery (risky: other imports in the same process
+    would be affected) just to simulate cocotb being present/absent."""
+    import importlib.util
+
+    return importlib.util.find_spec("cocotb") is not None
+
+
+def _doctor_checks() -> list[tuple[str, str, str, str]]:
+    """Return (tool, status, needed_for, detail) for the external toolchain
+    autombist's various commands shell out to. Pure/testable -- the `doctor`
+    command just renders whatever this returns."""
+    import os
+    import shutil
+
+    rows: list[tuple[str, str, str, str]] = []
+
+    def which_row(tool: str, needed_for: str) -> None:
+        path = shutil.which(tool)
+        status = "OK" if path else "MISSING"
+        detail = path or "not found on PATH"
+        rows.append((tool, status, needed_for, detail))
+
+    which_row("make", "simulate, run")
+    which_row("iverilog", "simulate, run")
+    cocotb_ok = _cocotb_available()
+    rows.append((
+        "cocotb (python)", "OK" if cocotb_ok else "MISSING", "simulate, run",
+        "importable" if cocotb_ok else "not importable",
+    ))
+    which_row("verilator", "test (fault-model research engine)")
+    which_row("yosys", "grade-controller")
+    which_row("nix", "harden --run")
+    which_row("bash", "macro-signoff")
+    which_row("magic", "macro-signoff")
+    which_row("netgen", "macro-signoff")
+
+    faultflow_home = os.environ.get("FAULTFLOW_HOME")
+    rows.append((
+        "FAULTFLOW_HOME (env)", "OK" if faultflow_home else "MISSING", "grade-controller",
+        faultflow_home or "not set (or pass --faultflow-repo explicitly)",
+    ))
+    return rows
+
+
+@app.command()
+def doctor() -> None:
+    """Report which external tools autombist can find on this system.
+
+    Checks the full toolchain autombist's various commands shell out to
+    (make/iverilog/cocotb for simulate & run, verilator for the fault-model
+    research engine, nix for harden --run, bash/magic/netgen for
+    macro-signoff, yosys + FAULTFLOW_HOME for grade-controller) via
+    shutil.which / an import probe / an env check, and prints a capability
+    table. Purely diagnostic -- never affects any other command's behavior or
+    exit code.
+
+    Examples:
+      autombist doctor
+    """
+    rows = _doctor_checks()
+    print_status_table(
+        "autombist doctor",
+        ["Tool", "Status", "Needed for", "Detail"],
+        [list(row) for row in rows],
+        status_col=1,
+    )
+
+
+@app.command()
+def shell(
+    file: Path | None = typer.Option(None, "-f", "--file", help="Run a .tcl script (batch mode) instead of an interactive REPL"),
+) -> None:
+    """Launch the interactive Tcl shell -- an EDA-native alternative to the
+    Typer CLI, for users who live in OpenROAD/OpenSTA/magic-style Tcl
+    consoles.
+
+    Every command is a thin adapter over the SAME core function the
+    corresponding Typer CLI command calls: generate, simulate, run, test,
+    harden, fix_lef_units, macro_signoff, grade_controller, ram_synth,
+    doctor. Commands return Tcl-usable values (e.g. `simulate` returns the
+    coverage percent) so sessions script naturally:
+
+        set cov [simulate -out out]
+        if {$cov < 90} { error "coverage too low" }
+
+    Failures raise real Tcl errors, catchable via Tcl's own `catch`. Without
+    --file, reads from stdin when stdin isn't a terminal (piping/redirecting
+    a script in), otherwise starts an interactive REPL.
+
+    Quoting paths: Tcl's "..." double-quotes apply backslash substitution, so
+    a Windows path like "C:\\Users\\me\\config.yml" silently loses its
+    backslashes -- use {...} brace-quoting instead, which is fully literal:
+    generate -config {C:\\Users\\me\\config.yml}
+
+    Requires tkinter (the stdlib's Tcl binding) -- on Debian/Ubuntu:
+    `apt install python3-tk`; already included in this repo's Nix flake.
+
+    Examples:
+      autombist shell
+      autombist shell --file session.tcl
+      printf 'puts [generate -config config.yml -out out]\\n' | autombist shell
+    """
+    from .tcl_shell import TclShellUnavailable
+
+    try:
+        from .tcl_shell import TclShell
+    except ImportError as exc:
+        typer.secho(f"autombist: Tcl shell unavailable: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    try:
+        tcl = TclShell()
+    except TclShellUnavailable as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    if file is not None:
+        raise typer.Exit(code=tcl.run_batch(file))
+    if not sys.stdin.isatty():
+        raise typer.Exit(code=tcl.run_batch(None))
+    tcl.run_repl()

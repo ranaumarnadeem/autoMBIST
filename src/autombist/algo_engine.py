@@ -20,7 +20,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .alg_spec import AlgSpec, expand_expected_blocks, find_engine_dir
 from .seq_check import SequenceResult, compare_trace, parse_observed_trace
@@ -490,8 +490,14 @@ def run_algo_campaign(
     workdir: Path | None = None,
     verbose: bool = False,
     fault_ram_sv: Path | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> CampaignResult:
     """Compile march_engine once, run a golden pass, then one run per fault.
+
+    ``progress_callback`` (opt-in) is invoked as ``callback(completed, total)``
+    after each per-fault run -- e.g. to drive a CLI progress bar. Default None
+    keeps every existing caller byte-identical (no behavior change, just skips
+    the call).
 
     Dispatches on mem.num_ports (see _resolve_engine_sources): num_ports==1
     (default) uses the existing march_engine.sv unmodified; num_ports==2
@@ -545,6 +551,8 @@ def run_algo_campaign(
                     elem=elem, op=op, addr=addr, xor=xor_bits, activations=activations,
                 )
             )
+            if progress_callback is not None:
+                progress_callback(i + 1, len(faults))
 
         run_seconds = time.time() - start
         detected_count = sum(1 for r in results if r.detected)
@@ -607,6 +615,7 @@ def run_fsm_campaign(
     workdir: Path | None = None,
     fault_ram_sv: Path | None = None,
     expected_spec: AlgSpec | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> CampaignResult:
     """Compile FSM + openram_shim + fault_ram (via a generated harness) once,
     golden-gate, then one run per fault. Detection is bist_fail only -- no
@@ -626,6 +635,10 @@ def run_fsm_campaign(
     ``CampaignResult.sequence``. When None (the default) NOTHING about this path
     changes: the harness renders byte-identically and no ``+SEQ_TRACE`` is
     passed, so every existing FSM campaign is unaffected.
+
+    ``progress_callback`` (opt-in) is invoked as ``callback(completed, total)``
+    after each per-fault run -- e.g. to drive a CLI progress bar. Default None
+    keeps every existing caller byte-identical.
     """
     from .fsm_harness import HARNESS_TOP, check_ports, parse_ports, render_harness, render_harness_mp
 
@@ -705,6 +718,8 @@ def run_fsm_campaign(
             results.append(
                 FaultResult(index=i, record=record, detected=detected, elem=elem, op=op, addr=addr, xor=xor_bits)
             )
+            if progress_callback is not None:
+                progress_callback(i + 1, len(faults))
 
         run_seconds = time.time() - start
         detected_count = sum(1 for r in results if r.detected)
