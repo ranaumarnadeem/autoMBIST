@@ -60,10 +60,18 @@ def _config(memory_name: str, wrapper_module_name: str, num_spare_rows: int) -> 
     }
 
 
-def _generate(tmp_path: Path, config: dict, subdir: str) -> Path:
+# Self-repair-capable single-port algos (Workstreams A + B1): march_c_top,
+# march_raw_top, march_x_top, and mats_plus_top all stream fail_valid/
+# fail_addr, and the single-port wrapper branch consumes that stream
+# generically -- so every scenario below runs against all four, proving
+# self-repair isn't a march-c-only accident.
+SELFREPAIR_ALGOS = ["march-c", "march-raw", "march-x", "mats-plus"]
+
+
+def _generate(tmp_path: Path, config: dict, subdir: str, algo: str = "march-c") -> Path:
     config_path = tmp_path / f"{subdir}.yml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    return generate_from_config(config_path, tmp_path / subdir, algo="march-c")
+    return generate_from_config(config_path, tmp_path / subdir, algo=algo)
 
 
 def _run(wrapper: Path, scenario: str):
@@ -73,8 +81,9 @@ def _run(wrapper: Path, scenario: str):
     )
 
 
-def test_one_defect_two_spares_is_autonomously_repaired(tmp_path: Path) -> None:
-    wrapper = _generate(tmp_path, _config("sram_spares_tiny", "sram_spares_tiny_mbist", 2), "one_defect")
+@pytest.mark.parametrize("algo", SELFREPAIR_ALGOS)
+def test_one_defect_two_spares_is_autonomously_repaired(tmp_path: Path, algo: str) -> None:
+    wrapper = _generate(tmp_path, _config("sram_spares_tiny", "sram_spares_tiny_mbist", 2), "one_defect", algo=algo)
     result = _run(wrapper, "repairable")
     assert result.returncode == 0, result.stdout
     # The forced stuck-at is gone after the chip repaired itself, verified
@@ -83,22 +92,28 @@ def test_one_defect_two_spares_is_autonomously_repaired(tmp_path: Path) -> None:
     assert fail_cells(result.report) == set()
 
 
-def test_two_defects_two_spares_is_autonomously_repaired(tmp_path: Path) -> None:
+@pytest.mark.parametrize("algo", SELFREPAIR_ALGOS)
+def test_two_defects_two_spares_is_autonomously_repaired(tmp_path: Path, algo: str) -> None:
     """Both distinct faulty rows fit within the spare budget -- the on-chip
     registrar must catch BOTH during the single analyze pass, not just the
     first one it encounters."""
-    wrapper = _generate(tmp_path, _config("sram_spares_tiny_2defect", "sram_spares_tiny_2defect_mbist", 2), "two_ok")
+    wrapper = _generate(
+        tmp_path, _config("sram_spares_tiny_2defect", "sram_spares_tiny_2defect_mbist", 2), "two_ok", algo=algo
+    )
     result = _run(wrapper, "repairable")
     assert result.returncode == 0, result.stdout
     assert fail_cells(result.report) == set()
 
 
-def test_two_defects_one_spare_is_flagged_not_silently_passed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("algo", SELFREPAIR_ALGOS)
+def test_two_defects_one_spare_is_flagged_not_silently_passed(tmp_path: Path, algo: str) -> None:
     """The DVCon-style check: 2 distinct faulty rows exceed the 1-spare budget
     -- self_repair_fail must read 1 (asserted inside the cocotb test), AND the
     independent re-scan must show a real, partial (not zero, not both) repair:
     exactly one of the two known defects remains."""
-    wrapper = _generate(tmp_path, _config("sram_spares_tiny_2defect", "sram_spares_tiny_2defect_mbist", 1), "unrepairable")
+    wrapper = _generate(
+        tmp_path, _config("sram_spares_tiny_2defect", "sram_spares_tiny_2defect_mbist", 1), "unrepairable", algo=algo
+    )
     result = _run(wrapper, "partial")
     assert result.returncode == 0, result.stdout
     observed = fail_cells(result.report)
@@ -107,7 +122,8 @@ def test_two_defects_one_spare_is_flagged_not_silently_passed(tmp_path: Path) ->
     assert len(observed) == 1
 
 
-def test_retrigger_gives_the_same_result_both_times(tmp_path: Path) -> None:
+@pytest.mark.parametrize("algo", SELFREPAIR_ALGOS)
+def test_retrigger_gives_the_same_result_both_times(tmp_path: Path, algo: str) -> None:
     """Running the autonomous sequence twice in one simulation (no reset in
     between) must reach the SAME verdict both times -- proves the analyzer's
     known-defect state correctly PERSISTS across the re-trigger (accumulate
@@ -116,7 +132,7 @@ def test_retrigger_gives_the_same_result_both_times(tmp_path: Path) -> None:
     state at the start of the second pass would see no fault (the first
     pass's repair already masks it) and silently erase the still-valid
     repair -- see onchip_row_repair_analyzer.sv's header comment."""
-    wrapper = _generate(tmp_path, _config("sram_spares_tiny", "sram_spares_tiny_mbist", 2), "retrigger")
+    wrapper = _generate(tmp_path, _config("sram_spares_tiny", "sram_spares_tiny_mbist", 2), "retrigger", algo=algo)
     result = _run(wrapper, "retrigger")
     assert result.returncode == 0, result.stdout
     assert fail_cells(result.report) == set()
