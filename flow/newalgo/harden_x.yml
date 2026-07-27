@@ -1,0 +1,27 @@
+# Harden config for selfrepair_x (`autombist harden`) -- march-X self-repair
+# wrapping the real sky130_sram_32b256w OpenRAM macro (the same macro,
+# LEF-units-fixed the same way, already proven clean in
+# flow/multimem/mbist/harden.yml's slot a). Proves self-repair-through-
+# LibreLane generalizes beyond march-C to a newly hand-written algorithm.
+#
+# EDIT the absolute paths below to your generated wrapper (autombist generate
+# --algo march-x --config ... with read_latency: 0 -- see
+# tests/hardware/run_newalgo_real_macro_selfrepair_tb.py for the exact config)
+# and your units-normalized macro (`autombist fix-lef-units`).
+design_name: selfrepair_x
+verilog_files:
+  - gen_x/sram_wrap_x/march_x/march_x_algo.sv
+  - gen_x/sram_wrap_x/march_x/march_x_fsm.sv
+  - gen_x/sram_wrap_x/march_x/march_x_top.sv
+  - gen_x/sram_wrap_x/onchip_row_repair_analyzer.sv
+  - gen_x/sram_wrap_x/onchip_selfrepair_ctrl.sv
+  - gen_x/sram_wrap_x/repair_remap_row.sv
+  - gen_x/sram_wrap_x/sram_wrap_x_mbist.v
+  - flow/newalgo/sram_wrap_x.sv
+  - flow/multimem/sky130_srams_bb.v
+clock_port: clk
+clock_period: 20
+die_area: [0, 0, 900, 600]
+pl_target_density_pct: 25
+macros:
+  - {name: sky130_sram_32b256w, gds: macros_1000/sky130_sram_32b256w.gds, lef: macros_1000/sky130_sram_32b256w.lef, instance: u_sram.u_macro, location: [55, 60]}
