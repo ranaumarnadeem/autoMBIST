@@ -29,6 +29,12 @@ myst_enable_extensions = [
     "fieldlist",
 ]
 
+# Auto-generate GitHub-style heading anchors (#some-heading-slug) up to H3, so
+# in-page and cross-doc anchor links written the way GitHub already renders
+# them (e.g. architecture.md#the-multi-port-invariant-one-shared-core-not-two)
+# resolve on the built site too, instead of only working on github.com.
+myst_heading_anchors = 3
+
 source_suffix = {
     ".md": "markdown",
 }

@@ -27,10 +27,13 @@ A single broadcast `self_repair_start` runs all three; the top reports aggregate
   (here) over the real OpenRAM macro — bridges the wrapper's plain interface to
   the macro's 33-bit word (spare col tied off) and drives `wmask0` for the
   32-bit macros. Elaboration verified (`yosys hierarchy -check` clean: 3
-  wrappers + 3 real macros), and now also **functionally** verified with
-  self-repair actually running against the real macro models
+  wrappers + 3 real macros), **functionally** verified with self-repair
+  actually running against the real macro models
   (`tests/hardware/test_mem_subsystem_mbist.py`, `read_latency: 0` — see the
-  caveats below).
+  caveats below), and now also hardened end-to-end: `autombist harden --run`
+  on `harden.yml` below closes clean (589 Magic / 3194 KLayout
+  macro-internal DRC, LVS clean, exit 0 — see the caveats below for why
+  those DRC counts are non-fatal by explicit config, not luck).
 
 ## Reproduce
 
@@ -74,12 +77,19 @@ blackboxes, and `mem_subsystem_mbist.sv`.
   just the one observed-faulty word address, not every word sharing that
   physical row) — not a live issue here.
 - **Macro-internal DRC** was root-caused, not left open: the "thousands of
-  errors" originally reported here turned out to be a `magic` 8.3.623
-  GDS-hierarchy tooling artifact (unstable violation counts across runs of
-  the *same* geometry), not a real defect or a spares-related issue. Building
-  `magic` 8.3.363 (the version OpenRAM's own CI pins) against the identical
-  GDS gives zero violations, reliably. Top-level integration P&Rs LVS-clean;
-  see [../signoff](../signoff) for the per-macro scripts.
+  errors" originally reported here are OpenRAM SRAM-macro bitcell/periphery
+  cells using legitimate sky130 GDS layer/datatype pairs (e.g. `CFOMDROP`,
+  `CNTMADD`) that the local Magic/KLayout deck flags as "unknown
+  layer/datatype in boundary" — a known OpenRAM/open_pdks quirk
+  (`librelane/librelane#519`), not a real defect or a spares-related issue.
+  `autombist harden`'s `build_librelane_config()`
+  (`src/autombist/signoff.py`) sets `ERROR_ON_MAGIC_DRC: false` +
+  `ERROR_ON_KLAYOUT_DRC: false` whenever the harden config declares
+  `macros:` (as this one does), so these counts (589 Magic / 3194 KLayout
+  here) are deterministically non-fatal by explicit config, not just
+  advisory by upstream-default luck — `harden --run` exits 0 reproducibly.
+  Top-level integration P&Rs LVS-clean; see [../](../) for the full recipe
+  write-up and [../signoff](../signoff) for the per-macro scripts.
 - **Self-repair timing against the real macros — `read_latency: 0` required,
   now fixed and tested.** This subsystem was originally only
   elaboration-checked (see "Two build views" above), never simulated with

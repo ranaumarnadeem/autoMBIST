@@ -1,3 +1,7 @@
+---
+orphan: true
+---
+
 # Diagnosis / Fail-Bitmap Reports
 
 This page documents autoMBIST's **per-cell diagnosis** reporting: the feature that
@@ -70,6 +74,15 @@ autombist test -aw 8 -dw 8 --algo march_c --faults faults.txt \
 flag from the pre-existing `--report`/`--fmt` pair (the per-fault coverage
 report) — you can request both a `--report` and a `--diagnosis` from the same
 run, in different formats, and they never interfere with each other.
+
+`test` also has a top-level `--json` flag, but don't confuse it with
+`--diagnosis-fmt json`: `--json` prints the campaign's raw per-fault list
+(`{schema_version, algo_name, mem, faults: [...], ...}`, one entry per
+`FaultResult` with its `vaddr`/`vbit`/`addr`/`xor`/`detected` fields — the same
+data `--report json` writes to a file) straight to stdout, not the aggregated
+per-`(addr, bit)` cell table described below. Reach for `--diagnosis` when you
+want the cell-table view; reach for `--json` when you want the flat per-fault
+record list without writing a file.
 
 **From the interactive shell** (`autombist algo`), after a `run <algo_name>`,
 use the `write_diagnosis` command:
@@ -164,7 +177,7 @@ below for why those two rows span whole words while the coupling rows don't.)
 The equivalent CSV (`--diagnosis-fmt csv`) is the same rows, comma-separated,
 with the header as the first line:
 
-```csv
+```text
 addr,bit,role,fault_types_injected_here,detected_as_injection,escaped_types_here,times_observed_mismatch,observed_from_fault_types
 10,3,both,SA0,True,,1,SA0
 17,0,both,SA1,True,,1,SA1
@@ -228,6 +241,12 @@ convenience wrapper `autombist run --test`) produces its results as a single JSO
 report at `out/<memory_name>/reports/latest.json` (schema `"1.2.0"`, built by
 `build_simulation_report()` in `src/autombist/reporting.py`). That report always
 contains a `fault_details` array.
+
+Both `autombist simulate` and `autombist run` accept a `--json` flag that
+prints this same report — `fault_details` and, when a fail-scan ran,
+`fail_bitmap` included — directly to stdout instead of (only) the files under
+`reports/`, which is convenient for piping straight into `jq` without opening
+`latest.json` separately.
 
 ### 3.1 How it differs from `--diagnosis`
 

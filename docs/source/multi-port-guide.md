@@ -1,3 +1,7 @@
+---
+orphan: true
+---
+
 # Multi-Port Memory Guide
 
 A practical guide to testing 2-port memories with autoMBIST — dual-port and
@@ -6,7 +10,7 @@ subsystems, plus a third, separate multi-port surface for researchers
 validating their own controller FSM.
 
 This guide assumes you already know the basics of generating/simulating a
-single-port memory (see the main [README](../README.md)) or of running the
+single-port memory (see the main [README](https://github.com/ranaumarnadeem/autoMBIST/blob/main/README.md)) or of running the
 algo-shell (see `src/autombist/engine/README.md`). It focuses only on what
 changes when your memory under test has two physical ports.
 
@@ -74,8 +78,9 @@ which port *composition* is required, and this is enforced at generate time:
   `rw` plus an `r`, all raise a config error).
 - `march-2rw` requires **exactly two `rw` ports** — one `rw` plus one `r`
   (or `w`), or only one `rw` port, is rejected.
-- Every other algo (`march-c`, `march-raw`) still requires **exactly one
-  port**, of any type — a 2-port config is rejected for them.
+- Every other algo (`march-c`, `march-raw`, `march-x`, `mats-plus`) still
+  requires **exactly one port**, of any type — a 2-port config is rejected
+  for them.
 
 A 1R1W config (one read-only port, one write-only port):
 
@@ -189,6 +194,41 @@ autombist generate --config config.yml --out out --test --faults 20 \
   --algo march-2rw --fault-type stuck-at
 autombist simulate --out out/sram_2rw_64x32
 ```
+
+### 2c. march-1r1w is the only multi-port algo with on-chip self-repair
+
+`march-1r1w` is currently the sole multi-port algorithm that supports
+on-chip self-repair (`redundancy.onchip_selfrepair: true` — the autonomous
+BIRA analyzer + BISR sequencer + row remap, see the
+[README's BIRA/BISR section](https://github.com/ranaumarnadeem/autoMBIST/blob/main/README.md#redundancy-repair-birabisr-and-physical-closure)).
+Config validation carves out exactly one exception to the "redundancy is
+single-port only" rule: the 1R1W `r`+`w` shape is accepted when
+`onchip_selfrepair: true` is set, and rejected otherwise. `march-2rw` gets
+no such exception — its two ports' concurrent same-cycle compare breaks
+the on-chip analyzer's single-fail-per-cycle assumption, so it's not (and
+won't become) self-repair-capable without new arbitration RTL.
+
+The mechanism works because both ports share the FSM's single `addr_q`
+register (`rtl/march_1r1w/march_1r1w_fsm.sv`): the read port and write
+port always access the same address on the same cycle, so one
+`fail_valid`/`fail_addr` stream and one `repair_remap_row` instance can
+steer both ports together.
+
+```yaml
+redundancy:
+  num_spare_rows: 1
+  num_spare_cols: 0
+  onchip_selfrepair: true
+```
+
+Add that block to the 1R1W config from §2a and generate with `--algo
+march-1r1w` as usual — no other config changes are needed. Note this
+covers the *controller logic* only: the self-repair wrapper hasn't been
+hardened through LibreLane against a real dual-port OpenRAM macro, since
+none of this project's three real sky130 macros are dual-port (they're
+all single-port r/w). See
+[`flow/newalgo/README.md`, "march-1r1w: scope decision"](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flow/newalgo/README.md#march-1r1w-scope-decision-not-hardened-here)
+for the full explanation and current status.
 
 ## 3. Algo-shell: 2-port sessions and cross-port faults
 

@@ -48,4 +48,5 @@ configuration
 librelane
 challenges
 roadmap
+advanced-guide
 ```

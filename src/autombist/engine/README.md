@@ -10,6 +10,8 @@ Runs unmodified under Xcelium (xrun) and Verilator 5.x.
                            default) or num_ports=2 (rendered via fault_ram_gen.py --
                            see "Multi-port" below)
     openram_shim.sv        drop-in wrapper matching the OpenRAM 1rw pinout
+    openram_shim_mp.sv     num_ports=2 counterpart of openram_shim.sv -- one shared
+                           fault_ram core across both port buses (see "Multi-port" below)
     march_engine.sv        MATS+, March C-, March SS runner with detection attribution
                            (single-port only; never touched by the multi-port work)
     march_engine_mp.sv     num_ports=2 counterpart of march_engine.sv -- same file-driven
@@ -151,7 +153,7 @@ activates 10 times and still escapes.
 
 ## Measured results, faults.example.txt, INIT=1 (defaults)
 
-| Fault | MATS+ (4n) | March C- (10n) | March SS (22n) |
+| Fault | MATS+ (5n) | March C- (10n) | March SS (22n) |
 |---|---|---|---|
 | SA0, SA1 | D | D | D |
 | TF0, TF1 | D | D | D |
@@ -202,6 +204,11 @@ openram_shim.sv matches the OpenRAM 1rw macro pinout
 the bit-level mask the core uses. Set DATA_WIDTH, ADDR_WIDTH, NUM_WMASKS to
 the generated config and swap the instance. Golden runs against the real
 OpenRAM Verilog model, fault runs against the shim, same testbench.
+
+For a real 2-port (2RW) OpenRAM macro, use openram_shim_mp.sv instead: same
+approach per port (clk0/csb0/.../dout0 and clk1/csb1/.../dout1), wrapping
+one shared num_ports=2 fault_ram core so cross-port coupling stays
+meaningful (see "Multi-port" above).
 
 ## Cadence notes
 

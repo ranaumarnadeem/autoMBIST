@@ -111,9 +111,10 @@ sky130 macro subsystem) sets `read_latency: 0` for exactly this reason.
 ## Redundancy repair (BIRA/BISR)
 
 Opt-in via a `redundancy:` block, paired with either `repair_ports:`
-(tester-driven) or `onchip_selfrepair: true` (autonomous). Single-port memories
-only; `num_spare_cols` must currently be `0` (row repair only — see
-{doc}`roadmap`).
+(tester-driven) or `onchip_selfrepair: true` (autonomous). Single-port
+memories only, except the 1-read+1-write `march-1r1w` port shape when paired
+with `onchip_selfrepair: true` (see below); `num_spare_cols` must currently
+be `0` (row repair only — see {doc}`roadmap`).
 
 **Tester-driven** — the wrapper exposes repair-register pins a tester (or the
 Python `repair/bisr.py` encoder) drives directly:
@@ -138,8 +139,38 @@ redundancy:
   onchip_selfrepair: true
 ```
 
-`onchip_selfrepair` is currently gated to `--algo march-c` (the on-chip
-analyzer streams fail data only from that FSM today).
+`onchip_selfrepair` currently requires `--algo` to be one of `march-c`,
+`march-raw`, `march-1r1w` (a 1-read-port + 1-write-port config, `type: r`/
+`type: w`), `march-x`, or `mats-plus`. `march-2rw` isn't wired up yet -- its
+two concurrent same-cycle compares break the on-chip analyzer's
+single-fail-per-cycle assumption and would need new arbiter RTL.
+
+`march-1r1w` is the one multi-port shape `redundancy:` accepts, and only in
+this autonomous form (no `repair_ports:` — self-repair and tester-driven
+repair are mutually exclusive). A single `repair_remap_row` steers both
+ports, since `march_1r1w_fsm` drives them off the same shared address
+register:
+
+```yaml
+ports:
+  rport:
+    type: r
+    clk: clk0
+    addr: addr0
+    dout: dout0
+    csb: csb0
+  wport:
+    type: w
+    clk: clk1
+    addr: addr1
+    din: din1
+    csb: csb1
+    we: web1
+redundancy:
+  num_spare_rows: 2
+  num_spare_cols: 0
+  onchip_selfrepair: true
+```
 
 ## OpenRAM synthesis config (`openram.yml`)
 
@@ -152,5 +183,5 @@ target technology). `autombist init` scaffolds a starter one alongside
 
 Every CLI flag that reads or overrides these files — `generate`, `run`,
 `ram-synth`, `harden` — is documented flag-by-flag in
-[`docs/cli-reference.md`](https://github.com/ranaumarnadeem/autoMBIST/blob/main/docs/cli-reference.md),
-including the full `reports/latest.json` output schema.
+{doc}`cli-reference`, including the full `reports/latest.json` output
+schema.

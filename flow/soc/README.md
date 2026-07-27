@@ -20,11 +20,20 @@ CPU fetch/load/store traffic, on a design close to what a real chip looks like.
 - `gen_program.py` — a tiny local RV32I assembler (just enough of the ISA:
   LUI, ADDI, SW, LW, BEQ, BNE) and the test firmware itself. No RV32I
   toolchain dependency.
+- `hardened/harden.yml`, `hardened/soc_top_hw.sv` — a second toplevel: the
+  same CPU and self-repair RTL, retargeted onto the two real OpenRAM macros
+  from `flow/multimem/mbist/` (`sky130_sram_32b256w` for instruction memory,
+  `sky130_sram_32b512w` for data) instead of this directory's
+  defect-injectable fixtures — the LibreLane hardening target for this
+  design (see "The hardened variant" below). Its cocotb test is
+  `tests/hardware/test_soc_hw_selfrepair.py`, with a standalone runner at
+  `tests/hardware/run_soc_hw_selfrepair_tb.py`.
 
-The cocotb test lives at `tests/hardware/test_soc_selfrepair.py` (with a
-standalone runner at `tests/hardware/run_soc_selfrepair_tb.py`), per this
-repo's convention that all cocotb tests live under `tests/hardware/`
-regardless of which `flow/` example they exercise.
+The cocotb test for the toy-fixture version above lives at
+`tests/hardware/test_soc_selfrepair.py` (with a standalone runner at
+`tests/hardware/run_soc_selfrepair_tb.py`), per this repo's convention that
+all cocotb tests live under `tests/hardware/` regardless of which `flow/`
+example they exercise.
 
 ## Memory map
 
@@ -91,15 +100,49 @@ repaired path; (3) a direct, CPU-independent peek at the raw physical cell the
 defect was remapped to (computed from the wrapper's own repair registers, not
 assumed), confirming the actual bits landed where the remap says they should.
 
+## The hardened variant: `soc_top_hw`
+
+`hardened/soc_top_hw.sv` reuses `selfrepair_a`/`selfrepair_b` unchanged from
+`flow/multimem/mbist/` — same generator config
+(`redundancy: {num_spare_rows: 1, onchip_selfrepair: true}`, algo march-c) —
+and drives them with this same real RV32I CPU instead of
+`mem_subsystem_mbist.sv`'s plain functional bus. Real macros have no
+defect-injection knob pre-silicon, so this isn't a second repair-correctness
+proof; it's a physical/toolchain-closure target: does the whole
+CPU+repair+real-macro design synthesize, place, route, and sign off through
+LibreLane? `tests/hardware/test_soc_hw_selfrepair.py` (run via
+`tests/hardware/run_soc_hw_selfrepair_tb.py`) simulates it first, generating
+the wrappers with `read_latency: 0` — the same fix `flow/multimem/mbist/`
+needed, since the generator's default `read_latency: 1` is tuned for this
+project's toy behavioral fixtures and phantom-fails against a real macro's
+narrow output-valid window. Repair runs at boot as always, finds nothing to
+repair on the (non-defective) real macros, and the CPU boots and runs the
+same firmware normally afterward.
+
+`hardened/harden.yml` runs it through
+`autombist harden --config flow/soc/hardened/harden.yml --run`: a
+1400x900um die at 25% placement density, the two macros placed side by side.
+It hardens clean — DRC and LVS clean, `harden --run` exits 0 — under this
+project's documented policy of treating OpenRAM's macro-internal DRC counts
+(legitimate sky130 mask layers used only inside the macro's own geometry,
+not a defect in this project's own logic) as non-fatal signoff, the same
+policy `flow/multimem/mbist/` hardens under; see that directory's README for
+the fuller signoff caveats, which apply here unchanged since both designs
+reuse the identical wrapper/macro pair.
+
 ## What this does and doesn't prove
 
-This is a simulation-only proof — `soc_top` is not hardened through
-LibreLane, and PicoRV32 is used as-is with no synthesis/timing work of its
-own. It demonstrates functional, CPU-level transparency of on-chip self-repair
-on a design shaped like a real SoC; it says nothing new about physical
-closure (that's `flow/multimem/`) or real silicon defects (which, as
-elsewhere in this project, can't be injected into a compiled macro
-pre-silicon).
+`soc_top` itself (the toy-fixture version above) is a simulation-only proof
+— it is not hardened through LibreLane, and PicoRV32 is used as-is with no
+synthesis/timing work of its own. It demonstrates functional, CPU-level
+transparency of on-chip self-repair on a design shaped like a real SoC, and
+— because its memories are defect-injectable — that repair genuinely fixes
+a defect the CPU would otherwise read wrong. Physical closure for this same
+CPU+repair design is covered by its `hardened/soc_top_hw` sibling above
+(and, for the memory-only subsystem without a CPU, by `flow/multimem/`);
+real silicon defects still can't be injected into a compiled macro
+pre-silicon, so neither variant demonstrates repair against an actual
+physical defect.
 
 The bus bridge's address decode only covers the three mapped regions above;
 any other word-aligned address would silently fall through to reading

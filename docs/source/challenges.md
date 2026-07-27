@@ -41,9 +41,36 @@ Checking a macro's actual GDS polygons as part of one merged pass (rather
 than treating the macro as an opaque boundary) needs a specific layer in the
 macro's GDS that OpenRAM's output doesn't include. Also still open.
 
+Along the way we hit a related, more concrete problem: OpenRAM's own
+bitcell/periphery cells use a handful of GDS layer/datatype pairs (things
+like `CFOMDROP`, `CNTMADD`) that are legitimate sky130 mask-operation layers,
+but are internal to the macro's own geometry and aren't in the local
+Magic/KLayout DRC deck — so they get flagged as "unknown layer/datatype in
+boundary". That's a known OpenRAM/open_pdks integration quirk, not a defect
+in autoMBIST's own logic (see
+[librelane/librelane#519](https://github.com/librelane/librelane/issues/519)),
+but Magic and KLayout both treat DRC violations as fatal by default, so
+whether that macro-internal noise aborted a `harden --run` outright used to
+depend on whatever LibreLane defaulted to upstream rather than anything this
+project pinned itself — not actually reproducible. `autombist harden` now
+sets `ERROR_ON_MAGIC_DRC` and `ERROR_ON_KLAYOUT_DRC` to `false` itself
+whenever a config declares `macros:`, alongside the `MAGIC_DRC_USE_GDS`/
+`RUN_KLAYOUT_XOR` stance above, so those counts are deterministically
+advisory now rather than accidental. They're still nonzero counts coming
+from inside the macro, though — closing that for real is exactly what a
+proper merged-hierarchy pass would do.
+
 ## Toolchain setup on Windows/WSL
 
 Wiring up the physical-design tools (magic, netgen, klayout, LibreLane) took
 some trial and error to get consistent within a WSL environment — mostly
 around PATH resolution and matching library versions. Nothing unusual for a
 mixed open-source EDA toolchain, just worth knowing going in.
+
+`autombist doctor` now surfaces exactly this up front — it checks for
+make/iverilog/cocotb/verilator/yosys/nix/bash/magic/netgen and the
+`FAULTFLOW_HOME` env var in one shot and prints which commands each one
+unblocks, instead of finding out via a failed command halfway through a run.
+`harden --run` and `macro-signoff` also check for `nix`/`bash` before
+invoking and point Windows users at WSL or Git Bash directly, rather than
+surfacing a raw subprocess traceback.

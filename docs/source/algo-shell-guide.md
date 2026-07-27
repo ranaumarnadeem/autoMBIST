@@ -1,10 +1,14 @@
+---
+orphan: true
+---
+
 # Algo-shell guide (`autombist test` / `autombist algo`)
 
 This is the user guide for autoMBIST's **algo-shell** subsystem: the
 research-oriented half of the tool that grades march algorithms (and
 controller FSMs) against a 19-primitive functional fault model, using a
 Verilator-driven behavioral RAM instead of a synthesizable memory macro. If
-you haven't already, read `docs/architecture.md` first — its "Two
+you haven't already, read {doc}`architecture` first — its "Two
 subsystems, one repository" table and "The algo-shell" section explain how
 this half relates to the classic RTL-wrapping path (`autombist generate` /
 `simulate` / `run`) and why they're kept separate.
@@ -23,7 +27,7 @@ question is about a specific memory instance you intend to actually tape
 out: generating synthesizable MBIST RTL around an OpenRAM-generated (or
 otherwise real) macro, with cocotb + Icarus driving the simulation. The two
 subsystems share a CLI and a Python package but touch disjoint code paths,
-simulators, and report schemas — see `docs/architecture.md` for the full
+simulators, and report schemas — see {doc}`architecture` for the full
 comparison table and rationale.
 
 ## 2. `autombist test` — batch/scripted command reference
@@ -51,12 +55,14 @@ autombist test --addr-width INTEGER --data-width INTEGER --faults PATH [OPTIONS]
 | `--fault-types PATH` | none | JSON file with a list of custom fault-primitive specs, added to the built-in 19 (see §4 and `fault_primitives.py`'s module docstring for the schema) |
 | `--init INTEGER` | `1` | Memory init value (0 or 1) |
 | `--sim TEXT` | `verilator` | Simulator backend — Verilator only; Icarus cannot run the SV fault engine (it uses `foreach`, queues, and `final` blocks) |
-| `--verbose` | off | Print per-fault activation counts (`+FAULT_VERBOSE`) |
+| `--verbose` | off | Print per-fault activation counts (`+FAULT_VERBOSE`); ORed with the top-level `autombist -v` flag, so `autombist -v test ...` has the same effect without touching this flag |
 | `--report PATH` | none | Write a per-fault coverage report to this path |
 | `--fmt TEXT` | `md` | Report format: `md`, `csv`, or `json` |
 | `--min-coverage FLOAT` | none | Exit 1 if coverage falls below this percent (useful as a CI gate) |
 | `--diagnosis PATH` | none | Write a per-cell `(addr, bit)` diagnosis/fail-bitmap report to this path |
 | `--diagnosis-fmt TEXT` | `md` | Diagnosis report format: `md`, `csv`, or `json` |
+| `--check-sequence` | off | With `--fsm`: also verify the controller drives the exact march sequence of `--algo` (address order, ops, write data, port), independent of fault detection. Exits 1 on a sequence mismatch |
+| `--json` | off | Print the full campaign result (same shape as `--report json`) as JSON to stdout instead of the human summary |
 
 ### Examples
 
@@ -66,8 +72,10 @@ autombist test -aw 10 -dw 32 --algo march_ss --faults faults.txt --verbose
 autombist test -aw 8 -dw 8 --algo my_algo.alg --faults faults.txt --report cov.md
 autombist test -aw 8 -dw 8 --algo march_c --faults faults.txt --min-coverage 90
 autombist test -aw 10 -dw 32 --fsm rtl/march_c/march_c_top.sv --faults faults.txt
+autombist test -aw 10 -dw 32 --fsm rtl/march_c/march_c_top.sv --faults faults.txt --check-sequence
 autombist test -aw 8 -dw 8 --algo march_ss --faults faults.txt --fault-types mytypes.json
 autombist test -aw 8 -dw 8 --algo march_c --faults faults.txt --diagnosis diag.md
+autombist test -aw 8 -dw 8 --algo march_c --faults faults.txt --json
 ```
 
 A run against an 8x8 memory with a small hand-picked fault list looks like:
@@ -87,6 +95,22 @@ injected into or observed at, useful for spotting whether escapes cluster on
 particular cells. `--min-coverage` makes `test` a gate: exit code 1 (with the
 coverage percent on stderr) if the campaign falls short, so it composes with
 CI or a Makefile target the same way the classic path's `--test` flag does.
+
+`--check-sequence` (only meaningful with `--fsm`) is a second, independent
+gate: it checks that the controller drives the *exact* march sequence
+implied by `--algo` — address order, ops, write data, and port — regardless
+of whether any fault happened to be detected. A mismatch prints a diagnostic
+`sequence: MISMATCH` block (always, on stderr, regardless of `-q`/`--json`)
+and exits 1 even if fault coverage looks fine; this catches controllers that
+pass by accident (e.g. two elements swapped, or a wrong write value) rather
+than by actually implementing the specified algorithm. `--json` prints the
+full campaign result (same shape as `--report json`) to stdout instead of
+the human-readable summary, so a script can `autombist test ... --json |
+jq` without parsing status text. On a TTY (and unless `NO_COLOR` is set),
+`test` also shows a live progress bar over the per-fault simulation loop.
+The top-level `autombist -q` flag suppresses `test`'s routine
+`autombist test: ...`/coverage summary lines the same way `--json` does
+(results/errors still print).
 
 ## 3. `autombist algo` — the interactive research shell
 
@@ -228,11 +252,16 @@ Generate a fault list: one instance of each of the 19 built-in types
 (default), or `N` random faults with `--n`/`--seed` for reproducibility.
 This *replaces* the session's current fault list.
 
-**`run <algo_name|fsm_name> [--verbose]`**
+**`run <algo_name|fsm_name> [--verbose] [--check ALGO]`**
 Run a fault campaign for one registered algorithm or FSM against the
 current fault list. FSM runs report detect/escape only — `--verbose` has no
 effect for them (no elem/op step counter on a black-box controller). Stores
-the result as "last op" for `write_report`/`write_diagnosis`.
+the result as "last op" for `write_report`/`write_diagnosis`. `--check ALGO`
+(FSM targets only; `ALGO` is a built-in name or a `.alg` path) additionally
+verifies the controller drives the exact march sequence of `ALGO` — address
+order, ops, write data, port — independent of fault detection; the result
+prints a `sequence: OK`/`MISMATCH` line alongside the usual detect/escape
+summary.
 
 **`compare_algo <name> -march NAME1,NAME2,...`**
 Run `<name>` plus each comma-separated named algorithm (aliases like `C`,
@@ -442,6 +471,6 @@ for `num_ports=2`, which switches the engine to `march_engine_mp.sv` and
 enables the corresponding 9-field fault-list format (trailing `VPORT
 APORT` columns) for genuine cross-port coupling faults. See
 `src/autombist/engine/README.md`'s "Multi-port" section for the full
-grammar and same-port-vs-cross-port semantics, and `docs/architecture.md`'s
+grammar and same-port-vs-cross-port semantics, and {doc}`architecture`'s
 "multi-port invariant" section for why this is one shared engine rather
 than a fork.
