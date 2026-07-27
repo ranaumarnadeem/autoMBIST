@@ -127,11 +127,93 @@ def test_onchip_selfrepair_mutually_exclusive_with_repair_ports(tmp_path: Path) 
         generate_from_config(config_path, tmp_path / "out")
 
 
-def test_onchip_selfrepair_requires_march_c(tmp_path: Path) -> None:
-    config_path = tmp_path / "bad_algo.yml"
-    config_path.write_text(yaml.safe_dump(_onchip(), sort_keys=False), encoding="utf-8")
-    with pytest.raises(ConfigError, match="march-c"):
-        generate_from_config(config_path, tmp_path / "out", algo="march-raw")
+def test_onchip_selfrepair_now_works_for_march_raw(tmp_path: Path) -> None:
+    """Self-repair generalizes beyond march-c (Workstream A1): march_raw_fsm/
+    march_raw_top now stream fail_valid/fail_addr just like march-c's, and the
+    single-port wrapper branch already consumes that stream generically (keyed
+    off {{ algo_top_module }}, not a hardcoded march_c reference) -- so this
+    algo choice renders the same on-chip self-repair scaffold, just wired to
+    march_raw_top instead of march_c_top."""
+    text = _render(tmp_path, _onchip(), "onchip_raw", algo="march-raw")
+    assert "onchip_row_repair_analyzer #(" in text
+    assert "onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl (" in text
+    assert "march_raw_top #(" in text
+    assert ".bist_fail_valid(algo_fail_valid)," in text
+    assert ".bist_fail_addr(algo_fail_addr)," in text
+
+
+def test_onchip_selfrepair_now_works_for_march_x_and_mats_plus(tmp_path: Path) -> None:
+    """The two new generated algorithms (Workstream B1) are self-repair-ready
+    from day one: single-port, fail_valid/fail_addr wired up like march-c's."""
+    for algo, top_module in (("march-x", "march_x_top"), ("mats-plus", "mats_plus_top")):
+        text = _render(tmp_path, _onchip(), f"onchip_{algo}", algo=algo)
+        assert "onchip_row_repair_analyzer #(" in text
+        assert "onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl (" in text
+        assert f"{top_module} #(" in text
+        assert ".bist_fail_valid(algo_fail_valid)," in text
+        assert ".bist_fail_addr(algo_fail_addr)," in text
+
+
+def test_onchip_selfrepair_now_works_for_march_1r1w(tmp_path: Path) -> None:
+    """Self-repair now generalizes to the multi-port march-1r1w shape too
+    (Workstream A2): the multi-port wrapper branch gained its own analyzer/
+    ctrl/remap scaffold, fed by port 0's (the read port's) fail stream, and a
+    SINGLE repair_remap_row steers both ports since they always carry the
+    identical logical address (see march_1r1w_fsm.sv)."""
+    config = {
+        "memory_name": "sram_spares_tiny_1r1w",
+        "wrapper_module_name": "sram_spares_tiny_1r1w_mbist",
+        "addr_width": 2,
+        "data_width": 4,
+        "we_active_low": True,
+        "ports": {
+            "rport": {"type": "r", "clk": "clk0", "addr": "addr0", "dout": "dout0", "csb": "csb0"},
+            "wport": {"type": "w", "clk": "clk1", "addr": "addr1", "din": "din1", "csb": "csb1", "we": "web1"},
+        },
+        "redundancy": {"num_spare_rows": 2, "num_spare_cols": 0, "onchip_selfrepair": True},
+    }
+    config_path = tmp_path / "onchip_1r1w.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    text = generate_from_config(config_path, tmp_path / "onchip_1r1w", algo="march-1r1w").read_text(encoding="utf-8")
+
+    assert "march_1r1w_top #(" in text
+    assert "onchip_row_repair_analyzer #(" in text
+    assert "onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl (" in text
+    assert ".bist_fail_valid(algo_fail_valid)," in text
+    assert ".bist_fail_addr(algo_fail_addr)," in text
+    # A single remap, fed by port 0's (the read port's) logical address.
+    assert ".addr_in(sram_addr0)" in text
+    assert text.count("repair_remap_row #(") == 1
+    # BOTH ports' memory pins take the SAME remapped physical address.
+    assert ".addr0(sram_addr_phys)" in text
+    assert ".addr1(sram_addr_phys)" in text
+    assert ".NUM_SPARE_ROWS(2)" in text
+    # No tester-driven repair_ports boundary pins.
+    assert "input  logic [2-1:0] row_repair_en" not in text
+
+
+def test_onchip_selfrepair_rejects_unsupported_algo(tmp_path: Path) -> None:
+    """march-2rw is still rejected: redundancy remains single-port only (its
+    own, separate restriction), so a 2-port march-2rw config combined with
+    onchip_selfrepair still fails -- proving the A1 allowlist relaxation for
+    march-raw didn't quietly open the door to multi-port algos the wrapper
+    template has no self-repair scaffold for yet."""
+    config = {
+        "memory_name": "sram_2rw_dut",
+        "wrapper_module_name": "sram_2rw_dut_mbist",
+        "addr_width": 6,
+        "data_width": 8,
+        "we_active_low": True,
+        "ports": {
+            "porta": {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "csb": "csb0", "we": "web0"},
+            "portb": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "csb": "csb1", "we": "web1"},
+        },
+        "redundancy": {"num_spare_rows": 2, "num_spare_cols": 0, "onchip_selfrepair": True},
+    }
+    config_path = tmp_path / "bad_multiport.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ConfigError, match="single-port"):
+        generate_from_config(config_path, tmp_path / "out", algo="march-2rw")
 
 
 @pytest.mark.parametrize("bad", [1, "true", [], {}])

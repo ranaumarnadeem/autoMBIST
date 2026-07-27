@@ -308,6 +308,7 @@ def test_cli_simulate_reports_summary(
     def fake_run(*args, **kwargs):
         return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="PASS\n", stderr="")
 
+    monkeypatch.setattr("autombist.runner.shutil.which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr("autombist.runner.subprocess.run", fake_run)
 
     result = runner.invoke(app, ["simulate", "--out", str(outdir)])
@@ -508,6 +509,48 @@ def test_cli_march_raw_algo_accepted(tmp_path: Path, base_config: dict[str, obje
     assert result.exit_code == 0
     wrapper_text = (outdir / "sram_1rw" / "sram_1rw_mbist.v").read_text(encoding="utf-8")
     assert "march_raw_top" in wrapper_text
+
+
+def test_cli_march_x_algo_accepted(tmp_path: Path, base_config: dict[str, object]) -> None:
+    """Verify CLI accepts march-x algorithm selection (Workstream B1)."""
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    result = runner.invoke(
+        app,
+        [
+            "generate",
+            "--config", str(config_path),
+            "--out", str(outdir),
+            "--algo", "march-x",
+        ],
+    )
+
+    assert result.exit_code == 0
+    wrapper_text = (outdir / "sram_1rw" / "sram_1rw_mbist.v").read_text(encoding="utf-8")
+    assert "march_x_top" in wrapper_text
+
+
+def test_cli_mats_plus_algo_accepted(tmp_path: Path, base_config: dict[str, object]) -> None:
+    """Verify CLI accepts mats-plus algorithm selection (Workstream B1)."""
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    result = runner.invoke(
+        app,
+        [
+            "generate",
+            "--config", str(config_path),
+            "--out", str(outdir),
+            "--algo", "mats-plus",
+        ],
+    )
+
+    assert result.exit_code == 0
+    wrapper_text = (outdir / "sram_1rw" / "sram_1rw_mbist.v").read_text(encoding="utf-8")
+    assert "mats_plus_top" in wrapper_text
 
 
 def test_invalid_algo_raises(tmp_path: Path, base_config: dict[str, object]) -> None:
@@ -813,7 +856,7 @@ def test_cli_run_with_faultflow_flag_invokes_grading(
     outdir = tmp_path / "out"
     _write_yaml(config_path, base_config)
 
-    def fake_simulate(module_outdir: Path, verbose: bool, min_coverage=None) -> None:
+    def fake_simulate(module_outdir: Path, verbose: bool, min_coverage=None, json_output=False) -> None:
         return None
 
     fake_coverage = {
@@ -838,6 +881,70 @@ def test_cli_run_with_faultflow_flag_invokes_grading(
     assert result.exit_code == 0
     assert "Controller structural coverage (FaultFlow)" in result.output
     assert "9/10" in result.output
+
+
+def test_cli_run_faultflow_json_keeps_stdout_as_pure_json(
+    tmp_path: Path, base_config: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """'run --faultflow --json': the FaultFlow coverage echo must not follow
+    the JSON report on stdout -- the whole of stdout must stay one parseable
+    JSON document, same invariant test_cli_run_json_e2e.py proves for the
+    non-faultflow case."""
+    import json as json_module
+
+    import typer
+
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    def fake_simulate(module_outdir: Path, verbose: bool, min_coverage=None, json_output=False) -> None:
+        if json_output:
+            typer.echo(json_module.dumps({"status": "pass"}))
+
+    def fake_run_controller_grading(module_outdir: Path, opts, *, run: bool = True):
+        return {"coverage_percent": 91.0, "detected": 9, "denominator": 10, "excluded_blackbox": 0}
+
+    monkeypatch.setattr("autombist.cli._simulate", fake_simulate)
+    monkeypatch.setattr("autombist.runner.run_controller_grading", fake_run_controller_grading)
+
+    result = runner.invoke(
+        app,
+        ["run", "--config", str(config_path), "--out", str(outdir), "--faultflow", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json_module.loads(result.output)
+    assert payload == {"status": "pass"}
+    assert "Controller structural coverage" not in result.output
+
+
+def test_cli_run_faultflow_quiet_suppresses_coverage_echo(
+    tmp_path: Path, base_config: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """'-q run --faultflow': -q's 'suppress routine status lines' contract
+    must cover the FaultFlow coverage echo too, not just generate/simulate's
+    own status lines."""
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    def fake_simulate(module_outdir: Path, verbose: bool, min_coverage=None, json_output=False) -> None:
+        return None
+
+    def fake_run_controller_grading(module_outdir: Path, opts, *, run: bool = True):
+        return {"coverage_percent": 91.0, "detected": 9, "denominator": 10, "excluded_blackbox": 0}
+
+    monkeypatch.setattr("autombist.cli._simulate", fake_simulate)
+    monkeypatch.setattr("autombist.runner.run_controller_grading", fake_run_controller_grading)
+
+    result = runner.invoke(
+        app,
+        ["-q", "run", "--config", str(config_path), "--out", str(outdir), "--faultflow"],
+    )
+
+    assert result.exit_code == 0
+    assert result.output == ""
 
 
 # ---------------------------------------------------------------------------
@@ -870,7 +977,7 @@ def test_cli_test_command_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyP
     faults_path = tmp_path / "faults.txt"
     _write_faults_file(faults_path)
 
-    def fake_run_algo_campaign(mem, spec, records, *, sim="verilator", verbose=False, fault_ram_sv=None):
+    def fake_run_algo_campaign(mem, spec, records, *, sim="verilator", verbose=False, fault_ram_sv=None, progress_callback=None):
         return _fake_campaign_result()
 
     monkeypatch.setattr("autombist.algo_engine.run_algo_campaign", fake_run_algo_campaign)
@@ -896,7 +1003,7 @@ def test_cli_test_command_writes_report_file(tmp_path: Path, monkeypatch: pytest
     _write_faults_file(faults_path)
     report_path = tmp_path / "cov.md"
 
-    def fake_run_algo_campaign(mem, spec, records, *, sim="verilator", verbose=False, fault_ram_sv=None):
+    def fake_run_algo_campaign(mem, spec, records, *, sim="verilator", verbose=False, fault_ram_sv=None, progress_callback=None):
         return _fake_campaign_result()
 
     monkeypatch.setattr("autombist.algo_engine.run_algo_campaign", fake_run_algo_campaign)
@@ -925,7 +1032,7 @@ def test_cli_test_command_min_coverage_gate_fails(tmp_path: Path, monkeypatch: p
     faults_path = tmp_path / "faults.txt"
     _write_faults_file(faults_path)
 
-    def fake_run_algo_campaign(mem, spec, records, *, sim="verilator", verbose=False, fault_ram_sv=None):
+    def fake_run_algo_campaign(mem, spec, records, *, sim="verilator", verbose=False, fault_ram_sv=None, progress_callback=None):
         return CampaignResult(
             algo_name="march_c",
             mem=MemoryParams(8, 8),
@@ -980,7 +1087,7 @@ def test_cli_test_command_custom_fault_types(tmp_path: Path, monkeypatch: pytest
 
     captured: dict[str, object] = {}
 
-    def fake_run_algo_campaign(mem, spec, records, *, sim="verilator", verbose=False, fault_ram_sv=None):
+    def fake_run_algo_campaign(mem, spec, records, *, sim="verilator", verbose=False, fault_ram_sv=None, progress_callback=None):
         captured["fault_ram_sv"] = fault_ram_sv
         return _fake_campaign_result()
 
@@ -1017,7 +1124,7 @@ def test_cli_test_command_fsm_path(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     def fake_check_ports(sv_text: str, module_name: str | None = None):
         return FsmPorts(module_name="my_fsm_top", ports={})
 
-    def fake_run_fsm_campaign(mem, sources, module_name, records, *, sim="verilator", fault_ram_sv=None):
+    def fake_run_fsm_campaign(mem, sources, module_name, records, *, sim="verilator", fault_ram_sv=None, progress_callback=None):
         return _fake_campaign_result()
 
     monkeypatch.setattr("autombist.fsm_harness.check_ports", fake_check_ports)
