@@ -1,8 +1,9 @@
 `timescale 1ns/1ps
 // On-chip row-repair analyzer (Step E on-chip BIRA) -- a CAM-style registrar
 // that tracks distinct failing ROW addresses streamed live by the controller
-// (march_c_fsm's fail_valid/fail_addr) during a BIST pass, and freezes a
-// row-repair signature into registered outputs on demand.
+// (fail_valid/fail_addr, wired up on march_c/march_raw/march_x/mats_plus's
+// FSMs, and on march_1r1w's single shared read-port compare) during a BIST
+// pass, and freezes a row-repair signature into registered outputs on demand.
 //
 // This is the hardware equivalent of the software repair.bira.analyze() +
 // repair.bisr.encode_row_repair() pipeline, SCOPED TO THE DEGENERATE ROW-ONLY
@@ -21,10 +22,14 @@
 //
 // Deliberate, documented properties (not bugs):
 //   * Single-fail-per-cycle is assumed -- no arbitration for two simultaneous
-//     fail_valid sources. Sound ONLY because march-c is inherently serial (one
-//     address in flight at a time); this module is gated to algo=="march-c" at
-//     the config layer (generator.py) for exactly that reason. A future
-//     concurrent/multi-port march engine would need real arbitration here.
+//     fail_valid sources. Sound because every algo that reaches this module is
+//     either inherently serial (march-c/march-raw/march-x/mats-plus: one
+//     address in flight at a time) or has exactly one compare per cycle
+//     despite being multi-port (march-1r1w: both ports share the same address
+//     register, only the read port ever compares); this module is gated to
+//     algo membership in generator.py's _SELFREPAIR_ALGOS for exactly that
+//     reason. march-2rw's genuinely concurrent dual compare is excluded from
+//     that set and would need real arbitration here.
 //   * A PARTIAL repair is still applied when unrepairable is asserted: whatever
 //     slots filled before the spare budget ran out remain latched into
 //     row_repair_en/faulty_row_addr. This is a deliberate "fail-open-partially"
