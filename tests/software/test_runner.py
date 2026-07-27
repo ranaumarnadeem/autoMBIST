@@ -67,6 +67,7 @@ def test_run_simulation_uses_clean_path_when_config_disables_saboteur(
         captured["command"] = command
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok\n", stderr="")
 
+    monkeypatch.setattr(runner_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr("autombist.runner.subprocess.run", fake_run)
 
     result = run_simulation(module_outdir, verbose=False)
@@ -113,6 +114,7 @@ def test_run_simulation_legacy_outputs_still_use_fault_makefile(
         captured["command"] = command
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok\n", stderr="")
 
+    monkeypatch.setattr(runner_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr("autombist.runner.subprocess.run", fake_run)
 
     result = run_simulation(module_outdir, verbose=False)
@@ -424,12 +426,65 @@ def test_run_simulation_failure_hint_when_fault_sim_log_has_trigger_substring(
     def fake_run(command, **kwargs):
         return subprocess.CompletedProcess(args=command, returncode=1, stdout="", stderr="boom")
 
+    monkeypatch.setattr(runner_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr("autombist.runner.subprocess.run", fake_run)
 
     with pytest.raises(SimulationError) as exc_info:
         run_simulation(module_outdir, verbose=False)
 
     assert "autombist generate --test" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Preflight tool guard + missing-tool failure hint (C-A correctness fixes)
+# ---------------------------------------------------------------------------
+
+
+def test_run_simulation_raises_actionable_error_when_make_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, _base_config())
+    wrapper_path = generate_from_config(config_path, outdir, use_saboteur=False)
+    module_outdir = wrapper_path.parent
+
+    monkeypatch.setattr(runner_mod.shutil, "which", lambda name: None)
+
+    def fake_run(command, **kwargs):
+        raise AssertionError("subprocess.run should not be called when make is missing")
+
+    monkeypatch.setattr("autombist.runner.subprocess.run", fake_run)
+
+    with pytest.raises(SimulationError, match="'make' not found on PATH"):
+        run_simulation(module_outdir, verbose=False)
+
+
+def test_run_simulation_failure_hint_when_backend_log_shows_missing_tool(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, _base_config())
+    wrapper_path = generate_from_config(config_path, outdir, use_saboteur=False)
+    module_outdir = wrapper_path.parent
+
+    (module_outdir / "simulate.log").write_text(
+        "make: iverilog: command not found\n", encoding="utf-8"
+    )
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            args=command, returncode=2, stdout="", stderr="make: iverilog: command not found\n"
+        )
+
+    monkeypatch.setattr(runner_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("autombist.runner.subprocess.run", fake_run)
+
+    with pytest.raises(SimulationError) as exc_info:
+        run_simulation(module_outdir, verbose=False)
+
+    assert "missing simulation tool" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------

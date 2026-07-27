@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -79,6 +80,28 @@ class SimulationError(RuntimeError):
 def _get_run_metadata(config: dict[str, Any], key: str, default: Any) -> Any:
     value = config.get(key, default)
     return default if value is None else value
+
+
+def _require_make() -> None:
+    if shutil.which("make") is None:
+        raise SimulationError(
+            "'make' not found on PATH. autombist simulate/run need GNU Make, "
+            "Icarus Verilog (iverilog/vvp), and the Python cocotb package "
+            "(all provided by `nix develop`)."
+        )
+
+
+_MISSING_TOOL_MARKERS = (
+    "command not found",
+    "is not recognized as an internal or external command",
+    "No such file or directory",
+    "ModuleNotFoundError: No module named 'cocotb'",
+    "ModuleNotFoundError: No module named cocotb",
+)
+
+
+def _looks_like_missing_tool(text: str) -> bool:
+    return any(marker in text for marker in _MISSING_TOOL_MARKERS)
 
 
 def _parse_makefile_metadata(module_outdir: Path) -> dict[str, str]:
@@ -262,6 +285,8 @@ def run_simulation(
                 f"Saboteur wrapper not found: {saboteur_path}. Run `autombist generate --test` first."
             )
 
+    _require_make()
+
     hardware_dir = _find_hardware_dir()
     repo_root = Path(__file__).resolve().parents[2]
 
@@ -377,6 +402,12 @@ def run_simulation(
         if "contains no child object named dbg_actual_word" in backend_log_contents:
             failure_hint = (
                 " The generated saboteur wrapper looks stale or incompatible; run `autombist generate --test` again to refresh the output directory."
+            )
+        elif _looks_like_missing_tool(backend_log_contents) or _looks_like_missing_tool(completed.stderr):
+            failure_hint = (
+                " This looks like a missing simulation tool: simulate/run need "
+                "Icarus Verilog (iverilog/vvp) and the Python cocotb package on "
+                "PATH/installed (both provided by `nix develop`)."
             )
         raise SimulationError(
             f"Simulation failed with exit code {completed.returncode}. See {log_path}.{failure_hint}"

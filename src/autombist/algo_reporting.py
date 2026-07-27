@@ -24,6 +24,21 @@ def coverage_meets_threshold(result: CampaignResult, min_coverage: float | None)
     return result.coverage_percent >= min_coverage
 
 
+def _render_pipe_table(columns: tuple[str, ...], rows: list[tuple[str, ...]]) -> str:
+    """Shared markdown pipe-table renderer (column-width-aligned), used by
+    render_campaign_md/render_matrix_md/render_diagnosis_md -- previously
+    three copy-pasted implementations of the identical algorithm."""
+    all_rows = [list(columns)] + [list(row) for row in rows]
+    widths = [max(len(row[i]) for row in all_rows) for i in range(len(columns))]
+
+    def fmt_row(cells: list[str]) -> str:
+        return "| " + " | ".join(cell.ljust(w) for cell, w in zip(cells, widths)) + " |"
+
+    lines = [fmt_row(list(columns)), "| " + " | ".join("-" * w for w in widths) + " |"]
+    lines.extend(fmt_row(list(row)) for row in rows)
+    return "\n".join(lines) + "\n"
+
+
 # --------------------------------------------------------------------------- #
 # Single-campaign report (per-fault detail)
 # --------------------------------------------------------------------------- #
@@ -82,15 +97,8 @@ def render_campaign_md(result: CampaignResult) -> str:
         f"Build: {result.build_seconds:.2f}s, run: {result.run_seconds:.2f}s, sim: {result.sim}\n\n"
     )
     columns = _fault_columns_for(result)
-    rows = [list(columns)] + [list(_fault_row(r.index, r, with_ports=with_ports)) for r in result.faults]
-    widths = [max(len(row[i]) for row in rows) for i in range(len(columns))]
-
-    def fmt_row(cells: list[str]) -> str:
-        return "| " + " | ".join(cell.ljust(w) for cell, w in zip(cells, widths)) + " |"
-
-    table = [fmt_row(rows[0]), "| " + " | ".join("-" * w for w in widths) + " |"]
-    table.extend(fmt_row(row) for row in rows[1:])
-    return header + "\n".join(table) + "\n"
+    rows = [_fault_row(r.index, r, with_ports=with_ports) for r in result.faults]
+    return header + _render_pipe_table(columns, rows)
 
 
 def render_campaign_json(result: CampaignResult) -> str:
@@ -137,21 +145,13 @@ def render_matrix_csv(results: list[CampaignResult]) -> str:
 def render_matrix_md(results: list[CampaignResult]) -> str:
     algo_names = [r.algo_name for r in results]
     fault_keys, cells = _matrix_rows(results)
-    header = ["fault", *algo_names]
-    rows = [header]
+    columns = ("fault", *algo_names)
+    rows: list[tuple[str, ...]] = []
     for key in fault_keys:
         row = cells.get(key, {})
-        rows.append([key, *(row.get(a, "-") for a in algo_names)])
-    rows.append(["total", *(f"{r.detected}/{r.total}" for r in results)])
-
-    widths = [max(len(row[i]) for row in rows) for i in range(len(header))]
-
-    def fmt_row(vals: list[str]) -> str:
-        return "| " + " | ".join(v.ljust(w) for v, w in zip(vals, widths)) + " |"
-
-    lines = [fmt_row(rows[0]), "| " + " | ".join("-" * w for w in widths) + " |"]
-    lines.extend(fmt_row(r) for r in rows[1:])
-    return "\n".join(lines) + "\n"
+        rows.append((key, *(row.get(a, "-") for a in algo_names)))
+    rows.append(("total", *(f"{r.detected}/{r.total}" for r in results)))
+    return _render_pipe_table(columns, rows)
 
 
 def render_matrix_json(results: list[CampaignResult]) -> str:
@@ -341,16 +341,8 @@ def render_diagnosis_md(result: CampaignResult) -> str:
         f"Coverage: **{result.detected}/{result.total} ({result.coverage_percent:.2f}%)**  \n"
         f"Cells: {len(cells)} (sparse: injection and/or observation sites only)\n\n"
     )
-    columns = _DIAGNOSIS_COLUMNS
-    rows = [list(columns)] + [list(_diagnosis_row(cell)) for cell in cells]
-    widths = [max(len(row[i]) for row in rows) for i in range(len(columns))]
-
-    def fmt_row(vals: list[str]) -> str:
-        return "| " + " | ".join(v.ljust(w) for v, w in zip(vals, widths)) + " |"
-
-    table = [fmt_row(rows[0]), "| " + " | ".join("-" * w for w in widths) + " |"]
-    table.extend(fmt_row(row) for row in rows[1:])
-    return header + "\n".join(table) + "\n"
+    rows = [_diagnosis_row(cell) for cell in cells]
+    return header + _render_pipe_table(_DIAGNOSIS_COLUMNS, rows)
 
 
 def render_diagnosis_json(result: CampaignResult) -> str:
