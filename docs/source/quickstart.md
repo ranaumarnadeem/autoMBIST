@@ -42,5 +42,4 @@ autombist algo   # interactive research shell
 - Have a real memory to test? See {doc}`example` for a full walkthrough,
   including redundancy repair.
 - Want to harden a design to GDS? See {doc}`librelane`.
-- Full flag-by-flag reference: [`docs/cli-reference.md`](https://github.com/ranaumarnadeem/autoMBIST/blob/main/docs/cli-reference.md)
-  in the repository.
+- Full flag-by-flag reference: {doc}`cli-reference`.

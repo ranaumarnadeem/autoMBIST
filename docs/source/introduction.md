@@ -38,7 +38,8 @@ other logic and needs no special macro views.
     exact register layout the remap RTL expects; a tester loads it.
   - **On-chip, autonomous**: `rtl/onchip_row_repair_analyzer.sv` +
     `rtl/onchip_selfrepair_ctrl.sv` run analyze → decide → verify entirely in
-    silicon from a single `self_repair_start` pulse, no tester involved.
+    silicon by asserting `self_repair_start` and holding it until
+    `self_repair_done` reads back, no tester involved.
 
 ## Proven under a real CPU
 

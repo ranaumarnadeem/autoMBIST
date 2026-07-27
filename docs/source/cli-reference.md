@@ -1,9 +1,14 @@
+---
+orphan: true
+---
+
 # autombist CLI Reference — Classic Path
 
 This page documents the **classic path**: the array-level MBIST flow built around
 `generate` / `simulate` / `run`, plus the supporting `grade-controller`, `ram-synth`,
-`init`, and `smoke` commands. For the functional fault-primitive engine and the
-interactive research shell (`autombist test`, `autombist algo`), see
+`init`, `smoke`, `harden`, `fix-lef-units`, `macro-signoff`, `doctor`, and `shell`
+commands. For the functional fault-primitive engine and the interactive research
+shell (`autombist test`, `autombist algo`), see
 [algo-shell-guide.md](algo-shell-guide.md).
 
 All commands are exposed under the single `autombist` entry point:
@@ -17,10 +22,26 @@ autombist COMMAND --help
 `--version` is a top-level, eager flag (`autombist --version`) — it prints the
 installed autombist version and exits before any command runs.
 
+`-v/--verbose` and `-q/--quiet` are also top-level flags, placed before the
+command name (`autombist -v run ...`, not `autombist run -v ...`):
+
+- **`-v, --verbose`** — turn on verbose output for whichever command runs;
+  ORed with that command's own `--verbose` flag (additive — an ordinary
+  invocation with neither flag set keeps its existing behavior unchanged).
+- **`-q, --quiet`** — suppress routine status echoes (results and errors
+  still print). Mutually exclusive with `-v` — passing both exits 1.
+
+```bash
+autombist -v run --config config.yml --test
+autombist -q simulate --out out
+```
+
 > **Platform note.** `autombist generate` (wrapper/RTL emission) and config parsing
 > run anywhere Python 3.10+ runs. `simulate`, `run`, and `grade-controller --run`
 > invoke Icarus Verilog / Cocotb / Yosys / FaultFlow and only work on Linux or WSL,
-> using a venv created inside WSL/Linux.
+> using a venv created inside WSL/Linux. Run `autombist doctor` for a quick check
+> of which of these tools (plus nix/bash/magic/netgen) autombist can currently
+> find on `PATH`.
 
 ---
 
@@ -43,7 +64,7 @@ autombist generate [OPTIONS]
 | `--seed INTEGER` | none | Random seed for reproducible fault injection (optional) |
 | `--fault-type TEXT` | `stuck-at` | Fault model: `stuck-at` (SA0/SA1), `transition-up`, `transition-down`, or `port-coupling` (march-1r1w only; march-2rw supports stuck-at/transition only) |
 | `--pulse-width-ns INTEGER` | `2` | Pulse width in clock cycles for transition faults |
-| `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, or `march-2rw` |
+| `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, or `mats-plus` |
 | `--help` | | Show this message and exit |
 
 If `--config` is omitted, autombist looks for `config.yml` in the current working
@@ -115,6 +136,16 @@ autombist simulate [OPTIONS]
 | `--out PATH` | `out` | Output directory containing generated autombist output |
 | `--verbose` | off | Print full simulator console output and detailed logs |
 | `--min-coverage FLOAT` | none | Fail (exit 1) if array fault coverage is below this percent |
+| `--json` | off | Print the structured report as JSON to stdout instead of the human summary |
+
+`--json` prints the same `reports/latest.json` document (see schema below) as
+one JSON document to stdout; `--verbose`'s raw simulator output (and any other
+status lines) is redirected to stderr instead, so stdout stays a single
+parseable document.
+
+On an interactive terminal (and unless `NO_COLOR` is set), `simulate` shows a
+spinner while the underlying cocotb/Icarus subprocess runs; it degrades to a
+no-op on a non-TTY or scripted invocation.
 
 `--out` may point either directly at a module directory (one containing
 `*_mbist.v` plus a `config.yml` or fault `Makefile`) or at a parent directory —
@@ -131,6 +162,7 @@ the clean-simulation path.
 autombist simulate --out out
 autombist simulate --out out --verbose
 autombist simulate --out out/input_demo_8x16_scn4m
+autombist simulate --out out --json | jq .fault_metrics
 ```
 
 ### Output
@@ -166,13 +198,22 @@ autombist run [OPTIONS]
 | `--seed INTEGER` | none | Random seed for reproducible fault injection |
 | `--fault-type TEXT` | `stuck-at` | Fault model: `stuck-at`, `transition-up`, `transition-down`, or `port-coupling` (march-1r1w only; march-2rw supports stuck-at/transition only) |
 | `--pulse-width-ns INTEGER` | `2` | Pulse width in clock cycles for transition faults |
-| `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, or `march-2rw` |
+| `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, or `mats-plus` |
 | `--verbose` | off | Print full simulator console output and detailed logs |
 | `--faultflow` / `--no-faultflow` | `--no-faultflow` | After sim, grade the MBIST controller logic with FaultFlow (Linux/WSL) |
 | `--faultflow-repo PATH` | none (env var `FAULTFLOW_HOME`) | FaultFlow repo path (or set `FAULTFLOW_HOME`) |
 | `--cell-lib TEXT` | `sky130` | FaultFlow standard-cell library: `sky130` or `osu035` |
 | `--scan-chains INTEGER` | `1` | Scan chains for controller grading |
 | `--min-coverage FLOAT` | none | Fail (exit 1) if array fault coverage is below this percent |
+| `--json` | off | Print the structured report as JSON to stdout instead of the human summary |
+
+`--json` behaves the same as on `simulate`: the structured report goes to
+stdout as one JSON document, and verbose/status output is redirected to
+stderr so it doesn't interleave. Note that with `--faultflow` the JSON is
+printed by the `simulate` stage *before* controller grading runs, so it
+won't include `controller_grading` — that block is merged into
+`reports/latest.json` on disk afterward (read the file, or use
+`grade-controller`/`autombist shell`, if you need it in the same JSON blob).
 
 When `--faultflow` is set, `run` internally calls the same controller-grading flow
 as `grade-controller`, fixed at `--threshold 90.0` and `--max-rounds 20`.
@@ -184,6 +225,7 @@ autombist run --config config.yml --test
 autombist run --config config.yml --test --faults 200 --algo march-raw --seed 999
 autombist run --config config.yml --test --fault-type transition-up --verbose
 autombist run  # uses ./config.yml when present
+autombist run --config config.yml --json | jq .fault_metrics
 ```
 
 ### Output
@@ -390,10 +432,21 @@ At the end it prints the workspace path and `[smoke] All checks passed`.
 
 Emit (and optionally run) a LibreLane RTL-to-GDS config for a design plus its
 OpenRAM sky130 macros, with the proven macro-integration recipe baked in:
-hard-IP signoff flags (`MAGIC_DRC_USE_GDS=false`, `RUN_KLAYOUT_XOR=false`),
-placement + PDN halos (15 µm), and the `PDN_MACRO_CONNECTIONS` net-vs-pin format
+hard-IP signoff flags (`MAGIC_DRC_USE_GDS=false`, `RUN_KLAYOUT_XOR=false`,
+`ERROR_ON_MAGIC_DRC=false`, `ERROR_ON_KLAYOUT_DRC=false`), placement + PDN
+halos (15 µm), and the `PDN_MACRO_CONNECTIONS` net-vs-pin format
 (`<instance> VPWR VGND vccd1 vssd1`). See
-[`flow/multimem/`](../flow/multimem) for the design this was proven on.
+[`flow/multimem/`](https://github.com/ranaumarnadeem/autoMBIST/tree/main/flow/multimem) for the design this was proven on.
+
+The `ERROR_ON_*_DRC` flags are set automatically whenever the harden config
+declares `macros:`. OpenRAM SRAM-macro bitcell/periphery cells use GDS
+layer/datatype pairs (e.g. `CFOMDROP`, `CNTMADD`) that Magic/KLayout DRC
+reports as "unknown layer/datatype in boundary" — a known OpenRAM/open_pdks
+integration quirk internal to the macro's own geometry (see
+[librelane/librelane#519](https://github.com/librelane/librelane/issues/519)),
+not a defect in the generated design. `harden` makes these counts
+non-fatal by config rather than leaving it to upstream LibreLane's own
+defaults; LVS and antenna checks still gate normally.
 
 ### Syntax
 
@@ -403,7 +456,7 @@ autombist harden [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--config PATH` | `harden.yml` | Compact harden config (design + macros); see [`flow/multimem/harden.yml`](../flow/multimem/harden.yml) |
+| `--config PATH` | `harden.yml` | Compact harden config (design + macros); see [`flow/multimem/harden.yml`](../../flow/multimem/harden.yml) |
 | `--out PATH` | `librelane-config.json` | Where to write the generated LibreLane config |
 | `--pdk-root PATH` | `~/.ciel` | ciel-managed PDK root (used with `--run`) |
 | `--run` | off | Actually invoke LibreLane (needs nix + PDK). Default only writes the config. |
@@ -412,6 +465,10 @@ The config maps a `design_name`, `verilog_files`, `clock_port`/`clock_period`,
 optional `die_area`, and a list of `macros` (each `{name, gds, lef, instance,
 location}`) into a full LibreLane config. Point `gds`/`lef` at the
 **units-normalized** LEF (run `fix-lef-units` first; the GDS needs no change).
+
+`--run` checks for `nix` on `PATH` before invoking LibreLane (`nix run
+github:librelane/librelane`); if it's missing, `harden` prints an actionable
+error naming the missing tool instead of a raw subprocess traceback.
 
 ```bash
 autombist harden --config flow/multimem/harden.yml            # emit config only
@@ -435,13 +492,97 @@ autombist fix-lef-units macro.lef --out fixed.lef  # write a copy
 
 Run magic DRC + netgen LVS on generated OpenRAM macros — the macro-internal
 signoff owed when a macro was compiled with `-n` (no inline DRC/LVS). Wraps
-[`flow/multimem/signoff/run_macro_signoff.sh`](../flow/multimem/signoff/run_macro_signoff.sh);
+[`flow/multimem/signoff/run_macro_signoff.sh`](../../flow/multimem/signoff/run_macro_signoff.sh);
 requires `magic`/`netgen` on `PATH` and the sky130 PDK.
+
+Before running (but not with `--show-command`), it checks for `bash` on
+`PATH` — the script itself is a bash script. If `bash` is missing, it prints
+an actionable message (on Windows, use WSL/Git Bash, or pass
+`--show-command` to inspect the command without running it) instead of a
+raw traceback.
 
 ```bash
 autombist macro-signoff                          # the multimem macro set
 autombist macro-signoff sky130_sram_32b256w      # a specific macro dir
 autombist macro-signoff --show-command           # print, don't run
+```
+
+## doctor
+
+Report which external tools autombist can find on this system — a quick,
+purely diagnostic health check to run before `simulate`/`run`/`harden`/
+`macro-signoff`/`grade-controller` for the first time.
+
+`doctor` takes no options besides `--help`. It checks `make`, `iverilog`,
+cocotb (an import probe, not `PATH`), `verilator`, `yosys`, `nix`, `bash`,
+`magic`, `netgen` (via `shutil.which`) and the `FAULTFLOW_HOME` env var, then
+prints a capability table with each tool's OK/MISSING status, which
+command(s) it unblocks, and where it was found (or "not found on PATH").
+Renders as a `rich` table on an interactive terminal (unless `NO_COLOR` is
+set), falling back to plain fixed-width text otherwise. Purely diagnostic —
+it never affects any other command's behavior and always exits 0.
+
+```bash
+autombist doctor
+NO_COLOR=1 autombist doctor   # force the plain-text fallback
+```
+
+## shell
+
+Launch an interactive Tcl shell — an EDA-native alternative to the Typer
+CLI, for users who live in OpenROAD/OpenSTA/magic-style Tcl consoles. Every
+registered command is a thin adapter over the exact same core function the
+corresponding Typer CLI command calls (`generate_from_config`,
+`run_simulation`, `build_librelane_config`, etc.), so behavior is inherited
+from the CLI, not duplicated. Ten commands are registered: `generate`,
+`simulate`, `run`, `test`, `harden`, `fix_lef_units`, `macro_signoff`,
+`grade_controller`, `ram_synth`, `doctor` — same options as their CLI
+counterparts, but EDA `-flag value` syntax instead of `--flag value`.
+
+### Syntax
+
+```bash
+autombist shell                    # interactive REPL
+autombist shell --file script.tcl  # batch mode
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `-f, --file PATH` | none | Run a `.tcl` script (batch mode) instead of an interactive REPL |
+
+Without `--file`, `shell` reads a script from stdin when stdin isn't a
+terminal (piping/redirecting a script in), otherwise it starts an
+interactive REPL.
+
+Requires `tkinter` (the standard library's only Tcl binding) — already
+included in this repo's Nix flake; on Debian/Ubuntu install it separately
+with `apt install python3-tk`. If tkinter/Tcl isn't available, `shell` alone
+reports an actionable error and exits 1 — every other `autombist` command is
+unaffected.
+
+Commands return Tcl-usable values (e.g. `simulate` returns the coverage
+percent as a string), so sessions script naturally, and failures raise real
+Tcl errors catchable with Tcl's own `catch`:
+
+```tcl
+set cov [simulate -out out]
+if {$cov < 90} { error "coverage too low" }
+```
+
+**Windows path quoting gotcha.** Tcl's `"..."` double-quotes apply backslash
+substitution, so a path typed as `"C:\Users\me\config.yml"` silently loses
+its backslashes. Use `{...}` brace-quoting instead, which is fully literal:
+
+```text
+generate -config {C:\Users\me\config.yml} -out out
+```
+
+### Examples
+
+```bash
+autombist shell
+autombist shell --file session.tcl
+printf 'puts [generate -config config.yml -out out]\n' | autombist shell
 ```
 
 ---

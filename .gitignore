@@ -89,5 +89,7 @@ changelog.md
 promptphase3.md
 *plan*.md
 plan-trans*.md
-# ...but the committed redundancy-repair design plan is a real, linked doc, not scratch.
-!docs/redundancy-repair-plan.md
+
+# Planning/outline docs kept locally for reference, not published or tracked
+docs/paper-outline.md
+docs/redundancy-repair-roadmap.md

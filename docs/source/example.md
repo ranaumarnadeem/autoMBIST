@@ -87,7 +87,7 @@ autombist harden --config flow/multimem/mbist/harden.yml --run
 
 Result, as of this writing: **DRT 0 violations, LVS-clean including power**,
 die 0.91 mm², 7,189 standard cells (the self-repair logic across all three
-memories) plus the three macros at their fixed area. Full recipe and the four
+memories) plus the three macros at their fixed area. Full recipe and the
 gotchas it took to get there: {doc}`librelane`.
 
 ## Under a real CPU
@@ -103,6 +103,10 @@ the repaired path. It runs both against defect-injectable behavioral memories
 (proving repair genuinely fixes a defect the CPU would otherwise read wrong)
 and against the real hardened OpenRAM macros
 ([`flow/soc/hardened/`](https://github.com/ranaumarnadeem/autoMBIST/tree/main/flow/soc/hardened)).
+That directory's `soc_top_hw` — the CPU plus both self-repair wrappers plus
+the real macros — is itself hardened clean through the same LibreLane recipe
+as the plain subsystem above, not just simulated against real macros: routing
+and LVS close with no CPU-specific issues.
 
 ## Where to go from here
 
@@ -111,3 +115,10 @@ and against the real hardened OpenRAM macros
 - Swap in your own OpenRAM-compiled macro — same config shape.
 - Grade the underlying march algorithm against the full fault model first,
   with no macro at all: `autombist test --algo march_c --faults faults.txt`.
+- march-C isn't the only self-repair-capable algorithm: `onchip_selfrepair`
+  also works with `march-raw`, `march-x`, `mats-plus`, and (as a multi-port
+  scaffold) `march-1r1w` — only `march-2rw`'s concurrent same-cycle dual
+  compare is out of scope by design. See
+  [`flow/newalgo/`](https://github.com/ranaumarnadeem/autoMBIST/tree/main/flow/newalgo)
+  for march-X and MATS+ each wrapping a different real OpenRAM macro and
+  hardened clean through the same LibreLane recipe.

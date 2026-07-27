@@ -7,14 +7,16 @@ progress, and what's further out.
 ## Done
 
 - MBIST wrapper generation for single- and multi-port memories (`march-c`,
-  `march-raw`, `march-1r1w`, `march-2rw`)
+  `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, `mats-plus`)
 - A 19-primitive functional fault model and research shell, independent of
   any real memory macro
 - BIRA (redundancy analysis) as a 2D solver, both row and column allocation
-- BISR — tester-driven and, for `march-c`, a fully autonomous on-chip
-  self-repair FSM
+- BISR — tester-driven, and (for every algo except `march-2rw`: `march-c`,
+  `march-raw`, `march-x`, `mats-plus`, and the multi-port `march-1r1w`) a
+  fully autonomous on-chip self-repair FSM
 - A proven LibreLane hardening recipe for real OpenRAM sky130 macros,
-  including the self-repair-wrapped variant
+  including self-repair-wrapped variants across multiple algorithms
+  (march-c, march-x, mats-plus)
 - An SoC-level demonstration: an unmodified RV32I core (PicoRV32) booting and
   running a real program through self-repaired memory, both against
   defect-injectable behavioral models and the real hardened OpenRAM macros
@@ -25,7 +27,9 @@ progress, and what's further out.
   memory timing rather than using measured numbers)
 - A merged full-hierarchy DRC pass that checks macro polygons directly
   instead of treating the macro as an opaque boundary
-- Extending on-chip self-repair beyond `march-c` to the multi-port algorithms
+- Extending on-chip self-repair to `march-2rw` (needs new arbiter RTL: its two
+  concurrent same-cycle compares break the analyzer's single-fail-per-cycle
+  assumption, unlike `march-1r1w`'s single shared compare)
 
 ## Further out
 

@@ -1,8 +1,11 @@
+---
+orphan: true
+---
+
 # OpenROAD / LibreLane macro integration — how memories plug into the open flow
 
-> **Purpose.** Research notes grounding the redundant-memory + repair build
-> ([redundancy-repair-roadmap.md](redundancy-repair-roadmap.md)). It answers one
-> question: *how is an SRAM represented and integrated as a hard macro in the
+> **Purpose.** Research notes grounding the redundant-memory + repair build. It
+> answers one question: *how is an SRAM represented and integrated as a hard macro in the
 > open-source RTL-to-GDS flow (LibreLane driving OpenROAD, memories from OpenRAM)?*
 > — so a hand-written redundant SRAM model can present the **same macro contract**
 > and, eventually, drop into the same flow.
@@ -112,7 +115,7 @@ dataclasses. Each abstract view is a field on the `Macro`, and each instantiatio
 is placed inside its `instances` dict. Canonical (JSON) form, adapted from the
 docs' own example:
 
-```jsonc
+```text
 // One entry per hardened block. Paths use the dir:: relative-path prefix.
 "MACROS": {
   "sram_model_redundant": {
@@ -176,46 +179,85 @@ OpenRAM single-port convention:
 Our wrapper (`wrapper_template.j2`) binds a controller to exactly this set by pin
 *name* (the config `ports:` block), so any macro matching the contract drops in.
 
-## 6. What this means for the redundant SRAM model (the actionable split)
+## 6. What this means for the redundant SRAM model (the actual split)
 
-Repair pins (`repair_valid` / `repair_addr`) are a **macro-boundary change**, so
-they must appear **consistently in every view that declares the macro's ports**.
-That splits the work into two tiers:
+The design decision actually taken — and now proven through the real LibreLane
+RTL-to-GDS flow — is **external remap around a stock, spare-augmented memory**,
+not repair pins baked into a hand-written macro. Repair steering is a
+**standard-cell-logic concern**, so it never touches the macro's own view set
+(LEF/Liberty/GDS/`vh`) at all; only the wrapper's `repair_ports:` boundary and
+the surrounding logic change. That splits the work into two tiers:
 
-### Tier 1 — behavioral repair loop (build now; nothing blocks it)
+### Tier 1 — behavioral repair loop, built and proven in real hardening
 
-Only the **behavioral `.v`** is needed. Hand-write `rtl/sram_model_redundant.sv`:
-row spares + a combinational remap CAM + a `repair_valid`/`repair_addr` config
-port + a hard-defect knob, **keeping the `sram_model.sv` pinout** (`clk0`,
-`csb0`-low, `web0`-low, `addr0`, `din0`, `dout0`) plus the repair port. Steps A→D
-of the roadmap all run in Icarus/Verilator against this model — the same engine
-the fail-bitmap foundation already drives. No LEF/Liberty/GDS/LibreLane needed for
-simulation.
+The memory model is `rtl/sram_model_spares.sv`: it widens `addr0` to
+`MEM_ADDR_WIDTH` so `NUM_SPARE_ROWS` spare rows are addressable as the top
+addresses (mirroring how OpenRAM exposes spare rows), plus an optional
+compile-time hard-defect knob for test DUTs — **keeping the `sram_model.sv`
+pinout** (`clk0`, `csb0`-low, `web0`-low, `addr0`, `din0`, `dout0`) exactly.
+As its own header states, **there are no repair pins on this module**: all
+remap steering lives outside, in `rtl/repair_remap_row.sv` — a purely
+combinational block that sits between the address mux and the memory and
+substitutes a spare-row physical address for any logical address a loaded
+repair register marks faulty. This is exactly the architecture that lets the
+memory macro itself stay a stock, unmodified view set (§2, §4) while repair
+becomes ordinary synthesizable logic around it.
 
-### Tier 2 — LibreLane-integrable / tapeout-ready repairable macro (future; flag only)
+On-chip self-repair (autonomous BIRA analyzer + BISR sequencer +
+`repair_remap_row`, config key `redundancy.onchip_selfrepair: true`) now covers
+five of the project's six march algorithms — march-C, march-raw, march-X,
+MATS+ (all single-port), and march-1r1w (the first multi-port case: a
+read-only + write-only dual-port memory steered by one `repair_remap_row`
+shared off the FSM's address register). march-2rw is **deliberately excluded**:
+its concurrent same-cycle dual compare breaks the analyzer's
+single-fail-per-cycle assumption — a documented scope boundary, not a gap to
+be closed later without new arbitration RTL.
 
-To harden the macro in LibreLane, the repair pins must *also* exist as **physical
-pins on the LEF**, in the **Liberty**, and in the **blackbox `vh`**, with a
-matching **GDS** — populated as the fields of a `Macro` object (§4) — and nothing
-checks that they agree, so it's on us to keep them in lockstep.
+### Tier 2 — LibreLane-integrable / tapeout-ready repairable macro: done for single-port
 
-**Precise OpenRAM-redundancy status** (reconciling the roadmap's "OpenRAM emits no
-redundancy" note with `scripts/synthesize_sram.py`): OpenRAM's sky130 flow *does*
-accept `num_spare_rows` / `num_spare_cols` (passed only on the sky130 tech, see
-`synthesize_sram.py:76-86`), which add **physical** spare rows/columns to the
-array — but it generates **no repair logic and no repair pins in any view**. Its
-spares are therefore invisible to both behavioral simulation and P&R-level repair.
-A tapeout-ready repairable macro needs **hand-authored (or OpenRAM-extended)
-LEF/Liberty/`vh` views carrying the repair interface** — a substantial, separate
-effort, out of scope until tapeout matters.
+Because repair pins never touch the macro's own views, hardening a self-repair
+design in LibreLane needed **no new LEF/Liberty/`vh`/GDS work at all** — the
+real macros' pre-existing widened `addr0` + `spare_wen0` pins (already present
+whenever OpenRAM is asked for spare rows) were sufficient. This has now been
+proven clean through the full LibreLane RTL-to-GDS flow for three algorithms,
+each wrapping an unmodified real OpenRAM macro (`.spare_wen0(1'b0)`, no macro
+modification):
+
+- march-C, wrapping 3 real macros in a multi-memory subsystem
+  (`flow/multimem/mbist/`).
+- march-X, wrapping `sky130_sram_32b256w` (`flow/newalgo/`, target
+  `selfrepair_x`) — hardens clean (Antenna pass, LVS pass, exit 0).
+- MATS+, wrapping `sky130_sram_32b512w` (`flow/newalgo/`, target
+  `selfrepair_mp`) — hardens clean (Antenna pass, LVS pass, exit 0).
+
+march-1r1w's multi-port self-repair scaffold has **not** been hardened against
+a real macro: none of this project's three real sky130 macros (32b256w,
+32b512w, 8b1024w) are dual-port, and building a real dual-port OpenRAM macro is
+out of scope for now — documented as future work in `flow/newalgo/README.md`.
+march-2rw is out of scope entirely (see above), so there is nothing to harden
+there.
+
+**OpenRAM-redundancy status** (`scripts/synthesize_sram.py`): OpenRAM's flow
+accepts `num_spare_rows` / `num_spare_cols` unconditionally for every tech
+(`synthesize_sram.py:74-79` — a generic `sram_config.py` feature, not
+sky130-specific; the code's own comment notes emitting it only under the
+sky130 branch would silently no-op the flags on other techs), which add
+**physical** spare rows/columns to the array. OpenRAM itself generates no
+repair *logic* — the BIRA analyzer, BISR sequencer, and `repair_remap_row` are
+all this project's own RTL, sitting outside the macro's view set as described
+above.
 
 ### Symmetry with the `repair_ports` seam already built
 
-Fix 4 (`repair_ports:` config) put repair pins on the **wrapper** boundary and
-bound them to the macro instance. The redundant **macro's own** view set (the
-blackbox stub `sram_blackbox_template.j2`, and eventually its LEF/Liberty for the
-LibreLane `Macro`) must expose the *same* pins. When Tier 2 arrives, the blackbox
-stub template needs the same treatment the wrapper got.
+The `repair_ports:` config (validated by `_validate_repair_ports` in
+`src/autombist/generator.py`) puts repair pins on the **wrapper** boundary and
+binds them to the macro instance — pin names are arbitrary, declared per-entry
+as `{name, width, dir}`, not fixed names like `repair_valid`/`repair_addr`
+(those are just the docstring's illustrative example). The redundant
+**macro's own** view set (the blackbox stub `sram_blackbox_template.j2`, and
+its real LEF/Liberty/GDS) never needs the same pins — it stays exactly the
+stock macro contract from §1–§5, which is what let Tier 2 close without any
+macro-side work.
 
 ## Sources
 

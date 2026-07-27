@@ -84,8 +84,8 @@ build and simulate fine, but silently defeat cross-port coupling-fault
 testing — an aggressor write on port 1 disturbing a victim read on port 0 can
 only be observed if both ports resolve against the *same* state. The engine's
 `openram_shim_mp.sv` and the classic path's 1R1W/2RW templates are both built
-around this rule; see `docs/architecture.md` in the repository for the exact
-code that enforces it.
+around this rule; see {doc}`architecture` for the exact code that enforces
+it.
 
 ## Where OpenRAM fits in
 
@@ -101,6 +101,4 @@ researcher swap between "golden run against the real OpenRAM Verilog" and
 ## Further reading
 
 The full internal architecture doc — with the exact code excerpts backing
-every claim above — lives at
-[`docs/architecture.md`](https://github.com/ranaumarnadeem/autoMBIST/blob/main/docs/architecture.md)
-in the repository.
+every claim above — lives at {doc}`architecture`.

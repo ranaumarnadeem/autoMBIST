@@ -36,6 +36,11 @@ This installs the CLI from your local checkout (editable). You're
 responsible for keeping `iverilog`/`verilator`/`yosys` versions compatible
 yourself — Nix is what pins the tested combination.
 
+The optional `autombist shell` command (an interactive Tcl shell) needs
+`tkinter`, the stdlib's Tcl binding, which `pip` can't install — on
+Debian/Ubuntu run `apt install python3-tk`. Nix users get this for free;
+`tkinter` is already in the flake's Python environment.
+
 ## Physical/signoff toolchain (optional)
 
 Only needed for the `harden` / `fix-lef-units` / `macro-signoff` commands and
@@ -46,6 +51,16 @@ all reachable through
 for the sky130 PDK. See {doc}`librelane` for the full recipe.
 
 ## Verify the install
+
+```bash
+autombist doctor
+```
+
+Checks which external tools are on `PATH` (make, iverilog, verilator, yosys,
+nix, bash, magic, netgen), whether cocotb is importable, and whether
+`FAULTFLOW_HOME` is set, then prints a table of what each one unblocks
+(simulate/run, test, grade-controller, harden --run, macro-signoff). Purely
+diagnostic — a quick way to see what's missing before running anything else.
 
 ```bash
 autombist smoke

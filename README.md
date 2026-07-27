@@ -52,6 +52,7 @@ These two subsystems don't share RTL, a simulator, or a fault format — see
 - [Fault coverage](#fault-coverage)
 - [Controller Structural Grading (grade-controller)](#controller-structural-grading-grade-controller)
 - [OpenRAM Synthesis + Starter Scaffolding](#openram-synthesis--starter-scaffolding)
+- [Interactive Tcl Shell (autombist shell)](#interactive-tcl-shell-autombist-shell)
 - [CLI Help](#cli-help)
 - [Further Documentation](#further-documentation)
 
@@ -91,10 +92,24 @@ spare-augmented OpenRAM macro with **redundancy analysis (BIRA)** and
   ([`rtl/onchip_selfrepair_ctrl.sv`](rtl/onchip_selfrepair_ctrl.sv) +
   [`rtl/onchip_row_repair_analyzer.sv`](rtl/onchip_row_repair_analyzer.sv)) — runs
   analyze → decide → verify with no tester, from a single `self_repair_start`.
-- **Proven RTL-to-GDS closure** of a realistic 3-memory sky130 subsystem
-  ([`flow/multimem/`](flow/multimem/)) in LibreLane 3.0.5: **0.78 mm² die, ~51%
-  memory area, 4,158 std cells, 0 detailed-routing violations, LVS-clean
-  including power.**
+  Covers march-c, march-raw, march-x, mats-plus, and march-1r1w (the first
+  multi-port self-repair — one `repair_remap_row` steers both ports off the
+  FSM's shared address register); march-2rw is deliberately out of scope,
+  since its concurrent same-cycle dual compare breaks the analyzer's
+  single-fail-per-cycle assumption.
+- **Proven RTL-to-GDS closure** of a realistic 3-memory sky130 subsystem with
+  self-repair wrapped around every memory
+  ([`flow/multimem/mbist/`](flow/multimem/mbist/)) in LibreLane 3.0.5: **0.91
+  mm² die, 7,189 std cells, 0 detailed-routing violations, LVS-clean including
+  power** (macro-internal Magic/KLayout DRC — 589/3194 — explicitly non-fatal
+  by config; see [`docs/source/cli-reference.md`](docs/source/cli-reference.md#harden) for
+  why). The same three macros without the MBIST wrap
+  ([`flow/multimem/`](flow/multimem/)) harden the same way at 0.78 mm² die,
+  ~51% memory area, 4,158 std cells. The same self-repair-through-hardening
+  result also holds for march-X and MATS+ wrapping real OpenRAM macros
+  ([`flow/newalgo/`](flow/newalgo/)), and for a real RV32I core (PicoRV32)
+  booting and running firmware through self-repaired memory
+  ([`flow/soc/`](flow/soc/)).
 
 ```mermaid
 flowchart LR
@@ -107,8 +122,7 @@ flowchart LR
   harden --> gds["signed-off GDS<br/>(DRT 0, LVS clean)"]
 ```
 
-See [`docs/redundancy-repair-plan.md`](docs/redundancy-repair-plan.md) for the
-architecture, and [`flow/multimem/`](flow/multimem/) + [`docs/demo.md`](docs/demo.md)
+See [`flow/multimem/`](flow/multimem/) + [`docs/source/demo.md`](docs/source/demo.md)
 for the reproducible hardening flow. This subsystem currently ships as the
 [`repair/`](src/autombist/repair/) Python library plus the RTL and flow configs;
 a dedicated top-level CLI surface is in progress.
@@ -189,6 +203,17 @@ small fault simulations) with:
 autombist smoke
 ```
 
+Check which optional EDA tools (Icarus, Verilator, Yosys, Nix, bash, Magic,
+netgen, cocotb, FaultFlow) autombist can actually find on this system:
+
+```bash
+autombist doctor
+```
+
+`simulate`, `run`, and `test` also accept `--json` to print the full
+structured report to stdout instead of the human summary — handy for piping
+into `jq` or other tooling.
+
 ## What It Generates
 
 For each memory in your config, `autombist generate` produces a module
@@ -204,6 +229,14 @@ The generated artifacts are plain synthesizable Verilog and can be fed into
 Yosys or any other synthesis tool.
 
 ## Fault Simulation Flow
+
+The example below selects `march-c` (the default); single-port memories can
+equally pass `march-raw`, `march-x`, or `mats-plus` to `--algo` (multi-port
+memories use `march-1r1w` or `march-2rw` — see their dedicated sections
+below). Note that this `mats-plus` is the classic-path RTL wrapper
+(`rtl/mats_plus/`) — a separate implementation from the research engine's
+`mats_plus` algorithm spec used by `test`/`algo` in the
+[fault-coverage table](#fault-coverage) further down.
 
 Generate fault-enabled artifacts (saboteur + fault masks + module Makefile):
 
@@ -277,6 +310,12 @@ autombist simulate --out out/sram_1r1w_64x32
 The legacy flat single-port `ports:` form (`{clk, addr, din, dout, we, csb}`) still works
 unchanged and renders byte-identical output — no existing config needs to change.
 
+march-1r1w is also the first multi-port algorithm to support on-chip
+self-repair (`redundancy.onchip_selfrepair: true` — see
+["Redundancy repair"](#redundancy-repair-birabisr-and-physical-closure)
+above): a single `repair_remap_row` steers both ports off the FSM's shared
+address register. march-2rw does not support this — see below.
+
 ## Multi-Port Memories (`march-2rw`)
 
 `march-2rw` generalizes further: two *fully symmetric* read/write ports (both ports can
@@ -341,6 +380,11 @@ march-2rw's functional (`test_mode=0`) boundary is inherently single-port: only 
 wired to `sram_*0` drives `func_dout` in functional mode. The second port exists for the
 MBIST algorithm's internal concurrency, not for external dual-port functional access.
 
+march-2rw does not support on-chip self-repair (`redundancy.onchip_selfrepair`) — its
+concurrent same-cycle dual compare breaks the analyzer's single-fail-per-cycle assumption.
+This is a deliberate scope boundary, not a gap slated to be filled by more config; see
+march-1r1w above for the multi-port algorithm that does support self-repair.
+
 ## Functional Fault-Primitive Grading (`test` / `algo`)
 
 This is the research platform — it does not require an OpenRAM memory or a
@@ -354,6 +398,13 @@ Grade a memory + march algorithm against a fault list in one shot:
 ```bash
 autombist test --addr-width 8 --data-width 8 --algo march_c --faults faults.txt
 autombist test -aw 10 -dw 32 --algo march_ss --faults faults.txt --report cov.md
+```
+
+Custom fault primitives, beyond the built-in 19, can be added from a JSON spec file with
+`--fault-types` (validated and appended to the built-in registry):
+
+```bash
+autombist test -aw 8 -dw 8 --algo march_ss --faults faults.txt --fault-types mytypes.json
 ```
 
 Or validate an actual controller FSM (rather than an algorithm spec) against the same
@@ -378,7 +429,7 @@ Multi-port campaigns (genuine cross-port coupling faults, not just single-port) 
 supported: `set_memory --ports 2` in the shell (or `MemoryParams(num_ports=2)` via the
 Python API) switches to the `march_engine_mp.sv` engine, and `add_fault`'s optional
 trailing `VPORT APORT` arguments define which physical port the victim/aggressor side of
-a fault uses. See [`docs/multi-port-guide.md`](docs/multi-port-guide.md) and
+a fault uses. See [`docs/source/multi-port-guide.md`](docs/source/multi-port-guide.md) and
 `src/autombist/engine/README.md`'s "Multi-port" section for the full `.alg`/fault-list
 syntax and same-port-vs-cross-port semantics.
 
@@ -391,7 +442,7 @@ fault model. Measured detection (**D**) vs escape (**E**) against
 escape rationale in
 [`src/autombist/engine/README.md`](src/autombist/engine/README.md)):
 
-| Fault | MATS+ (4n) | March C- (10n) | March SS (22n) |
+| Fault | MATS+ (5n) | March C- (10n) | March SS (22n) |
 |---|---|---|---|
 | SA0, SA1 | D | D | D |
 | TF0, TF1 | D | D | D |
@@ -425,6 +476,13 @@ autombist grade-controller --out out --no-run     # just emit the re-runnable bu
 Requires Yosys and a built FaultFlow repo (path via `--faultflow-repo` or `$FAULTFLOW_HOME`),
 Linux/WSL only.
 
+`autombist run --faultflow` does `generate` + `simulate` + `grade-controller` in one
+command:
+
+```bash
+autombist run --config config.yml --faultflow --faultflow-repo ~/faultflow
+```
+
 ## OpenRAM Synthesis + Starter Scaffolding
 
 Generate starter files (`config.yml`, `openram.yml`, and `Makefile`) for a new project:
@@ -452,6 +510,38 @@ autombist smoke
 autombist smoke --no-sim
 ```
 
+## Interactive Tcl Shell (`autombist shell`)
+
+For users who live in OpenROAD/OpenSTA/magic-style Tcl consoles, autombist also
+ships an EDA-native alternative to the Typer CLI: a Tcl shell built on
+`tkinter.Tcl()` (the stdlib's only Tcl binding), with 10 commands mirroring the
+CLI 1:1 as thin adapters over the same core library calls — `generate`,
+`simulate`, `run`, `test`, `harden`, `fix_lef_units`, `macro_signoff`,
+`grade_controller`, `ram_synth`, `doctor`:
+
+```bash
+autombist shell                    # interactive REPL
+autombist shell --file session.tcl # batch mode
+```
+
+Commands use EDA-style `-flag value` syntax and return Tcl-usable values, so
+sessions script naturally:
+
+```tcl
+set cov [simulate -out out]
+if {$cov < 90} { error "coverage too low" }
+```
+
+Failures raise real, catchable Tcl errors (`catch {...} err`). One gotcha worth
+knowing: Tcl's `"..."` double-quotes apply backslash substitution, so a Windows
+path typed as `"C:\Users\me\config.yml"` silently loses its backslashes — use
+`{...}` brace-quoting instead, which is fully literal:
+`generate -config {C:\Users\me\config.yml}`.
+
+Requires `tkinter` (already in this repo's Nix flake; `apt install python3-tk`
+on Debian/Ubuntu for non-Nix setups) — if it's missing, every other `autombist`
+command still works fine; only `shell` reports an actionable error and exits 1.
+
 ## CLI Help
 
 ```bash
@@ -459,35 +549,39 @@ autombist --help
 autombist --version
 ```
 
+Every command also accepts global `-v/--verbose` and `-q/--quiet` on `autombist`
+itself, before the subcommand (mutually exclusive; `-v` is ORed with any
+command-specific `--verbose`):
+
+```bash
+autombist -v run --config config.yml
+```
+
 ## Further Documentation
 
 This README covers install and the common day-to-day commands. For deeper
-detail, see:
+detail, see the [Advanced Guide](https://ranaumarnadeem.github.io/autoMBIST/advanced-guide.html)
+on the published docs site (or the same files directly in the repo):
 
-- [`docs/architecture.md`](docs/architecture.md) — how the two subsystems
+- [`docs/source/architecture.md`](docs/source/architecture.md) — how the two subsystems
   (wrapper/generator + fault-primitive engine) are structured internally, and
   how the pieces (generator, saboteur, march engines, shell) fit together.
-- [`docs/cli-reference.md`](docs/cli-reference.md) — flag-by-flag reference for
+- [`docs/source/cli-reference.md`](docs/source/cli-reference.md) — flag-by-flag reference for
   the classic-path and hardening commands (`generate`, `simulate`, `run`,
   `grade-controller`, `ram-synth`, `harden`, `fix-lef-units`, `macro-signoff`,
   `init`, `smoke`).
-- [`docs/algo-shell-guide.md`](docs/algo-shell-guide.md) — the `autombist test`
+- [`docs/source/algo-shell-guide.md`](docs/source/algo-shell-guide.md) — the `autombist test`
   and `autombist algo` research subsystem: registering algorithms and fault
   instances, running campaigns, comparing marches, exporting reports/testbenches.
-- [`docs/multi-port-guide.md`](docs/multi-port-guide.md) — full reference for
+- [`docs/source/multi-port-guide.md`](docs/source/multi-port-guide.md) — full reference for
   `march-1r1w` and `march-2rw` config shapes, port-coupling faults, and
   multi-port fault-campaign syntax in both the classic and algo-shell paths.
-- [`docs/diagnosis-reports.md`](docs/diagnosis-reports.md) — how to read
+- [`docs/source/diagnosis-reports.md`](docs/source/diagnosis-reports.md) — how to read
   generated coverage/diagnosis reports (fail-bitmap, fault_details, JSON/CSV/MD
   formats) from both subsystems.
-- [`docs/redundancy-repair-plan.md`](docs/redundancy-repair-plan.md) — the
-  BIRA/BISR architecture: external repair logic around a spare-augmented OpenRAM
-  macro, and how it hardens through LibreLane.
-- [`docs/redundancy-repair-roadmap.md`](docs/redundancy-repair-roadmap.md) — the
-  earlier redundancy-repair design roadmap (partly superseded by the plan).
-- [`docs/openroad-macro-integration.md`](docs/openroad-macro-integration.md) —
+- [`docs/source/openroad-macro-integration.md`](docs/source/openroad-macro-integration.md) —
   how an SRAM plugs into the LibreLane / OpenROAD / OpenRAM hard-macro flow.
-- [`docs/demo.md`](docs/demo.md) — a one-command, zero-to-result walkthrough
+- [`docs/source/demo.md`](docs/source/demo.md) — a one-command, zero-to-result walkthrough
   covering both subsystems and the hardening flow.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development setup, test markers, and
   how to submit changes.
