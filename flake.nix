@@ -32,6 +32,9 @@
           typer
           jinja2
           pyyaml
+          tkinter       # stdlib Tcl binding for `autombist shell` (Workstream C-D);
+                         # import-guarded everywhere else, so its absence never
+                         # breaks the rest of the CLI (see src/autombist/tcl_shell.py)
         ]);
       in
       {
