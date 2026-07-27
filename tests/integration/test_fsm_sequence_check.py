@@ -29,6 +29,8 @@ from autombist.main import app  # noqa: E402
 
 MARCH_C_TOP = REPO_ROOT / "rtl" / "march_c" / "march_c_top.sv"
 MARCH_2RW_TOP = REPO_ROOT / "rtl" / "march_2rw" / "march_2rw_top.sv"
+MARCH_X_TOP = REPO_ROOT / "rtl" / "march_x" / "march_x_top.sv"
+MATS_PLUS_TOP = REPO_ROOT / "rtl" / "mats_plus" / "mats_plus_top.sv"
 
 runner = CliRunner()
 
@@ -82,6 +84,66 @@ def test_march_c_controller_diverges_from_wrong_spec() -> None:
     assert result.sequence.divergences, "expected at least one divergence vs march_ss"
 
 
+def test_march_x_controller_matches_its_own_spec() -> None:
+    """march_x_top.sv (Workstream B1, hand-written to mirror march_c_fsm.sv's
+    style with its own phase count/direction table) must drive exactly its
+    own 4-element .alg spec: {either(w0); up(r0,w1); down(r1,w0); either(r0)}."""
+    sources = gather_sibling_sources(MARCH_X_TOP)
+    module_name = check_ports(MARCH_X_TOP.read_text(encoding="utf-8")).module_name
+    mem = MemoryParams(addr_width=4, data_width=8, init_val=1)
+
+    result = run_fsm_campaign(
+        mem, sources, module_name, [FaultRecord("SA0", 3, 0, 0, 0, 0, 0)],
+        expected_spec=resolve_algo("march_x"),
+    )
+
+    assert result.sequence is not None
+    assert result.sequence.matches is True, result.sequence.message()
+    # march_x is 6n; over 16 words that's 96 memory operations.
+    assert result.sequence.observed_count == 6 * mem.depth
+    assert result.detected == 1
+
+
+def test_mats_plus_controller_matches_its_own_spec() -> None:
+    """mats_plus_top.sv (Workstream B1) must drive exactly its own 3-element
+    .alg spec: {either(w0); up(r0,w1); down(r1,w0)} -- the minimal march this
+    codebase generates."""
+    sources = gather_sibling_sources(MATS_PLUS_TOP)
+    module_name = check_ports(MATS_PLUS_TOP.read_text(encoding="utf-8")).module_name
+    mem = MemoryParams(addr_width=4, data_width=8, init_val=1)
+
+    result = run_fsm_campaign(
+        mem, sources, module_name, [FaultRecord("SA0", 3, 0, 0, 0, 0, 0)],
+        expected_spec=resolve_algo("mats_plus"),
+    )
+
+    assert result.sequence is not None
+    assert result.sequence.matches is True, result.sequence.message()
+    # mats_plus is 5n (1 + 2 + 2 ops across its 3 elements); over 16 words
+    # that's 80 memory operations.
+    assert result.sequence.observed_count == 5 * mem.depth
+    assert result.detected == 1
+
+
+def test_march_x_controller_diverges_from_mats_plus_spec() -> None:
+    """march_x is mats_plus PLUS a trailing either(r0) element -- pointing
+    march_x's own controller at mats_plus's (shorter) spec must diverge,
+    proving the extra phase is a real, distinguishing difference and not an
+    accidental copy-paste of the same sequence."""
+    sources = gather_sibling_sources(MARCH_X_TOP)
+    module_name = check_ports(MARCH_X_TOP.read_text(encoding="utf-8")).module_name
+    mem = MemoryParams(addr_width=4, data_width=8, init_val=1)
+
+    result = run_fsm_campaign(
+        mem, sources, module_name, [FaultRecord("SA0", 3, 0, 0, 0, 0, 0)],
+        expected_spec=resolve_algo("mats_plus"),
+    )
+
+    assert result.sequence is not None
+    assert result.sequence.matches is False
+    assert result.sequence.divergences, "expected at least one divergence vs mats_plus"
+
+
 def test_sequence_check_is_opt_in_absent_by_default() -> None:
     """Without expected_spec, run_fsm_campaign behaves exactly as before:
     no sequence result attached."""
@@ -132,6 +194,38 @@ def test_cli_check_sequence_reports_ok_for_matching_controller(tmp_path: Path) -
     assert "sequence: OK" in result.output
 
 
+def test_cli_check_sequence_reports_ok_for_march_x(tmp_path: Path) -> None:
+    faults = _write_faults(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "test", "-aw", "4", "-dw", "8",
+            "--fsm", str(MARCH_X_TOP),
+            "--algo", "march_x",
+            "--faults", str(faults),
+            "--check-sequence",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "sequence: OK" in result.output
+
+
+def test_cli_check_sequence_reports_ok_for_mats_plus(tmp_path: Path) -> None:
+    faults = _write_faults(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "test", "-aw", "4", "-dw", "8",
+            "--fsm", str(MATS_PLUS_TOP),
+            "--algo", "mats_plus",
+            "--faults", str(faults),
+            "--check-sequence",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "sequence: OK" in result.output
+
+
 def test_cli_check_sequence_exits_1_on_mismatch(tmp_path: Path) -> None:
     faults = _write_faults(tmp_path)
     result = runner.invoke(
@@ -146,6 +240,53 @@ def test_cli_check_sequence_exits_1_on_mismatch(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1
     assert "sequence: MISMATCH" in result.output
+
+
+def test_cli_check_sequence_mismatch_diagnostic_survives_quiet(tmp_path: Path) -> None:
+    """'-q' must not delete the mismatch diagnostic: the final error message
+    says '(see sequence MISMATCH above)', so something must actually be
+    above it, regardless of -q. -q's own contract is 'suppress routine
+    status lines', not 'suppress failure diagnosis'."""
+    faults = _write_faults(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "-q", "test", "-aw", "4", "-dw", "8",
+            "--fsm", str(MARCH_C_TOP),
+            "--algo", "march_ss",
+            "--faults", str(faults),
+            "--check-sequence",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "sequence: MISMATCH" in result.output
+    assert "see sequence MISMATCH above" in result.output
+
+
+def test_cli_check_sequence_mismatch_diagnostic_present_with_json(tmp_path: Path) -> None:
+    """'--json' must not lose the mismatch diagnostic either: it has to land
+    on stderr, keeping stdout pure JSON (never corrupted by the diagnostic
+    text) even in the failure case."""
+    import json
+
+    faults = _write_faults(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "test", "-aw", "4", "-dw", "8",
+            "--fsm", str(MARCH_C_TOP),
+            "--algo", "march_ss",
+            "--faults", str(faults),
+            "--check-sequence", "--json",
+        ],
+    )
+    assert result.exit_code == 1
+    # stdout alone must still be exactly one parseable JSON document...
+    payload = json.loads(result.stdout)
+    assert payload["sequence"]["matches"] is False
+    # ...while the human-readable diagnostic lands on stderr, not stdout.
+    assert "sequence: MISMATCH" in result.stderr
+    assert "sequence: MISMATCH" not in result.stdout
 
 
 def test_cli_check_sequence_requires_fsm(tmp_path: Path) -> None:

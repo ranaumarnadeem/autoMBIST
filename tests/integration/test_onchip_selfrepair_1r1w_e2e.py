@@ -1,16 +1,15 @@
-"""End-to-end proof of Step E: a fully AUTONOMOUS on-chip BIRA/BISR loop -- no
-tester, one `self_repair_start` level, the chip detects its own failing rows
-during its own march-C pass, computes the repair via
-onchip_row_repair_analyzer, applies it, and (except in the deliberately
-unrepairable case) re-verifies via a second march-C pass -- all in silicon.
+"""End-to-end proof of Step E's autonomous on-chip BIRA/BISR loop for the
+multi-port march-1r1w algorithm (Workstream A2) -- the same four scenarios as
+test_onchip_selfrepair_e2e.py (march-c/march-raw), but exercising the
+multi-port wrapper branch's self-repair scaffold instead of the single-port
+one, and a genuinely dual-ported (1 read-only + 1 write-only) spare-augmented
+memory model (sram_spares_tiny_1r1w[.v]/_2defect) instead of a single rw port.
 
-Contrast with test_repair_loop_e2e.py (Step D): there, Python drives
-bira.analyze()/encode_row_repair() between two separate simulator invocations
-and pokes the resulting signature onto combinational input pins. Here,
-`redundancy.onchip_selfrepair: true` means there ARE no repair_ports/tester
-pins at all -- the ENTIRE inject-detect-analyze-apply-(verify) sequence
-happens inside ONE simulation run, triggered by a single self_repair_start
-level and read back via self_repair_done/self_repair_fail. Icarus + make gated.
+A single repair_remap_row steers BOTH ports here, because march_1r1w_fsm
+drives both from the SAME addr_q register (see its header comment) -- the
+wrapper template only remaps port 0's (the read port's) logical address and
+feeds the resulting physical address to both ports' memory pins. Icarus +
+make gated, same as test_onchip_selfrepair_e2e.py.
 """
 from __future__ import annotations
 
@@ -37,11 +36,14 @@ from autombist.runner import run_simulation  # noqa: E402
 
 ADDR_WIDTH = 2
 DATA_WIDTH = 4
-BASE_PORTS = {"clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "we": "web0", "csb": "csb0"}
+PORTS_1R1W = {
+    "rport": {"type": "r", "clk": "clk0", "addr": "addr0", "dout": "dout0", "csb": "csb0"},
+    "wport": {"type": "w", "clk": "clk1", "addr": "addr1", "din": "din1", "csb": "csb1", "we": "web1"},
+}
 
-# Matches sram_spares_tiny.v's baked-in DEFECT_ADDR/DEFECT_BIT (Step A's DUT).
+# Matches sram_spares_tiny_1r1w.v's baked-in DEFECT_ADDR/DEFECT_BIT.
 DEFECT_1 = (3, 3)
-# Matches sram_spares_tiny_2defect.v's two baked-in defects.
+# Matches sram_spares_tiny_1r1w_2defect.v's two baked-in defects.
 DEFECT_2A = (3, 3)
 DEFECT_2B = (1, 1)
 
@@ -53,25 +55,17 @@ def _config(memory_name: str, wrapper_module_name: str, num_spare_rows: int) -> 
         "addr_width": ADDR_WIDTH,
         "data_width": DATA_WIDTH,
         "we_active_low": True,
-        "ports": BASE_PORTS,
+        "ports": PORTS_1R1W,
         # NO repair_ports: -- mutually exclusive with onchip_selfrepair, the
         # analyzer/sequencer drive the remap directly.
         "redundancy": {"num_spare_rows": num_spare_rows, "num_spare_cols": 0, "onchip_selfrepair": True},
     }
 
 
-# Self-repair-capable single-port algos (Workstreams A + B1): march_c_top,
-# march_raw_top, march_x_top, and mats_plus_top all stream fail_valid/
-# fail_addr, and the single-port wrapper branch consumes that stream
-# generically -- so every scenario below runs against all four, proving
-# self-repair isn't a march-c-only accident.
-SELFREPAIR_ALGOS = ["march-c", "march-raw", "march-x", "mats-plus"]
-
-
-def _generate(tmp_path: Path, config: dict, subdir: str, algo: str = "march-c") -> Path:
+def _generate(tmp_path: Path, config: dict, subdir: str) -> Path:
     config_path = tmp_path / f"{subdir}.yml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    return generate_from_config(config_path, tmp_path / subdir, algo=algo)
+    return generate_from_config(config_path, tmp_path / subdir, algo="march-1r1w")
 
 
 def _run(wrapper: Path, scenario: str):
@@ -81,9 +75,10 @@ def _run(wrapper: Path, scenario: str):
     )
 
 
-@pytest.mark.parametrize("algo", SELFREPAIR_ALGOS)
-def test_one_defect_two_spares_is_autonomously_repaired(tmp_path: Path, algo: str) -> None:
-    wrapper = _generate(tmp_path, _config("sram_spares_tiny", "sram_spares_tiny_mbist", 2), "one_defect", algo=algo)
+def test_one_defect_two_spares_is_autonomously_repaired(tmp_path: Path) -> None:
+    wrapper = _generate(
+        tmp_path, _config("sram_spares_tiny_1r1w", "sram_spares_tiny_1r1w_mbist", 2), "one_defect"
+    )
     result = _run(wrapper, "repairable")
     assert result.returncode == 0, result.stdout
     # The forced stuck-at is gone after the chip repaired itself, verified
@@ -92,27 +87,29 @@ def test_one_defect_two_spares_is_autonomously_repaired(tmp_path: Path, algo: st
     assert fail_cells(result.report) == set()
 
 
-@pytest.mark.parametrize("algo", SELFREPAIR_ALGOS)
-def test_two_defects_two_spares_is_autonomously_repaired(tmp_path: Path, algo: str) -> None:
+def test_two_defects_two_spares_is_autonomously_repaired(tmp_path: Path) -> None:
     """Both distinct faulty rows fit within the spare budget -- the on-chip
     registrar must catch BOTH during the single analyze pass, not just the
     first one it encounters."""
     wrapper = _generate(
-        tmp_path, _config("sram_spares_tiny_2defect", "sram_spares_tiny_2defect_mbist", 2), "two_ok", algo=algo
+        tmp_path,
+        _config("sram_spares_tiny_1r1w_2defect", "sram_spares_tiny_1r1w_2defect_mbist", 2),
+        "two_ok",
     )
     result = _run(wrapper, "repairable")
     assert result.returncode == 0, result.stdout
     assert fail_cells(result.report) == set()
 
 
-@pytest.mark.parametrize("algo", SELFREPAIR_ALGOS)
-def test_two_defects_one_spare_is_flagged_not_silently_passed(tmp_path: Path, algo: str) -> None:
+def test_two_defects_one_spare_is_flagged_not_silently_passed(tmp_path: Path) -> None:
     """The DVCon-style check: 2 distinct faulty rows exceed the 1-spare budget
     -- self_repair_fail must read 1 (asserted inside the cocotb test), AND the
     independent re-scan must show a real, partial (not zero, not both) repair:
     exactly one of the two known defects remains."""
     wrapper = _generate(
-        tmp_path, _config("sram_spares_tiny_2defect", "sram_spares_tiny_2defect_mbist", 1), "unrepairable", algo=algo
+        tmp_path,
+        _config("sram_spares_tiny_1r1w_2defect", "sram_spares_tiny_1r1w_2defect_mbist", 1),
+        "unrepairable",
     )
     result = _run(wrapper, "partial")
     assert result.returncode == 0, result.stdout
@@ -122,17 +119,15 @@ def test_two_defects_one_spare_is_flagged_not_silently_passed(tmp_path: Path, al
     assert len(observed) == 1
 
 
-@pytest.mark.parametrize("algo", SELFREPAIR_ALGOS)
-def test_retrigger_gives_the_same_result_both_times(tmp_path: Path, algo: str) -> None:
+def test_retrigger_gives_the_same_result_both_times(tmp_path: Path) -> None:
     """Running the autonomous sequence twice in one simulation (no reset in
     between) must reach the SAME verdict both times -- proves the analyzer's
     known-defect state correctly PERSISTS across the re-trigger (accumulate
     for the chip's lifetime, cleared only by rst_n), not just correct by
-    accident of a single fresh reset. A design that wrongly cleared this
-    state at the start of the second pass would see no fault (the first
-    pass's repair already masks it) and silently erase the still-valid
-    repair -- see onchip_row_repair_analyzer.sv's header comment."""
-    wrapper = _generate(tmp_path, _config("sram_spares_tiny", "sram_spares_tiny_mbist", 2), "retrigger", algo=algo)
+    accident of a single fresh reset."""
+    wrapper = _generate(
+        tmp_path, _config("sram_spares_tiny_1r1w", "sram_spares_tiny_1r1w_mbist", 2), "retrigger"
+    )
     result = _run(wrapper, "retrigger")
     assert result.returncode == 0, result.stdout
     assert fail_cells(result.report) == set()

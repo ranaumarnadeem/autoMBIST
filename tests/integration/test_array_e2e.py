@@ -74,7 +74,7 @@ def _write_config(path: Path, config: dict) -> None:
 
 
 @pytest.mark.parametrize("config", MEMORIES, ids=[m["memory_name"] for m in MEMORIES])
-@pytest.mark.parametrize("algo", ["march-c", "march-raw"])
+@pytest.mark.parametrize("algo", ["march-c", "march-raw", "march-x", "mats-plus"])
 def test_clean_simulation_passes(tmp_path: Path, config: dict, algo: str) -> None:
     """Golden (fault-free) simulation must report bist_fail == 0 for every
     memory shape and both algorithms -- the base correctness contract."""
@@ -162,4 +162,33 @@ def test_transition_fault_simulation_march_raw_detects(tmp_path: Path, config: d
     assert result.returncode == 0
     metrics = result.report["fault_metrics"]
     assert metrics["injected_faults"] == 4
+    assert metrics["detected_faults"] is not None and metrics["detected_faults"] > 0
+
+
+@pytest.mark.parametrize("config", MEMORIES, ids=[m["memory_name"] for m in MEMORIES])
+@pytest.mark.parametrize("algo", ["march-x", "mats-plus"])
+def test_stuck_at_fault_simulation_new_algos_detect(tmp_path: Path, config: dict, algo: str) -> None:
+    """The two Workstream B1 algorithms must detect stuck-at faults across
+    every memory shape, same base contract as march-c/march-raw above."""
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_config(config_path, config)
+
+    wrapper_path = generate_from_config(
+        config_path, outdir, use_saboteur=True, faults=4, fault_seed=1,
+        fault_type="stuck-at", algo=algo,
+    )
+    result = run_simulation(wrapper_path.parent, verbose=False)
+
+    assert result.returncode == 0
+    metrics = result.report["fault_metrics"]
+    assert metrics["injected_faults"] == 4
+
+    # Same narrow, pre-existing timing-margin quirk documented on
+    # test_stuck_at_fault_simulation_detects_faults above: this memory's
+    # ~1ns dbg_actual_word/T_HOLD margin can make the cocotb harness's fault-
+    # ATTRIBUTION sampling land on X, independent of algo. bist_fail detection
+    # itself (already asserted via returncode==0 above) is unaffected.
+    if config["memory_name"] == "input_demo_8x16_scn4m":
+        return
     assert metrics["detected_faults"] is not None and metrics["detected_faults"] > 0
