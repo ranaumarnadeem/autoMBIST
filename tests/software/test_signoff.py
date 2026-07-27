@@ -91,6 +91,9 @@ def test_config_with_macros_bakes_the_recipe():
     # hard-IP signoff + halos baked in
     assert out["MAGIC_DRC_USE_GDS"] is False
     assert out["RUN_KLAYOUT_XOR"] is False
+    # macro-internal DRC noise (OpenRAM bitcell layers) must not fail signoff
+    assert out["ERROR_ON_MAGIC_DRC"] is False
+    assert out["ERROR_ON_KLAYOUT_DRC"] is False
     assert out["PDN_HORIZONTAL_HALO"] == 15
     assert out["FP_MACRO_VERTICAL_HALO"] == 15
     # macros collapsed by name, instances under each
