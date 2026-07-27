@@ -65,11 +65,26 @@ def _normalize_algo(algo: str) -> tuple[str, str]:
         "march-raw": ("march_raw", "march_raw_top"),
         "march-1r1w": ("march_1r1w", "march_1r1w_top"),
         "march-2rw": ("march_2rw", "march_2rw_top"),
+        "march-x": ("march_x", "march_x_top"),
+        "mats-plus": ("mats_plus", "mats_plus_top"),
     }
     if algo_value not in algo_map:
-        raise ValueError("algo must be one of: march-c, march-raw, march-1r1w, march-2rw")
+        raise ValueError(
+            "algo must be one of: march-c, march-raw, march-1r1w, march-2rw, "
+            "march-x, mats-plus"
+        )
     return algo_map[algo_value]
 
+
+# Algorithms whose FSM/top stream fail_valid/fail_addr AND whose wrapper
+# branch has the on-chip self-repair scaffold (analyzer + ctrl + remap) wired
+# up, so redundancy.onchip_selfrepair is actually implementable. march-1r1w's
+# multi-port wrapper branch now has that scaffold too (Workstream A2); march-2rw
+# does not (its concurrent same-cycle dual compare breaks the analyzer's
+# single-fail-per-cycle assumption -- needs new arbiter RTL, out of scope).
+# march-x/mats-plus (Workstream B1) are single-port and got the fail stream
+# from day one, so they're free additions here too.
+_SELFREPAIR_ALGOS = frozenset({"march-c", "march-raw", "march-1r1w", "march-x", "mats-plus"})
 
 # Algorithms that require a specific multi-port shape. Every other algo
 # (march-c, march-raw) is still restricted to exactly 1 port.
@@ -423,7 +438,20 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
             "implemented yet (row repair only in this phase)"
         )
     if len(loaded["normalized_ports"]) != 1:
-        raise ConfigError("redundancy is only supported for single-port memories")
+        # The only multi-port shape redundancy tolerates is the march-1r1w
+        # r+w pair, and only when onchip_selfrepair drives it -- there is no
+        # tester-driven (repair_ports) multi-port path, and no algo is passed
+        # down to this function to check more precisely than "the port roles
+        # match march-1r1w's shape" (generate_from_config's later
+        # _validate_port_topology call is what actually confirms algo agrees).
+        port_types = sorted(pdata["type"] for pdata in loaded["normalized_ports"].values())
+        is_1r1w_shape = len(loaded["normalized_ports"]) == 2 and port_types == ["r", "w"]
+        if not (onchip_selfrepair and is_1r1w_shape):
+            raise ConfigError(
+                "redundancy is only supported for single-port memories, or the "
+                "1-read+1-write port shape when combined with "
+                "onchip_selfrepair (algo=march-1r1w)"
+            )
 
     if onchip_selfrepair:
         if has_repair_ports:
@@ -555,7 +583,7 @@ def _find_rtl_dir() -> Path:
     )
 
 
-_ALGO_DIRS = {"march_c", "march_raw", "march_1r1w", "march_2rw"}
+_ALGO_DIRS = {"march_c", "march_raw", "march_1r1w", "march_2rw", "march_x", "mats_plus"}
 
 
 def copy_mbist_rtl(outdir: Path, algo_dir: str | None = None) -> None:
@@ -613,12 +641,17 @@ def generate_from_config(
         )
 
     redundancy_cfg = config.get("redundancy")
-    if redundancy_cfg and redundancy_cfg.get("onchip_selfrepair") and algo != "march-c":
+    if redundancy_cfg and redundancy_cfg.get("onchip_selfrepair") and algo.strip().lower() not in _SELFREPAIR_ALGOS:
         # algo is a generate_from_config keyword, never seen by load_config /
-        # _validate_redundancy -- this gate has to live here instead.
+        # _validate_redundancy -- this gate has to live here instead. Normalize
+        # before the membership check (as _normalize_algo/_validate_port_topology
+        # /_validate_port_coupling_topology/_algo_port_suffixes all do) so a
+        # differently-cased but otherwise-valid algo string isn't falsely
+        # rejected here even though it renders fine everywhere else.
         raise ConfigError(
-            "redundancy.onchip_selfrepair requires algo='march-c' in this phase "
-            f"(fail_valid/fail_addr are only wired up for march-c); got algo={algo!r}"
+            "redundancy.onchip_selfrepair requires algo to be one of: "
+            f"{', '.join(sorted(_SELFREPAIR_ALGOS))} in this phase "
+            f"(fail_valid/fail_addr are only wired up for these algorithms); got algo={algo!r}"
         )
 
     outdir.mkdir(parents=True, exist_ok=True)
