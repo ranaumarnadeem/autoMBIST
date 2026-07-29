@@ -102,7 +102,7 @@ spare-augmented OpenRAM macro with **redundancy analysis (BIRA)** and
   ([`flow/multimem/mbist/`](flow/multimem/mbist/)) in LibreLane 3.0.5: **0.91
   mm² die, 7,189 std cells, 0 detailed-routing violations, LVS-clean including
   power** (macro-internal Magic/KLayout DRC — 589/3194 — explicitly non-fatal
-  by config; see [`docs/source/cli-reference.md`](docs/source/cli-reference.md#harden) for
+  by config; see [the CLI reference](https://ranaumarnadeem.github.io/autoMBIST/cli-reference.html#harden) for
   why). The same three macros without the MBIST wrap
   ([`flow/multimem/`](flow/multimem/)) harden the same way at 0.78 mm² die,
   ~51% memory area, 4,158 std cells. The same self-repair-through-hardening
@@ -122,7 +122,7 @@ flowchart LR
   harden --> gds["signed-off GDS<br/>(DRT 0, LVS clean)"]
 ```
 
-See [`flow/multimem/`](flow/multimem/) + [`docs/source/demo.md`](docs/source/demo.md)
+See [`flow/multimem/`](flow/multimem/) + [the demo walkthrough](https://ranaumarnadeem.github.io/autoMBIST/demo.html)
 for the reproducible hardening flow. This subsystem currently ships as the
 [`repair/`](src/autombist/repair/) Python library plus the RTL and flow configs;
 a dedicated top-level CLI surface is in progress.
@@ -429,7 +429,7 @@ Multi-port campaigns (genuine cross-port coupling faults, not just single-port) 
 supported: `set_memory --ports 2` in the shell (or `MemoryParams(num_ports=2)` via the
 Python API) switches to the `march_engine_mp.sv` engine, and `add_fault`'s optional
 trailing `VPORT APORT` arguments define which physical port the victim/aggressor side of
-a fault uses. See [`docs/source/multi-port-guide.md`](docs/source/multi-port-guide.md) and
+a fault uses. See [the Multi-Port Memory Guide](https://ranaumarnadeem.github.io/autoMBIST/multi-port-guide.html) and
 `src/autombist/engine/README.md`'s "Multi-port" section for the full `.alg`/fault-list
 syntax and same-port-vs-cross-port semantics.
 
@@ -560,28 +560,27 @@ autombist -v run --config config.yml
 ## Further Documentation
 
 This README covers install and the common day-to-day commands. For deeper
-detail, see the [Advanced Guide](https://ranaumarnadeem.github.io/autoMBIST/advanced-guide.html)
-on the published docs site (or the same files directly in the repo):
+detail, see the published docs site:
 
-- [`docs/source/architecture.md`](docs/source/architecture.md) — how the two subsystems
+- [Architecture](https://ranaumarnadeem.github.io/autoMBIST/architecture.html) — how the two subsystems
   (wrapper/generator + fault-primitive engine) are structured internally, and
   how the pieces (generator, saboteur, march engines, shell) fit together.
-- [`docs/source/cli-reference.md`](docs/source/cli-reference.md) — flag-by-flag reference for
+- [CLI Reference](https://ranaumarnadeem.github.io/autoMBIST/cli-reference.html) — flag-by-flag reference for
   the classic-path and hardening commands (`generate`, `simulate`, `run`,
   `grade-controller`, `ram-synth`, `harden`, `fix-lef-units`, `macro-signoff`,
   `init`, `smoke`).
-- [`docs/source/algo-shell-guide.md`](docs/source/algo-shell-guide.md) — the `autombist test`
+- [Algo-Shell Guide](https://ranaumarnadeem.github.io/autoMBIST/algo-shell-guide.html) (experimental) — the `autombist test`
   and `autombist algo` research subsystem: registering algorithms and fault
   instances, running campaigns, comparing marches, exporting reports/testbenches.
-- [`docs/source/multi-port-guide.md`](docs/source/multi-port-guide.md) — full reference for
+- [Multi-Port Memory Guide](https://ranaumarnadeem.github.io/autoMBIST/multi-port-guide.html) — full reference for
   `march-1r1w` and `march-2rw` config shapes, port-coupling faults, and
   multi-port fault-campaign syntax in both the classic and algo-shell paths.
-- [`docs/source/diagnosis-reports.md`](docs/source/diagnosis-reports.md) — how to read
+- [Diagnosis / Fail-Bitmap Reports](https://ranaumarnadeem.github.io/autoMBIST/diagnosis-reports.html) — how to read
   generated coverage/diagnosis reports (fail-bitmap, fault_details, JSON/CSV/MD
   formats) from both subsystems.
-- [`docs/source/openroad-macro-integration.md`](docs/source/openroad-macro-integration.md) —
+- [OpenROAD / LibreLane Macro Integration](https://ranaumarnadeem.github.io/autoMBIST/openroad-macro-integration.html) —
   how an SRAM plugs into the LibreLane / OpenROAD / OpenRAM hard-macro flow.
-- [`docs/source/demo.md`](docs/source/demo.md) — a one-command, zero-to-result walkthrough
+- [Demo](https://ranaumarnadeem.github.io/autoMBIST/demo.html) — a one-command, zero-to-result walkthrough
   covering both subsystems and the hardening flow.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development setup, test markers, and
   how to submit changes.

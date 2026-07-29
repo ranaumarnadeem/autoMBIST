@@ -2,7 +2,7 @@
 orphan: true
 ---
 
-# autoMBIST demo — zero to result
+# Demo
 
 A copy-pasteable walkthrough of the three things autoMBIST does: generate + fault-simulate
 an MBIST wrapper, grade a march algorithm against the functional fault model, and harden a

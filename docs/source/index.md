@@ -44,6 +44,7 @@ quickstart
 installation
 example
 flow
+algo-shell-guide
 configuration
 librelane
 challenges

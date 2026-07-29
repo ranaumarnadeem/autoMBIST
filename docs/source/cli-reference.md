@@ -2,7 +2,7 @@
 orphan: true
 ---
 
-# autombist CLI Reference — Classic Path
+# CLI Reference
 
 This page documents the **classic path**: the array-level MBIST flow built around
 `generate` / `simulate` / `run`, plus the supporting `grade-controller`, `ram-synth`,
