@@ -2,7 +2,7 @@
 orphan: true
 ---
 
-# OpenROAD / LibreLane macro integration — how memories plug into the open flow
+# OpenROAD / LibreLane Macro Integration
 
 > **Purpose.** Research notes grounding the redundant-memory + repair build. It
 > answers one question: *how is an SRAM represented and integrated as a hard macro in the

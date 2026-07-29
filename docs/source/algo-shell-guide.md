@@ -1,8 +1,12 @@
----
-orphan: true
----
+# Algo-Shell Guide
 
-# Algo-shell guide (`autombist test` / `autombist algo`)
+```{admonition} Experimental
+:class: warning
+The algo-shell / research-mode subsystem (`autombist test`, `autombist algo`)
+is experimental and under active development. Interfaces, report formats, and
+the `.alg` grammar may still change. The classic path (`autombist generate` /
+`simulate` / `run`) is the stable, production path.
+```
 
 This is the user guide for autoMBIST's **algo-shell** subsystem: the
 research-oriented half of the tool that grades march algorithms (and

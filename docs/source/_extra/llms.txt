@@ -24,14 +24,15 @@ multi-corner SPICE-based timing signoff or merged full-hierarchy DRC/LVS.
 - [Installation](https://ranaumarnadeem.github.io/autoMBIST/installation.html): Nix (recommended, matches CI) and manual setup
 - [Example](https://ranaumarnadeem.github.io/autoMBIST/example.html): a full walkthrough including redundancy repair
 - [Flow architecture](https://ranaumarnadeem.github.io/autoMBIST/flow.html): how generation, simulation, and hardening fit together
+- [Algo-Shell Guide](https://ranaumarnadeem.github.io/autoMBIST/algo-shell-guide.html) (experimental): the research-mode subsystem (`autombist test` / `autombist algo`)
 - [Configuration reference](https://ranaumarnadeem.github.io/autoMBIST/configuration.html): the config file schema
 - [LibreLane hardening recipe](https://ranaumarnadeem.github.io/autoMBIST/librelane.html): the proven RTL-to-GDS macro-integration recipe
 - [Challenges](https://ranaumarnadeem.github.io/autoMBIST/challenges.html): real problems hit during development and how they were resolved
 - [Roadmap](https://ranaumarnadeem.github.io/autoMBIST/roadmap.html): what's built and what's not
+- [Advanced Guide](https://ranaumarnadeem.github.io/autoMBIST/advanced-guide.html): architecture, CLI reference, multi-port guide, diagnosis reports, demo, and macro-integration notes
 
 ## Source
 
 - [GitHub repository](https://github.com/ranaumarnadeem/autoMBIST): source code, issues, CI
-- [CLI reference](https://github.com/ranaumarnadeem/autoMBIST/blob/main/docs/cli-reference.md): full flag-by-flag command reference
 - [Real-CPU self-repair demo](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flow/soc/README.md): a real RV32I core booting through self-repaired memory
 - [CITATION.cff](https://github.com/ranaumarnadeem/autoMBIST/blob/main/CITATION.cff): how to cite this software

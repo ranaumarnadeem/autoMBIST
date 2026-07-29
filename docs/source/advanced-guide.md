@@ -1,27 +1,19 @@
 # Advanced Guide
 
-Deeper reference material for autoMBIST, beyond the getting-started pages —
-internal architecture, the full CLI flag reference, the research-mode
-(`autombist test` / `autombist algo`) guide, multi-port configuration,
-diagnosis-report formats, a full zero-to-result walkthrough, and the
-OpenROAD/LibreLane macro-integration notes. Expand any section below.
+Deeper reference material for autoMBIST, beyond the getting-started pages.
+Expand any section below.
 
-:::{dropdown} Architecture — how the two subsystems fit together
+:::{dropdown} Architecture
 ```{include} architecture.md
 ```
 :::
 
-:::{dropdown} CLI Reference — flag-by-flag for every command
+:::{dropdown} CLI Reference
 ```{include} cli-reference.md
 ```
 :::
 
-:::{dropdown} Algo-Shell Guide — the research-mode subsystem (`autombist test` / `autombist algo`)
-```{include} algo-shell-guide.md
-```
-:::
-
-:::{dropdown} Multi-Port Memory Guide — `march-1r1w` / `march-2rw`
+:::{dropdown} Multi-Port Memory Guide
 ```{include} multi-port-guide.md
 ```
 :::
@@ -31,7 +23,7 @@ OpenROAD/LibreLane macro-integration notes. Expand any section below.
 ```
 :::
 
-:::{dropdown} Demo — zero to result
+:::{dropdown} Demo
 ```{include} demo.md
 ```
 :::
