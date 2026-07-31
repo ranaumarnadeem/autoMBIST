@@ -460,6 +460,7 @@ autombist harden [OPTIONS]
 | `--out PATH` | `librelane-config.json` | Where to write the generated LibreLane config |
 | `--pdk-root PATH` | `~/.ciel` | ciel-managed PDK root (used with `--run`) |
 | `--run` | off | Actually invoke LibreLane (needs nix + PDK). Default only writes the config. |
+| `--librelane-ref REF` | `github:librelane/librelane/3.0.5` | Nix flake ref for LibreLane |
 
 The config maps a `design_name`, `verilog_files`, `clock_port`/`clock_period`,
 optional `die_area`, and a list of `macros` (each `{name, gds, lef, instance,
@@ -467,8 +468,19 @@ location}`) into a full LibreLane config. Point `gds`/`lef` at the
 **units-normalized** LEF (run `fix-lef-units` first; the GDS needs no change).
 
 `--run` checks for `nix` on `PATH` before invoking LibreLane (`nix run
-github:librelane/librelane`); if it's missing, `harden` prints an actionable
-error naming the missing tool instead of a raw subprocess traceback.
+<ref>`); if it's missing, `harden` prints an actionable error naming the
+missing tool instead of a raw subprocess traceback.
+
+`--librelane-ref` is pinned to a tagged release by default rather than
+floating on LibreLane's `main` branch — an unpinned `nix run
+github:librelane/librelane` resolves to whatever `main` happens to be at
+invocation time, which is a real reproducibility risk for a physical-design
+recipe. Every hardened design in this repo was verified against
+`3.0.5` (commit `bf87321d`); override `--librelane-ref` to try a newer
+release before bumping the pinned default. This was tested against sky130A
+PDK commit `8afc8346a57fe1ab7934ba5a6056ea8b43078e71` (via ciel) — a
+different PDK snapshot is a second, independent source of drift this flag
+doesn't cover.
 
 ```bash
 autombist harden --config flow/multimem/harden.yml            # emit config only

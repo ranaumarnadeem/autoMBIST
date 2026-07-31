@@ -17,6 +17,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from autombist.signoff import (  # noqa: E402
+    LIBRELANE_FLAKE_REF,
     SignoffConfigError,
     build_librelane_command,
     build_librelane_config,
@@ -143,9 +144,24 @@ def test_config_rejects_duplicate_instance():
 def test_librelane_command_shape():
     cmd = build_librelane_command("cfg.json", "/home/u/.ciel")
     assert cmd[0] == "nix"
-    assert "run" in cmd and "github:librelane/librelane" in cmd
+    assert "run" in cmd and LIBRELANE_FLAKE_REF in cmd
     assert cmd[-1] == "cfg.json"
     assert "--pdk-root" in cmd and "/home/u/.ciel" in cmd
+
+
+def test_librelane_command_ref_is_pinned_not_floating():
+    # Regression guard for the reproducibility fix: the default must be a
+    # tagged release (a third path segment after owner/repo), not a bare
+    # `github:owner/repo` floating on the default branch.
+    cmd = build_librelane_command("cfg.json", "/home/u/.ciel")
+    flake_arg = cmd[cmd.index("run") + 1]
+    assert flake_arg.count("/") >= 2, f"expected a pinned ref (owner/repo/tag), got {flake_arg!r}"
+
+
+def test_librelane_command_ref_override():
+    cmd = build_librelane_command("cfg.json", "/home/u/.ciel", flake="github:librelane/librelane/3.1.0.dev2")
+    assert "github:librelane/librelane/3.1.0.dev2" in cmd
+    assert LIBRELANE_FLAKE_REF not in cmd
 
 
 def test_macro_signoff_command_all_vs_named():

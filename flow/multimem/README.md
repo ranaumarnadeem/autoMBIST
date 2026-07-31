@@ -105,8 +105,11 @@ Residual caveats: macro-internal DRC counts (magic-abstract 529 / klayout 3194)
 are macro-dominated noise — legitimate OpenRAM bitcell/periphery layers
 (CFOMDROP, CNTMADD, etc.) that the local Magic/KLayout deck doesn't recognize
 inside macro boundaries, a known OpenRAM/open_pdks quirk (librelane/librelane#519),
-not a defect in this design. They're deterministically non-fatal by the
-`ERROR_ON_MAGIC_DRC`/`ERROR_ON_KLAYOUT_DRC: false` config above (not just
-advisory by upstream-default luck), so `harden --run` exits 0 reproducibly.
+not a defect in this design. `Checker.MagicDRC`/`Checker.KLayoutDRC` default to
+*fatal* upstream (`ERROR_ON_MAGIC_DRC`/`ERROR_ON_KLAYOUT_DRC` both default
+`True`), so without the `: false` override in the config above, this noise
+would abort `harden --run` with exit code 2 regardless of the design's own
+logic being clean — the override is what makes these counts non-fatal and lets
+`harden --run` exit 0 reproducibly.
 The macros also ship no `.lib` (characterization skipped), so STA black-boxes
 them.

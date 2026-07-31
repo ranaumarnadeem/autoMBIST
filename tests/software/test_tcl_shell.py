@@ -411,6 +411,60 @@ def test_harden_command_calls_build_librelane_config(shell: TclShell, tmp_path: 
     assert out_path.exists()
 
 
+def test_harden_command_run_defaults_to_pinned_librelane_ref(
+    shell: TclShell, tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "harden.yml"
+    config_path.write_text("design_name: stub\n", encoding="utf-8")
+    out_path = tmp_path / "librelane-config.json"
+
+    captured: dict[str, object] = {}
+
+    class _FakeCompleted:
+        returncode = 0
+
+    monkeypatch.setattr(tcl_shell_mod, "build_librelane_config", lambda loaded: {"DESIGN_NAME": "stub"})
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/nix")
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompleted()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    shell.eval(f"harden -config {_q(config_path)} -out {_q(out_path)} -run")
+
+    assert tcl_shell_mod.LIBRELANE_FLAKE_REF in captured["cmd"]
+
+
+def test_harden_command_run_librelane_ref_override(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "harden.yml"
+    config_path.write_text("design_name: stub\n", encoding="utf-8")
+    out_path = tmp_path / "librelane-config.json"
+
+    captured: dict[str, object] = {}
+
+    class _FakeCompleted:
+        returncode = 0
+
+    monkeypatch.setattr(tcl_shell_mod, "build_librelane_config", lambda loaded: {"DESIGN_NAME": "stub"})
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/nix")
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompleted()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    shell.eval(
+        f"harden -config {_q(config_path)} -out {_q(out_path)} -run "
+        "-librelane-ref github:librelane/librelane/3.1.0.dev2"
+    )
+
+    assert "github:librelane/librelane/3.1.0.dev2" in captured["cmd"]
+    assert tcl_shell_mod.LIBRELANE_FLAKE_REF not in captured["cmd"]
+
+
 def test_harden_command_missing_config_raises_clean_message(shell: TclShell, tmp_path: Path) -> None:
     missing_config = tmp_path / "nope.yml"
     caught = shell.eval(
