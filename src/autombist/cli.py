@@ -21,6 +21,7 @@ if __package__ in {None, ""}:
     )
     from autombist.runner import SimulationError, run_simulation
     from autombist.signoff import (
+        LIBRELANE_FLAKE_REF,
         SignoffConfigError,
         build_librelane_command,
         build_librelane_config,
@@ -40,6 +41,7 @@ else:
     )
     from .runner import SimulationError, run_simulation
     from .signoff import (
+        LIBRELANE_FLAKE_REF,
         SignoffConfigError,
         build_librelane_command,
         build_librelane_config,
@@ -727,6 +729,7 @@ def harden(
     out: Path = typer.Option("librelane-config.json", "--out", help="Where to write the generated LibreLane config"),
     pdk_root: Path = typer.Option(Path.home() / ".ciel", "--pdk-root", help="ciel PDK root"),
     run: bool = typer.Option(False, "--run", help="Actually run LibreLane (needs nix + PDK); default only emits the config"),
+    librelane_ref: str = typer.Option(LIBRELANE_FLAKE_REF, "--librelane-ref", help="Nix flake ref for LibreLane (pinned by default; override to try a newer version)"),
 ) -> None:
     """Emit (and optionally run) a LibreLane config for a design + OpenRAM macros.
 
@@ -734,6 +737,11 @@ def harden(
     halos, PDN_MACRO_CONNECTIONS net-vs-pin format). Without --run it just writes
     the LibreLane config JSON, so you can inspect it or feed it to LibreLane
     yourself -- a quick way to verify the integration wiring.
+
+    --run invokes LibreLane pinned to a tested tag (see --librelane-ref's
+    default) rather than floating on LibreLane's main branch, so reproducing
+    a hardening result doesn't depend on whatever the tip of main happens to
+    be at invocation time.
     """
     import json
     import shutil
@@ -759,15 +767,15 @@ def harden(
 
     if shutil.which("nix") is None:
         typer.secho(
-            "autombist: 'nix' not found on PATH. --run invokes LibreLane via "
-            "`nix run github:librelane/librelane`; install Nix "
+            f"autombist: 'nix' not found on PATH. --run invokes LibreLane via "
+            f"`nix run {librelane_ref}`; install Nix "
             "(https://nixos.org/download) or omit --run to only emit the config.",
             err=True,
             fg=typer.colors.RED,
         )
         raise typer.Exit(code=1)
 
-    cmd = build_librelane_command(out, pdk_root)
+    cmd = build_librelane_command(out, pdk_root, flake=librelane_ref)
     typer.echo("$ " + " ".join(cmd))
     result = subprocess.run(cmd)
     if result.returncode != 0:

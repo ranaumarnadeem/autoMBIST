@@ -22,6 +22,19 @@ class SignoffConfigError(ValueError):
     """Raised when a harden/signoff config is malformed."""
 
 
+# Pinned to a tagged release rather than floating on `main`: `nix run
+# github:librelane/librelane` (no ref) resolves to whatever the default
+# branch is at invocation time, which is what every hardened design in this
+# repo actually built (nix store path `python3.13-librelane-3.0.5` in every
+# verified run) -- but that was incidental, not guaranteed, since nothing
+# pinned it there. 3.0.5 is the latest tagged stable release (3.1.0.dev1/
+# dev2 are pre-releases) and resolves to commit bf87321d, the exact commit
+# `main` sat at across every run in this project's history. Override with
+# `--librelane-ref` (CLI) / `-librelane-ref` (Tcl shell) to try a newer
+# version before bumping this default.
+LIBRELANE_FLAKE_REF = "github:librelane/librelane/3.0.5"
+
+
 # --------------------------------------------------------------------------
 # LEF units normalization
 # --------------------------------------------------------------------------
@@ -172,7 +185,7 @@ def build_librelane_command(
     config_path: str | Path,
     pdk_root: str | Path,
     *,
-    flake: str = "github:librelane/librelane",
+    flake: str = LIBRELANE_FLAKE_REF,
 ) -> list[str]:
     """Argument vector to run the LibreLane flow on ``config_path`` via nix."""
     return [

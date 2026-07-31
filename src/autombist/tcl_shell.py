@@ -62,6 +62,7 @@ if __package__ in {None, ""}:
     from autombist.reporting import format_simulation_summary
     from autombist.runner import SimulationError, run_controller_grading, run_simulation
     from autombist.signoff import (
+        LIBRELANE_FLAKE_REF,
         SignoffConfigError,
         build_librelane_command,
         build_librelane_config,
@@ -81,6 +82,7 @@ else:
     from .reporting import format_simulation_summary
     from .runner import SimulationError, run_controller_grading, run_simulation
     from .signoff import (
+        LIBRELANE_FLAKE_REF,
         SignoffConfigError,
         build_librelane_command,
         build_librelane_config,
@@ -440,6 +442,7 @@ class TclShell:
         out = Path(_pop_str(flags, "-out", "librelane-config.json"))
         pdk_root = Path(_pop_str(flags, "-pdk-root", str(Path.home() / ".ciel")))
         run = _pop_bool(flags, "-run", False)
+        librelane_ref = _pop_str(flags, "-librelane-ref", LIBRELANE_FLAKE_REF)
         _reject_unknown(flags)
 
         import yaml
@@ -462,8 +465,8 @@ class TclShell:
         import subprocess
 
         if shutil.which("nix") is None:
-            raise RuntimeError("'nix' not found on PATH -- --run invokes LibreLane via `nix run ...`")
-        cmd = build_librelane_command(out, pdk_root)
+            raise RuntimeError(f"'nix' not found on PATH -- -run invokes LibreLane via `nix run {librelane_ref}`")
+        cmd = build_librelane_command(out, pdk_root, flake=librelane_ref)
         self._puts("$ " + " ".join(cmd))
         result = subprocess.run(cmd)
         if result.returncode != 0:

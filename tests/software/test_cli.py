@@ -262,6 +262,64 @@ def test_harden_without_run_does_not_require_nix(tmp_path: Path, monkeypatch) ->
     )
 
     assert result.exit_code == 0
+
+
+def test_harden_run_defaults_to_pinned_librelane_ref(tmp_path: Path, monkeypatch) -> None:
+    harden_config = tmp_path / "harden.yml"
+    harden_config.write_text("design_name: stub\n", encoding="utf-8")
+    out_path = tmp_path / "librelane-config.json"
+
+    captured: dict[str, object] = {}
+
+    class _FakeCompleted:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompleted()
+
+    monkeypatch.setattr(cli_mod, "build_librelane_config", lambda loaded: {"DESIGN_NAME": "stub"})
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/nix")
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = runner.invoke(
+        cli_mod.app,
+        ["harden", "--config", str(harden_config), "--out", str(out_path), "--run"],
+    )
+
+    assert result.exit_code == 0
+    assert cli_mod.LIBRELANE_FLAKE_REF in captured["cmd"]
+
+
+def test_harden_run_librelane_ref_override(tmp_path: Path, monkeypatch) -> None:
+    harden_config = tmp_path / "harden.yml"
+    harden_config.write_text("design_name: stub\n", encoding="utf-8")
+    out_path = tmp_path / "librelane-config.json"
+
+    captured: dict[str, object] = {}
+
+    class _FakeCompleted:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompleted()
+
+    monkeypatch.setattr(cli_mod, "build_librelane_config", lambda loaded: {"DESIGN_NAME": "stub"})
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/nix")
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = runner.invoke(
+        cli_mod.app,
+        [
+            "harden", "--config", str(harden_config), "--out", str(out_path), "--run",
+            "--librelane-ref", "github:librelane/librelane/3.1.0.dev2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "github:librelane/librelane/3.1.0.dev2" in captured["cmd"]
+    assert cli_mod.LIBRELANE_FLAKE_REF not in captured["cmd"]
     assert out_path.exists()
 
 

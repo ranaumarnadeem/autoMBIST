@@ -82,12 +82,13 @@ blackboxes, and `mem_subsystem_mbist.sv`.
   `CNTMADD`) that the local Magic/KLayout deck flags as "unknown
   layer/datatype in boundary" — a known OpenRAM/open_pdks quirk
   (`librelane/librelane#519`), not a real defect or a spares-related issue.
-  `autombist harden`'s `build_librelane_config()`
-  (`src/autombist/signoff.py`) sets `ERROR_ON_MAGIC_DRC: false` +
-  `ERROR_ON_KLAYOUT_DRC: false` whenever the harden config declares
-  `macros:` (as this one does), so these counts (589 Magic / 3194 KLayout
-  here) are deterministically non-fatal by explicit config, not just
-  advisory by upstream-default luck — `harden --run` exits 0 reproducibly.
+  `Checker.MagicDRC`/`Checker.KLayoutDRC` default to *fatal* upstream
+  (`ERROR_ON_MAGIC_DRC`/`ERROR_ON_KLAYOUT_DRC` both default `True`), so this
+  noise would otherwise abort `harden --run` with exit code 2. `autombist
+  harden`'s `build_librelane_config()` (`src/autombist/signoff.py`) sets both
+  to `false` whenever the harden config declares `macros:` (as this one
+  does), which is what makes these counts (589 Magic / 3194 KLayout here)
+  non-fatal and lets `harden --run` exit 0 reproducibly.
   Top-level integration P&Rs LVS-clean; see [../](../) for the full recipe
   write-up and [../signoff](../signoff) for the per-macro scripts.
 - **Self-repair timing against the real macros — `read_latency: 0` required,
