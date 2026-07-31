@@ -64,12 +64,12 @@ module march_1r1w_fsm #(
     localparam integer WAIT_CNT_W = (READ_LATENCY < 2) ? 1 : $clog2(READ_LATENCY + 1);
     logic [WAIT_CNT_W-1:0] wait_cnt_q;
 
-    logic                  phase_dir_up;
-    logic                  do_read  [0:1];
-    logic                  do_write [0:1];
-    logic [DATA_WIDTH-1:0] expected_data [0:1];
-    logic [DATA_WIDTH-1:0] write_data    [0:1];
-    logic                  last_substep;
+    logic                       phase_dir_up;
+    logic [1:0]                 do_read;
+    logic [1:0]                 do_write;
+    logic [1:0][DATA_WIDTH-1:0] expected_data;
+    logic [1:0][DATA_WIDTH-1:0] write_data;
+    logic                       last_substep;
 
     march_1r1w_algo #(
         .DATA_WIDTH(DATA_WIDTH)

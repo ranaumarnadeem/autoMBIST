@@ -40,16 +40,21 @@
 // Elements 1-4 exercise genuine same-address, same-cycle read(port0) +
 // write(port1) concurrency -- exactly the condition an inter-port coupling
 // fault needs to be sensitized.
+// Ports below use packed (not unpacked) 2-element vectors -- Yosys's
+// read_verilog frontend rejects unpacked-array port declarations
+// (`do_read [0:1]`) with a syntax error; packed `[1:0]` indexes identically
+// (do_read[0], do_read[1]) at every call site, so this is a synthesis-target
+// fix with no semantic change.
 module march_1r1w_algo #(
     parameter integer DATA_WIDTH = 32
 ) (
-    input  logic [2:0]            phase,
-    output logic                  phase_dir_up,
-    output logic                  do_read  [0:1],
-    output logic                  do_write [0:1],
-    output logic [DATA_WIDTH-1:0] expected_data [0:1],
-    output logic [DATA_WIDTH-1:0] write_data    [0:1],
-    output logic                  last_step
+    input  logic [2:0]                 phase,
+    output logic                       phase_dir_up,
+    output logic [1:0]                 do_read,
+    output logic [1:0]                 do_write,
+    output logic [1:0][DATA_WIDTH-1:0] expected_data,
+    output logic [1:0][DATA_WIDTH-1:0] write_data,
+    output logic                       last_step
 );
 
     localparam logic [DATA_WIDTH-1:0] ALL_ZERO = '0;
