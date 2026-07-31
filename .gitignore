@@ -44,6 +44,9 @@ campaign_*.csv
 # Generated outputs
 out/
 flow/soc/firmware.hex
+gen_*/
+runs/
+librelane-config*.json
 
 # OpenRAM reference docs (local guidance only)
 openram_doc/

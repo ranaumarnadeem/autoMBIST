@@ -1,0 +1,51 @@
+# Harden config for selfrepair_1r1w (`autombist harden`) -- march-1r1w
+# self-repair wrapping a REAL genuinely-dual-port sky130 OpenRAM macro
+# (sky130_sram_1r1w_32b256w: num_r_ports=1, num_w_ports=1, num_spare_rows=2).
+# Closes the gap flow/newalgo/README.md's "march-1r1w: scope decision"
+# section previously documented as future work.
+#
+# Result: flow completes all 80 stages, LVS PASS, Antenna PASS. DRC is not
+# clean -- see flow/newalgo/README.md's "march-1r1w: real-macro DRC result"
+# section for the full breakdown (KLayout's ~520 is the same already-accepted
+# OpenRAM-macro-internal noise the other three macros hit; Magic's ~539 is a
+# separate, externally-documented, currently-unresolved OpenROAD/sky130
+# tapcell limitation -- OpenROAD#7118, OpenLane#1140 -- not something this
+# config can tune away; four independent attempts confirmed it).
+#
+# Reproduce:
+#   autombist generate --algo march-1r1w --out gen_1r1w --config - <<'YAML'
+#   memory_name: "sram_wrap_1r1w"
+#   wrapper_module_name: "selfrepair_1r1w"
+#   addr_width: 8
+#   data_width: 32
+#   we_active_low: true
+#   read_latency: 0
+#   ports:
+#     rport: {type: r, clk: clkA, addr: addrA, dout: doutA, csb: csbA}
+#     wport: {type: w, clk: clkB, addr: addrB, din: dinB, csb: csbB, we: webB}
+#   redundancy: {num_spare_rows: 2, num_spare_cols: 0, onchip_selfrepair: true}
+#   YAML
+#   autombist harden --config flow/newalgo/harden_1r1w.yml --run
+#
+# (macros_1000/sky130_sram_1r1w_32b256w.{gds,lef} generated via
+# scripts/synthesize_sram.py --tech sky130 --word-size 32 --num-words 256
+# --num-rw-ports 0 --num-r-ports 1 --num-w-ports 1 --num-spare-rows 2
+# --output-name sky130_sram_1r1w_32b256w, then LEF-units-fixed the same way
+# as the other three real macros.)
+design_name: selfrepair_1r1w
+verilog_files:
+  - gen_1r1w/sram_wrap_1r1w/march_1r1w/march_1r1w_algo.sv
+  - gen_1r1w/sram_wrap_1r1w/march_1r1w/march_1r1w_fsm.sv
+  - gen_1r1w/sram_wrap_1r1w/march_1r1w/march_1r1w_top.sv
+  - gen_1r1w/sram_wrap_1r1w/onchip_row_repair_analyzer.sv
+  - gen_1r1w/sram_wrap_1r1w/onchip_selfrepair_ctrl.sv
+  - gen_1r1w/sram_wrap_1r1w/repair_remap_row.sv
+  - gen_1r1w/sram_wrap_1r1w/sram_wrap_1r1w_mbist.v
+  - flow/newalgo/sram_wrap_1r1w.sv
+  - flow/multimem/sky130_srams_bb.v
+clock_port: clk
+clock_period: 20
+die_area: [0, 0, 1000, 850]
+pl_target_density_pct: 25
+macros:
+  - {name: sky130_sram_1r1w_32b256w, gds: macros_1000/sky130_sram_1r1w_32b256w.gds, lef: macros_1000/sky130_sram_1r1w_32b256w.lef, instance: u_sram.u_macro, location: [60, 60]}
