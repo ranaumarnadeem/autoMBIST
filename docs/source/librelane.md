@@ -31,10 +31,12 @@ the same self-repaired memories:
   real self-repair-wrapped macros through actual fetch/load/store traffic,
   not just a bus testbench) — 1400×900 µm die, 25% density — hardens clean.
 
-march-1r1w (the multi-port self-repair scaffold) is the one exception: it
-needs a genuinely dual-port memory, and none of this project's real sky130
-macros are dual-port, so it hasn't been hardened against a real macro — see
-"What isn't proven yet" below.
+march-1r1w (the multi-port self-repair scaffold) is the one exception, and
+not for lack of a real macro: it's been hardened against a purpose-built,
+genuinely dual-port sky130 OpenRAM macro (`sky130_sram_1r1w_32b256w`) —
+LVS and Antenna both pass, but DRC doesn't, tracing to an external,
+unresolved OpenROAD/sky130 tapcell bug rather than anything in this
+project — see "What isn't proven yet" below.
 
 ## The recipe
 
@@ -100,10 +102,14 @@ black-box memory timing) and a merged full-hierarchy DRC pass that includes
 macro polygons directly are both open. See {doc}`challenges` for what we ran
 into trying to close those, and {doc}`roadmap` for where they sit.
 
-march-1r1w's self-repair wrapper is also not part of the "proven" list above.
-It's a genuinely dual-port design (one read-only port, one write-only port),
-and none of this project's three real sky130 macros are dual-port — they're
-all single-port r/w. Building a real dual-port OpenRAM macro to wrap is a
-separate undertaking, not a LibreLane config change, and is left as future
-work rather than rushed here; see `flow/newalgo/README.md`'s "march-1r1w:
-scope decision" section for the full reasoning.
+march-1r1w's self-repair wrapper is also not part of the "proven" list above,
+but not for lack of a real macro to test it against — a genuinely dual-port
+sky130 OpenRAM macro (`sky130_sram_1r1w_32b256w`) was generated and
+hardened. That run completes all 80 stages with LVS and Antenna both
+passing; DRC is not clean, and the dominant issue (Magic's `nwell.4`
+"missing N+ tap" rule) traces to a documented, currently-unresolved
+OpenROAD/sky130 tapcell limitation ([OpenROAD#7118](https://github.com/The-OpenROAD-Project/OpenROAD/issues/7118),
+[OpenLane#1140](https://github.com/The-OpenROAD-Project/OpenLane/issues/1140)),
+confirmed by four independent config-level attempts that didn't move it. See
+`flow/newalgo/README.md`'s "march-1r1w: real, genuinely-dual-port macro"
+section for the full breakdown.

@@ -213,15 +213,15 @@ its concurrent same-cycle dual compare breaks the analyzer's
 single-fail-per-cycle assumption — a documented scope boundary, not a gap to
 be closed later without new arbitration RTL.
 
-### Tier 2 — LibreLane-integrable / tapeout-ready repairable macro: done for single-port
+### Tier 2 — LibreLane-integrable / tapeout-ready repairable macro
 
 Because repair pins never touch the macro's own views, hardening a self-repair
 design in LibreLane needed **no new LEF/Liberty/`vh`/GDS work at all** — the
 real macros' pre-existing widened `addr0` + `spare_wen0` pins (already present
 whenever OpenRAM is asked for spare rows) were sufficient. This has now been
-proven clean through the full LibreLane RTL-to-GDS flow for three algorithms,
-each wrapping an unmodified real OpenRAM macro (`.spare_wen0(1'b0)`, no macro
-modification):
+proven clean through the full LibreLane RTL-to-GDS flow for three single-port
+algorithms, each wrapping an unmodified real OpenRAM macro (`.spare_wen0(1'b0)`,
+no macro modification):
 
 - march-C, wrapping 3 real macros in a multi-memory subsystem
   (`flow/multimem/mbist/`).
@@ -230,12 +230,18 @@ modification):
 - MATS+, wrapping `sky130_sram_32b512w` (`flow/newalgo/`, target
   `selfrepair_mp`) — hardens clean (Antenna pass, LVS pass, exit 0).
 
-march-1r1w's multi-port self-repair scaffold has **not** been hardened against
-a real macro: none of this project's three real sky130 macros (32b256w,
-32b512w, 8b1024w) are dual-port, and building a real dual-port OpenRAM macro is
-out of scope for now — documented as future work in `flow/newalgo/README.md`.
-march-2rw is out of scope entirely (see above), so there is nothing to harden
-there.
+march-1r1w's multi-port self-repair scaffold **has** been hardened against a
+real, genuinely dual-port OpenRAM macro (`sky130_sram_1r1w_32b256w`, purpose
+-built for this: `num_r_ports=1`, `num_w_ports=1`). The flow completes all 80
+stages with LVS and Antenna both passing; DRC is not clean, and the dominant
+finding traces to a documented, currently-unresolved OpenROAD/sky130 tapcell
+limitation ([OpenROAD#7118](https://github.com/The-OpenROAD-Project/OpenROAD/issues/7118),
+[OpenLane#1140](https://github.com/The-OpenROAD-Project/OpenLane/issues/1140)),
+not to this project's RTL or LibreLane config — four independent, targeted
+attempts (floorplan, tap-cell distance, macro halo) confirmed it doesn't
+respond to anything under this project's control. See `flow/newalgo/README.md`
+for the full breakdown. march-2rw is out of scope entirely (see above), so
+there is nothing to harden there.
 
 **OpenRAM-redundancy status** (`scripts/synthesize_sram.py`): OpenRAM's flow
 accepts `num_spare_rows` / `num_spare_cols` unconditionally for every tech
