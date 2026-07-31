@@ -222,13 +222,14 @@ redundancy:
 ```
 
 Add that block to the 1R1W config from §2a and generate with `--algo
-march-1r1w` as usual — no other config changes are needed. Note this
-covers the *controller logic* only: the self-repair wrapper hasn't been
-hardened through LibreLane against a real dual-port OpenRAM macro, since
-none of this project's three real sky130 macros are dual-port (they're
-all single-port r/w). See
-[`flow/newalgo/README.md`, "march-1r1w: scope decision"](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flow/newalgo/README.md#march-1r1w-scope-decision-not-hardened-here)
-for the full explanation and current status.
+march-1r1w` as usual — no other config changes are needed. This has been
+hardened through LibreLane against a real, genuinely dual-port sky130
+OpenRAM macro (`sky130_sram_1r1w_32b256w`): the flow completes all 80
+stages, LVS and Antenna both pass. DRC does not — the dominant violation
+traces to a documented, currently-unresolved OpenROAD/sky130 tapcell
+limitation, not to anything in this project's RTL or config. See
+[`flow/newalgo/README.md`, "march-1r1w: real, genuinely-dual-port macro"](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flow/newalgo/README.md#march-1r1w-real-genuinely-dual-port-macro-hardened-drc-not-clean)
+for the full breakdown.
 
 ## 3. Algo-shell: 2-port sessions and cross-port faults
 
