@@ -128,6 +128,19 @@ class AlgSpec:
         path.write_text(self.to_numeric(), encoding="ascii")
         return path
 
+    def to_text(self) -> str:
+        """Serialize back to the human `.alg` grammar (inverse of
+        :func:`parse_alg`, modulo the leading ``#`` header comment, which
+        parsing ignores) -- ``parse_alg(spec.to_text(), name).elements ==
+        spec.elements``. One line per element via :meth:`Element.human`."""
+        header = f"# {self.name}  ({self.length_n}n)\n"
+        return header + "".join(e.human() + "\n" for e in self.elements)
+
+    def write_text(self, path: Path) -> Path:
+        path = Path(path)
+        path.write_text(self.to_text(), encoding="utf-8")
+        return path
+
 
 def parse_alg(text: str, name: str) -> AlgSpec:
     """Parse the human `.alg` form into an :class:`AlgSpec`."""
