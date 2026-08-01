@@ -18,7 +18,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .alg_spec import AlgSpec, AlgSpecError, builtin_algos, find_engine_dir, load_alg_file
+from .alg_spec import MAX_ELEMENTS, MAX_OPS, AlgSpec, AlgSpecError, builtin_algos, find_engine_dir, load_alg_file
 from .algo_engine import (
     BUILTIN_FAULT_TYPES,
     CampaignResult,
@@ -35,6 +35,7 @@ from .algo_reporting import render_matrix_md, write_campaign_report, write_diagn
 from .fault_primitives import FaultPrimitive, FaultPrimitiveError, default_registry, from_dict, validate
 from .fault_ram_gen import render_and_write
 from .fsm_harness import check_ports, gather_sibling_sources
+from .synth_engine import synthesize_alg, synth_verification_faults
 
 # The 15 DSL-covered built-ins' names, for distinguishing "custom" registry
 # entries (added via add_fault_type) from the defaults in `list types`.
@@ -414,6 +415,67 @@ class AlgoShell(cmd.Cmd):
             self._print_result_summary(r)
         self._out("")
         self._out(render_matrix_md(results))
+
+    def do_synth(self, arg: str) -> None:
+        """synth <name> [--elements N] [--max-ops N] [--verify] [--write PATH]
+        Synthesize a new march test from the CURRENT fault-type registry
+        (built-ins plus any add_fault_type additions) via the Pattern-Graph
+        greedy-walk algorithm (Benso et al., ETS 2005 / DATE 2006). Registers
+        the result into session.algos[name] -- immediately usable by
+        'run'/'compare_algo', same contract as add_algo.
+          --elements N  cap on march elements (default alg_spec.MAX_ELEMENTS)
+          --max-ops N   cap on ops per element (default alg_spec.MAX_OPS)
+          --verify      run the synthesized test through a real Verilator
+                        campaign against the targeted primitives and print
+                        detected/total (also becomes the 'last run' result,
+                        usable by write_report/write_diagnosis)
+          --write PATH  also write the human .alg text form
+        Never targets SOF/AF_NOACC/AF_ALIAS/CFDS (structurally fixed types,
+        not expressible in the Sensitize/Effect DSL -- see
+        fault_primitives.py) or any raw_sv custom primitive (no DSL
+        description to synthesize against) -- the printed summary always
+        states "targets M/N" so the exclusion is visible, never implied."""
+        pos, flags = _parse_flags(
+            _tokenize(arg), {"elements": int, "max-ops": int, "verify": None, "write": str}
+        )
+        if not pos:
+            raise ValueError("usage: synth <name> [--elements N] [--max-ops N] [--verify] [--write PATH]")
+        name = pos[0]
+        init_val = self.session.mem.init_val if self.session.mem is not None else 1
+        result = synthesize_alg(
+            self.session.registry, name,
+            max_elements=int(flags.get("elements", MAX_ELEMENTS)),
+            max_ops=int(flags.get("max-ops", MAX_OPS)),
+            init_val=init_val,
+        )
+        self.session.algos[name] = result.spec
+        total = len(result.targeted) + len(result.excluded_fixed)
+        self._out(
+            f"synthesized '{name}': {result.spec.length_n}n, {len(result.spec.elements)} elements -- "
+            f"targets {len(result.targeted)}/{total} registry primitives "
+            f"(excludes {', '.join(result.excluded_fixed)}: structurally fixed types)"
+        )
+        if result.uncovered:
+            self._out(f"  WARNING: {len(result.uncovered)} NOT covered within caps: {', '.join(result.uncovered)}")
+        else:
+            self._out(f"  covered: {len(result.covered)}/{len(result.targeted)}")
+        if "write" in flags:
+            path = Path(str(flags["write"]))
+            result.spec.write_text(path)
+            self._out(f"  .alg text written: {path}")
+        if flags.get("verify"):
+            mem = self._require_memory()
+            targets = [p for p in self.session.registry if p.name in result.targeted]
+            faults = synth_verification_faults(mem, targets)
+            workdir = self.session.next_run_dir(f"synth_verify_{name}")
+            fault_ram_sv = self._render_fault_ram_for(workdir)
+            campaign = run_algo_campaign(
+                mem, result.spec, faults, sim=self.session.sim,
+                workdir=workdir, fault_ram_sv=fault_ram_sv,
+            )
+            self.session.last_results[name] = campaign
+            self.session.last_op = ("run", name)
+            self._print_result_summary(campaign)
 
     def do_write_report(self, arg: str) -> None:
         """write_report <path> [--fmt md|csv|json]
