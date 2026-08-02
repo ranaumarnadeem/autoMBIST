@@ -418,6 +418,16 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
     if not isinstance(onchip_selfrepair, bool):
         raise ConfigError("redundancy.onchip_selfrepair must be a boolean")
 
+    onchip_repair_persistence = block.get("onchip_repair_persistence", False)
+    if not isinstance(onchip_repair_persistence, bool):
+        raise ConfigError("redundancy.onchip_repair_persistence must be a boolean")
+    if onchip_repair_persistence and not onchip_selfrepair:
+        raise ConfigError(
+            "redundancy.onchip_repair_persistence requires onchip_selfrepair: true -- "
+            "the persisted-repair-signature load path extends the on-chip analyzer, "
+            "which only exists when onchip_selfrepair is enabled"
+        )
+
     num_spare_rows = block.get("num_spare_rows", 0)
     num_spare_cols = block.get("num_spare_cols", 0)
     for key, value in (
@@ -487,6 +497,7 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         "num_spare_cols": geometry.num_spare_cols,
         "mem_addr_width": geometry.mem_addr_width,
         "onchip_selfrepair": onchip_selfrepair,
+        "onchip_repair_persistence": onchip_repair_persistence,
     }
 
 

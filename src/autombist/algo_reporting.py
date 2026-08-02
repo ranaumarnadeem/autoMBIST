@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from .algo_engine import CampaignResult
 
@@ -373,6 +374,143 @@ def write_diagnosis_report(result: CampaignResult, path: Path, fmt: str = "md") 
         "md": render_diagnosis_md,
         "csv": render_diagnosis_csv,
         "json": render_diagnosis_json,
+    }
+    Path(path).write_text(renderers[fmt](result), encoding="utf-8")
+    return Path(path)
+
+
+# --------------------------------------------------------------------------- #
+# Blind syndrome-based diagnosis (single-campaign, fault-type ambiguity)
+# --------------------------------------------------------------------------- #
+# Structurally independent from the report families above -- own VALID_FORMATS,
+# own renderer dict, own write_* entrypoint (same deliberate isolation as the
+# diagnosis section, so this never touches write_campaign_report/
+# write_diagnosis_report or their render_* functions).
+#
+# Honest scope note: the engine's capture model records only the FIRST
+# detecting (elem, op) per run (RESULT_DETECTED_RE), not a per-element
+# pass/fail bit-string the way the cited literature's syndrome does. What's
+# implemented here is a faithful, narrower reading of the same underlying
+# problem: fault TYPES that this algorithm flags at the identical (elem, op)
+# location -- or that both escape entirely -- are indistinguishable to a
+# diagnostician who only observes "this algorithm detected/escaped, and
+# where." This is campaign-mode diagnosis (ground truth known from the
+# injected fault list), useful for algorithm R&D, not real-silicon blind
+# triage -- don't conflate the two.
+SYNDROME_VALID_FORMATS = ("md", "csv", "json")
+
+
+def _check_syndrome_fmt(fmt: str) -> None:
+    if fmt not in SYNDROME_VALID_FORMATS:
+        raise ValueError(
+            f"unknown syndrome report format '{fmt}'. Choose one of: {', '.join(SYNDROME_VALID_FORMATS)}"
+        )
+
+
+def compute_syndrome_groups(result: CampaignResult) -> list[dict[str, Any]]:
+    """Groups the fault TYPES present in `result` (one injected instance per
+    type is the expected shape, e.g. generate_all_types_faults(mem)'s output
+    -- multiple instances of the same type make 'the' syndrome for that type
+    ambiguous on its own terms, independent of this function) by identical
+    (detected, elem, op) signature: the (elem, op) location where THIS march
+    test first flags each type (elem=op=None if it escapes).
+
+    Returns one dict per distinct signature, sorted by (detected desc, elem,
+    op): {"detected": bool, "elem": int | None, "op": int | None,
+    "fault_types": list[str], "ambiguous": bool}. ambiguous is True iff
+    len(fault_types) > 1 -- exactly the case a blind diagnostician (observing
+    only this algorithm's detect/escape + location output) cannot resolve
+    without further information.
+    """
+    groups: dict[tuple[bool, int | None, int | None], list[str]] = {}
+    for r in result.faults:
+        key = (r.detected, r.elem, r.op)
+        groups.setdefault(key, []).append(r.record.type)
+
+    def _sort_key(key: tuple[bool, int | None, int | None]) -> tuple[bool, int, int]:
+        detected, elem, op = key
+        return (not detected, elem if elem is not None else -1, op if op is not None else -1)
+
+    rows: list[dict[str, Any]] = []
+    for key in sorted(groups, key=_sort_key):
+        detected, elem, op = key
+        fault_types = groups[key]
+        rows.append(
+            {
+                "detected": detected,
+                "elem": elem,
+                "op": op,
+                "fault_types": fault_types,
+                "ambiguous": len(fault_types) > 1,
+            }
+        )
+    return rows
+
+
+_SYNDROME_COLUMNS = ("detected", "elem", "op", "fault_types", "ambiguous")
+
+
+def _syndrome_row(group: dict[str, Any]) -> tuple[str, ...]:
+    return (
+        "DETECTED" if group["detected"] else "ESCAPED",
+        "" if group["elem"] is None else str(group["elem"]),
+        "" if group["op"] is None else str(group["op"]),
+        _DIAGNOSIS_LIST_JOIN.join(group["fault_types"]),
+        "True" if group["ambiguous"] else "False",
+    )
+
+
+def render_syndrome_csv(result: CampaignResult) -> str:
+    """CSV syndrome report. fault_types is '|'-joined -- CSV has no native
+    list type (same convention as render_diagnosis_csv)."""
+    groups = compute_syndrome_groups(result)
+    lines = [",".join(_SYNDROME_COLUMNS)]
+    for group in groups:
+        lines.append(",".join(_syndrome_row(group)))
+    return "\n".join(lines) + "\n"
+
+
+def render_syndrome_md(result: CampaignResult) -> str:
+    """Markdown syndrome report. fault_types is '|'-joined (see
+    render_syndrome_csv)."""
+    groups = compute_syndrome_groups(result)
+    ambiguous_count = sum(1 for g in groups if g["ambiguous"])
+    header = (
+        f"# autombist syndrome diagnosis — {result.algo_name}\n\n"
+        f"Memory: {result.mem.addr_width}x{result.mem.data_width}, init={result.mem.init_val}  \n"
+        f"Fault types: {result.total}  \n"
+        f"Syndrome groups: {len(groups)} ({ambiguous_count} ambiguous -- 2+ fault types "
+        "indistinguishable by this algorithm alone)\n\n"
+    )
+    rows = [_syndrome_row(group) for group in groups]
+    return header + _render_pipe_table(_SYNDROME_COLUMNS, rows)
+
+
+def render_syndrome_json(result: CampaignResult) -> str:
+    """JSON syndrome report. fault_types stays a real JSON list (unlike the
+    CSV/MD renderers, which '|'-join it)."""
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "algo_name": result.algo_name,
+        "mem": {
+            "addr_width": result.mem.addr_width,
+            "data_width": result.mem.data_width,
+            "init_val": result.mem.init_val,
+            "num_ports": result.mem.num_ports,
+        },
+        "groups": compute_syndrome_groups(result),
+    }
+    return json.dumps(payload, indent=2, sort_keys=False)
+
+
+def write_syndrome_report(result: CampaignResult, path: Path, fmt: str = "md") -> Path:
+    """Write a blind syndrome-ambiguity report (own fmt validation, own
+    renderer set -- see the module-level note above this section)."""
+    _check_syndrome_fmt(fmt)
+    renderers = {
+        "md": render_syndrome_md,
+        "csv": render_syndrome_csv,
+        "json": render_syndrome_json,
     }
     Path(path).write_text(renderers[fmt](result), encoding="utf-8")
     return Path(path)

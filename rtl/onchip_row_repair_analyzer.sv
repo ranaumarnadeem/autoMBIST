@@ -57,6 +57,46 @@ module onchip_row_repair_analyzer #(
     input  logic [ADDR_WIDTH-1:0] fail_addr,
     input  logic                  latch_result, // pulse: publishes accumulated state to outputs
 
+    // --- Persisted-repair-signature load (Workstream 1.7), additive/optional ---
+    // repair_load is a POR-time-only SINGLE-CYCLE pulse: restores a previously-
+    // saved repair signature (e.g. from off-chip fuse/NVM storage) into BOTH the
+    // internal live_valid/live_addr accumulator (so a later live analyze pass
+    // correctly treats a persisted repair as already-known, per this module's
+    // own "accumulate for the chip's lifetime" semantics above) and the
+    // registered row_repair_en/faulty_row_addr outputs directly (active
+    // immediately, no need to wait for a latch_result pulse). Ties to '0/unused
+    // when the integrator never drives repair_load -- byte-identical to before
+    // this was added.
+    //
+    // Contract, not hardware-enforced (adversarially reviewed -- both hazards
+    // below are bounded by onchip_selfrepair_ctrl's independent verify-by-
+    // re-execution: a violation makes repair ineffective or internally
+    // inconsistent, but the system-level self_repair_fail status still comes
+    // out correct, never a false pass):
+    //   * Must be a single cycle, not held. Held for N cycles, it re-applies
+    //     (or re-zeros, for an all-zero fuse bus) live_valid/live_addr every
+    //     one of those cycles, discarding any live fail registration that
+    //     lands during the hold -- repair becomes ineffective for as long as
+    //     the hold lasts, e.g. a slow/glitchy fuse-read circuit.
+    //   * Must not be pulsed the same cycle as a live fail registration OR a
+    //     latch_result pulse. Vs. the live-fail block: repair_load's blanket
+    //     write (placed textually after it below) wins for live_valid/
+    //     live_addr AND row_repair_en/faulty_row_addr, consistently. Vs.
+    //     latch_result (placed textually after repair_load below): latch_result
+    //     wins row_repair_en/faulty_row_addr, but with THIS cycle's fresh
+    //     repair_load write to live_valid/live_addr NOT YET visible to it (NBA
+    //     reads see pre-edge values) -- so row_repair_en/faulty_row_addr can end
+    //     up holding a STALE value while live_valid/live_addr hold the fresh
+    //     one, a split-brain state that persists until a later repair_load or
+    //     latch_result reconciles it. Neither collision can occur under the
+    //     documented usage (repair_load only pre-self-repair-sequence;
+    //     latch_result only fires mid-sequence, from S_ANALYZE_LATCH, which
+    //     requires self_repair_busy=1) -- not interlocked in hardware.
+    input  logic                                 repair_load,
+    input  logic [NUM_SPARE_ROWS-1:0]            fuse_row_repair_en,
+    input  logic [NUM_SPARE_ROWS*ADDR_WIDTH-1:0] fuse_faulty_row_addr,
+    output logic                                 repair_load_done,  // sticky, cleared only by rst_n
+
     output logic [NUM_SPARE_ROWS-1:0]            row_repair_en,
     output logic [NUM_SPARE_ROWS*ADDR_WIDTH-1:0] faulty_row_addr,
     output logic                                 unrepairable
@@ -95,6 +135,7 @@ module onchip_row_repair_analyzer #(
             row_repair_en     <= '0;
             faulty_row_addr   <= '0;
             unrepairable      <= 1'b0;
+            repair_load_done  <= 1'b0;
         end else begin
             if (enable && fail_valid && !already_registered) begin
                 if (found_free_slot) begin
@@ -103,6 +144,27 @@ module onchip_row_repair_analyzer #(
                 end else begin
                     live_unrepairable <= 1'b1;  // sticky for the chip's lifetime
                 end
+            end
+
+            // Placed AFTER the live-fail block above for defined last-write-wins
+            // precedence if repair_load is (against the documented contract on
+            // the port declaration above) ever pulsed the same cycle as a live
+            // fail registration -- repair_load's blanket restore wins for that
+            // cycle, consistently across live_valid/live_addr AND
+            // row_repair_en/faulty_row_addr (see the port-declaration comment
+            // for why the SAME claim does NOT hold against latch_result, placed
+            // after this block). Does not touch live_unrepairable/unrepairable:
+            // there is no fuse_unrepairable input (out of scope for this pass --
+            // see module header); a persisted signature restores the repair map
+            // only, not an analysis-time unrepairable verdict.
+            if (repair_load) begin
+                for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
+                    live_valid[i]    <= fuse_row_repair_en[i];
+                    live_addr[i]     <= fuse_faulty_row_addr[i*ADDR_WIDTH +: ADDR_WIDTH];
+                    row_repair_en[i] <= fuse_row_repair_en[i];
+                    faulty_row_addr[i*ADDR_WIDTH +: ADDR_WIDTH] <= fuse_faulty_row_addr[i*ADDR_WIDTH +: ADDR_WIDTH];
+                end
+                repair_load_done <= 1'b1;
             end
 
             if (latch_result) begin

@@ -9,6 +9,8 @@
 //   +ALG=MATSP|MARCHCM|MARCHSS   built-in fallback for tool-free smoke tests
 //                                (every op runs on port 0 -- these built-ins
 //                                predate multi-port and are single-port programs)
+//   +BACKGROUND=<hex>  DW-bit data-background mask (default 0 = solid 0/1,
+//                      byte-identical to every campaign that omits it)
 //   plus all fault_ram plusargs (+FAULTS, +FAULT_INDEX, +INIT, +FAULT_VERBOSE)
 //
 // AW/DW are top parameters so a driver can override at compile time
@@ -32,9 +34,10 @@
 //   correctly through this engine too (see the 1-port sanity check in
 //   tests/integration/test_march_engine_mp_sanity.py).
 //
-// Word background is solid 0 / solid 1. Intra-word coupling faults need data
-// backgrounds and are not exercised here; place coupled pairs in different
-// words, same bit lane (see faults.example.txt).
+// Word background: under +BACKGROUND=<mask> (default 0, i.e. solid 0/1 as
+// before), a nominal w0/r0 drives/expects `mask` and w1/r1 drives/expects
+// `~mask` (see bg_value below, shared identically with march_engine.sv) --
+// exposes intra-word coupling faults a uniform solid background cannot.
 
 `timescale 1ns/1ps
 
@@ -57,6 +60,8 @@ module march_engine_mp #(
   logic [AW-1:0] addr1 = '0;
   logic [DW-1:0] din1 = '0, dout1;
 
+  logic [DW-1:0] background_mask = '0;
+
   fault_ram #(.ADDR_WIDTH(AW), .DATA_WIDTH(DW)) dut (
     .clk0(clk0), .csb0(csb0), .web0(web0), .wmask0(wmask0),
     .addr0(addr0), .din0(din0), .dout0(dout0),
@@ -66,6 +71,13 @@ module march_engine_mp #(
 
   always #5 clk0 = ~clk0;
   always #5 clk1 = ~clk1;
+
+  // Nominal value v (0/1) under the current data background: w0/r0 -> mask,
+  // w1/r1 -> ~mask. mask=0 (the default) reduces to {DW{v}} exactly, so
+  // every campaign that omits +BACKGROUND sees byte-identical behavior.
+  function automatic logic [DW-1:0] bg_value(input bit v);
+    bg_value = background_mask ^ {DW{v}};
+  endfunction
 
   // op codes: 0=r0 1=r1 2=w0 3=w1 ; dir: 0=up 1=down 2=either(run up)
   // port: 0 or 1, parallel to ops.
@@ -213,13 +225,13 @@ module march_engine_mp #(
   task automatic do_write(input int a, input bit v, input int port);
     if (port == 0) begin
       @(negedge clk0);
-      csb0 = 0; web0 = 0; addr0 = a[AW-1:0]; din0 = {DW{v}};
+      csb0 = 0; web0 = 0; addr0 = a[AW-1:0]; din0 = bg_value(v);
       @(posedge clk0);
       @(negedge clk0);
       csb0 = 1; web0 = 1;
     end else begin
       @(negedge clk1);
-      csb1 = 0; web1 = 0; addr1 = a[AW-1:0]; din1 = {DW{v}};
+      csb1 = 0; web1 = 0; addr1 = a[AW-1:0]; din1 = bg_value(v);
       @(posedge clk1);
       @(negedge clk1);
       csb1 = 1; web1 = 1;
@@ -238,10 +250,10 @@ module march_engine_mp #(
       @(posedge clk0);        // dout0 updates here
       @(negedge clk0);
       csb0 = 1;
-      if (dout0 !== {DW{v}} && !detected) begin
+      if (dout0 !== bg_value(v) && !detected) begin
         detected = 1;
         det_elem = ei; det_op = oi; det_addr = a;
-        det_xor  = dout0 ^ {DW{v}};
+        det_xor  = dout0 ^ bg_value(v);
       end
     end else begin
       @(negedge clk1);
@@ -249,10 +261,10 @@ module march_engine_mp #(
       @(posedge clk1);        // dout1 updates here
       @(negedge clk1);
       csb1 = 1;
-      if (dout1 !== {DW{v}} && !detected) begin
+      if (dout1 !== bg_value(v) && !detected) begin
         detected = 1;
         det_elem = ei; det_op = oi; det_addr = a;
-        det_xor  = dout1 ^ {DW{v}};
+        det_xor  = dout1 ^ bg_value(v);
       end
     end
   endtask
@@ -265,6 +277,7 @@ module march_engine_mp #(
       if (!$value$plusargs("ALG=%s", alg)) alg = "MARCHCM";
       load_alg(alg);
     end
+    if (!$value$plusargs("BACKGROUND=%h", background_mask)) background_mask = '0;
 
     repeat (4) @(negedge clk0);
 

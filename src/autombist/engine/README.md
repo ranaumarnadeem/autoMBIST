@@ -123,6 +123,8 @@ and `set_memory --ports 2` configures the session for `march_engine_mp.sv`.
 ## Fault primitive semantics
 
 Notation <S/F/R>: sensitizing op / faulty cell value / faulty read value.
+This is van de Goor & Al-Ars's formal notation ("Functional Memory Faults:
+A Formal Notation and a Taxonomy," VTS 2000).
 
 | Type | Semantics |
 |---|---|
@@ -186,16 +188,47 @@ fires at element 0, which misrepresents coverage: real silicon powers up
 unknown, so WDF detection cannot rely on init state. Init=1 reproduces the
 textbook escape/detect pattern.
 
-Word background is solid 0 / solid 1. Intra-word coupling (aggressor and
-victim bits in the same word) requires data backgrounds and is not
-exercised by march_engine; put coupled pairs in different words on the same
-bit lane, as the example list does. Adding a background loop over
-log2(W)+1 patterns is the natural extension if you need intra-word CFs.
+Word background defaults to solid 0 / solid 1 (byte-identical to before this
+was added), but `march_engine.sv`/`march_engine_mp.sv` accept
+`+BACKGROUND=<DW-bit hex mask>`: a nominal w0/r0 drives/expects `mask` and
+w1/r1 drives/expects `~mask`, via a single `bg_value()` function shared by
+both the write side and the read-assertion side (so a fault-free run can
+never spuriously diverge from itself under any mask). The Python campaign
+driver's `run_background_campaign()`/`merge_background_results()`
+(`algo_engine.py`) run the same algorithm/fault-list once per
+`standard_backgrounds(data_width)` pattern (solid + `ceil(log2(W))`
+column-stripe masks) and merge results as "detected if any background
+caught it" -- exposed as `--backgrounds` on the shell's `run`/`compare_algo`
+commands. Placing coupled pairs in different words on the same bit lane (as
+`faults.example.txt` does) still works unmodified and needs no background at
+all.
+
+**Measured before/after delta:** `faults.example.txt`'s existing CFIN/CFID/
+CFST entries are all inter-word placements and are unaffected either way (by
+design -- background only changes intra-word behavior). The concrete case
+this closes: an intra-word `CFID` (`vaddr==aaddr`, victim and aggressor on
+different bit lanes of the *same* word) with an "up"-transition sensitize
+and a forced value that happens to coincide with what that same write op
+would naturally produce for *every* bit of the word under a solid
+background (since victim and aggressor are driven by the identical
+instruction) -- e.g. `CFID vaddr=5 vbit=0 aaddr=5 abit=1 p0=0(up) p1=1` on
+`march_c` at `+INIT=0` -- escapes under the solid background but is detected
+once `--backgrounds` runs (verified via real Verilator runs, both with and
+without the background loop; see
+`tests/integration/test_data_backgrounds_e2e.py`).
 
 Read fault evaluation uses the pre-read cell state; destructive read
 effects land after the returned value is formed. Static clamps (SAF, CFST)
 are re-applied after every operation, so they win over any coupling effect
 targeting the same bit.
+
+`march-raw`'s name does not claim identity with the literature's "March
+RAW" test. Decoding `rtl/march_raw/march_raw_algo.sv`'s phase table gives
+w0[1] / r0,w1,r1[3] / r1,w0,r0[3] x up and down = 14 operations/address
+(14n), not the published March RAW's 26N -- a different length and, by
+shape (a doubled/mirrored March-C--like read-write-read pattern), almost
+certainly a different sequence. `march-raw` is this project's own name for
+its own classic-path algorithm.
 
 ## Using with OpenRAM
 

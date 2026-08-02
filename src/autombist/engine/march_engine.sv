@@ -3,6 +3,8 @@
 //
 //   +ALG_FILE=<file>   numeric element/op program (preferred; emitted by autombist)
 //   +ALG=MATSP|MARCHCM|MARCHSS   built-in fallback for tool-free smoke tests
+//   +BACKGROUND=<hex>  DW-bit data-background mask (default 0 = solid 0/1,
+//                      byte-identical to every campaign that omits it)
 //   plus all fault_ram plusargs (+FAULTS, +FAULT_INDEX, +INIT, +FAULT_VERBOSE)
 //
 // AW/DW are top parameters so a driver can override at compile time
@@ -16,9 +18,14 @@
 //   DIR NOPS OP0 OP1 OP2 OP3 OP4 OP5 OP6 OP7
 //   DIR: 0=up 1=down 2=either    OP: 0=r0 1=r1 2=w0 3=w1  (padded with 0)
 //
-// Word background is solid 0 / solid 1. Intra-word coupling faults need data
-// backgrounds and are not exercised here; place coupled pairs in different
-// words, same bit lane (see faults.example.txt).
+// Word background: under +BACKGROUND=<mask> (default 0, i.e. solid 0/1 as
+// before), a nominal w0/r0 drives/expects `mask` and w1/r1 drives/expects
+// `~mask` (see bg_value below) -- the standard word-oriented-memory
+// technique (van de Goor & Al-Ars) for exposing intra-word coupling faults,
+// which a uniform solid background can never sensitize. Both the write side
+// and the read-assertion side route through the SAME bg_value() function, so
+// a golden (fault-free) run can never spuriously diverge from itself no
+// matter what mask is in effect.
 
 `timescale 1ns/1ps
 
@@ -34,6 +41,7 @@ module march_engine #(
   logic [DW-1:0] wmask = '1;
   logic [AW-1:0] addr = '0;
   logic [DW-1:0] din = '0, dout;
+  logic [DW-1:0] background_mask = '0;
 
   fault_ram #(.ADDR_WIDTH(AW), .DATA_WIDTH(DW)) dut (
     .clk(clk), .csb(csb), .web(web), .wmask(wmask),
@@ -41,6 +49,13 @@ module march_engine #(
   );
 
   always #5 clk = ~clk;
+
+  // Nominal value v (0/1) under the current data background: w0/r0 -> mask,
+  // w1/r1 -> ~mask. mask=0 (the default) reduces to {DW{v}} exactly, so
+  // every campaign that omits +BACKGROUND sees byte-identical behavior.
+  function automatic logic [DW-1:0] bg_value(input bit v);
+    bg_value = background_mask ^ {DW{v}};
+  endfunction
 
   // op codes: 0=r0 1=r1 2=w0 3=w1 ; dir: 0=up 1=down 2=either(run up)
   typedef struct {
@@ -129,7 +144,7 @@ module march_engine #(
 
   task automatic do_write(input int a, input bit v);
     @(negedge clk);
-    csb = 0; web = 0; addr = a[AW-1:0]; din = {DW{v}};
+    csb = 0; web = 0; addr = a[AW-1:0]; din = bg_value(v);
     @(posedge clk);
     @(negedge clk);
     csb = 1; web = 1;
@@ -146,10 +161,10 @@ module march_engine #(
     @(posedge clk);        // dout updates here
     @(negedge clk);
     csb = 1;
-    if (dout !== {DW{v}} && !detected) begin
+    if (dout !== bg_value(v) && !detected) begin
       detected = 1;
       det_elem = ei; det_op = oi; det_addr = a;
-      det_xor  = dout ^ {DW{v}};
+      det_xor  = dout ^ bg_value(v);
     end
   endtask
 
@@ -161,6 +176,7 @@ module march_engine #(
       if (!$value$plusargs("ALG=%s", alg)) alg = "MARCHCM";
       load_alg(alg);
     end
+    if (!$value$plusargs("BACKGROUND=%h", background_mask)) background_mask = '0;
 
     repeat (4) @(negedge clk);
 
