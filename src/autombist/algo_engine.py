@@ -12,6 +12,7 @@ queues, ``foreach``, and ``final`` blocks, none of which Icarus Verilog supports
 """
 from __future__ import annotations
 
+import math
 import random
 import re
 import shutil
@@ -53,6 +54,34 @@ class MemoryParams:
         return 1 << self.addr_width
 
 
+@dataclass(slots=True, frozen=True)
+class DataBackground:
+    """A word-oriented data background (van de Goor & Al-Ars): a DW-bit mask
+    such that a nominal w0/r0 op drives/expects `mask` and w1/r1 drives/
+    expects `~mask`. mask=0 is the solid background -- today's only mode,
+    reproduced byte-identically."""
+    name: str
+    mask: int
+
+
+def standard_backgrounds(data_width: int) -> list[DataBackground]:
+    """[DataBackground('solid', 0)] plus ceil(log2(data_width)) column-stripe
+    backgrounds: mask_k has bit i set iff bit k of i is set, for k in
+    range(ceil(log2(data_width))). Any two distinct bit lanes i != j differ
+    in at least one bit of their binary index, so they differ under at least
+    one mask_k -- the property needed to expose every intra-word bit-lane
+    pair to an opposite-polarity write at least once."""
+    backgrounds = [DataBackground("solid", 0)]
+    num_stripes = (data_width - 1).bit_length()
+    for k in range(num_stripes):
+        mask = 0
+        for i in range(data_width):
+            if (i >> k) & 1:
+                mask |= 1 << i
+        backgrounds.append(DataBackground(f"stripe{k}", mask))
+    return backgrounds
+
+
 @dataclass(slots=True)
 class FaultRecord:
     type: str
@@ -67,15 +96,24 @@ class FaultRecord:
                              # today's only mode (same-port coupling); vport!=aport
                              # means the aggressor op (on aport) disturbs a victim
                              # reachable via a different port (aport).
+    weight: float | None = None   # optional relative-likelihood weight for a future
+                                    # IFA/SPICE-derived campaign (see fault_primitives.py's
+                                    # module docstring for the adapter contract this feeds).
+                                    # None == unweighted -- today's only mode.
 
     def to_line(self) -> str:
         base = f"{self.type} {self.vaddr} {self.vbit} {self.aaddr} {self.abit} {self.p0} {self.p1}"
-        if self.vport == 0 and self.aport == 0:
-            # Byte-identical to the pre-multi-port on-disk format when both
-            # ports are the default -- every existing fixture/generated file
-            # stays exactly as it was.
-            return base
-        return f"{base} {self.vport} {self.aport}"
+        if self.weight is None:
+            if self.vport == 0 and self.aport == 0:
+                # Byte-identical to the pre-multi-port on-disk format when both
+                # ports are the default -- every existing fixture/generated file
+                # stays exactly as it was.
+                return base
+            return f"{base} {self.vport} {self.aport}"
+        # weight forces vport/aport to be emitted (even at 0) so weight stays
+        # unambiguously the 10th positional field -- never confusable with the
+        # 8/9-field vport/aport-only formats.
+        return f"{base} {self.vport} {self.aport} {self.weight!r}"
 
 
 @dataclass(slots=True)
@@ -104,6 +142,8 @@ class CampaignResult:
     sim: str
     sequence: SequenceResult | None = None   # populated only when a sequence
                                              # check was requested (FSM front)
+    backgrounds_run: list[str] | None = None  # populated only by
+                                               # merge_background_results
 
     def matrix_row(self) -> dict[str, str]:
         """{fault label: 'D'/'E'}, keyed by 'TYPE@vaddr.vbit' to disambiguate
@@ -149,6 +189,7 @@ class CampaignResult:
                     "p1": r.record.p1,
                     "vport": r.record.vport,
                     "aport": r.record.aport,
+                    "weight": r.record.weight,
                     "detected": r.detected,
                     "elem": r.elem,
                     "op": r.op,
@@ -177,6 +218,10 @@ class CampaignResult:
                     for dv in self.sequence.divergences
                 ],
             }
+        # Present only for a merge_background_results output; omitted
+        # entirely otherwise so existing consumers see a byte-identical dict.
+        if self.backgrounds_run is not None:
+            d["backgrounds_run"] = list(self.backgrounds_run)
         return d
 
 
@@ -195,10 +240,13 @@ _FAULT_TYPE_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 def parse_fault_list(text: str) -> list[FaultRecord]:
-    """Each non-comment/non-blank line is 7, 8, or 9 whitespace-separated
-    fields: ``TYPE VADDR VBIT AADDR ABIT P0 P1 [VPORT [APORT]]``. The two
-    trailing port fields are optional and default to 0 when absent, so every
-    pre-multi-port fault-list file (always exactly 7 fields) parses unchanged.
+    """Each non-comment/non-blank line is 7, 8, 9, or 10 whitespace-separated
+    fields: ``TYPE VADDR VBIT AADDR ABIT P0 P1 [VPORT [APORT [WEIGHT]]]``. The
+    two trailing port fields are optional and default to 0 when absent, so
+    every pre-multi-port fault-list file (always exactly 7 fields) parses
+    unchanged. WEIGHT (10th field only) is the first non-integer trailing
+    field this format has ever needed, so it's split off and parsed as a
+    float *before* the all-int pass over the remaining fields.
     """
     records: list[FaultRecord] = []
     for lineno, raw in enumerate(text.splitlines(), start=1):
@@ -206,13 +254,27 @@ def parse_fault_list(text: str) -> list[FaultRecord]:
         if not line or line.startswith("#"):
             continue
         fields = line.split()
-        if len(fields) not in (7, 8, 9):
+        if len(fields) not in (7, 8, 9, 10):
             raise CampaignError(f"fault list line {lineno}: cannot parse '{raw}'")
         fault_type = fields[0]
         if not _FAULT_TYPE_RE.match(fault_type):
             raise CampaignError(f"fault list line {lineno}: cannot parse '{raw}'")
+        weight: float | None = None
+        int_fields = fields[1:]
+        if len(fields) == 10:
+            try:
+                weight = float(fields[-1])
+            except ValueError:
+                raise CampaignError(f"fault list line {lineno}: cannot parse '{raw}'") from None
+            if not math.isfinite(weight):
+                # float() also accepts "inf"/"nan" tokens -- reject them here,
+                # not downstream: a non-finite weight can't round-trip through
+                # equality (nan != nan) and serializes as an invalid bare
+                # NaN/Infinity literal via json.dumps (not valid per RFC 8259).
+                raise CampaignError(f"fault list line {lineno}: weight must be finite, got '{fields[-1]}'")
+            int_fields = fields[1:-1]
         try:
-            nums = [int(x) for x in fields[1:]]
+            nums = [int(x) for x in int_fields]
         except ValueError:
             raise CampaignError(f"fault list line {lineno}: cannot parse '{raw}'") from None
         va, vb, aa, ab, p0, p1, *ports = nums
@@ -225,6 +287,7 @@ def parse_fault_list(text: str) -> list[FaultRecord]:
                 aaddr=aa, abit=ab,
                 p0=p0, p1=p1,
                 vport=vport, aport=aport,
+                weight=weight,
             )
         )
     return records
@@ -442,8 +505,11 @@ def run_one(
     return (completed.stdout or "") + (completed.stderr or "")
 
 
-def _common_plusargs(mem: MemoryParams) -> list[str]:
-    return [f"+INIT={mem.init_val}"]
+def _common_plusargs(mem: MemoryParams, background: DataBackground | None = None) -> list[str]:
+    args = [f"+INIT={mem.init_val}"]
+    if background is not None and background.mask != 0:
+        args.append(f"+BACKGROUND={background.mask:x}")
+    return args
 
 
 def _resolve_engine_sources(mem: MemoryParams, engine_dir: Path, workdir: Path,
@@ -479,6 +545,69 @@ def _resolve_engine_sources(mem: MemoryParams, engine_dir: Path, workdir: Path,
         march_mp_sv = engine_dir / "march_engine_mp.sv"
         return [resolved_fault_ram, march_mp_sv], "march_engine_mp"
     raise CampaignError(f"unsupported mem.num_ports={mem.num_ports!r}: only 1 or 2 are supported")
+
+
+def _run_campaign_against_artifact(
+    artifact: BuildArtifact,
+    mem: MemoryParams,
+    alg: AlgSpec,
+    faults: list[FaultRecord],
+    *,
+    workdir: Path,
+    sim: str,
+    verbose: bool = False,
+    background: DataBackground | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> CampaignResult:
+    """Golden pass + one run per fault against an already-compiled artifact.
+    Factored out of run_algo_campaign so run_background_campaign can reuse a
+    single compiled binary across multiple backgrounds instead of
+    recompiling once per background."""
+    alg_file = alg.write_numeric(workdir / f"{alg.name}.algc")
+    fault_file = write_fault_list(faults, workdir / "faults.txt") if faults else None
+    plusargs = _common_plusargs(mem, background)
+
+    start = time.time()
+
+    golden_out = run_one(artifact, alg_file=alg_file, extra_plusargs=plusargs)
+    golden_detected, *_ = parse_result_line(golden_out)
+    if golden_detected:
+        bg_note = f" (background={background.name})" if background is not None else ""
+        raise CampaignError(
+            f"golden run for algorithm '{alg.name}'{bg_note} unexpectedly reported DETECTED "
+            f"(no faults were injected). The algorithm spec or engine is broken.\n{golden_out}"
+        )
+
+    results: list[FaultResult] = []
+    for i, record in enumerate(faults):
+        out = run_one(
+            artifact, alg_file=alg_file, fault_file=fault_file, index=i,
+            verbose=verbose, extra_plusargs=plusargs,
+        )
+        detected, elem, op, addr, xor_bits = parse_result_line(out)
+        activations = None
+        if verbose:
+            hits = parse_fault_hits(out)
+            activations = hits[2] if hits else None
+        results.append(
+            FaultResult(
+                index=i, record=record, detected=detected,
+                elem=elem, op=op, addr=addr, xor=xor_bits, activations=activations,
+            )
+        )
+        if progress_callback is not None:
+            progress_callback(i + 1, len(faults))
+
+    run_seconds = time.time() - start
+    detected_count = sum(1 for r in results if r.detected)
+    total = len(results)
+    coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
+
+    return CampaignResult(
+        algo_name=alg.name, mem=mem, golden_clean=True, faults=results,
+        detected=detected_count, total=total, coverage_percent=coverage,
+        build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
+    )
 
 
 def run_algo_campaign(
@@ -520,53 +649,129 @@ def run_algo_campaign(
             workdir=workdir, sim=sim,
         )
 
-        alg_file = alg.write_numeric(workdir / f"{alg.name}.algc")
-        fault_file = write_fault_list(faults, workdir / "faults.txt") if faults else None
-        plusargs = _common_plusargs(mem)
-
-        start = time.time()
-
-        golden_out = run_one(artifact, alg_file=alg_file, extra_plusargs=plusargs)
-        golden_detected, *_ = parse_result_line(golden_out)
-        if golden_detected:
-            raise CampaignError(
-                f"golden run for algorithm '{alg.name}' unexpectedly reported DETECTED "
-                f"(no faults were injected). The algorithm spec or engine is broken.\n{golden_out}"
-            )
-
-        results: list[FaultResult] = []
-        for i, record in enumerate(faults):
-            out = run_one(
-                artifact, alg_file=alg_file, fault_file=fault_file, index=i,
-                verbose=verbose, extra_plusargs=plusargs,
-            )
-            detected, elem, op, addr, xor_bits = parse_result_line(out)
-            activations = None
-            if verbose:
-                hits = parse_fault_hits(out)
-                activations = hits[2] if hits else None
-            results.append(
-                FaultResult(
-                    index=i, record=record, detected=detected,
-                    elem=elem, op=op, addr=addr, xor=xor_bits, activations=activations,
-                )
-            )
-            if progress_callback is not None:
-                progress_callback(i + 1, len(faults))
-
-        run_seconds = time.time() - start
-        detected_count = sum(1 for r in results if r.detected)
-        total = len(results)
-        coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
-
-        return CampaignResult(
-            algo_name=alg.name, mem=mem, golden_clean=True, faults=results,
-            detected=detected_count, total=total, coverage_percent=coverage,
-            build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
+        return _run_campaign_against_artifact(
+            artifact, mem, alg, faults, workdir=workdir, sim=sim, verbose=verbose,
+            progress_callback=progress_callback,
         )
     finally:
         if own_tmp is not None:
             own_tmp.cleanup()
+
+
+def run_background_campaign(
+    mem: MemoryParams,
+    alg: AlgSpec,
+    faults: list[FaultRecord],
+    *,
+    backgrounds: list[DataBackground] | None = None,
+    sim: str = "verilator",
+    workdir: Path | None = None,
+    verbose: bool = False,
+    fault_ram_sv: Path | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> dict[str, CampaignResult]:
+    """Runs the same algorithm/fault-list once per data background (default:
+    standard_backgrounds(mem.data_width)), reusing ONE compiled artifact,
+    keyed by DataBackground.name. Opt-in and additive -- run_algo_campaign
+    itself is untouched; a caller that never calls this function sees no
+    behavior change at all.
+
+    Each per-background run gets its own golden-soundness check (see
+    _run_campaign_against_artifact): a fault-free run under a non-zero
+    background must still report ESCAPED, since bg_value() applies the same
+    mask to both the write side and the read-assertion side.
+    """
+    backgrounds = backgrounds if backgrounds is not None else standard_backgrounds(mem.data_width)
+    if not backgrounds:
+        raise CampaignError("run_background_campaign: no backgrounds to run")
+
+    own_tmp: tempfile.TemporaryDirectory[str] | None = None
+    if workdir is None:
+        own_tmp = tempfile.TemporaryDirectory(prefix="autombist-algo-bg-")
+        workdir = Path(own_tmp.name)
+    else:
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        engine_dir = find_engine_dir()
+        sources, top_module = _resolve_engine_sources(mem, engine_dir, workdir, fault_ram_sv)
+
+        artifact = compile_engine(
+            mem, sources=sources, top_module=top_module,
+            workdir=workdir, sim=sim,
+        )
+
+        results: dict[str, CampaignResult] = {}
+        for background in backgrounds:
+            results[background.name] = _run_campaign_against_artifact(
+                artifact, mem, alg, faults, workdir=workdir, sim=sim, verbose=verbose,
+                background=background, progress_callback=progress_callback,
+            )
+        return results
+    finally:
+        if own_tmp is not None:
+            own_tmp.cleanup()
+
+
+def merge_background_results(per_background: dict[str, CampaignResult]) -> CampaignResult:
+    """Collapses N run_background_campaign results (same mem/alg/fault-list,
+    keyed by DataBackground.name) into one CampaignResult: a fault is
+    'detected' if ANY background detected it; elem/op/addr/xor/activations
+    are taken from the first background (in dict insertion order) that
+    detected it, None if escaped in every background. build_seconds and
+    run_seconds are summed across all per-background runs.
+    ``backgrounds_run`` records which background names were merged."""
+    if not per_background:
+        raise CampaignError("merge_background_results: no per-background results to merge")
+
+    names = list(per_background.keys())
+    per_faults = [per_background[n].faults for n in names]
+    n_faults = len(per_faults[0])
+    for lst in per_faults:
+        if len(lst) != n_faults:
+            raise CampaignError(
+                "merge_background_results: mismatched fault counts across backgrounds "
+                f"({[len(lst) for lst in per_faults]})"
+            )
+
+    merged_faults: list[FaultResult] = []
+    for i in range(n_faults):
+        detected = False
+        first_hit: FaultResult | None = None
+        base = per_faults[0][i]
+        for lst in per_faults:
+            r = lst[i]
+            if r.detected:
+                detected = True
+                if first_hit is None:
+                    first_hit = r
+        source = first_hit if first_hit is not None else base
+        merged_faults.append(
+            FaultResult(
+                index=base.index, record=base.record, detected=detected,
+                elem=source.elem if detected else None,
+                op=source.op if detected else None,
+                addr=source.addr if detected else None,
+                xor=source.xor if detected else None,
+                activations=source.activations if detected else None,
+            )
+        )
+
+    first_result = per_background[names[0]]
+    detected_count = sum(1 for r in merged_faults if r.detected)
+    total = len(merged_faults)
+    coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
+
+    return CampaignResult(
+        algo_name=first_result.algo_name, mem=first_result.mem,
+        golden_clean=all(r.golden_clean for r in per_background.values()),
+        faults=merged_faults, detected=detected_count, total=total,
+        coverage_percent=coverage,
+        build_seconds=sum(r.build_seconds for r in per_background.values()),
+        run_seconds=sum(r.run_seconds for r in per_background.values()),
+        sim=first_result.sim, backgrounds_run=names,
+    )
 
 
 def _resolve_fsm_engine_sources(

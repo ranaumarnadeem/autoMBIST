@@ -55,6 +55,16 @@ def _onchip() -> dict:
     return {**BASE_CONFIG, "redundancy": {"num_spare_rows": 2, "num_spare_cols": 0, "onchip_selfrepair": True}}
 
 
+def _onchip_with_persistence() -> dict:
+    return {
+        **BASE_CONFIG,
+        "redundancy": {
+            "num_spare_rows": 2, "num_spare_cols": 0,
+            "onchip_selfrepair": True, "onchip_repair_persistence": True,
+        },
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Byte-identity: the regression-critical case
 # --------------------------------------------------------------------------- #
@@ -220,6 +230,83 @@ def test_onchip_selfrepair_rejects_unsupported_algo(tmp_path: Path) -> None:
 def test_onchip_selfrepair_bad_type_rejected(tmp_path: Path, bad) -> None:
     config = {**BASE_CONFIG, "redundancy": {"num_spare_rows": 2, "onchip_selfrepair": bad}}
     config_path = tmp_path / "bad_type.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ConfigError, match="boolean"):
+        generate_from_config(config_path, tmp_path / "out")
+
+
+# --------------------------------------------------------------------------- #
+# onchip_repair_persistence (Workstream 1.7)
+# --------------------------------------------------------------------------- #
+def test_onchip_render_without_persistence_has_no_persistence_boundary_ports(tmp_path: Path) -> None:
+    """onchip_selfrepair alone (no onchip_repair_persistence key) renders
+    byte-identically to before this workstream at the wrapper BOUNDARY -- no
+    repair_load/fuse_*/repair_load_done ports leak in. The analyzer module
+    itself always has these ports now (not templated), so the instantiation
+    ties them off internally instead."""
+    text = _render(tmp_path, _onchip(), "onchip_no_persist")
+    assert "input  logic repair_load" not in text
+    assert "fuse_row_repair_en" not in text or ".fuse_row_repair_en('0)," in text
+    assert "output logic repair_load_done" not in text
+    assert ".repair_load(1'b0)," in text
+    assert ".repair_load_done()," in text
+
+
+def test_onchip_repair_persistence_render_has_new_boundary_ports(tmp_path: Path) -> None:
+    text = _render(tmp_path, _onchip_with_persistence(), "onchip_persist")
+    assert "  , input  logic repair_load\n" in text
+    assert "  , input  logic [2-1:0] fuse_row_repair_en\n" in text
+    assert "  , input  logic [2*ADDR_WIDTH-1:0] fuse_faulty_row_addr\n" in text
+    assert "  , output logic repair_load_done\n" in text
+    assert ".repair_load(repair_load)," in text
+    assert ".fuse_row_repair_en(fuse_row_repair_en)," in text
+    assert ".fuse_faulty_row_addr(fuse_faulty_row_addr)," in text
+    assert ".repair_load_done(repair_load_done)," in text
+
+
+def test_onchip_repair_persistence_works_for_march_1r1w(tmp_path: Path) -> None:
+    """The multi-port wrapper branch's analyzer instantiation gets the same
+    persistence wiring treatment as the single-port branch."""
+    config = {
+        "memory_name": "sram_spares_tiny_1r1w",
+        "wrapper_module_name": "sram_spares_tiny_1r1w_mbist",
+        "addr_width": 2,
+        "data_width": 4,
+        "we_active_low": True,
+        "ports": {
+            "rport": {"type": "r", "clk": "clk0", "addr": "addr0", "dout": "dout0", "csb": "csb0"},
+            "wport": {"type": "w", "clk": "clk1", "addr": "addr1", "din": "din1", "csb": "csb1", "we": "web1"},
+        },
+        "redundancy": {
+            "num_spare_rows": 2, "num_spare_cols": 0,
+            "onchip_selfrepair": True, "onchip_repair_persistence": True,
+        },
+    }
+    config_path = tmp_path / "onchip_1r1w_persist.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    text = generate_from_config(
+        config_path, tmp_path / "onchip_1r1w_persist", algo="march-1r1w"
+    ).read_text(encoding="utf-8")
+    assert "  , input  logic repair_load\n" in text
+    assert ".repair_load(repair_load)," in text
+    assert ".repair_load_done(repair_load_done)," in text
+
+
+def test_onchip_repair_persistence_requires_onchip_selfrepair(tmp_path: Path) -> None:
+    config = {**BASE_CONFIG, "redundancy": {"num_spare_rows": 2, "onchip_repair_persistence": True}}
+    config_path = tmp_path / "bad_persist.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ConfigError, match="onchip_selfrepair"):
+        generate_from_config(config_path, tmp_path / "out")
+
+
+@pytest.mark.parametrize("bad", [1, "true", [], {}])
+def test_onchip_repair_persistence_bad_type_rejected(tmp_path: Path, bad) -> None:
+    config = {
+        **BASE_CONFIG,
+        "redundancy": {"num_spare_rows": 2, "onchip_selfrepair": True, "onchip_repair_persistence": bad},
+    }
+    config_path = tmp_path / "bad_persist_type.yml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     with pytest.raises(ConfigError, match="boolean"):
         generate_from_config(config_path, tmp_path / "out")

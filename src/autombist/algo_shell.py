@@ -27,11 +27,19 @@ from .algo_engine import (
     generate_all_types_faults,
     generate_random_faults,
     load_fault_list,
+    merge_background_results,
     run_algo_campaign,
+    run_background_campaign,
     run_fsm_campaign,
     write_fault_list,
 )
-from .algo_reporting import render_matrix_md, write_campaign_report, write_diagnosis_report, write_matrix_report
+from .algo_reporting import (
+    render_matrix_md,
+    write_campaign_report,
+    write_diagnosis_report,
+    write_matrix_report,
+    write_syndrome_report,
+)
 from .fault_primitives import FaultPrimitive, FaultPrimitiveError, default_registry, from_dict, validate
 from .fault_ram_gen import render_and_write
 from .fsm_harness import check_ports, gather_sibling_sources
@@ -343,20 +351,29 @@ class AlgoShell(cmd.Cmd):
         self._out(f"generated {len(records)} faults")
 
     def do_run(self, arg: str) -> None:
-        """run <algo_name|fsm_name> [--verbose] [--check ALGO]
+        """run <algo_name|fsm_name> [--verbose] [--check ALGO] [--backgrounds]
         Run a fault campaign for one algorithm, or a registered FSM (from
         add_fsm), against the current fault list. FSM runs report detect/
         escape only (--verbose has no effect for them).
         --check ALGO (FSM targets only): also verify the controller drives the
         exact march sequence of ALGO (a built-in name or a .alg path), address
-        order / ops / write data / port -- independent of fault detection."""
+        order / ops / write data / port -- independent of fault detection.
+        --backgrounds (algorithm targets only): also run against the standard
+        intra-word data-background set (solid + column-stripe patterns),
+        merging results so a fault counts as detected if any background
+        caught it. FSM targets don't support this (openram_shim.sv has no
+        +BACKGROUND path)."""
         mem = self._require_memory()
-        pos, flags = _parse_flags(_tokenize(arg), {"verbose": None, "check": str})
+        pos, flags = _parse_flags(_tokenize(arg), {"verbose": None, "check": str, "backgrounds": None})
         if not pos:
-            raise ValueError("usage: run <algo_name|fsm_name> [--verbose] [--check ALGO]")
+            raise ValueError("usage: run <algo_name|fsm_name> [--verbose] [--check ALGO] [--backgrounds]")
         name = pos[0]
 
         if name in self.session.fsms:
+            if flags.get("backgrounds"):
+                raise ValueError(
+                    "--backgrounds applies only to algorithm targets (FSM front has no +BACKGROUND path)"
+                )
             entry = self.session.fsms[name]
             workdir = self.session.next_run_dir(f"run_fsm_{name}")
             fault_ram_sv = self._render_fault_ram_for(workdir)
@@ -377,10 +394,17 @@ class AlgoShell(cmd.Cmd):
             spec = self._resolve_algo(name)
             workdir = self.session.next_run_dir(f"run_{spec.name}")
             fault_ram_sv = self._render_fault_ram_for(workdir)
-            result = run_algo_campaign(
-                mem, spec, self.session.faults, sim=self.session.sim,
-                workdir=workdir, verbose=bool(flags.get("verbose")), fault_ram_sv=fault_ram_sv,
-            )
+            if flags.get("backgrounds"):
+                per_bg = run_background_campaign(
+                    mem, spec, self.session.faults, sim=self.session.sim,
+                    workdir=workdir, verbose=bool(flags.get("verbose")), fault_ram_sv=fault_ram_sv,
+                )
+                result = merge_background_results(per_bg)
+            else:
+                result = run_algo_campaign(
+                    mem, spec, self.session.faults, sim=self.session.sim,
+                    workdir=workdir, verbose=bool(flags.get("verbose")), fault_ram_sv=fault_ram_sv,
+                )
             name = spec.name
 
         self.session.last_results[name] = result
@@ -388,12 +412,14 @@ class AlgoShell(cmd.Cmd):
         self._print_result_summary(result)
 
     def do_compare_algo(self, arg: str) -> None:
-        """compare_algo <name> -march NAME1,NAME2,...
-        Run <name> plus each named algorithm and print a fault-by-fault matrix."""
+        """compare_algo <name> -march NAME1,NAME2,... [--backgrounds]
+        Run <name> plus each named algorithm and print a fault-by-fault matrix.
+        --backgrounds also runs the standard intra-word data-background set
+        per algorithm, merging results (see 'run --backgrounds')."""
         mem = self._require_memory()
-        pos, flags = _parse_flags(_tokenize(arg), {"march": str})
+        pos, flags = _parse_flags(_tokenize(arg), {"march": str, "backgrounds": None})
         if not pos:
-            raise ValueError("usage: compare_algo <name> -march NAME1,NAME2,...")
+            raise ValueError("usage: compare_algo <name> -march NAME1,NAME2,... [--backgrounds]")
         others = [t for t in str(flags.get("march", "")).split(",") if t]
         names = [pos[0], *others]
 
@@ -402,10 +428,17 @@ class AlgoShell(cmd.Cmd):
             spec = self._resolve_algo(name)
             workdir = self.session.next_run_dir(f"cmp_{spec.name}")
             fault_ram_sv = self._render_fault_ram_for(workdir)
-            result = run_algo_campaign(
-                mem, spec, self.session.faults, sim=self.session.sim,
-                workdir=workdir, fault_ram_sv=fault_ram_sv,
-            )
+            if flags.get("backgrounds"):
+                per_bg = run_background_campaign(
+                    mem, spec, self.session.faults, sim=self.session.sim,
+                    workdir=workdir, fault_ram_sv=fault_ram_sv,
+                )
+                result = merge_background_results(per_bg)
+            else:
+                result = run_algo_campaign(
+                    mem, spec, self.session.faults, sim=self.session.sim,
+                    workdir=workdir, fault_ram_sv=fault_ram_sv,
+                )
             self.session.last_results[spec.name] = result
             results.append(result)
 
@@ -519,6 +552,31 @@ class AlgoShell(cmd.Cmd):
         path = Path(pos[0])
         write_diagnosis_report(self.session.last_results[name], path, fmt=fmt)
         self._out(f"diagnosis written: {path}")
+
+    def do_write_syndrome(self, arg: str) -> None:
+        """write_syndrome <path> [--fmt md|csv|json]
+        Persist a blind syndrome-ambiguity report for the most recent 'run'
+        result: groups the injected fault TYPES by identical (detect/escape,
+        elem, op) signature, flagging groups with 2+ types as 'ambiguous' --
+        this algorithm alone cannot distinguish them. Only a single 'run'
+        result has one obvious grouping; if the last op was 'compare_algo',
+        this raises an error instead (same rule as write_diagnosis)."""
+        pos, flags = _parse_flags(_tokenize(arg), {"fmt": str})
+        if not pos:
+            raise ValueError("usage: write_syndrome <path> [--fmt md|csv|json]")
+        fmt = str(flags.get("fmt", "md"))
+        if self.session.last_op is None:
+            raise ValueError("nothing to diagnose yet -- run 'run' first")
+        op, name = self.session.last_op
+        if op != "run":
+            raise ValueError(
+                "syndrome diagnosis only applies to a single 'run' result, not 'compare_algo' -- "
+                "run 'run <algo_name>' for the algorithm you want to diagnose, then retry."
+            )
+        assert name is not None
+        path = Path(pos[0])
+        write_syndrome_report(self.session.last_results[name], path, fmt=fmt)
+        self._out(f"syndrome report written: {path}")
 
     def do_export_tb(self, arg: str) -> None:
         """export_tb <dir>

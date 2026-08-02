@@ -256,22 +256,28 @@ Generate a fault list: one instance of each of the 19 built-in types
 (default), or `N` random faults with `--n`/`--seed` for reproducibility.
 This *replaces* the session's current fault list.
 
-**`run <algo_name|fsm_name> [--verbose] [--check ALGO]`**
+**`run <algo_name|fsm_name> [--verbose] [--check ALGO] [--backgrounds]`**
 Run a fault campaign for one registered algorithm or FSM against the
 current fault list. FSM runs report detect/escape only — `--verbose` has no
 effect for them (no elem/op step counter on a black-box controller). Stores
-the result as "last op" for `write_report`/`write_diagnosis`. `--check ALGO`
-(FSM targets only; `ALGO` is a built-in name or a `.alg` path) additionally
-verifies the controller drives the exact march sequence of `ALGO` — address
-order, ops, write data, port — independent of fault detection; the result
-prints a `sequence: OK`/`MISMATCH` line alongside the usual detect/escape
-summary.
+the result as "last op" for `write_report`/`write_diagnosis`/
+`write_syndrome`. `--check ALGO` (FSM targets only; `ALGO` is a built-in
+name or a `.alg` path) additionally verifies the controller drives the
+exact march sequence of `ALGO` — address order, ops, write data, port —
+independent of fault detection; the result prints a `sequence: OK`/
+`MISMATCH` line alongside the usual detect/escape summary. `--backgrounds`
+(algorithm targets only) also runs the standard intra-word data-background
+set (solid + column-stripe patterns) and merges results — a fault counts as
+detected if *any* background caught it; the merged result's
+`backgrounds_run` field lists which ran. FSM targets reject this flag
+(`openram_shim.sv` has no `+BACKGROUND` path).
 
-**`compare_algo <name> -march NAME1,NAME2,...`**
+**`compare_algo <name> -march NAME1,NAME2,... [--backgrounds]`**
 Run `<name>` plus each comma-separated named algorithm (aliases like `C`,
 `SS`, `MATS`, `X` resolve automatically) against the current fault list and
 print a fault-by-fault detect/escape matrix. Stores the result set as "last
-op" (a matrix, not a single run).
+op" (a matrix, not a single run). `--backgrounds` also runs the standard
+intra-word data-background set per algorithm (see `run --backgrounds`).
 
 **`write_report <path> [--fmt md|csv|json]`**
 Persist the most recent `run` or `compare_algo` result (whichever ran last)
@@ -282,6 +288,14 @@ Persist a per-cell `(addr, bit)` diagnosis/fail-bitmap report for the most
 recent `run` result only. If the last op was `compare_algo`, this raises an
 error instead — a cross-algorithm diagnosis has no single obvious cell-table
 shape, so diagnose each algorithm individually via `run`.
+
+**`write_syndrome <path> [--fmt md|csv|json]`**
+Persist a blind syndrome-ambiguity report for the most recent `run` result:
+groups the injected fault *types* by identical (detect/escape, elem, op)
+signature, flagging groups with 2+ types as `ambiguous` — this algorithm
+alone cannot distinguish them. Same `compare_algo`-rejection rule as
+`write_diagnosis`. See [diagnosis-reports.md](diagnosis-reports.md#6-blind-syndrome-based-diagnosis-fault-type-ambiguity)
+for the full schema and a worked example.
 
 **`export_tb <dir>`**
 Dump a self-contained, standalone-runnable testbench bundle into `<dir>`:

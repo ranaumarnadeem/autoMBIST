@@ -114,7 +114,7 @@ def test_parse_fault_list_rejects_wrong_field_counts() -> None:
     with pytest.raises(CampaignError):
         parse_fault_list("SA0 10 3 0 0 0\n")  # too few (6)
     with pytest.raises(CampaignError):
-        parse_fault_list("SA0 10 3 0 0 0 0 0 0 0\n")  # too many (10)
+        parse_fault_list("SA0 10 3 0 0 0 0 0 0 0 0\n")  # too many (11); 10 is now valid (weight)
 
 
 def test_parse_fault_list_rejects_malformed_type_token() -> None:
@@ -144,6 +144,68 @@ def test_write_fault_list_emits_extra_fields_when_ports_nonzero(tmp_path: Path) 
     records = [FaultRecord("CFIN", 100, 2, 101, 2, 2, 0, vport=0, aport=1)]
     path = write_fault_list(records, tmp_path / "faults.txt")
     assert path.read_text() == "CFIN 100 2 101 2 2 0 0 1\n"
+    assert parse_fault_list(path.read_text()) == records
+
+
+def test_fault_record_weight_defaults_to_none() -> None:
+    rec = FaultRecord(type="SA0", vaddr=10, vbit=3)
+    assert rec.weight is None
+
+
+def test_fault_record_to_line_unaffected_when_weight_default() -> None:
+    rec = FaultRecord(type="SA0", vaddr=10, vbit=3, aaddr=0, abit=0, p0=0, p1=0)
+    assert rec.to_line() == "SA0 10 3 0 0 0 0"
+
+
+def test_fault_record_to_line_emits_weight_field_when_set() -> None:
+    rec = FaultRecord(type="SA0", vaddr=10, vbit=3, weight=0.5)
+    assert rec.to_line() == "SA0 10 3 0 0 0 0 0 0 0.5"
+
+
+def test_fault_record_to_line_emits_ports_even_at_zero_when_weight_set() -> None:
+    # weight forces vport/aport to appear (even at their default 0) so weight
+    # stays unambiguously the 10th positional field -- never confusable with
+    # an 8/9-field vport/aport-only line.
+    rec = FaultRecord(type="CFIN", vaddr=10, vbit=3, aaddr=11, abit=3, p0=2, p1=0, weight=1.0)
+    assert rec.to_line() == "CFIN 10 3 11 3 2 0 0 0 1.0"
+
+
+def test_parse_fault_list_old_7_8_9field_formats_unaffected_by_weight() -> None:
+    assert parse_fault_list("SA0 10 3 0 0 0 0\n")[0].weight is None
+    assert parse_fault_list("CFIN 10 3 11 3 2 0 1\n")[0].weight is None
+    assert parse_fault_list("CFIN 10 3 11 3 2 0 0 1\n")[0].weight is None
+
+
+def test_parse_fault_list_10field_format_sets_weight() -> None:
+    records = parse_fault_list("SA0 10 3 0 0 0 0 0 0 0.25\n")
+    assert records == [FaultRecord("SA0", 10, 3, 0, 0, 0, 0, vport=0, aport=0, weight=0.25)]
+
+
+def test_parse_fault_list_rejects_non_float_weight_token() -> None:
+    with pytest.raises(CampaignError):
+        parse_fault_list("SA0 10 3 0 0 0 0 0 0 notafloat\n")
+
+
+@pytest.mark.parametrize("token", ["inf", "-inf", "nan", "Infinity", "-Infinity", "NaN"])
+def test_parse_fault_list_rejects_non_finite_weight_token(token: str) -> None:
+    # float() accepts these, but a non-finite weight can't round-trip through
+    # equality (nan != nan) and serializes as invalid JSON (bare NaN/Infinity,
+    # not valid per RFC 8259) -- reject at the parse boundary instead.
+    with pytest.raises(CampaignError, match="finite"):
+        parse_fault_list(f"SA0 10 3 0 0 0 0 0 0 {token}\n")
+
+
+def test_write_fault_list_roundtrip_byte_identical_when_weight_unset(tmp_path: Path) -> None:
+    records = [FaultRecord("SA1", 17, 0, 0, 0, 0, 0), FaultRecord("CFIN", 100, 2, 101, 2, 2, 0)]
+    path = write_fault_list(records, tmp_path / "faults.txt")
+    assert path.read_text() == "SA1 17 0 0 0 0 0\nCFIN 100 2 101 2 2 0\n"
+    assert parse_fault_list(path.read_text()) == records
+
+
+def test_write_fault_list_roundtrip_with_weight(tmp_path: Path) -> None:
+    records = [FaultRecord("SA0", 10, 3, 0, 0, 0, 0, weight=0.75)]
+    path = write_fault_list(records, tmp_path / "faults.txt")
+    assert path.read_text() == "SA0 10 3 0 0 0 0 0 0 0.75\n"
     assert parse_fault_list(path.read_text()) == records
 
 

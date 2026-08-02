@@ -24,6 +24,24 @@ of the three DSL-coverable categories (see the module docstrings on codegen
 in fault_ram_gen.py for the exact per-site variable scope). addr_decoder-
 style faults are not supported by add_fault_type in v1 (use raw_sv is not
 enough for a pre-pass site) -- AF_NOACC/AF_ALIAS remain the only ones.
+
+Defect-to-FaultPrimitive adapter contract (future IFA/SPICE campaign, Tier 3
+Workstream Q -- scaffolding only, not implemented here): (1) enumerate
+candidate defect sites -- resistive opens/shorts/bridges, per Shen, Maly &
+Ferguson, "Inductive Fault Analysis of MOS Integrated Circuits," IEEE D&T
+1985 (foundational IFA); (2) inject each as a resistor-value sweep in
+SPICE/Spectre; (3) classify the resulting read/write behavior against this
+module's existing static_clamp/write_effect/read_effect categories, per
+Hamdioui & van de Goor, "An Experimental Analysis of Spot Defects in SRAMs:
+Realistic Fault Models and Tests," ATS 2000 (the exact recipe: inject spot
+defects, classify to functional faults, validate which textbook models
+actually occur, derive a new march test from the results); (4) emit the
+result as a FaultPrimitive / add_fault_type call. This module's
+Sensitize/Effect shape is already the correct landing target for step 4 --
+no schema change needed here. `FaultRecord.weight` (algo_engine.py) is the
+matching landing spot on the campaign side: an optional relative-likelihood
+field a future weighted campaign can populate from IFA-derived defect
+densities, without a fault-list format break.
 """
 from __future__ import annotations
 

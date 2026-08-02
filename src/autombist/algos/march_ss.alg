@@ -1,4 +1,6 @@
 # March SS  (22n) — covers all static simple faults (adds WDF and DRDF over C-).
+# Reference: Hamdioui, van de Goor & Rodgers, "March SS: A Test for All Static
+# Simple RAM Faults," IEEE MTDT 2002.
 # Reference coverage: 18/19 on faults.example.txt (SOF escapes solid backgrounds).
 either w0
 up   r0 r0 w0 r0 w1

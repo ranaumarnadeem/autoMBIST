@@ -2,6 +2,7 @@
 
 {% set has_redundancy = redundancy is defined and redundancy.num_spare_rows > 0 %}
 {% set has_onchip_selfrepair = has_redundancy and redundancy.onchip_selfrepair %}
+{% set has_onchip_repair_persistence = has_onchip_selfrepair and redundancy.onchip_repair_persistence %}
 {% set mode_signal = "effective_test_mode" if has_onchip_selfrepair else "test_mode" %}
 {% set start_signal = "effective_bist_start" if has_onchip_selfrepair else "bist_start && test_mode" %}
 module {{ wrapper_module_name }} #(
@@ -31,6 +32,12 @@ module {{ wrapper_module_name }} #(
   , output logic self_repair_done
   , output logic self_repair_fail
   , output logic self_repair_busy
+{% endif %}
+{% if has_onchip_repair_persistence %}
+  , input  logic repair_load
+  , input  logic [{{ redundancy.num_spare_rows }}-1:0] fuse_row_repair_en
+  , input  logic [{{ redundancy.num_spare_rows }}*ADDR_WIDTH-1:0] fuse_faulty_row_addr
+  , output logic repair_load_done
 {% endif %}
 );
 
@@ -161,6 +168,17 @@ module {{ wrapper_module_name }} #(
         .fail_valid(algo_fail_valid),
         .fail_addr(algo_fail_addr),
         .latch_result(latch_result),
+{% if has_onchip_repair_persistence %}
+        .repair_load(repair_load),
+        .fuse_row_repair_en(fuse_row_repair_en),
+        .fuse_faulty_row_addr(fuse_faulty_row_addr),
+        .repair_load_done(repair_load_done),
+{% else %}
+        .repair_load(1'b0),
+        .fuse_row_repair_en('0),
+        .fuse_faulty_row_addr('0),
+        .repair_load_done(),
+{% endif %}
         .row_repair_en(row_repair_en),
         .faulty_row_addr(faulty_row_addr),
         .unrepairable(unrepairable)
@@ -399,6 +417,17 @@ module {{ wrapper_module_name }} #(
         .fail_valid(algo_fail_valid),
         .fail_addr(algo_fail_addr),
         .latch_result(latch_result),
+{% if has_onchip_repair_persistence %}
+        .repair_load(repair_load),
+        .fuse_row_repair_en(fuse_row_repair_en),
+        .fuse_faulty_row_addr(fuse_faulty_row_addr),
+        .repair_load_done(repair_load_done),
+{% else %}
+        .repair_load(1'b0),
+        .fuse_row_repair_en('0),
+        .fuse_faulty_row_addr('0),
+        .repair_load_done(),
+{% endif %}
         .row_repair_en(row_repair_en),
         .faulty_row_addr(faulty_row_addr),
         .unrepairable(unrepairable)

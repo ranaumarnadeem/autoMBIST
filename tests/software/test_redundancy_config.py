@@ -62,6 +62,7 @@ def test_valid_redundancy_derives_geometry(tmp_path: Path) -> None:
         "num_spare_cols": 0,
         "mem_addr_width": 3,    # ceil(log2(4 + 2))
         "onchip_selfrepair": False,
+        "onchip_repair_persistence": False,
     }
 
 

@@ -459,3 +459,68 @@ different address than where it was injected.
   computed from any other report, so it can only be as complete as the
   testbench's own stdout capture (interleaved or truncated stdout on a timeout
   means some sites may be missing from the array, not an error condition).
+
+---
+
+## 6. Blind syndrome-based diagnosis (fault-type ambiguity)
+
+This is a *different* question from the per-cell diagnosis table above:
+instead of "which cells did this algorithm catch," it answers "which fault
+**types** can this algorithm even tell apart?" A per-cell table can show two
+fault types both landing `DETECTED` — but if they're flagged at the exact
+same `(elem, op)` step of the march sequence, a diagnostician looking only at
+*this algorithm's* output has no way to tell which of the two actually
+occurred. The syndrome report groups fault types by that shared signature and
+flags any group with 2+ members as `ambiguous`.
+
+**Honest scope note:** this engine's capture model records only the *first*
+detecting `(elem, op)` per run (`RESULT_DETECTED_RE`), not a full per-element
+pass/fail bit-string the way the academic literature's "syndrome" concept
+does. `compute_syndrome_groups()` is a faithful but narrower reading of the
+same underlying problem, and it is *campaign-mode* diagnosis (ground truth
+known from the injected fault list) — useful for algorithm R&D, not
+real-silicon blind triage with no oracle. Don't conflate the two.
+
+### 6.1 Requesting it
+
+Shell-only for now (no one-shot CLI `--syndrome` flag, unlike `--diagnosis`
+above) — after a `run <algo_name>`, use `write_syndrome`:
+
+```
+(autombist) run march_c
+(autombist) write_syndrome syn.md --fmt md
+syndrome report written: syn.md
+```
+
+Same restriction as `write_diagnosis`: only valid after a `run` (single-
+algorithm) op, not after `compare_algo`.
+
+### 6.2 Schema
+
+| Field | Type | Meaning |
+|---|---|---|
+| `detected` | bool | Whether every fault type in this group was detected (`true`) or escaped (`false`) by this algorithm. Escaped faults always land in one shared group, since `elem`/`op` are both `None` for an escape. |
+| `elem` / `op` | int or null | The march-element index / op-index within that element where this group's fault types were first flagged. Null for the escaped group. |
+| `fault_types` | list of str | Fault-type names sharing this exact `(detected, elem, op)` signature. |
+| `ambiguous` | bool | `true` iff `len(fault_types) > 1` — this algorithm cannot distinguish these types from each other. |
+
+### 6.3 Worked example
+
+Against the same `faults.example.txt`-shaped registry (one instance of every
+built-in type, via `generate_all_types_faults`) on an 8×8 memory:
+
+- **`march_c`**: `SA1`/`TF1`/`RDF0`/`IRF0`/`AF_ALIAS`/`CFIN`/`CFID` all land at
+  the identical `(elem=1, op=0)` — a 7-way ambiguous group. `SA0`/`TF0`/
+  `RDF1`/`IRF1`/`AF_NOACC`/`CFST`/`CFDS` are similarly ambiguous at
+  `(elem=2, op=0)`. `WDF0`/`WDF1`/`DRDF0`/`DRDF1`/`SOF` all escape together —
+  a third ambiguous (escaped) group.
+- **`march_ss`**: the same two detected ambiguous groups persist unchanged
+  (March SS's added elements don't target them) — but `WDF0`, `WDF1`,
+  `DRDF0`, `DRDF1` each get pulled into their own distinct, unambiguous
+  `(elem, op)` group, since March SS specifically adds detection elements for
+  exactly those fault classes. Only `SOF` remains in the escaped bucket, alone
+  — so March SS resolves the WDF/DRDF ambiguity but not the
+  SAF/TF/RDF/IRF/coupling-class one.
+
+(Verified via real Verilator runs against both algorithms; see
+`tests/integration/test_syndrome_diagnosis_e2e.py`.)

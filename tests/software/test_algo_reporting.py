@@ -7,8 +7,10 @@ import pytest
 
 from autombist.algo_engine import CampaignResult, FaultRecord, FaultResult, MemoryParams
 from autombist.algo_reporting import (
+    SYNDROME_VALID_FORMATS,
     _decode_xor_bits,
     build_diagnosis_cells,
+    compute_syndrome_groups,
     coverage_meets_threshold,
     render_campaign_csv,
     render_campaign_json,
@@ -19,9 +21,13 @@ from autombist.algo_reporting import (
     render_matrix_csv,
     render_matrix_json,
     render_matrix_md,
+    render_syndrome_csv,
+    render_syndrome_json,
+    render_syndrome_md,
     write_campaign_report,
     write_diagnosis_report,
     write_matrix_report,
+    write_syndrome_report,
 )
 
 
@@ -400,3 +406,113 @@ def test_write_diagnosis_report_json_format(tmp_path: Path) -> None:
     path = write_diagnosis_report(_diagnosis_result(), tmp_path / "diag.json", fmt="json")
     payload = json.loads(path.read_text())
     assert "cells" in payload
+
+
+# --------------------------------------------------------------------------- #
+# Blind syndrome-based diagnosis (1.5)
+# --------------------------------------------------------------------------- #
+def _syndrome_result() -> CampaignResult:
+    """Hand-built CampaignResult exercising:
+      - SAF(0) and TF<up,0> DETECTED at the identical (elem=1, op=0) --
+        an ambiguous group (2 types, indistinguishable by this algorithm).
+      - WDF0 DETECTED at a DIFFERENT (elem=2, op=1) -- its own unambiguous
+        group, distinguishable from the SAF(0)/TF<up,0> pair.
+      - CFIN and CFID both ESCAPED -- grouped into the single (detected=False,
+        elem=None, op=None) bucket, also ambiguous (2 types)."""
+    mem = MemoryParams(addr_width=8, data_width=8)
+    faults = [
+        FaultResult(index=0, record=FaultRecord("SA0", 1, 0, 0, 0, 0, 0), detected=True, elem=1, op=0, addr=1),
+        FaultResult(index=1, record=FaultRecord("TF0", 2, 0, 0, 0, 0, 0), detected=True, elem=1, op=0, addr=2),
+        FaultResult(index=2, record=FaultRecord("WDF0", 3, 0, 0, 0, 0, 0), detected=True, elem=2, op=1, addr=3),
+        FaultResult(index=3, record=FaultRecord("CFIN", 4, 0, 5, 0, 2, 0), detected=False),
+        FaultResult(index=4, record=FaultRecord("CFID", 6, 0, 7, 0, 2, 1), detected=False),
+    ]
+    detected = sum(1 for f in faults if f.detected)
+    total = len(faults)
+    return CampaignResult(
+        algo_name="march_c", mem=mem, golden_clean=True, faults=faults,
+        detected=detected, total=total,
+        coverage_percent=100.0 if total == 0 else detected / total * 100.0,
+        build_seconds=1.0, run_seconds=0.5, sim="verilator",
+    )
+
+
+def test_compute_syndrome_groups_flags_same_location_as_ambiguous() -> None:
+    groups = compute_syndrome_groups(_syndrome_result())
+    same_loc = next(g for g in groups if g["elem"] == 1 and g["op"] == 0)
+    assert same_loc["detected"] is True
+    assert sorted(same_loc["fault_types"]) == ["SA0", "TF0"]
+    assert same_loc["ambiguous"] is True
+
+
+def test_compute_syndrome_groups_distinguishes_different_locations() -> None:
+    groups = compute_syndrome_groups(_syndrome_result())
+    distinct = next(g for g in groups if g["elem"] == 2 and g["op"] == 1)
+    assert distinct["fault_types"] == ["WDF0"]
+    assert distinct["ambiguous"] is False
+
+
+def test_compute_syndrome_groups_escapes_form_one_ambiguous_bucket() -> None:
+    groups = compute_syndrome_groups(_syndrome_result())
+    escaped = next(g for g in groups if g["detected"] is False)
+    assert escaped["elem"] is None and escaped["op"] is None
+    assert sorted(escaped["fault_types"]) == ["CFID", "CFIN"]
+    assert escaped["ambiguous"] is True
+
+
+def test_compute_syndrome_groups_sorted_detected_first_then_elem_op() -> None:
+    groups = compute_syndrome_groups(_syndrome_result())
+    detected_flags = [g["detected"] for g in groups]
+    assert detected_flags == sorted(detected_flags, reverse=True)
+    detected_groups = [g for g in groups if g["detected"]]
+    locations = [(g["elem"], g["op"]) for g in detected_groups]
+    assert locations == sorted(locations)
+
+
+def test_compute_syndrome_groups_no_ambiguity_when_every_group_unique() -> None:
+    r = _result("march_c", [("SA0", 1, 0, True), ("SA1", 2, 0, False)])
+    groups = compute_syndrome_groups(r)
+    assert all(not g["ambiguous"] for g in groups)
+
+
+def test_render_syndrome_csv_has_header_and_rows() -> None:
+    csv = render_syndrome_csv(_syndrome_result())
+    lines = csv.strip().splitlines()
+    assert lines[0] == "detected,elem,op,fault_types,ambiguous"
+    assert any("SA0|TF0" in line or "TF0|SA0" in line for line in lines[1:])
+
+
+def test_render_syndrome_md_reports_ambiguous_count() -> None:
+    md = render_syndrome_md(_syndrome_result())
+    assert "march_c" in md
+    # 2 ambiguous groups: the same-location DETECTED pair and the escaped bucket.
+    assert "2 ambiguous" in md
+
+
+def test_render_syndrome_json_keeps_real_lists() -> None:
+    payload = json.loads(render_syndrome_json(_syndrome_result()))
+    assert payload["algo_name"] == "march_c"
+    groups = payload["groups"]
+    same_loc = next(g for g in groups if g["elem"] == 1 and g["op"] == 0)
+    assert isinstance(same_loc["fault_types"], list)
+    assert sorted(same_loc["fault_types"]) == ["SA0", "TF0"]
+
+
+def test_syndrome_valid_formats_matches_renderer_set() -> None:
+    assert set(SYNDROME_VALID_FORMATS) == {"md", "csv", "json"}
+
+
+def test_write_syndrome_report_rejects_bad_format(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unknown syndrome report format"):
+        write_syndrome_report(_syndrome_result(), tmp_path / "x.txt", fmt="yaml")
+
+
+def test_write_syndrome_report_writes_file(tmp_path: Path) -> None:
+    path = write_syndrome_report(_syndrome_result(), tmp_path / "syn.md", fmt="md")
+    assert path.exists() and "march_c" in path.read_text()
+
+
+def test_write_syndrome_report_json_format(tmp_path: Path) -> None:
+    path = write_syndrome_report(_syndrome_result(), tmp_path / "syn.json", fmt="json")
+    payload = json.loads(path.read_text())
+    assert "groups" in payload
