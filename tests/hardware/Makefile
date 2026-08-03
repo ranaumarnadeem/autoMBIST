@@ -56,6 +56,7 @@ endif
 # option in this file that coexists unused in VERILOG_SOURCES.
 ifeq ($(USE_REPAIR_REMAP),1)
 REMAP_SOURCE := $(MODULE_OUTDIR)/repair_remap_row.sv \
+                $(MODULE_OUTDIR)/repair_remap_col.sv \
                 $(MODULE_OUTDIR)/onchip_row_repair_analyzer.sv \
                 $(MODULE_OUTDIR)/onchip_selfrepair_ctrl.sv
 else
