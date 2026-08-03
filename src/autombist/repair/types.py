@@ -49,10 +49,11 @@ class SpareGeometry:
     base_words: int
     word_size: int
     num_spare_rows: int = 0
-    # BIRA's analyze() fully supports num_spare_cols > 0 (2D row+column allocation).
-    # generator.py's config validation still REJECTS a nonzero value, because the
-    # RTL-side column-remap module (spare_wen, widened din/dout) is not built yet
-    # ("Phase 2 RTL") -- so this field is algorithm-ready before it is wrapper-ready.
+    # BIRA's analyze() fully supports num_spare_cols > 0 (2D row+column allocation),
+    # and since Workstream M.1 so does the RTL: rtl/repair_remap_col.sv steers faulty
+    # bit lanes onto spare columns, and generator.py accepts a nonzero value on the
+    # tester-driven (repair_ports) path. Still rejected for onchip_selfrepair, whose
+    # analyzer (rtl/onchip_row_repair_analyzer.sv) is row-only -- see generator.py.
     num_spare_cols: int = 0
 
     def __post_init__(self) -> None:
@@ -97,6 +98,34 @@ class SpareGeometry:
         n = self.total_words if self.num_spare_rows > 0 else self.base_words
         return max(1, (n - 1).bit_length())
 
+    @property
+    def bit_index_width(self) -> int:
+        """LOGICAL bit-index width: ``ceil(log2(word_size))``.
+
+        The exact column analogue of ``addr_width``, for the same reason: this is
+        ``repair_remap_col.sv``'s ``BIT_IDX_WIDTH`` parameter -- the width of each
+        packed slice of ``faulty_bit`` -- and a bit index a repair signature names
+        is always a LOGICAL bit (a spare column is never itself "faulty"), so
+        encoding must pack at this width, not ``mem_data_width``.
+
+        The ``max(1, ...)`` mirrors ``addr_width``'s: a 1-bit word would otherwise
+        give 0, making ``faulty_bit`` a zero-width port. ``repair_remap_col.sv``
+        carries the matching ``(DATA_WIDTH > 1)`` guard.
+        """
+        return max(1, (self.word_size - 1).bit_length())
+
+    @property
+    def mem_data_width(self) -> int:
+        """Physical data width including spare columns: ``word_size + num_spare_cols``.
+
+        Deliberately NOT guarded the way ``mem_addr_width`` is: spare columns widen
+        the bus exactly (one extra bit lane each, no log2 rounding), so
+        ``num_spare_cols == 0`` already yields ``word_size`` with no special case.
+        Spare column k lives at physical bit ``word_size + k`` -- OpenRAM's own
+        placement convention (see rtl/repair_remap_col.sv's header).
+        """
+        return self.word_size + self.num_spare_cols
+
 
 @dataclass(slots=True, frozen=True)
 class RepairSolution:
@@ -136,12 +165,21 @@ AnalysisResult = RepairSolution | Unrepairable
 @dataclass(slots=True, frozen=True)
 class RepairSignature:
     """A ``RepairSolution`` encoded into the exact packed integers
-    ``repair_remap_row.sv`` expects on its ``row_repair_en``/``faulty_row_addr``
-    ports (or the matching ``ROW_REPAIR_EN``/``FAULTY_ROW_ADDR`` plusargs/env
-    vars a cocotb testbench reads). This is BISR's output: what actually gets
-    driven/loaded, as opposed to ``RepairSolution``, which is BIRA's abstract
-    "which spare replaces which row" verdict.
+    ``repair_remap_row.sv``/``repair_remap_col.sv`` expect on their
+    ``row_repair_en``/``faulty_row_addr`` and ``col_repair_en``/``faulty_bit``
+    ports (or the matching ``ROW_REPAIR_EN``/``FAULTY_ROW_ADDR``/
+    ``COL_REPAIR_EN``/``FAULTY_BIT`` plusargs/env vars a cocotb testbench
+    reads). This is BISR's output: what actually gets driven/loaded, as opposed
+    to ``RepairSolution``, which is BIRA's abstract "which spare replaces which
+    row/column" verdict.
     """
 
-    row_repair_en: int      # one bit per spare, bit i set iff spare i is in use
-    faulty_row_addr: int    # packed: ADDR_WIDTH bits per spare, LSB-first by index
+    row_repair_en: int      # one bit per spare row, bit i set iff spare row i is in use
+    faulty_row_addr: int    # packed: ADDR_WIDTH bits per spare row, LSB-first by index
+    # Column half (Workstream M.1). Defaulted rather than split into a sibling
+    # dataclass, matching how RepairSolution.col_map and Unrepairable.faulty_cols
+    # were themselves added. 0/0 is the semantically correct value for a row-only
+    # repair, not a compatibility shim: with num_spare_cols == 0, col_map is always
+    # empty, so both fields are genuinely zero.
+    col_repair_en: int = 0  # one bit per spare column, bit k set iff spare column k is in use
+    faulty_bit: int = 0     # packed: bit_index_width bits per spare column, LSB-first by index

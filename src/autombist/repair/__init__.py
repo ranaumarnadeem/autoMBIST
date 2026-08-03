@@ -11,7 +11,7 @@ copy-paste-extractable into its own repo if the on-chip self-repair work ever
 grows into a separate artifact.
 """
 from .bira import analyze
-from .bisr import encode_row_repair
+from .bisr import encode_repair, encode_row_repair
 from .types import (
     SCHEMA_VERSION,
     AnalysisResult,
@@ -31,5 +31,6 @@ __all__ = [
     "SpareGeometryError",
     "Unrepairable",
     "analyze",
+    "encode_repair",
     "encode_row_repair",
 ]
