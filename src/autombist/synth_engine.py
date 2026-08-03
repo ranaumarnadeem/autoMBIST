@@ -32,12 +32,16 @@ first: ``up`` visits the lower address (v) first, then the higher (a);
 ``down`` visits a first, then v. Single-cell faults (SA0/SA1/TF/WDF/RDF/
 IRF/DRDF) never reference ``a`` at all -- the model is uniform.
 
-Excluded from synthesis targeting: the four fixed types
-(SOF/AF_NOACC/AF_ALIAS/CFDS -- see ``fault_primitives.py``'s module
+Excluded from synthesis targeting: the six fixed types
+(SOF/AF_NOACC/AF_ALIAS/CFDS/DRF/HSD -- see ``fault_primitives.py``'s module
 docstring for why each is structurally unreachable by a per-cell
-value-transition walk) and any registry entry using the ``raw_sv`` escape
-hatch (its semantics are hand-written SystemVerilog with no DSL description
-for this module's oracle to interpret). Every synthesis result states this
+value-transition walk; DRF specifically has no value-transition walk to
+search over at all, since it is sensitized by elapsed idle time rather than
+any op sequence, and HSD's row-membership aggressor selection has no fixed
+per-cell aggressor to walk either) and any registry entry using the
+``raw_sv`` escape hatch (its semantics are hand-written SystemVerilog with
+no DSL description for this module's oracle to interpret). Every synthesis
+result states this
 exclusion explicitly -- never silently implies full registry coverage.
 
 A read op's code is an ASSERTION, not a probe -- a critical distinction an
@@ -65,7 +69,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .alg_spec import DIR_MAP, MAX_ELEMENTS, MAX_OPS, OP_MAP, AlgSpec, Element
+from .alg_spec import DIR_MAP, MAX_ELEMENTS, MAX_OPS, OP_MAP, WAIT_BASE, AlgSpec, Element
 from .fault_primitives import FIXED_TYPE_NAMES, FaultPrimitive
 
 OP_R0, OP_R1, OP_W0, OP_W1 = OP_MAP["r0"], OP_MAP["r1"], OP_MAP["w0"], OP_MAP["w1"]
@@ -176,6 +180,15 @@ def _apply_op(v: int, a: int, op: int, role: str, fault: FaultPrimitive | None) 
     "victim" for every primitive in this project). ``observed`` is the raw
     simulated bit; the caller is responsible for comparing it against the
     op's own literal assertion (0 for r0, 1 for r1) -- see module docstring."""
+    if op >= WAIT_BASE:
+        # A wait/idle op: genuinely no-op for this abstract oracle -- no
+        # address is touched, so nothing is asserted. DRF (the only fault
+        # class a wait op can sensitize) is a FIXED_TYPE_NAMES type and can
+        # never reach this synthesizer at all (see synthesize_alg's module
+        # docstring), so this branch exists purely so a wait-containing
+        # spec, if ever passed to replay()/detects() directly, behaves
+        # correctly rather than being silently misread as a read.
+        return v, a, None
     is_write = op in (OP_W0, OP_W1)
     written = 0 if op == OP_W0 else (1 if op == OP_W1 else None)
     observed: int | None = None
@@ -578,7 +591,7 @@ def synthesize_alg(
     max_elements: int = MAX_ELEMENTS, max_ops: int = MAX_OPS, init_val: int = 1,
 ) -> SynthResult:
     """Synthesize a new march test targeting every DSL-expressible,
-    non-``raw_sv`` primitive in ``registry`` (the four fixed types are never
+    non-``raw_sv`` primitive in ``registry`` (the six fixed types are never
     targetable -- see module docstring; a ``raw_sv`` entry has no DSL
     description for this module's oracle to interpret, so it is excluded the
     same way)."""

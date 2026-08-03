@@ -73,9 +73,9 @@ def test_build_type_table_registry_first_then_fixed() -> None:
     table = build_type_table(reg)
     names = [name for name, _code in table]
     assert names[:2] == ["SA0", "SA1"]
-    assert names[2:] == ["SOF", "AF_NOACC", "AF_ALIAS", "CFDS"]
+    assert names[2:] == ["SOF", "AF_NOACC", "AF_ALIAS", "CFDS", "DRF", "HSD"]
     codes = [code for _name, code in table]
-    assert codes == list(range(6))  # contiguous, starting at 0
+    assert codes == list(range(8))  # contiguous, starting at 0
 
 
 def test_render_fault_ram_rejects_duplicate_names() -> None:
@@ -90,9 +90,9 @@ def test_render_fault_ram_rejects_fixed_type_collision() -> None:
         render_fault_ram(collide)
 
 
-def test_render_fault_ram_contains_all_19_type_codes() -> None:
+def test_render_fault_ram_contains_all_21_type_codes() -> None:
     text = render_fault_ram(default_registry())
-    for name in [p.name for p in default_registry()] + ["SOF", "AF_NOACC", "AF_ALIAS", "CFDS"]:
+    for name in [p.name for p in default_registry()] + ["SOF", "AF_NOACC", "AF_ALIAS", "CFDS", "DRF", "HSD"]:
         assert f"T_{name}" in text
     assert "module fault_ram" in text
     assert "endmodule" in text
@@ -131,18 +131,19 @@ def test_render_fault_ram_num_ports_1_implicit_and_explicit_are_identical() -> N
 
 
 def test_render_fault_ram_num_ports_1_is_byte_identical_to_pre_phase_golden() -> None:
-    """Pins render_fault_ram(default_registry()) to its exact sha256 captured
-    from the template BEFORE this phase's num_ports work began (see the P4
-    multi-port-DSL phase report). Any future edit that changes a single byte
-    of the num_ports=1 (default) rendering -- the backward-compat guarantee
-    every existing caller (algo_shell.py, cli.py, the e2e reference-coverage
-    gate) depends on -- must fail this test."""
+    """Pins render_fault_ram(default_registry()) to its exact sha256. Deliberately
+    re-pinned across both Workstream K (DRF) and Workstream L (HSD): each added
+    a new fixed type with its own RTL insertion site and (for K) a mid-phase
+    FAULT_VERBOSE attribution fix, so num_ports=1 text growth each time is the
+    expected, intended outcome of that phase, not a regression. Any *future*
+    edit that changes a byte of this rendering must still fail this test and
+    prompt a deliberate re-pin, exactly as these were."""
     import hashlib
 
     text = render_fault_ram(default_registry())
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    assert len(text) == 10870
-    assert digest == "1cafaeb8240d9d90d7b574ee716c99c82646c93c8c9c968d1f67b676d0931f1a"
+    assert len(text) == 14050
+    assert digest == "a4abde7a60b3a5555fb6ffae3f84ee9062903072c21e68a15e1a4d154493874f"
 
 
 def test_render_fault_ram_num_ports_1_has_unsuffixed_single_port_bus() -> None:
@@ -193,3 +194,64 @@ def test_render_and_write_num_ports_2(tmp_path: Path) -> None:
     out = render_and_write(default_registry(), tmp_path / "fault_ram_2p.sv", num_ports=2)
     text = out.read_text(encoding="utf-8")
     assert "clk0" in text and "clk1" in text
+
+
+# --------------------------------------------------------------------------- #
+# DRF (Workstream K): single-port-only fixed type, deferred for num_ports=2
+# behind a RUNTIME SystemVerilog guard -- not a Python-level render_fault_ram()
+# raise. Codegen time has no visibility into whether any given campaign's
+# fault LIST will ever actually contain a DRF entry (T_DRF's type code is
+# always present in the type table regardless), so the guard must fire only
+# when a DRF fault is actually loaded, at simulation time.
+# --------------------------------------------------------------------------- #
+def test_render_fault_ram_num_ports_1_has_drf_always_ff_block() -> None:
+    text = render_fault_ram(default_registry(), num_ports=1)
+    assert "T_DRF" in text
+    assert "drf_idle_count" in text
+    assert "drf_corrupted" in text
+    assert "drf_hits" in text
+
+
+def test_render_fault_ram_num_ports_2_has_runtime_drf_guard_not_a_raise() -> None:
+    # render_fault_ram() itself must NOT raise for num_ports=2 -- T_DRF is
+    # always in the type table, but the guard is emitted as SystemVerilog
+    # text that only fires if a fault LIST loaded at simulation time actually
+    # contains a DRF entry.
+    text = render_fault_ram(default_registry(), num_ports=2)
+    assert "T_DRF" in text
+    assert "DRF is not yet supported for num_ports=2" in text
+    assert "$finish" in text
+    # The single-port idle-tracking block must not be present under num_ports=2.
+    assert "drf_idle_count" not in text
+
+
+def test_render_fault_ram_num_ports_1_has_no_num_ports_2_drf_guard_text() -> None:
+    text = render_fault_ram(default_registry(), num_ports=1)
+    assert "DRF is not yet supported for num_ports=2" not in text
+
+
+# --------------------------------------------------------------------------- #
+# HSD (Workstream L): unlike DRF, ships for BOTH num_ports=1 and num_ports=2
+# in this same pass -- the check is stateless and lives inside write_op(),
+# which the num_ports=2 template already calls once per port against the SAME
+# shared mem[]/FQ[], so no runtime guard is needed for either port count.
+# --------------------------------------------------------------------------- #
+def test_render_fault_ram_has_words_per_row_parameter() -> None:
+    for num_ports in (1, 2):
+        text = render_fault_ram(default_registry(), num_ports=num_ports)
+        assert "WORDS_PER_ROW" in text
+
+
+def test_render_fault_ram_has_hsd_check_both_port_counts() -> None:
+    for num_ports in (1, 2):
+        text = render_fault_ram(default_registry(), num_ports=num_ports)
+        assert "T_HSD" in text
+        assert "FQ[i].t != T_HSD" in text
+        # Unlike DRF, HSD gets no runtime num_ports=2 rejection guard.
+        assert "HSD is not yet supported for num_ports=2" not in text
+
+
+def test_render_fault_ram_num_ports_2_still_has_drf_guard_but_not_hsd() -> None:
+    text = render_fault_ram(default_registry(), num_ports=2)
+    assert "DRF is not yet supported for num_ports=2" in text
+    assert "HSD is not yet supported for num_ports=2" not in text

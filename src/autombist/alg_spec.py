@@ -19,6 +19,20 @@ meaning "same base op, issued on port PORT" -- for multi-port memories. The suff
 is a dot, chosen because it cannot collide with anything else in this grammar (``#``
 starts a comment, whitespace tokenizes, and base op tokens are exactly ``r0|r1|w0|
 w1``). Omitting the suffix (every existing built-in `.alg` file) means port 0.
+
+An op token may also be ``t<N>`` (e.g. ``t5``), meaning "idle for N clock cycles,
+no memory access" -- for Data Retention Fault (DRF) modeling, which is sensitized
+by elapsed idle time rather than any read/write sequence. A wait token does not
+accept a ``.PORT`` suffix (it touches no bus) and does not count toward
+:attr:`AlgSpec.length_n` (see that property's docstring).
+
+Like every other op, a wait op is executed once per address the enclosing
+element visits -- there is no "run once regardless of address" wait shape.
+``up t5`` on a depth-8 memory idles 5 cycles at EACH of the 8 addresses (40
+cycles total), not once. To get a single bounded idle window (e.g. between
+two march elements for a DRF differential test), account for this
+multiplication explicitly -- either divide the desired total by the memory's
+depth, or use a small/known depth.
 """
 from __future__ import annotations
 
@@ -33,6 +47,14 @@ OP_NAME = {0: "r0", 1: "r1", 2: "w0", 3: "w1"}
 
 MAX_ELEMENTS = 16   # SystemVerilog prog[16]
 MAX_OPS = 8         # SystemVerilog ops[8]
+
+# Op codes >= WAIT_BASE encode an N-cycle wait/idle op: op_code = WAIT_BASE + N
+# (N >= 1). march_engine.sv's op-dispatch `case` already silently no-ops any
+# code outside {0,1,2,3} today, so this reuses that slot with zero numeric-
+# format growth -- to_numeric()/numeric_line() already emit str(x) for
+# arbitrary ints, no `$sscanf` format-string change needed on the RTL side.
+WAIT_BASE = 4
+MAX_WAIT_CYCLES = 65535   # blocks a typo like "t500000" from stalling simulation
 
 
 class AlgSpecError(ValueError):
@@ -52,6 +74,9 @@ class Element:
     def human(self) -> str:
         toks = []
         for op, port in zip(self.ops, self.ports):
+            if op >= WAIT_BASE:
+                toks.append(f"t{op - WAIT_BASE}")
+                continue
             tok = OP_NAME[op]
             if port:
                 tok = f"{tok}.{port}"
@@ -98,6 +123,14 @@ class AccessStep:
         return None
 
     def human(self) -> str:
+        # Defensive: _expand_element skips wait ops entirely (they have no
+        # bus activity to expand into a step), so this branch shouldn't be
+        # reachable in practice -- kept for the same reason Element.human()
+        # has one, in case something upstream ever constructs an AccessStep
+        # for a wait code directly.
+        if self.op >= WAIT_BASE:
+            tok = f"t{self.op - WAIT_BASE}"
+            return f"e{self.elem_idx}o{self.op_idx} {tok}@{self.addr}"
         tok = OP_NAME[self.op]
         if self.port:
             tok = f"{tok}.{self.port}"
@@ -111,8 +144,12 @@ class AlgSpec:
 
     @property
     def length_n(self) -> int:
-        """Test length in units of N (operations per address)."""
-        return sum(len(e.ops) for e in self.elements)
+        """Test length in units of N (operations per address). Wait ops are
+        excluded -- they are not memory operations and would make an "Xn"
+        comparison between a wait-using and a wait-free algorithm meaningless
+        (a test adding one long wait would look like "+1n" while actually
+        adding thousands of simulated cycles)."""
+        return sum(sum(1 for op in e.ops if op < WAIT_BASE) for e in self.elements)
 
     def to_numeric(self) -> str:
         """Byte-identical to the pre-multi-port serialization when every
@@ -166,9 +203,27 @@ def parse_alg(text: str, name: str) -> AlgSpec:
         ports: list[int] = []
         for tok in op_toks:
             key = tok.lower()
+            if key.startswith("t") and key[1:].isdigit():
+                n = int(key[1:])
+                if n < 1:
+                    raise AlgSpecError(
+                        f"{name}:{lineno}: bad wait count in '{tok}' (N must be >= 1)"
+                    )
+                if n > MAX_WAIT_CYCLES:
+                    raise AlgSpecError(
+                        f"{name}:{lineno}: wait count {n} exceeds engine max {MAX_WAIT_CYCLES}"
+                    )
+                ops.append(WAIT_BASE + n)
+                ports.append(0)
+                continue
             port = 0
             if "." in key:
                 key, _, port_tok = key.partition(".")
+                if key.startswith("t"):
+                    raise AlgSpecError(
+                        f"{name}:{lineno}: bad wait token '{tok}' (wait ops do not take a "
+                        "'.PORT' suffix)"
+                    )
                 if not port_tok.isdigit() or int(port_tok) not in (0, 1):
                     raise AlgSpecError(
                         f"{name}:{lineno}: bad port suffix in '{tok}' (use r0|r1|w0|w1, "
@@ -177,7 +232,8 @@ def parse_alg(text: str, name: str) -> AlgSpec:
                 port = int(port_tok)
             if key not in OP_MAP:
                 raise AlgSpecError(
-                    f"{name}:{lineno}: bad op '{tok}' (use r0|r1|w0|w1)"
+                    f"{name}:{lineno}: bad op '{tok}' (use r0|r1|w0|w1, or t<N> for an "
+                    "N-cycle wait)"
                 )
             ops.append(OP_MAP[key])
             ports.append(port)
@@ -193,11 +249,16 @@ def parse_alg(text: str, name: str) -> AlgSpec:
 
 
 def _expand_element(elem: Element, elem_idx: int, depth: int, direction: int) -> list[AccessStep]:
-    """Expand one element with an explicit address direction (0=up, 1=down)."""
+    """Expand one element with an explicit address direction (0=up, 1=down).
+    Wait ops are skipped -- they have zero bus activity, so there is no
+    memory operation for a real controller to drive or for a sequence
+    comparison to expect."""
     addr_iter: range = range(depth - 1, -1, -1) if direction == 1 else range(0, depth)
     steps: list[AccessStep] = []
     for addr in addr_iter:
         for o_idx, op in enumerate(elem.ops):
+            if op >= WAIT_BASE:
+                continue
             port = elem.ports[o_idx] if o_idx < len(elem.ports) else 0
             steps.append(AccessStep(elem_idx=elem_idx, op_idx=o_idx, addr=addr, op=op, port=port))
     return steps
