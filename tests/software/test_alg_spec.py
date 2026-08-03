@@ -4,7 +4,16 @@ from pathlib import Path
 
 import pytest
 
-from autombist.alg_spec import AlgSpecError, _find_pkg_subdir, builtin_algos, load_alg_file, parse_alg, resolve_algo
+from autombist.alg_spec import (
+    WAIT_BASE,
+    AlgSpecError,
+    _find_pkg_subdir,
+    _expand_element,
+    builtin_algos,
+    load_alg_file,
+    parse_alg,
+    resolve_algo,
+)
 
 
 def test_parse_human_elements() -> None:
@@ -67,6 +76,86 @@ def test_parse_alg_rejects_too_many_elements() -> None:
 def test_element_human_form() -> None:
     spec = parse_alg("up r0 w1\n", "t")
     assert spec.elements[0].human() == "up r0 w1"
+
+
+# --------------------------------------------------------------------------- #
+# Wait/idle op (Workstream K)
+# --------------------------------------------------------------------------- #
+def test_wait_token_parses_to_wait_op_code() -> None:
+    spec = parse_alg("either t5\n", "t")
+    assert spec.elements[0].ops == [WAIT_BASE + 5]
+    assert spec.elements[0].ports == [0]
+
+
+def test_wait_token_human_roundtrip() -> None:
+    spec = parse_alg("either t5\n", "t")
+    assert spec.elements[0].human() == "either t5"
+
+
+def test_wait_token_case_insensitive() -> None:
+    spec = parse_alg("either T5\n", "t")
+    assert spec.elements[0].ops == [WAIT_BASE + 5]
+
+
+def test_wait_token_zero_count_rejected() -> None:
+    with pytest.raises(AlgSpecError, match="wait count"):
+        parse_alg("either t0\n", "t")
+
+
+def test_wait_token_exceeds_max_rejected() -> None:
+    with pytest.raises(AlgSpecError, match="exceeds engine max"):
+        parse_alg("either t65536\n", "t")
+
+
+def test_wait_token_rejects_port_suffix() -> None:
+    with pytest.raises(AlgSpecError, match="do not take a"):
+        parse_alg("either t5.1\n", "t")
+
+
+def test_wait_op_mixed_with_ordinary_ops_in_one_element() -> None:
+    spec = parse_alg("either w0 t20 r0\n", "t")
+    assert spec.elements[0].ops == [2, WAIT_BASE + 20, 0]
+    assert spec.elements[0].human() == "either w0 t20 r0"
+
+
+def test_wait_op_excluded_from_length_n() -> None:
+    spec = parse_alg("either w0\neither t1000\neither r0\n", "t")
+    assert spec.length_n == 2
+
+
+def test_wait_op_still_occupies_a_max_ops_slot() -> None:
+    text = "up " + " ".join(["r0"] * 7 + ["t1"])  # exactly MAX_OPS=8
+    spec = parse_alg(text + "\n", "t")
+    assert len(spec.elements[0].ops) == 8
+    with pytest.raises(AlgSpecError, match="exceeds engine max"):
+        parse_alg(text + " r0\n", "t")  # 9th op, one over MAX_OPS
+
+
+def test_numeric_line_for_wait_op() -> None:
+    spec = parse_alg("either t5\n", "t")
+    assert spec.elements[0].numeric_line() == "2 1 9 0 0 0 0 0 0 0"  # WAIT_BASE+5=9
+
+
+def test_wait_spec_to_text_roundtrips_through_parse_alg() -> None:
+    spec = parse_alg("either w0\nup t20 r0\ndown r1 t5\n", "t")
+    reparsed = parse_alg(spec.to_text(), "t")
+    assert reparsed.elements == spec.elements
+
+
+# --------------------------------------------------------------------------- #
+# Wait ops and the FSM-comparison front (_expand_element)
+# --------------------------------------------------------------------------- #
+def test_expand_element_skips_wait_ops() -> None:
+    spec = parse_alg("up w0 t20 r0\n", "t")
+    steps = _expand_element(spec.elements[0], elem_idx=0, depth=1, direction=0)
+    # Only the w0 and r0 ops produce steps -- the wait has zero bus activity.
+    assert [s.op for s in steps] == [2, 0]
+
+
+def test_expand_element_wait_only_element_produces_no_steps() -> None:
+    spec = parse_alg("either t20\n", "t")
+    steps = _expand_element(spec.elements[0], elem_idx=0, depth=4, direction=0)
+    assert steps == []
 
 
 def test_load_alg_file_missing_path_raises(tmp_path: Path) -> None:

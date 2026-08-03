@@ -32,6 +32,7 @@ from .algo_engine import (
     run_background_campaign,
     run_fsm_campaign,
     write_fault_list,
+    _validate_words_per_row,
 )
 from .algo_reporting import (
     render_matrix_md,
@@ -180,7 +181,7 @@ class AlgoShell(cmd.Cmd):
 
     def _render_fault_ram_for(self, workdir: Path) -> Path:
         """Render fault_ram.sv from the session's registry into workdir. The
-        registry starts as the 19 built-ins (default_registry() + the 4 fixed
+        registry starts as the 21 built-ins (default_registry() + the 6 fixed
         types the template always includes); add_fault_type appends to it, so
         this always reflects any custom types the researcher has defined.
         num_ports follows the configured memory (set_memory --ports) so a
@@ -208,27 +209,44 @@ class AlgoShell(cmd.Cmd):
 
     # -- commands -------------------------------------------------------
     def do_set_memory(self, arg: str) -> None:
-        """set_memory <addr_width> <data_width> [--wmasks N] [--init 0|1] [--ports 1|2]
+        """set_memory <addr_width> <data_width> [--wmasks N] [--init 0|1] [--ports 1|2] [--words-per-row N]
         Configure the memory under test. --ports selects how many physical
         ports the fault engine models (default 1); 2 enables genuine
         cross-port coupling faults (see add_fault's vport/aport args) via
-        march_engine_mp.sv (see MemoryParams.num_ports)."""
-        pos, flags = _parse_flags(_tokenize(arg), {"wmasks": int, "init": int, "ports": int})
+        march_engine_mp.sv (see MemoryParams.num_ports). --words-per-row
+        (default 1) sets the physical-row width for HSD (Half-Select Disturb):
+        row(addr) = addr / words_per_row. 1 (no column muxing) makes HSD
+        provably inert -- see engine/README.md. Algo-front only in this
+        phase (rejected for FSM campaigns if not 1)."""
+        pos, flags = _parse_flags(
+            _tokenize(arg), {"wmasks": int, "init": int, "ports": int, "words-per-row": int}
+        )
         if len(pos) < 2:
             raise ValueError(
-                "usage: set_memory <addr_width> <data_width> [--wmasks N] [--init 0|1] [--ports 1|2]"
+                "usage: set_memory <addr_width> <data_width> [--wmasks N] [--init 0|1] "
+                "[--ports 1|2] [--words-per-row N]"
             )
         aw, dw = int(pos[0]), int(pos[1])
         num_ports = int(flags.get("ports", 1))
         if num_ports not in (1, 2):
             raise ValueError(f"--ports must be 1 or 2, got {num_ports}")
-        self.session.mem = MemoryParams(
+        words_per_row = int(flags.get("words-per-row", 1))
+        mem = MemoryParams(
             addr_width=aw, data_width=dw,
             num_wmasks=int(flags.get("wmasks", 1)), init_val=int(flags.get("init", 1)),
-            num_ports=num_ports,
+            num_ports=num_ports, words_per_row=words_per_row,
         )
+        # Reuses compile_engine's own validation (>=1, <=depth, exact divisor
+        # of depth) so a bad --words-per-row fails loud HERE, at set_memory
+        # time, with the identical error text campaign-time validation would
+        # give -- not silently accepted and deferred until `run` finally
+        # reaches compile_engine, after faults may already be built up around
+        # a nonsensical memory shape.
+        _validate_words_per_row(mem)
+        self.session.mem = mem
         self._out(
-            f"memory set: {aw}x{dw}, init={self.session.mem.init_val}, ports={num_ports}"
+            f"memory set: {aw}x{dw}, init={self.session.mem.init_val}, ports={num_ports}, "
+            f"words_per_row={words_per_row}"
         )
 
     def do_add_algo(self, arg: str) -> None:
@@ -308,6 +326,23 @@ class AlgoShell(cmd.Cmd):
         self.session.registry.append(prim)
         self._out(f"fault type '{prim.name}' registered ({prim.category}); takes effect on the next run")
 
+    def _warn_if_hsd_inert(self, records: list[FaultRecord]) -> None:
+        """HSD is provably inert at the default words_per_row=1 (see
+        engine/README.md) -- not fatal (0 hits is a CORRECT result there, not
+        a broken one, exactly like a CFIN fault whose aggressor address
+        happens to equal its victim), but silent 0 hits is enough of a
+        footgun (a researcher forgetting --words-per-row) to warrant a
+        non-fatal heads-up at the point a fault is actually registered."""
+        if not any(r.type == "HSD" for r in records):
+            return
+        words_per_row = self.session.mem.words_per_row if self.session.mem is not None else 1
+        if words_per_row <= 1:
+            self._out(
+                "WARNING: HSD fault(s) added but words_per_row=1 (default) -- HSD is "
+                "provably inert at words_per_row=1 (see set_memory --words-per-row and "
+                "engine/README.md)"
+            )
+
     def do_add_fault(self, arg: str) -> None:
         """add_fault TYPE VADDR VBIT [AADDR ABIT P0 P1 [VPORT APORT]]
         Append one fault instance to the current fault list. VPORT/APORT
@@ -321,9 +356,11 @@ class AlgoShell(cmd.Cmd):
         fault_type, va, vb = tokens[0], int(tokens[1]), int(tokens[2])
         aa, ab, p0, p1 = (int(x) for x in tokens[3:7]) if len(tokens) >= 7 else (0, 0, 0, 0)
         vport, aport = (int(x) for x in tokens[7:9]) if len(tokens) == 9 else (0, 0)
-        self.session.faults.append(FaultRecord(fault_type, va, vb, aa, ab, p0, p1, vport, aport))
+        record = FaultRecord(fault_type, va, vb, aa, ab, p0, p1, vport, aport)
+        self.session.faults.append(record)
         suffix = f" ports={vport}/{aport}" if (vport, aport) != (0, 0) else ""
         self._out(f"fault added: {fault_type} v={va}.{vb}{suffix} (total {len(self.session.faults)})")
+        self._warn_if_hsd_inert([record])
 
     def do_load_faults(self, arg: str) -> None:
         """load_faults <path> [--append]
@@ -337,6 +374,7 @@ class AlgoShell(cmd.Cmd):
         else:
             self.session.faults = records
         self._out(f"loaded {len(records)} faults from {pos[0]} (total {len(self.session.faults)})")
+        self._warn_if_hsd_inert(records)
 
     def do_gen_faults(self, arg: str) -> None:
         """gen_faults [--all-types] [--n N --seed S]

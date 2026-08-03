@@ -4,13 +4,16 @@ from pathlib import Path
 
 import pytest
 
+from autombist.alg_spec import parse_alg
 from autombist.algo_engine import (
     CampaignError,
     FaultRecord,
+    MemoryParams,
     parse_fault_hits,
     parse_fault_list,
     parse_fault_loaded,
     parse_result_line,
+    run_fsm_campaign,
     write_fault_list,
 )
 
@@ -221,3 +224,134 @@ def test_memory_params_num_ports_explicit() -> None:
 
     mem = MemoryParams(addr_width=8, data_width=8, num_ports=2)
     assert mem.num_ports == 2
+
+
+def test_run_fsm_campaign_rejects_wait_op_in_expected_spec(tmp_path: Path) -> None:
+    # This check runs before any Verilator/RTL work (right after workdir setup),
+    # so it's reachable as a pure software test -- no EDA tools needed.
+    mem = MemoryParams(addr_width=4, data_width=4)
+    expected_spec = parse_alg("either t5\n", "waity")
+    with pytest.raises(CampaignError, match="wait op"):
+        run_fsm_campaign(
+            mem, [Path("dummy_fsm.sv")], "dummy_fsm", [],
+            workdir=tmp_path, expected_spec=expected_spec,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# words_per_row / HSD (Workstream L)
+# --------------------------------------------------------------------------- #
+def test_memory_params_words_per_row_defaults_to_1() -> None:
+    mem = MemoryParams(addr_width=8, data_width=8)
+    assert mem.words_per_row == 1
+
+
+def test_run_fsm_campaign_rejects_non_default_words_per_row(tmp_path: Path) -> None:
+    # Same reachable-as-pure-software-test placement as the wait-op guard above:
+    # this fires before any Verilator/RTL work, right after the wait-op check.
+    mem = MemoryParams(addr_width=4, data_width=4, words_per_row=2)
+    with pytest.raises(CampaignError, match="words_per_row"):
+        run_fsm_campaign(mem, [Path("dummy_fsm.sv")], "dummy_fsm", [], workdir=tmp_path)
+
+
+def test_run_fsm_campaign_allows_default_words_per_row(tmp_path: Path) -> None:
+    # Negative control for the guard above: words_per_row=1 (default) must NOT
+    # be rejected by this guard (it'll fail later for other reasons -- no real
+    # FSM source exists -- but not with a words_per_row-related CampaignError).
+    mem = MemoryParams(addr_width=4, data_width=4)
+    with pytest.raises(Exception) as exc_info:
+        run_fsm_campaign(mem, [Path("dummy_fsm.sv")], "dummy_fsm", [], workdir=tmp_path)
+    assert "words_per_row" not in str(exc_info.value)
+
+
+def test_validate_words_per_row_rejects_zero() -> None:
+    from autombist.algo_engine import _validate_words_per_row
+
+    mem = MemoryParams(addr_width=2, data_width=4, words_per_row=0)
+    with pytest.raises(CampaignError, match="words_per_row must be >= 1"):
+        _validate_words_per_row(mem)
+
+
+def test_validate_words_per_row_rejects_negative() -> None:
+    from autombist.algo_engine import _validate_words_per_row
+
+    mem = MemoryParams(addr_width=2, data_width=4, words_per_row=-1)
+    with pytest.raises(CampaignError, match="words_per_row must be >= 1"):
+        _validate_words_per_row(mem)
+
+
+def test_validate_words_per_row_rejects_exceeding_depth() -> None:
+    from autombist.algo_engine import _validate_words_per_row
+
+    mem = MemoryParams(addr_width=2, data_width=4, words_per_row=8)  # depth=4
+    with pytest.raises(CampaignError, match="exceeds depth"):
+        _validate_words_per_row(mem)
+
+
+def test_validate_words_per_row_rejects_non_divisor_of_depth() -> None:
+    from autombist.algo_engine import _validate_words_per_row
+
+    mem = MemoryParams(addr_width=2, data_width=4, words_per_row=3)  # depth=4, 4%3 != 0
+    with pytest.raises(CampaignError, match="does not evenly divide"):
+        _validate_words_per_row(mem)
+
+
+def test_validate_words_per_row_accepts_exact_divisor() -> None:
+    from autombist.algo_engine import _validate_words_per_row
+
+    mem = MemoryParams(addr_width=2, data_width=4, words_per_row=4)  # depth=4, exact
+    _validate_words_per_row(mem)  # must not raise
+
+
+def test_validate_words_per_row_accepts_default() -> None:
+    from autombist.algo_engine import _validate_words_per_row
+
+    mem = MemoryParams(addr_width=8, data_width=8)
+    _validate_words_per_row(mem)  # must not raise
+
+
+def test_generate_all_types_faults_excludes_hsd_at_default_words_per_row() -> None:
+    from autombist.algo_engine import generate_all_types_faults
+
+    mem = MemoryParams(addr_width=4, data_width=8)
+    records = generate_all_types_faults(mem)
+    assert not any(r.type == "HSD" for r in records)
+    assert len(records) == 19
+
+
+def test_generate_all_types_faults_includes_hsd_when_words_per_row_over_1() -> None:
+    from autombist.algo_engine import generate_all_types_faults
+
+    mem = MemoryParams(addr_width=4, data_width=8, words_per_row=4)
+    records = generate_all_types_faults(mem)
+    hsd = [r for r in records if r.type == "HSD"]
+    assert len(hsd) == 1
+    assert len(records) == 20
+    assert hsd[0].aaddr == 0 and hsd[0].abit == 0  # no fixed aggressor address
+
+
+def test_generate_all_types_faults_hsd_p0_opposite_of_init_val() -> None:
+    from autombist.algo_engine import generate_all_types_faults
+
+    mem1 = MemoryParams(addr_width=4, data_width=8, words_per_row=4, init_val=1)
+    mem0 = MemoryParams(addr_width=4, data_width=8, words_per_row=4, init_val=0)
+    hsd1 = next(r for r in generate_all_types_faults(mem1) if r.type == "HSD")
+    hsd0 = next(r for r in generate_all_types_faults(mem0) if r.type == "HSD")
+    assert hsd1.p0 == 0   # init=1 -> disturbed-toward 0 (a real, observable disturb)
+    assert hsd0.p0 == 1   # init=0 -> disturbed-toward 1
+
+
+def test_generate_random_faults_never_picks_hsd_at_default_words_per_row() -> None:
+    from autombist.algo_engine import generate_random_faults
+
+    mem = MemoryParams(addr_width=4, data_width=8)
+    records = generate_random_faults(mem, 500, seed=1)
+    assert not any(r.type == "HSD" for r in records)
+
+
+def test_generate_random_faults_can_pick_hsd_when_words_per_row_over_1() -> None:
+    from autombist.algo_engine import generate_random_faults
+
+    mem = MemoryParams(addr_width=4, data_width=8, words_per_row=4)
+    records = generate_random_faults(mem, 500, seed=1)
+    assert any(r.type == "HSD" for r in records)

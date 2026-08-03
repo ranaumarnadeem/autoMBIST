@@ -13,8 +13,13 @@
 //                      byte-identical to every campaign that omits it)
 //   plus all fault_ram plusargs (+FAULTS, +FAULT_INDEX, +INIT, +FAULT_VERBOSE)
 //
-// AW/DW are top parameters so a driver can override at compile time
-// (Verilator: -GAW=<n> -GDW=<n>).
+// AW/DW/WORDS_PER_ROW are top parameters so a driver can override at compile
+// time (Verilator: -GAW=<n> -GDW=<n> -GWORDS_PER_ROW=<n>). WORDS_PER_ROW
+// defaults to 1 (byte-identical to before it existed) and is forwarded
+// straight through to fault_ram -- HSD (Half-Select Disturb, Workstream L)
+// needs no other change here: its check lives inside fault_ram's write_op(),
+// which this file already calls once per port against the SAME shared mem[]
+// -- "physical row shared across both ports" falls out for free.
 //
 // Prints exactly one line beginning with RESULT:
 //   RESULT DETECTED alg=<a> elem=<e> op=<o> addr=<n> xor=<bits>
@@ -27,6 +32,10 @@
 //   a non-zero port tag; see alg_spec.py's Element.numeric_line()):
 //     DIR NOPS OP0..OP7 PORT0..PORT7
 //   DIR: 0=up 1=down 2=either    OP: 0=r0 1=r1 2=w0 3=w1  (padded with 0)
+//   OP >= 4: wait/idle op, idle for (OP-4) clock cycles, no memory access
+//   (see alg_spec.py's WAIT_BASE; for Data Retention Fault modeling). Like
+//   every op, a wait executes once per address in the element's range -- an
+//   element with a single wait op idles (OP-4)*DEPTH cycles total, not once.
 //   PORT: 0 or 1, parallel to OP0..OP7 (padded with 0 -> port 0). A plain
 //   line (no PORT columns) means every op in that element is on port 0,
 //   exactly as march_engine.sv already assumes -- this engine parses BOTH
@@ -43,7 +52,8 @@
 
 module march_engine_mp #(
   parameter int AW = 8,
-  parameter int DW = 8
+  parameter int DW = 8,
+  parameter int WORDS_PER_ROW = 1
 );
 
   localparam int DEPTH = 1 << AW;
@@ -62,7 +72,7 @@ module march_engine_mp #(
 
   logic [DW-1:0] background_mask = '0;
 
-  fault_ram #(.ADDR_WIDTH(AW), .DATA_WIDTH(DW)) dut (
+  fault_ram #(.ADDR_WIDTH(AW), .DATA_WIDTH(DW), .WORDS_PER_ROW(WORDS_PER_ROW)) dut (
     .clk0(clk0), .csb0(csb0), .web0(web0), .wmask0(wmask0),
     .addr0(addr0), .din0(din0), .dout0(dout0),
     .clk1(clk1), .csb1(csb1), .web1(web1), .wmask1(wmask1),
@@ -238,6 +248,20 @@ module march_engine_mp #(
     end
   endtask
 
+  // Idle for n full clock periods; both ports' csb stay deasserted throughout
+  // -- never touches either DUT port, dout0/dout1, or the detected/det_*
+  // bookkeeping. clk0/clk1 toggle in lockstep (both `#5` half-period), so
+  // clk0 alone is a sufficient timing reference -- same negedge-anchored
+  // one-period-per-iteration idiom as march_engine.sv's do_wait.
+  task automatic do_wait(input int n);
+    repeat (n) begin
+      @(negedge clk0);
+      csb0 = 1; csb1 = 1;
+      @(posedge clk0);
+      @(negedge clk0);
+    end
+  endtask
+
   int det_elem, det_op, det_addr;
   logic [DW-1:0] det_xor;
   bit detected = 0;
@@ -292,7 +316,7 @@ module march_engine_mp #(
             1: do_read (a, 1'b1, prog[e].ports[o], e, o);
             2: do_write(a, 1'b0, prog[e].ports[o]);
             3: do_write(a, 1'b1, prog[e].ports[o]);
-            default: ;
+            default: if (prog[e].ops[o] >= 4) do_wait(prog[e].ops[o] - 4);
           endcase
         end
       end

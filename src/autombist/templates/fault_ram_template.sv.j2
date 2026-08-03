@@ -35,7 +35,12 @@
 module fault_ram #(
   parameter int ADDR_WIDTH = 8,
   parameter int DATA_WIDTH = 8,
-  parameter int DEPTH      = 1 << ADDR_WIDTH
+  parameter int DEPTH      = 1 << ADDR_WIDTH,
+  parameter int WORDS_PER_ROW = 1   // HSD (Workstream L): row(addr) = addr /
+                                      // WORDS_PER_ROW. Default 1 makes HSD
+                                      // provably inert -- see fault_ram.sv's
+                                      // identical parameter for the full
+                                      // rationale (kept in sync manually).
 )(
 {% if num_ports == 2 %}
   input  logic                    clk0,
@@ -147,6 +152,19 @@ module fault_ram #(
           $display("FATAL: unknown fault type '%s' (line %0d)", ts, idx);
           $finish;
         end
+{% if num_ports == 2 %}
+        // DRF is deferred for num_ports=2 (Phase 2 scope, Workstream K) --
+        // the idle-cycle-tracking always_ff block is single-port only in
+        // this phase. Fails loud here (a real fault list actually asking
+        // for it) rather than at codegen time (which cannot know whether
+        // any given campaign's fault LIST will ever contain a DRF entry --
+        // the registry/type-table always carries T_DRF's type code
+        // regardless), and rather than silently no-opping the fault.
+        if (f.t == T_DRF) begin
+          $display("FATAL: DRF is not yet supported for num_ports=2 (line %0d) -- the idle-cycle tracking always_ff block is single-port only in this phase", idx);
+          $finish;
+        end
+{% endif %}
         if (n < 7) begin
           $display("FATAL: fault line %0d has %0d fields, need 7", idx, n);
           $finish;
@@ -268,6 +286,27 @@ module fault_ram #(
       end
     end
 
+    // Half-select disturb (HSD, Workstream L): a write to any OTHER address
+    // sharing the victim's physical row forces the victim toward FQ[i].p0
+    // (the disturbed-toward polarity), not an invert -- see fault_ram.sv's
+    // identical check for the full rationale (kept in sync manually). A
+    // SINGLE per-fault, per-word check -- deliberately NOT nested in either
+    // per-bit loop above, and fires regardless of this write's own `m` (word-
+    // line assertion is per-WORD, independent of which bits are masked).
+    // Port-agnostic by construction (only `ea`/FQ[i].va matter, not `port`):
+    // under num_ports==2 this function already runs once per port against
+    // the SAME shared mem[]/FQ[], so "physical row shared across both ports"
+    // falls out for free with no separate num_ports==2 branch needed here.
+    foreach (FQ[i]) begin
+      if (FQ[i].t != T_HSD) continue;
+      if (ea == FQ[i].va) continue;                                       // direct write to the victim itself
+      if ((ea / WORDS_PER_ROW) != (FQ[i].va / WORDS_PER_ROW)) continue;    // different physical row
+      if (mem[FQ[i].va][FQ[i].vb] != FQ[i].p0[0]) begin
+        mem[FQ[i].va][FQ[i].vb] = FQ[i].p0[0];
+        FQ[i].hits++;
+      end
+    end
+
     clamp_static();
   endfunction
 
@@ -354,12 +393,48 @@ module fault_ram #(
       else      dout <= read_op(addr);
     end
   end
+
+  // ---------------- Data Retention Fault (DRF) idle-cycle tracking ----------------
+  // Single-port only in this phase (num_ports=2 is rejected loudly above, at
+  // fault-list-load time). See src/autombist/engine/fault_ram.sv's identical
+  // block for the full race-condition analysis and design rationale -- KEPT
+  // IN SYNC MANUALLY with that file, no automated equivalence check exists.
+  int drf_idle_count = 0;
+  bit drf_corrupted  = 0;
+  int drf_hits = 0;
+
+  always_ff @(posedge clk) begin
+    if (FQ.size() > 0 && FQ[0].t == T_DRF) begin
+      if (!csb && !web && int'(addr) == FQ[0].va) begin
+        drf_idle_count <= 0;
+        drf_corrupted  <= 0;
+      end else if (!drf_corrupted) begin
+        if (drf_idle_count >= FQ[0].p0) begin
+          mem[FQ[0].va][FQ[0].vb] <= ~mem[FQ[0].va][FQ[0].vb];
+          drf_hits      <= drf_hits + 1;
+          drf_corrupted <= 1;
+        end else begin
+          drf_idle_count <= drf_idle_count + 1;
+        end
+      end
+    end
+  end
 {% endif %}
 
   final begin
     if ($test$plusargs("FAULT_VERBOSE"))
       foreach (FQ[i])
+{% if num_ports == 2 %}
         $display("FAULT_HITS idx=%0d type=%s activations=%0d", i, FNAME[i], FQ[i].hits);
+{% else %}
+        // DRF's activation count lives in the dedicated drf_hits counter
+        // (see the idle-cycle-tracking always_ff block), not FQ[i].hits.
+        // Only FQ[0] is ever tracked by that block, so a DRF entry at any
+        // other index is structurally inert and must report 0, not
+        // drf_hits (see fault_ram.sv's identical fix for why).
+        $display("FAULT_HITS idx=%0d type=%s activations=%0d",
+                 i, FNAME[i], (FQ[i].t == T_DRF) ? (i == 0 ? drf_hits : 0) : FQ[i].hits);
+{% endif %}
   end
 
 endmodule

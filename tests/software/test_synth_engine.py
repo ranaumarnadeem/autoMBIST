@@ -8,7 +8,7 @@ import itertools
 
 import pytest
 
-from autombist.alg_spec import DIR_MAP, OP_MAP, Element, parse_alg
+from autombist.alg_spec import DIR_MAP, OP_MAP, WAIT_BASE, Element, parse_alg
 from autombist.fault_primitives import (
     Effect,
     FIXED_TYPE_NAMES,
@@ -17,6 +17,7 @@ from autombist.fault_primitives import (
     default_registry,
 )
 from autombist.synth_engine import (
+    _apply_op,
     detects,
     is_golden_sound,
     replay,
@@ -51,6 +52,34 @@ def test_resolve_params_cfst_hold_is_one():
 def test_resolve_params_non_parameterized_primitive_is_zero_zero():
     assert resolve_params(REGISTRY["SA0"]) == (0, 0)
     assert resolve_params(REGISTRY["TF0"]) == (0, 0)
+
+
+# --------------------------------------------------------------------------- #
+# Wait ops (Workstream K) -- a wait must be a genuine no-op in this oracle.
+# DRF (the only fault a wait sensitizes) is a FIXED_TYPE_NAMES type and can
+# never reach this synthesizer at all (default_registry() never contains
+# fixed-type FaultPrimitive instances), so these only guard _apply_op/replay
+# against a wait-containing spec being passed in directly.
+# --------------------------------------------------------------------------- #
+def test_apply_op_wait_is_a_true_noop():
+    v, a, observed = _apply_op(1, 0, WAIT_BASE + 5, "v", None)
+    assert (v, a, observed) == (1, 0, None)
+
+
+def test_apply_op_wait_does_not_mutate_aggressor_role():
+    v, a, observed = _apply_op(1, 0, WAIT_BASE + 5, "a", None)
+    assert (v, a, observed) == (1, 0, None)
+
+
+def test_replay_ignores_wait_ops():
+    with_wait = _spec(Element(EITHER, [W0]), Element(UP, [WAIT_BASE + 20, R0]))
+    without_wait = _spec(Element(EITHER, [W0]), Element(UP, [R0]))
+    assert replay(with_wait, None) == replay(without_wait, None)
+
+
+def test_detects_unaffected_by_an_inserted_wait_op():
+    positive = _spec(Element(EITHER, [W0]), Element(UP, [WAIT_BASE + 20, W1, R1]))
+    assert detects(positive, REGISTRY["TF0"])
 
 
 # --------------------------------------------------------------------------- #

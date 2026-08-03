@@ -23,11 +23,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .alg_spec import AlgSpec, expand_expected_blocks, find_engine_dir
+from .alg_spec import WAIT_BASE, AlgSpec, expand_expected_blocks, find_engine_dir
 from .seq_check import SequenceResult, compare_trace, parse_observed_trace
 
 # The 19 functional fault primitives fault_ram.sv implements natively (see
 # engine/README.md). P6 (add_fault_type) will let researchers extend this set.
+#
+# DRF and HSD (Workstreams K/L) are deliberately absent from this STATIC tuple,
+# for different reasons: DRF is unconditionally absent (no built-in march
+# algorithm contains a wait op, so it can never be detected regardless of
+# mem.*). HSD's fireability instead depends on mem.words_per_row at call time
+# (it needs another same-row address to ever be written) -- generate_all_
+# types_faults/generate_random_faults below include it CONDITIONALLY when
+# mem.words_per_row > 1, rather than baking a runtime-dependent fact into this
+# module-level constant.
 BUILTIN_FAULT_TYPES: tuple[str, ...] = (
     "SA0", "SA1", "TF0", "TF1", "WDF0", "WDF1", "RDF0", "RDF1", "DRDF0", "DRDF1",
     "IRF0", "IRF1", "SOF", "AF_NOACC", "AF_ALIAS", "CFIN", "CFID", "CFST", "CFDS",
@@ -48,6 +57,20 @@ class MemoryParams:
     num_wmasks: int = 1
     init_val: int = 1
     num_ports: int = 1
+    words_per_row: int = 1   # physical-row width for HSD (Half-Select Disturb,
+                               # Workstream L): row(addr) = addr / words_per_row.
+                               # Default 1 -> row(addr) = addr, so "different
+                               # address, same row" is mathematically unsatisfiable
+                               # and HSD is provably inert -- see engine/README.md
+                               # and flow/multimem/mbist/README.md's pre-existing
+                               # words_per_row finding (same term, same formula).
+                               # Validated (>=1, <=depth, depth%words_per_row==0)
+                               # at point-of-use (algo_shell.do_set_memory AND
+                               # compile_engine both call _validate_words_per_row),
+                               # not in this dataclass -- MemoryParams itself stays
+                               # a plain data holder, matching every other field
+                               # here (e.g. num_ports' own range check also lives
+                               # in its callers, not a dataclass __post_init__).
 
     @property
     def depth(self) -> int:
@@ -306,13 +329,28 @@ def write_fault_list(records: list[FaultRecord], path: Path) -> Path:
     return path
 
 
+def _effective_all_types(mem: MemoryParams) -> tuple[str, ...]:
+    """BUILTIN_FAULT_TYPES, plus HSD when (and only when) mem.words_per_row > 1
+    -- unlike DRF (unconditionally excluded, see BUILTIN_FAULT_TYPES' own
+    comment), HSD's fireability genuinely depends on mem at call time: at the
+    default words_per_row=1 no row-mate address exists at all (see
+    engine/README.md), so including it there would always emit an
+    always-zero-hits entry; at words_per_row>1 a real march algorithm's
+    natural traversal detects it fine, so excluding it there would be an
+    unnecessary gap, not a real limitation like DRF's."""
+    if mem.words_per_row > 1:
+        return BUILTIN_FAULT_TYPES + ("HSD",)
+    return BUILTIN_FAULT_TYPES
+
+
 def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
     """One instance of every built-in fault primitive, spread across the memory
-    (mirrors the shape of engine/faults.example.txt, scaled to this memory)."""
+    (mirrors the shape of engine/faults.example.txt, scaled to this memory).
+    Includes HSD only when mem.words_per_row > 1 (see _effective_all_types)."""
     depth = mem.depth
     dw = mem.data_width
     records: list[FaultRecord] = []
-    for i, t in enumerate(BUILTIN_FAULT_TYPES):
+    for i, t in enumerate(_effective_all_types(mem)):
         va = (i * 7 + 3) % depth
         vb = i % dw
         aa = (va + 1) % depth  # aggressor: different word, same bit lane
@@ -328,20 +366,29 @@ def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
             p0 = 4  # any read disturbs
         elif t == "AF_ALIAS":
             aa = (va + 2) % depth
+        elif t == "HSD":
+            # No fixed aggressor address (unlike the coupling types above) --
+            # AADDR/ABIT unused, write 0 (matches SOF/AF_NOACC's convention).
+            # p0 = disturbed-toward polarity, chosen opposite of init_val so a
+            # real disturb is actually observable rather than a same-value no-op.
+            aa, ab = 0, 0
+            p0 = 0 if mem.init_val else 1
         records.append(FaultRecord(t, va, vb, aa, ab, p0, p1))
     return records
 
 
 def generate_random_faults(mem: MemoryParams, n: int, seed: int = 0) -> list[FaultRecord]:
-    """N faults with a random type/site each, for stress-testing an algorithm."""
+    """N faults with a random type/site each, for stress-testing an algorithm.
+    Includes HSD only when mem.words_per_row > 1 (see _effective_all_types)."""
     rng = random.Random(seed)
     depth = mem.depth
     dw = mem.data_width
+    types = _effective_all_types(mem)
     records: list[FaultRecord] = []
     for _ in range(n):
         records.append(
             FaultRecord(
-                type=rng.choice(BUILTIN_FAULT_TYPES),
+                type=rng.choice(types),
                 vaddr=rng.randrange(depth), vbit=rng.randrange(dw),
                 aaddr=rng.randrange(depth), abit=rng.randrange(dw),
                 p0=rng.randrange(3), p1=rng.randrange(2),
@@ -427,6 +474,28 @@ def _require_verilator(sim: str) -> None:
 # --------------------------------------------------------------------------- #
 # Build + run
 # --------------------------------------------------------------------------- #
+def _validate_words_per_row(mem: MemoryParams) -> None:
+    """words_per_row must describe a shape a real column-muxed macro could
+    actually have: >=1 (0/negative divides by zero or is meaningless), <=depth
+    and an exact divisor of depth (a partial trailing physical row can't exist
+    -- see flow/multimem/mbist/README.md's words_per_row finding, which derives
+    ADDR_WIDTH from an EXACT words+spares/words_per_row relationship). Called by
+    both compile_engine (algo front) and run_fsm_campaign's FSM-front guard."""
+    wpr = mem.words_per_row
+    if wpr < 1:
+        raise CampaignError(f"mem.words_per_row must be >= 1, got {wpr}")
+    if wpr > mem.depth:
+        raise CampaignError(
+            f"mem.words_per_row={wpr} exceeds depth={mem.depth} -- this would silently "
+            "degenerate 'same row' into 'same memory' rather than model a real row shape"
+        )
+    if mem.depth % wpr != 0:
+        raise CampaignError(
+            f"mem.words_per_row={wpr} does not evenly divide depth={mem.depth} -- a real "
+            "column-muxed macro's row decoder can't produce a partial trailing row"
+        )
+
+
 def compile_engine(
     mem: MemoryParams,
     *,
@@ -439,6 +508,16 @@ def compile_engine(
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     exe_name = f"{top_module}_sim"
+    # Only march_engine.sv/march_engine_mp.sv (the algo front) expose a
+    # WORDS_PER_ROW top parameter -- the FSM front's generated harness does
+    # not (run_fsm_campaign rejects a non-default words_per_row before ever
+    # reaching here; see its own guard). Omitting this flag entirely at the
+    # default (1) means an FSM campaign that never touches words_per_row is
+    # completely unaffected by HSD's existence, byte-identical to before.
+    words_per_row_flags: list[str] = []
+    if mem.words_per_row != 1:
+        _validate_words_per_row(mem)
+        words_per_row_flags = [f"-GWORDS_PER_ROW={mem.words_per_row}"]
     cmd = [
         "verilator", "--binary", "--timing",
         "-Wno-WIDTHTRUNC", "-Wno-WIDTHEXPAND",
@@ -447,6 +526,7 @@ def compile_engine(
         # unconnected by design, not by omission.
         "-Wno-PINMISSING",
         f"-GAW={mem.addr_width}", f"-GDW={mem.data_width}",
+        *words_per_row_flags,
         "--top-module", top_module,
         *[str(s) for s in sources],
         "-o", exe_name,
@@ -856,6 +936,21 @@ def run_fsm_campaign(
         workdir.mkdir(parents=True, exist_ok=True)
 
     check_sequence = expected_spec is not None
+    if check_sequence:
+        assert expected_spec is not None  # for type checkers
+        if any(op >= WAIT_BASE for e in expected_spec.elements for op in e.ops):
+            raise CampaignError(
+                "expected_spec contains a wait op -- FSM sequence comparison cannot observe "
+                "elapsed idle cycles on a real controller's bus trace; wait ops are "
+                "march_engine-front only in this phase"
+            )
+    if mem.words_per_row != 1:
+        raise CampaignError(
+            "mem.words_per_row != 1 (HSD/Half-Select Disturb) is not yet supported on the "
+            "FSM front -- only march_engine.sv/march_engine_mp.sv (the algo front) expose "
+            "a WORDS_PER_ROW top parameter to Verilator's -G override in this phase; the "
+            "generated FSM harness does not"
+        )
     try:
         engine_dir = find_engine_dir()
         resolved_fault_ram, shim_sv = _resolve_fsm_engine_sources(mem, engine_dir, workdir, fault_ram_sv)

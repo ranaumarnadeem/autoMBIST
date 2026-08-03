@@ -54,7 +54,7 @@ def test_synth_with_custom_fault_type_end_to_end() -> None:
         "synth withcustom --verify",
     ])
     assert "error:" not in out
-    assert "targets 16/20" in out
+    assert "targets 16/22" in out
     assert "covered: 16/16" in out
     result = shell.session.last_results["withcustom"]
     assert (result.detected, result.total) == (16, 16)
@@ -94,8 +94,8 @@ def test_synth_write_flag_produces_parseable_alg_file(tmp_path: Path) -> None:
 
 def test_synth_excludes_fixed_types_in_printed_summary() -> None:
     shell, out = _run_script(["set_memory 8 8", "synth mytest"])
-    assert "excludes SOF, AF_NOACC, AF_ALIAS, CFDS" in out
-    assert "targets 15/19" in out
+    assert "excludes SOF, AF_NOACC, AF_ALIAS, CFDS, DRF, HSD" in out
+    assert "targets 15/21" in out
 
 
 def test_synth_registered_algo_immediately_usable_by_run() -> None:

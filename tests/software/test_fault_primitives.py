@@ -20,7 +20,7 @@ def test_default_registry_has_15_entries_no_fixed_overlap() -> None:
     names = {p.name for p in reg}
     assert len(names) == 15
     assert names.isdisjoint(FIXED_TYPE_NAMES)
-    assert len(names | set(FIXED_TYPE_NAMES)) == 19  # union = all 19 built-ins
+    assert len(names | set(FIXED_TYPE_NAMES)) == 21  # union = all 21 built-ins
 
 
 def test_default_registry_all_individually_valid() -> None:
@@ -38,6 +38,22 @@ def test_validate_rejects_lowercase_name() -> None:
 
 def test_validate_rejects_fixed_type_name() -> None:
     prim = FaultPrimitive("SOF", "static_clamp", Sensitize(), Effect(kind="force", value="0"))
+    with pytest.raises(FaultPrimitiveError, match="cannot be redefined"):
+        validate(prim, existing_names=set())
+
+
+def test_drf_cannot_be_registered_as_custom_type() -> None:
+    # DRF (Workstream K) is a fixed built-in like SOF/AF_NOACC/AF_ALIAS/CFDS --
+    # confirms the generic fixed-name rejection covers it too, not just the
+    # four pre-existing fixed types.
+    prim = FaultPrimitive("DRF", "static_clamp", Sensitize(), Effect(kind="force", value="0"))
+    with pytest.raises(FaultPrimitiveError, match="cannot be redefined"):
+        validate(prim, existing_names=set())
+
+
+def test_hsd_cannot_be_registered_as_custom_type() -> None:
+    # HSD (Workstream L) is also a fixed built-in -- same reasoning as DRF above.
+    prim = FaultPrimitive("HSD", "static_clamp", Sensitize(), Effect(kind="force", value="0"))
     with pytest.raises(FaultPrimitiveError, match="cannot be redefined"):
         validate(prim, existing_names=set())
 

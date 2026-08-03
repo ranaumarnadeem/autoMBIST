@@ -118,7 +118,7 @@ def _dispatch_arm(p: FaultPrimitive) -> tuple[str, str]:
 
 
 def build_type_table(registry: list[FaultPrimitive]) -> list[tuple[str, int]]:
-    """Contiguous (name, code) pairs: registry entries first, then the four
+    """Contiguous (name, code) pairs: registry entries first, then the six
     fixed built-ins, so user-added types don't disturb the fixed types' codes
     relative to each other."""
     names = [p.name for p in registry] + list(FIXED_TYPES)
