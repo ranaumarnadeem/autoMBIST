@@ -222,10 +222,13 @@ whenever OpenRAM is asked for spare rows) were sufficient. This has now been
 proven clean through the full LibreLane RTL-to-GDS flow for three single-port
 algorithms, each wrapping an unmodified real OpenRAM macro (`.spare_wen0(1'b0)`,
 no macro modification — these all use the *autonomous on-chip* path, which is
-row-only, so their spare column is present but unused; a tester-driven
-column-repair wrapper drives `spare_wen0` from `repair_remap_col` instead, and
-is proven functionally against a real spare-column macro in
-`tests/integration/test_repair_col_real_macro_e2e.py`, though not yet hardened):
+row-only, so their spare column is present but unused. The `sram_wrap_*`
+adapters take a `NUM_SPARE_COLS` parameter, default 0, that surfaces the
+macro's `spare_wen0` as a real port for a tester-driven column-repair wrapper
+to drive from `repair_remap_col`; column repair itself is proven functionally
+against a real spare-column macro in
+`tests/integration/test_repair_col_real_macro_e2e.py`, though no
+column-repairing design has been hardened yet):
 
 - march-C, wrapping 3 real macros in a multi-memory subsystem
   (`flow/multimem/mbist/`).
