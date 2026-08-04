@@ -13,9 +13,9 @@ march-algorithm research platform — proven through open RTL-to-GDS closure on
 sky130.**
 
 autoMBIST is a CLI for testing memory macros for manufacturing defects,
-repairing them with built-in row redundancy, and researching the march
-algorithms used to do it. It is two independent subsystems bundled behind one
-command:
+repairing them with built-in row and column redundancy, and researching the
+march algorithms used to do it. It is two independent subsystems bundled behind
+one command:
 
 1. **MBIST wrapper generation + array fault simulation** (`generate`, `simulate`,
    `run`, `grade-controller`) — takes an OpenRAM-style SRAM macro and a config
@@ -81,10 +81,13 @@ spare-augmented OpenRAM macro with **redundancy analysis (BIRA)** and
 **self-repair (BISR)**, and hardens the result to GDS through the open
 [LibreLane](https://github.com/librelane/librelane) flow.
 
-- **External row-repair remap** around a *stock* spare-augmented OpenRAM macro —
-  the repair steering lives in standard-cell logic in the wrapper
-  ([`rtl/repair_remap_row.sv`](rtl/repair_remap_row.sv)), so it simulates *and*
-  hardens with no special macro views.
+- **External row- and column-repair remaps** around a *stock* spare-augmented
+  OpenRAM macro — the repair steering lives in standard-cell logic in the
+  wrapper ([`rtl/repair_remap_row.sv`](rtl/repair_remap_row.sv) steers addresses
+  to spare rows, [`rtl/repair_remap_col.sv`](rtl/repair_remap_col.sv) steers bit
+  lanes onto spare columns), so it simulates *and* hardens with no special macro
+  views. Column repair is tester-driven; the autonomous on-chip analyzer is
+  row-only for now.
 - **2D BIRA solver**
   ([`src/autombist/repair/bira.py`](src/autombist/repair/bira.py)) — must-repair
   fixed point + backtracking, cross-checked against a brute-force oracle.

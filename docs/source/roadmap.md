@@ -14,6 +14,11 @@ progress, and what's further out.
 - BISR — tester-driven, and (for every algo except `march-2rw`: `march-c`,
   `march-raw`, `march-x`, `mats-plus`, and the multi-port `march-1r1w`) a
   fully autonomous on-chip self-repair FSM
+- Column repair on the tester-driven path — an external `repair_remap_col`
+  bit-steer mux driving a memory's `spare_wen`, composing with the row remap
+- Repair persistence across a reset, at the register level: a saved signature
+  can be reloaded into the on-chip analyzer before any access
+  (`onchip_repair_persistence: true`)
 - A proven LibreLane hardening recipe for real OpenRAM sky130 macros,
   including self-repair-wrapped variants across multiple algorithms
   (march-c, march-x, mats-plus)
@@ -33,9 +38,11 @@ progress, and what's further out.
 
 ## Further out
 
-- Column repair (today's redundancy support is row-only)
-- Repair persistence across a reset (today, repair state is volatile and a
-  fresh self-repair pass is needed after every reset)
+- Column repair on the *autonomous on-chip* path (today it is tester-driven
+  only — the on-chip analyzer is row-only, and a 2D one needs both a per-bit
+  fail dimension in the controller RTL and an on-chip heuristic analyzer)
+- Real fuse/NVM device physics behind repair persistence (today's persistence
+  is register-level: the load path exists, the storage element is out of scope)
 - A broader march-algorithm library (checkerboard, galloping, and similar
   patterns beyond the current built-ins)
 - A standard test-access wrapper (IEEE 1500/1687-style) for integrating

@@ -15,10 +15,22 @@ against and using that consistently.
 
 Generating macros with spare *columns* enabled surfaced a couple of rough
 edges: one geometry hit an edge case in how a write mask interacted with the
-spare column, and characterization crashed on another. We worked around both
-locally and, for the macros in this repository, moved to row-only spares,
-which sidesteps the issue entirely and matches the repair granularity we
-actually needed.
+spare column, and characterization crashed on another. Both are fixed in the
+vendored OpenRAM copy — the write-mask one at the root cause (the emitted
+Verilog was sizing the base write to exclude the spare columns, orphaning the
+top data bit), the characterization one by making that step non-fatal so it
+cannot abort before the GDS/LEF are written.
+
+For a long time we sidestepped the whole area by using row-only spares, which
+matched the repair granularity we then needed. That is no longer the case:
+column repair is implemented and proven, and the proof deliberately runs
+against a macro generated *with* a spare column so the behavioural model's
+spare-write semantics are checked against real OpenRAM output rather than only
+against themselves. One genuine limitation remains, and it is a modelling one
+rather than a toolchain one: under column muxing OpenRAM shares a single
+spare-column set across every word in a physical row, which the repair model's
+global bit-lane view does not express — so configs with more than one word per
+row are rejected rather than silently mis-repaired.
 
 ## LEF units
 
