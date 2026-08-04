@@ -33,8 +33,25 @@ PORT_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
     "r": ("clk", "addr", "dout", "csb"),
     "w": ("clk", "addr", "din", "csb", "we"),
 }
+# Signal roles a port MAY declare but need not. Deliberately separate from
+# PORT_KEYS_BY_TYPE: adding "spare_wen" there would make it mandatory and break
+# every existing config. A read-only port has no write strobe, so no spare_wen.
+OPTIONAL_PORT_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
+    "rw": ("spare_wen",),
+    "r": (),
+    "w": ("spare_wen",),
+}
+# Flattened union, for the legacy-flat-ports subset test and the flat normalizer.
+_ALL_OPTIONAL_PORT_KEYS = tuple(
+    dict.fromkeys(key for keys in OPTIONAL_PORT_KEYS_BY_TYPE.values() for key in keys)
+)
 _VALID_PORT_TYPES = frozenset(PORT_KEYS_BY_TYPE)
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Canonical repair-port pin names for the COLUMN half of a 2D repair. These bind
+# to rtl/repair_remap_col.sv (not repair_remap_row.sv), which is why each
+# normalized repair_ports entry carries a "bind" tag -- see _validate_redundancy.
+_COL_REPAIR_PINS = ("col_repair_en", "faulty_bit")
 
 
 class _DuplicateKeyGuardLoader(yaml.SafeLoader):
@@ -217,10 +234,17 @@ def _is_legacy_flat_ports(ports: dict[str, Any]) -> bool:
     so a legacy config with e.g. ``csb`` accidentally omitted still routes to
     the original clear "missing required key" error instead of being misread
     as a malformed named-port map (whose entries are themselves mappings).
+
+    The allowed set includes the OPTIONAL roles (``spare_wen``) as well as the
+    required ones. Without that, a flat config declaring ``spare_wen`` -- the
+    form every redundancy config uses -- would fail this subset test, get
+    misrouted to the named-multi-port path, and surface as a bogus
+    "ports 'clk' must be a mapping" instead of anything actionable.
     """
     if any(isinstance(value, dict) for value in ports.values()):
         return False
-    return set(ports.keys()) <= set(REQUIRED_PORT_KEYS)
+    allowed = set(REQUIRED_PORT_KEYS) | set(_ALL_OPTIONAL_PORT_KEYS)
+    return set(ports.keys()) <= allowed
 
 
 def _validate_port(name: str, pdata: Any, section: str) -> dict[str, Any]:
@@ -245,7 +269,22 @@ def _validate_port(name: str, pdata: Any, section: str) -> dict[str, Any]:
         if not isinstance(value, str) or not value.strip():
             raise ConfigError(f"{section} {name!r}.{key} must be a non-empty string")
 
-    return {"type": port_type, **{key: pdata[key] for key in required}}
+    # Optional roles (spare_wen) are carried through only when PRESENT -- never
+    # defaulted -- so a config that doesn't use column repair renders exactly as
+    # it did before the role existed. _check_signal_role_collisions iterates
+    # whatever ends up here, so these get collision-checked for free.
+    optional = OPTIONAL_PORT_KEYS_BY_TYPE[port_type]
+    present_optional = [key for key in optional if key in pdata]
+    for key in present_optional:
+        value = pdata[key]
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigError(f"{section} {name!r}.{key} must be a non-empty string")
+
+    return {
+        "type": port_type,
+        **{key: pdata[key] for key in required},
+        **{key: pdata[key] for key in present_optional},
+    }
 
 
 def _algo_port_suffixes(normalized_ports: dict[str, dict[str, Any]], algo: str) -> dict[str, str]:
@@ -315,7 +354,24 @@ def _normalize_ports(ports: dict[str, Any]) -> dict[str, dict[str, Any]]:
             value = ports[key]
             if not isinstance(value, str) or not value.strip():
                 raise ConfigError(f"ports.{key} must be a non-empty string")
-        return {"p0": {"type": "rw", **{key: ports[key] for key in REQUIRED_PORT_KEYS}}}
+        # Optional roles (spare_wen) carried through only when present, matching
+        # _validate_port's named-map handling -- otherwise a flat redundancy
+        # config could declare spare_wen and have it silently dropped here,
+        # leaving the wrapper unable to connect the memory's spare-column pin.
+        present_optional = [
+            key for key in OPTIONAL_PORT_KEYS_BY_TYPE["rw"] if key in ports
+        ]
+        for key in present_optional:
+            value = ports[key]
+            if not isinstance(value, str) or not value.strip():
+                raise ConfigError(f"ports.{key} must be a non-empty string")
+        return {
+            "p0": {
+                "type": "rw",
+                **{key: ports[key] for key in REQUIRED_PORT_KEYS},
+                **{key: ports[key] for key in present_optional},
+            }
+        }
 
     normalized: dict[str, dict[str, Any]] = {}
     for name, pdata in ports.items():
@@ -387,10 +443,16 @@ def _validate_repair_ports(loaded: dict[str, Any]) -> None:
 def _validate_redundancy(loaded: dict[str, Any]) -> None:
     """Validate the OPTIONAL ``redundancy:`` block and derive its spare geometry.
 
-    ``redundancy: {num_spare_rows: N, num_spare_cols: 0}`` declares a spare-
-    augmented memory whose spares are steered by an EXTERNAL row-repair remap in
-    the wrapper (``repair_remap_row``), driven by the ``repair_ports`` pins -- not
-    by pins on the memory itself. Absent -> nothing changes (byte-identical).
+    ``redundancy: {num_spare_rows: N, num_spare_cols: M}`` declares a spare-
+    augmented memory whose spares are steered by EXTERNAL repair remaps in the
+    wrapper (``repair_remap_row``, plus ``repair_remap_col`` when M > 0), driven
+    by the ``repair_ports`` pins -- not by pins on the memory itself. Absent ->
+    nothing changes (byte-identical).
+
+    Column repair (M > 0) is tester-driven only in this phase: it requires the
+    memory's ``spare_wen`` port role and the canonical ``col_repair_en``/
+    ``faulty_bit`` repair pins, and is rejected for ``onchip_selfrepair`` (whose
+    analyzer is row-only) and for ``words_per_row != 1`` (column muxing).
 
     ``redundancy`` and ``repair_ports`` are a required pair: spares need repair
     pins to drive the remap, and (now that repair pins bind to the remap, not a
@@ -440,13 +502,43 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
     if num_spare_rows < 1:
         raise ConfigError(
             "redundancy.num_spare_rows must be >= 1 (omit the redundancy: block "
-            "entirely for a memory with no redundancy)"
+            "entirely for a memory with no redundancy). A columns-only geometry "
+            "(num_spare_rows: 0 with num_spare_cols > 0) is not supported: the "
+            "wrapper's redundancy path is gated on having at least one spare row"
         )
-    if num_spare_cols != 0:
+
+    # words_per_row: the column-mux factor. Optional, defaults to 1 (no muxing).
+    # Rejected unconditionally when != 1 -- not just for column configs -- because
+    # the row-side spare address convention (2**addr_width + i) has the same
+    # latent caveat under muxing (see flow/multimem/mbist/README.md). Nothing sets
+    # this key today, so the default keeps every existing config unaffected.
+    words_per_row = block.get("words_per_row", 1)
+    if isinstance(words_per_row, bool) or not isinstance(words_per_row, int) or words_per_row < 1:
+        raise ConfigError("redundancy.words_per_row must be a positive integer")
+    if words_per_row != 1:
         raise ConfigError(
-            "redundancy.num_spare_cols must be 0 -- column repair is not "
-            "implemented yet (row repair only in this phase)"
+            f"redundancy.words_per_row must be 1, got {words_per_row} -- column "
+            "muxing is not supported by the repair path. Under muxing OpenRAM "
+            "shares ONE spare-column set per PHYSICAL row across the muxed words "
+            "(functional.py:71-77), which repair/bira.py's global bit-lane column "
+            "model does not express"
         )
+
+    if num_spare_cols > 0:
+        if num_spare_cols > int(loaded["data_width"]):
+            raise ConfigError(
+                f"redundancy.num_spare_cols ({num_spare_cols}) exceeds data_width "
+                f"({loaded['data_width']}) -- a spare column replaces a real bit "
+                "lane, so there cannot be more spares than bits"
+            )
+        if onchip_selfrepair:
+            raise ConfigError(
+                "redundancy.num_spare_cols > 0 is not supported with "
+                "onchip_selfrepair: true -- rtl/onchip_row_repair_analyzer.sv is "
+                "row-only, so the column-repair pins would exist but never be "
+                "driven (a silently no-op repair). Use the tester-driven path "
+                "(repair_ports with col_repair_en/faulty_bit) for column repair"
+            )
     if len(loaded["normalized_ports"]) != 1:
         # The only multi-port shape redundancy tolerates is the march-1r1w
         # r+w pair, and only when onchip_selfrepair drives it -- there is no
@@ -485,6 +577,92 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
     except SpareGeometryError as exc:
         raise ConfigError(f"redundancy: {exc}") from exc
 
+    if num_spare_cols > 0:
+        # The memory must expose its spare-column write-enable pin, or the
+        # wrapper has nothing to drive spare_wen onto and the spare lanes would
+        # never be written -- a silently no-op repair.
+        port_name, pdata = next(iter(loaded["normalized_ports"].items()))
+        if "spare_wen" not in pdata:
+            raise ConfigError(
+                f"redundancy.num_spare_cols > 0 requires ports.{port_name}.spare_wen "
+                "(the memory's per-spare-column write-enable pin, e.g. 'spare_wen0' "
+                "on an OpenRAM macro) -- without it the wrapper cannot drive the "
+                "spare columns"
+            )
+
+        # Column repair pins are a brand-new surface with no back-compat cost, so
+        # validate them strictly (unlike the row pins, whose widths stay
+        # unvalidated because tightening them would break existing configs).
+        by_name = {entry["name"]: entry for entry in loaded.get("repair_ports", [])}
+        expected_widths = {
+            "col_repair_en": num_spare_cols,
+            "faulty_bit": num_spare_cols * geometry.bit_index_width,
+        }
+        for pin, expected in expected_widths.items():
+            entry = by_name.get(pin)
+            if entry is None:
+                raise ConfigError(
+                    f"redundancy.num_spare_cols > 0 requires a repair_ports entry "
+                    f"named {pin!r} (width {expected}) to drive repair_remap_col"
+                )
+            if entry["width"] != expected:
+                raise ConfigError(
+                    f"repair_ports {pin!r} width must be {expected} for "
+                    f"num_spare_cols={num_spare_cols}, data_width="
+                    f"{geometry.word_size} (got {entry['width']})"
+                )
+            # dir matters as much as width: repair_remap_col takes these as
+            # INPUTS, so declaring one `output` puts an undriven wire on the
+            # boundary -- the tester gets no pin to drive, spare_wen goes X, and
+            # the repaired lane reads X rather than the spare.
+            if entry["dir"] != "input":
+                raise ConfigError(
+                    f"repair_ports {pin!r} must be dir: input (it drives "
+                    f"repair_remap_col's input port), got {entry['dir']!r}"
+                )
+    else:
+        # The biconditional has to run BOTH ways. Everything above only fires
+        # when num_spare_cols > 0, so a config that declares the whole column
+        # surface but forgets num_spare_cols (or sets it to 0) would otherwise
+        # generate happily: no repair_remap_col, the memory's spare_wen left
+        # unconnected, and col_repair_en/faulty_bit declared as wrapper inputs
+        # bound to nothing -- the tester drives a repair register into dead
+        # nets and column repair silently does nothing.
+        #
+        # This also restores a rejection that existed before column repair:
+        # _is_legacy_flat_ports used to reject an unknown `spare_wen` key
+        # outright (with a misleading message). Widening that set fixed the
+        # message but removed the only thing catching this config.
+        port_name, pdata = next(iter(loaded["normalized_ports"].items()))
+        if "spare_wen" in pdata:
+            raise ConfigError(
+                f"ports.{port_name}.spare_wen is declared but "
+                "redundancy.num_spare_cols is 0 -- the spare-column write enable "
+                "would never be driven. Set num_spare_cols > 0 to enable column "
+                "repair, or drop the spare_wen port role"
+            )
+        stray = [e["name"] for e in loaded.get("repair_ports", []) if e["name"] in _COL_REPAIR_PINS]
+        if stray:
+            raise ConfigError(
+                f"repair_ports {stray} are column-repair pins but "
+                "redundancy.num_spare_cols is 0 -- they would be declared on the "
+                "wrapper boundary and bound to nothing. Set num_spare_cols > 0, "
+                "or remove these pins"
+            )
+
+    # Tag each repair pin with the remap it binds to. The wrapper template
+    # partitions its instantiation loops on this: a column pin bound into
+    # repair_remap_row would be an elaboration error on a port that module does
+    # not have. Gated on num_spare_cols > 0 so that at 0 every pin tags "row"
+    # -- both because the template then renders byte-identically to before
+    # column repair existed, and because tagging by name alone would convert
+    # that loud elaboration error into a silently dangling input (the `col`
+    # binding block only renders when has_col_repair). The `else` branch above
+    # rejects that config outright, so this is belt-and-braces.
+    for entry in loaded.get("repair_ports", []):
+        is_col = num_spare_cols > 0 and entry["name"] in _COL_REPAIR_PINS
+        entry["bind"] = "col" if is_col else "row"
+
     # Plain dict (YAML- and Jinja-safe); the SpareGeometry dataclass is transient.
     # onchip_selfrepair MUST be threaded through here explicitly -- this dict is
     # a full rebuild from a fixed key list, not an update of the input block, so
@@ -496,6 +674,9 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         "num_spare_rows": geometry.num_spare_rows,
         "num_spare_cols": geometry.num_spare_cols,
         "mem_addr_width": geometry.mem_addr_width,
+        "mem_data_width": geometry.mem_data_width,
+        "bit_index_width": geometry.bit_index_width,
+        "words_per_row": words_per_row,
         "onchip_selfrepair": onchip_selfrepair,
         "onchip_repair_persistence": onchip_repair_persistence,
     }

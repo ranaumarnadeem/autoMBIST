@@ -61,6 +61,9 @@ def test_valid_redundancy_derives_geometry(tmp_path: Path) -> None:
         "num_spare_rows": 2,
         "num_spare_cols": 0,
         "mem_addr_width": 3,    # ceil(log2(4 + 2))
+        "mem_data_width": 4,    # word_size + num_spare_cols(0)
+        "bit_index_width": 2,   # ceil(log2(word_size 4))
+        "words_per_row": 1,     # no column muxing (the only supported value)
         "onchip_selfrepair": False,
         "onchip_repair_persistence": False,
     }
@@ -101,9 +104,188 @@ def test_repair_ports_without_redundancy_rejected(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # Field rules
 # --------------------------------------------------------------------------- #
-def test_num_spare_cols_must_be_zero_this_phase(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="num_spare_cols"):
-        _load(tmp_path, {**BASE, "redundancy": {"num_spare_rows": 1, "num_spare_cols": 1}, "repair_ports": REPAIR_PORTS})
+# --------------------------------------------------------------------------- #
+# Column repair (Workstream M.1): accepted on the tester-driven path, with a
+# strict, loud surface. num_spare_cols was hard-rejected outright before this.
+# --------------------------------------------------------------------------- #
+COL_PORTS = {**BASE["ports"], "spare_wen": "spare_wen0"}
+COL_REPAIR_PORTS = [
+    *REPAIR_PORTS,
+    {"name": "col_repair_en", "width": 1, "dir": "input"},
+    {"name": "faulty_bit", "width": 2, "dir": "input"},   # 1 spare * bit_index_width(2)
+]
+COL_BASE = {**BASE, "ports": COL_PORTS}
+
+
+def test_num_spare_cols_accepted_on_the_tester_driven_path(tmp_path: Path) -> None:
+    loaded = _load(tmp_path, {
+        **COL_BASE,
+        "redundancy": {"num_spare_rows": 1, "num_spare_cols": 1},
+        "repair_ports": COL_REPAIR_PORTS,
+    })
+    r = loaded["redundancy"]
+    assert r["num_spare_cols"] == 1
+    assert r["mem_data_width"] == 5      # word_size 4 + 1 spare column
+    assert r["bit_index_width"] == 2
+
+
+def test_column_repair_pins_are_tagged_bind_col(tmp_path: Path) -> None:
+    """The wrapper template partitions its instantiation loops on this tag -- a
+    column pin bound into repair_remap_row would be an elaboration error."""
+    loaded = _load(tmp_path, {
+        **COL_BASE,
+        "redundancy": {"num_spare_rows": 1, "num_spare_cols": 1},
+        "repair_ports": COL_REPAIR_PORTS,
+    })
+    binds = {e["name"]: e["bind"] for e in loaded["repair_ports"]}
+    assert binds == {
+        "row_repair_en": "row", "faulty_row_addr": "row",
+        "col_repair_en": "col", "faulty_bit": "col",
+    }
+
+
+def test_row_only_config_tags_every_pin_bind_row(tmp_path: Path) -> None:
+    """The byte-identity guarantee: with no spare columns every pin binds "row",
+    so the template's loops render exactly as they did before column repair."""
+    loaded = _load(tmp_path, {**BASE, "redundancy": {"num_spare_rows": 2}, "repair_ports": REPAIR_PORTS})
+    assert all(e["bind"] == "row" for e in loaded["repair_ports"])
+
+
+def test_num_spare_cols_rejected_with_onchip_selfrepair(tmp_path: Path) -> None:
+    """onchip_row_repair_analyzer.sv is row-only: the column pins would exist
+    but never be driven -- a silently no-op repair."""
+    with pytest.raises(ConfigError, match="num_spare_cols > 0 is not supported with"):
+        _load(tmp_path, {
+            **COL_BASE,
+            "redundancy": {"num_spare_rows": 1, "num_spare_cols": 1, "onchip_selfrepair": True},
+        })
+
+
+def test_num_spare_cols_cannot_exceed_data_width(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="exceeds data_width"):
+        _load(tmp_path, {
+            **COL_BASE,
+            "redundancy": {"num_spare_rows": 1, "num_spare_cols": 5},   # data_width is 4
+            "repair_ports": COL_REPAIR_PORTS,
+        })
+
+
+def test_num_spare_cols_requires_the_spare_wen_port_role(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="spare_wen"):
+        _load(tmp_path, {
+            **BASE,   # BASE's ports have no spare_wen
+            "redundancy": {"num_spare_rows": 1, "num_spare_cols": 1},
+            "repair_ports": COL_REPAIR_PORTS,
+        })
+
+
+@pytest.mark.parametrize("missing", ["col_repair_en", "faulty_bit"])
+def test_num_spare_cols_requires_the_canonical_column_pins(tmp_path: Path, missing: str) -> None:
+    ports = [e for e in COL_REPAIR_PORTS if e["name"] != missing]
+    with pytest.raises(ConfigError, match=missing):
+        _load(tmp_path, {
+            **COL_BASE,
+            "redundancy": {"num_spare_rows": 1, "num_spare_cols": 1},
+            "repair_ports": ports,
+        })
+
+
+@pytest.mark.parametrize("pin,bad_width", [("col_repair_en", 2), ("faulty_bit", 3)])
+def test_column_pin_widths_are_validated_strictly(tmp_path: Path, pin: str, bad_width: int) -> None:
+    """A brand-new surface with no back-compat cost, so unlike the row pins these
+    widths are checked rather than trusted."""
+    ports = [
+        {**e, "width": bad_width} if e["name"] == pin else e
+        for e in COL_REPAIR_PORTS
+    ]
+    with pytest.raises(ConfigError, match="width must be"):
+        _load(tmp_path, {
+            **COL_BASE,
+            "redundancy": {"num_spare_rows": 1, "num_spare_cols": 1},
+            "repair_ports": ports,
+        })
+
+
+# --- The biconditional must run BOTH ways (adversarial-review findings 1-3) --- #
+def test_spare_wen_port_role_without_spare_columns_rejected(tmp_path: Path) -> None:
+    """Regression: declaring the column surface but forgetting num_spare_cols
+    used to generate happily -- no repair_remap_col, the memory's spare_wen
+    unconnected, and col_repair_en/faulty_bit on the boundary bound to nothing.
+    A tester would drive the repair register into dead nets."""
+    with pytest.raises(ConfigError, match="spare_wen is declared but"):
+        _load(tmp_path, {
+            **COL_BASE,
+            "redundancy": {"num_spare_rows": 1},   # num_spare_cols omitted -> 0
+            "repair_ports": COL_REPAIR_PORTS,
+        })
+
+
+@pytest.mark.parametrize("pin", ["col_repair_en", "faulty_bit"])
+def test_column_repair_pins_without_spare_columns_rejected(tmp_path: Path, pin: str) -> None:
+    """The other half of the same hole: a column-repair pin name in a row-only
+    config. Before the fix it was tagged bind='col' purely by name, so the
+    template excluded it from the row remap and had no column remap to bind it
+    to -- turning what used to be a loud elaboration error into a dangling
+    wrapper input."""
+    with pytest.raises(ConfigError, match="column-repair pins but"):
+        _load(tmp_path, {
+            **BASE,   # no spare_wen role, so the check above cannot fire first
+            "redundancy": {"num_spare_rows": 1, "num_spare_cols": 0},
+            "repair_ports": [*REPAIR_PORTS, {"name": pin, "width": 1, "dir": "input"}],
+        })
+
+
+def test_row_only_config_with_a_col_named_pin_tags_it_row_when_allowed() -> None:
+    """Belt-and-braces on the bind tag itself: _COL_REPAIR_PINS membership must
+    not decide `bind` on its own, independent of the config-level rejection."""
+    from autombist.generator import _COL_REPAIR_PINS
+
+    assert "col_repair_en" in _COL_REPAIR_PINS
+    assert "faulty_bit" in _COL_REPAIR_PINS
+
+
+@pytest.mark.parametrize("pin", ["col_repair_en", "faulty_bit"])
+def test_column_pin_must_be_dir_input(tmp_path: Path, pin: str) -> None:
+    """dir matters as much as width: repair_remap_col takes these as inputs, so
+    `output` leaves an undriven wire on the boundary -- spare_wen goes X and the
+    repaired lane reads X, with no pin for the tester to drive."""
+    ports = [
+        {**e, "dir": "output"} if e["name"] == pin else e
+        for e in COL_REPAIR_PORTS
+    ]
+    with pytest.raises(ConfigError, match="must be dir: input"):
+        _load(tmp_path, {
+            **COL_BASE,
+            "redundancy": {"num_spare_rows": 1, "num_spare_cols": 1},
+            "repair_ports": ports,
+        })
+
+
+def test_words_per_row_defaults_to_one(tmp_path: Path) -> None:
+    loaded = _load(tmp_path, {**BASE, "redundancy": {"num_spare_rows": 1}, "repair_ports": REPAIR_PORTS})
+    assert loaded["redundancy"]["words_per_row"] == 1
+
+
+def test_words_per_row_other_than_one_rejected(tmp_path: Path) -> None:
+    """Column muxing shares ONE spare-column set per PHYSICAL row, which BIRA's
+    global bit-lane column model does not express. Rejected unconditionally --
+    the row-side spare-address convention has the same latent caveat."""
+    with pytest.raises(ConfigError, match="words_per_row"):
+        _load(tmp_path, {
+            **BASE,
+            "redundancy": {"num_spare_rows": 1, "words_per_row": 2},
+            "repair_ports": REPAIR_PORTS,
+        })
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, "two", 1.5])
+def test_words_per_row_must_be_a_positive_int(tmp_path: Path, bad) -> None:
+    with pytest.raises(ConfigError, match="words_per_row"):
+        _load(tmp_path, {
+            **BASE,
+            "redundancy": {"num_spare_rows": 1, "words_per_row": bad},
+            "repair_ports": REPAIR_PORTS,
+        })
 
 
 def test_num_spare_rows_must_be_at_least_one(tmp_path: Path) -> None:
