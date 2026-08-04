@@ -113,8 +113,9 @@ sky130 macro subsystem) sets `read_latency: 0` for exactly this reason.
 Opt-in via a `redundancy:` block, paired with either `repair_ports:`
 (tester-driven) or `onchip_selfrepair: true` (autonomous). Single-port
 memories only, except the 1-read+1-write `march-1r1w` port shape when paired
-with `onchip_selfrepair: true` (see below); `num_spare_cols` must currently
-be `0` (row repair only — see {doc}`roadmap`).
+with `onchip_selfrepair: true` (see below). `num_spare_cols` may be non-zero
+on the **tester-driven** path (see "Column repair" below); it must be `0` with
+`onchip_selfrepair: true`, whose analyzer is row-only.
 
 **Tester-driven** — the wrapper exposes repair-register pins a tester (or the
 Python `repair/bisr.py` encoder) drives directly:
@@ -171,6 +172,57 @@ redundancy:
   num_spare_cols: 0
   onchip_selfrepair: true
 ```
+
+### Column repair
+
+Set `num_spare_cols` to a non-zero value on the **tester-driven** path and the
+wrapper gains a second external remap, `repair_remap_col`, on the *data* path:
+it copies each faulty bit lane onto a spare column on writes (driving the
+memory's `spare_wen` pin) and substitutes the spare back in on reads. The row
+and column remaps are independent — one steers addresses, the other steers
+bits — so they compose: a row-steered access still gets its column steer, on
+the spare row's own spare columns.
+
+This requires three additional things:
+
+* the memory's spare-column write-enable pin, declared as a `spare_wen` port
+  role (e.g. `spare_wen0` on an OpenRAM macro);
+* two extra `repair_ports` with canonical names and exact widths —
+  `col_repair_en` (`num_spare_cols` bits) and `faulty_bit`
+  (`num_spare_cols * ceil(log2(data_width))` bits);
+* `words_per_row: 1` (the default). Column muxing is rejected: OpenRAM shares
+  one spare-column set per *physical* row across the muxed words, which the
+  repair model's global bit-lane view does not express.
+
+```yaml
+ports:
+  clk: clk0
+  addr: addr0
+  din: din0
+  dout: dout0
+  we: web0
+  csb: csb0
+  spare_wen: spare_wen0        # required when num_spare_cols > 0
+redundancy:
+  num_spare_rows: 1
+  num_spare_cols: 1
+repair_ports:
+  - {name: row_repair_en, width: 1, dir: input}
+  - {name: faulty_row_addr, width: 2, dir: input}   # num_spare_rows * addr_width
+  - {name: col_repair_en, width: 1, dir: input}     # num_spare_cols
+  - {name: faulty_bit, width: 2, dir: input}        # num_spare_cols * bit_index_width
+```
+
+`repair.analyze()` has always been a 2D solver; `repair.encode_repair()` packs
+both halves of its verdict into these pins. (`repair.encode_row_repair()` is
+the row-only encoder and now refuses a geometry with spare columns rather than
+silently emitting half a repair.)
+
+One behavioural caveat worth knowing: a spare column is only *written* while
+`col_repair_en` is high, so a spare lane holds stale data until the first write
+to that address after the signature is applied. Every flow here writes before
+it reads, so this is bounded in practice — but enabling repair midway through
+and reading without rewriting will surface the stale lane.
 
 ## OpenRAM synthesis config (`openram.yml`)
 
