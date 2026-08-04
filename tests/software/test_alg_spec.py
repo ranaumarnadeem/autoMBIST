@@ -272,3 +272,41 @@ def test_builtin_alg_to_numeric_byte_identical_to_pre_phase_golden(algo_name: st
 def test_builtin_alg_length_n_byte_identical_to_pre_phase_golden(algo_name: str) -> None:
     spec = resolve_algo(algo_name)
     assert spec.length_n == _GOLDEN_LENGTH_N[algo_name]
+
+
+# March B is pinned SEPARATELY from the two _GOLDEN_* maps above rather than
+# added to them: those exist specifically to prove the four PRE-EXISTING built-in
+# .alg files serialize byte-identically to their pre-multi-port values, and
+# folding a newer file into that set would blur what they attest to.
+_MARCH_B_NUMERIC = (
+    "# march_b  (17n)  DIR NOPS OP0..OP7\n"
+    "2 1 2 0 0 0 0 0 0 0\n"
+    "0 6 0 3 1 2 0 3 0 0\n"
+    "0 3 1 2 3 0 0 0 0 0\n"
+    "1 4 1 2 3 2 0 0 0 0\n"
+    "1 3 0 3 2 0 0 0 0 0\n"
+)
+
+
+def test_march_b_is_exactly_17n() -> None:
+    """The literature figure for Suk & Reddy's March B, and the one number an
+    earlier planning note got wrong: it recorded the same quoted sequence as
+    summing to 18n and deferred the algorithm over the discrepancy. The sequence
+    is 1 + 6 + 3 + 4 + 3 = 17."""
+    assert resolve_algo("march_b").length_n == 17
+
+
+def test_march_b_element_shape() -> None:
+    """Pins the actual op sequence, not just its length -- a different sequence
+    that happened to total 17 ops would otherwise slip through."""
+    assert [e.human() for e in resolve_algo("march_b").elements] == [
+        "either w0",
+        "up r0 w1 r1 w0 r0 w1",
+        "up r1 w0 w1",
+        "down r1 w0 w1 w0",
+        "down r0 w1 w0",
+    ]
+
+
+def test_march_b_numeric_serialization() -> None:
+    assert resolve_algo("march_b").to_numeric() == _MARCH_B_NUMERIC

@@ -320,26 +320,40 @@ activates 10 times and still escapes.
 
 ## Measured results, faults.example.txt, INIT=1 (defaults)
 
-| Fault | MATS+ (5n) | March C- (10n) | March SS (22n) |
-|---|---|---|---|
-| SA0, SA1 | D | D | D |
-| TF0, TF1 | D | D | D |
-| WDF0, WDF1 | E | E | D |
-| RDF0, RDF1 | D | D | D |
-| DRDF0, DRDF1 | E | E | D |
-| IRF0, IRF1 | D | D | D |
-| SOF | E | E | E |
-| AF_NOACC, AF_ALIAS | D | D | D |
-| CFIN | D | D | D |
-| CFID | E | D | D |
-| CFST | D | D | D |
-| CFDS (any-read) | E | D | D |
-| total | 12/19 | 14/19 | 18/19 |
+| Fault | MATS+ (5n) | March C- (10n) | March B (17n) | March SS (22n) |
+|---|---|---|---|---|
+| SA0, SA1 | D | D | D | D |
+| TF0, TF1 | D | D | D | D |
+| WDF0, WDF1 | E | E | E | D |
+| RDF0, RDF1 | D | D | D | D |
+| DRDF0, DRDF1 | E | E | E | D |
+| IRF0, IRF1 | D | D | D | D |
+| SOF | E | E | **D** | E |
+| AF_NOACC, AF_ALIAS | D | D | D | D |
+| CFIN | D | D | D | D |
+| CFID | E | D | D | D |
+| CFST | D | D | D | D |
+| CFDS (any-read) | E | D | D | D |
+| total | 12/19 | 14/19 | 15/19 | 18/19 |
 
 These match the published coverage claims: March C- misses WDF (it never
 performs a non-transition write) and DRDF (no read-after-read); March SS
 adds both and covers all static simple faults. The MATS+ CFDS escape is a
-double-inversion masking between its up and down passes. SOF escapes solid
+double-inversion masking between its up and down passes.
+
+**March B is the one entry here whose headline number understates it.** Its
+15/19 beats March C- by exactly one fault, SOF — element 2 (`up r0 w1 r1 w0 r0
+w1`) reads the same cell at opposite polarity within a single address visit, so
+the output keeper an SOF models is forced across reads of opposite expected
+data, which is precisely the condition described below as necessary to expose
+it. No other built-in does that. But the reason to reach for March B is
+*linked* coupling faults (one coupling fault masking another), and
+`faults.example.txt` contains no linked faults at all — so the property it is
+actually chosen for contributes nothing to this table. Read its 15/19 as a
+lower bound on a fault list that cannot test its real strength, not as the
+whole value of 7 extra operations over March C-.
+
+SOF escapes solid
 data background March tests because the output keeper tracks neighboring
 reads of the same expected value; detecting it needs consecutive reads of
 opposite data (element-boundary cells, paused tests, or address-order

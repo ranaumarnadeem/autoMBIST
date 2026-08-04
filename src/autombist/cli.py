@@ -514,7 +514,7 @@ def grade_controller(
 def test(
     addr_width: int = typer.Option(..., "--addr-width", "-aw", help="Memory address width in bits"),
     data_width: int = typer.Option(..., "--data-width", "-dw", help="Memory data width in bits"),
-    algo: str = typer.Option("march_c", "--algo", help="Built-in algorithm name (march_c, mats_plus, march_ss, march_x) or a path to a .alg file"),
+    algo: str = typer.Option("march_c", "--algo", help="Built-in algorithm name (march_c, march_b, mats_plus, march_ss, march_x) or a path to a .alg file"),
     fsm: Path | None = typer.Option(None, "--fsm", help="Validate a controller FSM .sv instead of an algorithm (takes precedence over --algo); sibling .sv/.v files in its directory are gathered automatically"),
     faults: Path = typer.Option(..., "--faults", help="Fault-list file: 'TYPE VADDR VBIT AADDR ABIT P0 P1' per line"),
     fault_types: Path | None = typer.Option(None, "--fault-types", help="JSON file with a list of custom fault-primitive specs, added to the built-in 19 (see fault_primitives.py for the schema)"),
@@ -669,8 +669,8 @@ def algo(
     Register algorithms (add_algo) and fault instances (add_fault/load_faults/
     gen_faults), run a campaign (run), compare against built-in marches
     (compare_algo), and export a report (write_report) or a standalone
-    testbench bundle (export_tb). Built-in algorithms (march_c, mats_plus,
-    march_ss, march_x) are preloaded. Type 'help' inside the shell for the
+    testbench bundle (export_tb). Built-in algorithms (march_c, march_b,
+    mats_plus, march_ss, march_x) are preloaded. Type 'help' inside the shell for the
     full command list.
 
     Examples:
