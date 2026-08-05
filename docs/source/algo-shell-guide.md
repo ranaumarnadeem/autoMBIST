@@ -470,6 +470,47 @@ each (the SystemVerilog engine's fixed-size `prog[16]`/`ops[8]` arrays).
 Load one with `add_algo my_march.alg` in the shell, or pass its path
 directly to `--algo` on `autombist test`.
 
+### How `either` gets resolved
+
+`either` is a statement about the *algorithm* — this element detects what it
+detects regardless of address order — so a consumer that needs one concrete
+address order has to pick. Every consumer in this project picks the same way,
+via one function: **an `either` element inherits the direction of the
+previous element, defaulting to up when there is none**
+(`alg_spec.resolve_directions()`). The numeric form the SystemVerilog engines
+read (`AlgSpec.to_numeric()`), the classic-path RTL table renderer, the FSM
+reference trace, and the synthesizer's internal replay model all call this
+one function rather than resolving independently.
+
+So March C-'s trailing `either r0` resolves to **down** — it follows two
+`down` elements — both when `march_engine.sv` runs the algorithm from a
+campaign and in the hand-written classic RTL that ships to silicon.
+
+This rule is not arbitrary. It is the one real silicon already implements —
+proven by an exhaustive simulation sweep comparing every rendered classic-path
+table against the hand-written one it replaces
+(`tests/integration/test_algo_table_equivalence.py`, 32/32 vectors per
+algorithm) — and it has a hardware rationale: continuing in the same direction
+means the address counter never has to rewind between elements.
+
+**Getting this right is not cosmetic.** Before the rule was unified,
+`march_engine.sv` ran every `either` element ascending regardless of context.
+On `faults.example.txt` at `addr_width=8`/`data_width=8`, that made
+`run_algo_campaign` under-report March X's coverage as 12/19 instead of the
+13/19 the algorithm actually detects: `CFDS 130 1 131 1 4 0` (aggressor above
+the victim) is caught only by a descending final read, and March X's trailing
+`either r0` is exactly that read. March C-'s own trailing `either` happens to
+be direction-insensitive for every fault in that list — which is why the two
+subsystems could disagree there for years without a coverage number ever
+looking wrong.
+
+The one place `either`'s freedom is still honored rather than collapsed to a
+single answer is the FSM sequence checker (`--check-sequence`): it validates
+an arbitrary hand-written controller against a spec, and a controller is free
+to choose either address order for a genuine `either` element, so it accepts
+both — with the direction `resolve_directions()` picks reported first in any
+divergence message.
+
 ### Port suffixes (multi-port)
 
 Any op token may carry an optional `.PORT` suffix — `r0.1`, `w1.0`, etc. —

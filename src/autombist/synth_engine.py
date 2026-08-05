@@ -69,7 +69,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .alg_spec import DIR_MAP, MAX_ELEMENTS, MAX_OPS, OP_MAP, WAIT_BASE, AlgSpec, Element
+from .alg_spec import DIR_MAP, MAX_ELEMENTS, MAX_OPS, OP_MAP, WAIT_BASE, AlgSpec, Element, resolve_directions
 from .fault_primitives import FIXED_TYPE_NAMES, FaultPrimitive
 
 OP_R0, OP_R1, OP_W0, OP_W1 = OP_MAP["r0"], OP_MAP["r1"], OP_MAP["w0"], OP_MAP["w1"]
@@ -229,9 +229,18 @@ def _apply_op(v: int, a: int, op: int, role: str, fault: FaultPrimitive | None) 
 
 
 def _role_order(direction: int, aggressor_gt_victim: bool) -> tuple[str, str]:
+    """``direction`` must already be resolved to a concrete 0/1 -- callers
+    (``replay``, ``_golden_state_after``) resolve the whole element list ONCE,
+    up front, via :func:`autombist.alg_spec.resolve_directions`, rather than
+    each element guessing what an unresolved `either` (2) means on its own
+    (which is what this function used to do, and which is exactly the kind of
+    second, independently-guessed rule that let the engine and the classic
+    RTL disagree on march_x before that rule was unified). The ``else``
+    branch below is only a defensive fallback for a caller that hands this
+    function a raw, unresolved ``Element.direction`` directly."""
     if direction == DIR_DOWN:
         return ("a", "v") if aggressor_gt_victim else ("v", "a")
-    return ("v", "a") if aggressor_gt_victim else ("a", "v")  # up, or either (treated as up)
+    return ("v", "a") if aggressor_gt_victim else ("a", "v")  # up (or an unresolved either, defensively)
 
 
 def replay(
@@ -246,8 +255,8 @@ def replay(
     simulation; see module docstring)."""
     v = a = init_val
     obs: list[tuple[int, int]] = []
-    for elem in elements:
-        for role in _role_order(elem.direction, aggressor_gt_victim):
+    for elem, direction in zip(elements, resolve_directions(elements)):
+        for role in _role_order(direction, aggressor_gt_victim):
             for op in elem.ops:
                 v, a, observed = _apply_op(v, a, op, role, fault)
                 v = _apply_static_clamp(v, a, fault)
@@ -291,8 +300,8 @@ def _golden_state_after(elements: list[Element], *, aggressor_gt_victim: bool = 
     """(v, a) after replaying ``elements`` with no fault -- the starting
     point for building the next candidate."""
     v = a = init_val
-    for elem in elements:
-        for role in _role_order(elem.direction, aggressor_gt_victim):
+    for elem, direction in zip(elements, resolve_directions(elements)):
+        for role in _role_order(direction, aggressor_gt_victim):
             for op in elem.ops:
                 v, a, _ = _apply_op(v, a, op, role, None)
                 v = _apply_static_clamp(v, a, None)

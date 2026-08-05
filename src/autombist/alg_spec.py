@@ -37,6 +37,7 @@ depth, or use a small/known depth.
 from __future__ import annotations
 
 import importlib.resources
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -151,15 +152,36 @@ class AlgSpec:
         adding thousands of simulated cycles)."""
         return sum(sum(1 for op in e.ops if op < WAIT_BASE) for e in self.elements)
 
+    def resolved(self) -> AlgSpec:
+        """Return a new spec with every element's direction collapsed to a
+        concrete up/down value via :func:`resolve_directions` -- the ONE
+        canonical rule for what `either` means when a consumer needs an actual
+        address order. ``self`` is left untouched: `either` is preserved in a
+        freshly-parsed spec so it round-trips through :meth:`to_text` (it is
+        author intent, not yet a decision), and this method is the one place
+        that makes the decision on a caller's behalf. :meth:`to_numeric` calls
+        this before serializing, so every consumer downstream of the numeric
+        form (both SystemVerilog engines) sees only 0/1, never 2."""
+        dirs = resolve_directions(self.elements)
+        resolved_elements = [
+            Element(direction=d, ops=list(e.ops), ports=list(e.ports))
+            for e, d in zip(self.elements, dirs)
+        ]
+        return AlgSpec(name=self.name, elements=resolved_elements)
+
     def to_numeric(self) -> str:
         """Byte-identical to the pre-multi-port serialization when every
         element's ports are all zero (true of every existing built-in `.alg`
-        file). Only emits the extended ``...PORT0..PORT7`` header/columns when
-        a non-zero port tag is actually present somewhere in the spec."""
-        extended = any(any(e.ports) for e in self.elements)
+        file) AND no element's direction needed resolving (true of any spec
+        with no `either`). Only emits the extended ``...PORT0..PORT7``
+        header/columns when a non-zero port tag is actually present somewhere
+        in the spec. Serializes :meth:`resolved`, not ``self`` -- the DIR
+        column a consumer reads is always a concrete 0/1, never 2 (`either`)."""
+        resolved = self.resolved()
+        extended = any(any(e.ports) for e in resolved.elements)
         suffix = "  PORT0..PORT7" if extended else ""
         header = f"# {self.name}  ({self.length_n}n)  DIR NOPS OP0..OP7{suffix}\n"
-        return header + "".join(e.numeric_line() + "\n" for e in self.elements)
+        return header + "".join(e.numeric_line() + "\n" for e in resolved.elements)
 
     def write_numeric(self, path: Path) -> Path:
         path.write_text(self.to_numeric(), encoding="ascii")
@@ -248,6 +270,54 @@ def parse_alg(text: str, name: str) -> AlgSpec:
     return AlgSpec(name=name, elements=elements)
 
 
+def resolve_directions(elements: Sequence[Element]) -> list[int]:
+    """Resolve each element's traversal direction to a concrete up/down value
+    (0/1, :data:`DIR_MAP` encoding -- ``either`` (2) never appears in the result).
+
+    ``up``/``down`` pass straight through. ``either`` means "this element's
+    direction does not affect what it tests" (typically a lone init write or a
+    lone verify read), so the caller is free to choose -- and the rule is
+    **inherit the previous element's direction, defaulting to up when there is
+    none**.
+
+    This is the ONE canonical rule for the whole project. Every consumer that
+    needs a concrete address order calls this function rather than resolving
+    independently: the numeric serialization handed to the SystemVerilog
+    engines (:meth:`AlgSpec.resolved`/:meth:`AlgSpec.to_numeric`), the
+    classic-path RTL table renderer (:mod:`autombist.algo_rtl_gen`), the
+    reference linear trace (:func:`expand_expected_trace`), and the
+    synthesizer's internal replay model (:mod:`autombist.synth_engine`). Before
+    this function existed, those sites disagreed -- the engine ran every
+    ``either`` element ascending while the hand-written classic RTL ran a
+    *trailing* ``either`` in the previous element's direction -- and that was
+    not cosmetic: on ``faults.example.txt`` at addr_width=8/data_width=8,
+    ``march_x`` scored 12/19 under the engine's rule and 13/19 under this one
+    (its ``CFDS 130 1 131 1 4 0``, aggressor above the victim, is caught only
+    by a descending final read). This rule was chosen because it is the one
+    real silicon already implements: it reproduces the direction sequence of
+    all three hand-written classic-path tables exactly (``march_c`` up,up,up,
+    down,down,down; ``march_x`` up,up,down,down; ``mats_plus`` up,up,down --
+    proven behaviourally identical by
+    ``tests/integration/test_algo_table_equivalence.py``'s exhaustive
+    simulation sweep), and it has a hardware rationale: continuing in the same
+    direction means the address counter never has to rewind between elements.
+
+    The one place ``either``'s freedom is still honored rather than collapsed
+    to this single answer is the FSM sequence checker
+    (:func:`expand_expected_blocks`), which validates an arbitrary hand-written
+    controller against a spec -- a controller is free to choose either order
+    for a genuine ``either`` element, so the checker accepts both, with this
+    function's answer listed first.
+    """
+    directions: list[int] = []
+    previous = 0  # default direction when a spec opens with `either`: up
+    for element in elements:
+        if element.direction != 2:  # not `either` -- adopt it as the running direction
+            previous = element.direction
+        directions.append(previous)
+    return directions
+
+
 def _expand_element(elem: Element, elem_idx: int, depth: int, direction: int) -> list[AccessStep]:
     """Expand one element with an explicit address direction (0=up, 1=down).
     Wait ops are skipped -- they have zero bus activity, so there is no
@@ -266,16 +336,21 @@ def _expand_element(elem: Element, elem_idx: int, depth: int, direction: int) ->
 
 def expand_expected_trace(spec: AlgSpec, depth: int) -> list[AccessStep]:
     """Expand a march spec into a single flat per-address memory-operation
-    sequence (``either`` treated as up, matching ``engine/march_engine.sv``'s
-    reference traversal). This is the canonical linear form; the *comparison*
-    against a real controller uses :func:`expand_expected_blocks` instead, which
-    additionally accepts a reversed traversal for ``either`` elements.
+    sequence, resolving every ``either`` element via :func:`resolve_directions`
+    -- the same canonical rule :meth:`AlgSpec.to_numeric` uses, so this trace
+    always matches what a compiled engine actually runs. This is the canonical
+    linear form; the *comparison* against a real controller uses
+    :func:`expand_expected_blocks` instead, which additionally accepts a
+    reversed traversal for ``either`` elements -- a real controller is free to
+    choose either order, but this trace makes no claim about what's allowed,
+    only about what one canonical run does.
     """
     if depth <= 0:
         raise AlgSpecError(f"depth must be a positive number of words, got {depth}")
+    dirs = resolve_directions(spec.elements)
     steps: list[AccessStep] = []
     for e_idx, elem in enumerate(spec.elements):
-        steps.extend(_expand_element(elem, e_idx, depth, 1 if elem.direction == 1 else 0))
+        steps.extend(_expand_element(elem, e_idx, depth, dirs[e_idx]))
     return steps
 
 
@@ -287,7 +362,11 @@ class ElementBlock:
     element has two -- ascending OR descending -- because the march definition
     leaves the address order of an ``either`` element free (a controller like
     ``march_c_fsm`` legitimately runs one ``either`` element up and another
-    down). The comparison accepts the observed block if it matches ANY ordering.
+    down). The comparison accepts the observed block if it matches ANY
+    ordering. ``orderings[0]`` is always the canonical direction (see
+    :func:`resolve_directions`) -- for a fixed-direction element that's its
+    only ordering anyway, and for an ``either`` element it is what a
+    divergence message reports as "expected", rather than an arbitrary pick.
     """
     elem_idx: int
     orderings: tuple[tuple[AccessStep, ...], ...]
@@ -299,18 +378,24 @@ class ElementBlock:
 
 def expand_expected_blocks(spec: AlgSpec, depth: int) -> list[ElementBlock]:
     """Expand a march spec into per-element blocks for sequence comparison,
-    encoding the ``either``-direction freedom (see :class:`ElementBlock`)."""
+    encoding the ``either``-direction freedom (see :class:`ElementBlock`). The
+    two orderings an ``either`` element accepts are DERIVED from the one
+    canonical rule (:func:`resolve_directions`) rather than independently
+    fixed at ascending/descending -- so this stays a documented RELAXATION of
+    the canonical rule, not a second rule that could silently disagree with
+    it (which is exactly the bug that made the engine and the hand-written
+    classic RTL disagree on `march_x` before that rule was unified)."""
     if depth <= 0:
         raise AlgSpecError(f"depth must be a positive number of words, got {depth}")
+    dirs = resolve_directions(spec.elements)
     blocks: list[ElementBlock] = []
     for e_idx, elem in enumerate(spec.elements):
-        if elem.direction == 2:  # either -> ascending or descending both valid
-            orderings = (
-                tuple(_expand_element(elem, e_idx, depth, 0)),
-                tuple(_expand_element(elem, e_idx, depth, 1)),
-            )
+        canonical = tuple(_expand_element(elem, e_idx, depth, dirs[e_idx]))
+        if elem.direction == 2:  # either -- the other order is also acceptable
+            other = tuple(_expand_element(elem, e_idx, depth, 1 - dirs[e_idx]))
+            orderings = (canonical, other)
         else:
-            orderings = (tuple(_expand_element(elem, e_idx, depth, elem.direction)),)
+            orderings = (canonical,)
         blocks.append(ElementBlock(elem_idx=e_idx, orderings=orderings))
     return blocks
 
