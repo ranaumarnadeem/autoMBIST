@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -111,6 +112,87 @@ def test_export_tb_produces_runnable_bundle(tmp_path: Path) -> None:
     ])
     for name in ("fault_ram.sv", "march_engine.sv", "openram_shim.sv", "run_campaign.sh", "faults.txt"):
         assert (bundle_dir / name).exists(), name
+
+
+def test_run_campaign_sh_runs_a_non_builtin_algo_from_its_own_bundle(tmp_path: Path) -> None:
+    """The bug: run_campaign.sh only ever passed +ALG=<name> to the engine,
+    which understands exactly 3 hardcoded table names (MATSP/MARCHCM/MARCHSS).
+    Every OTHER algorithm -- march_x, march_b, or a custom .alg -- has no
+    built-in table at all, even though export_tb writes it a same-named
+    <name>.algc file specifically so it CAN be run. Running the bundle's own
+    march_x.algc via ./run_campaign.sh faults.txt march_x used to abort with
+    "FATAL: unknown +ALG=march_x" -- the algorithm the bundle exists to
+    demonstrate could never actually be run from it.
+
+    Verified negative control: delete the .algc file the fix depends on and
+    confirm the ORIGINAL failure reproduces exactly, proving the fix (not
+    something else -- a different Verilator version, a stale build) is what
+    makes the positive case pass. Note the simulator's own "FATAL: unknown
+    +ALG=march_x" text never reaches this level: run_campaign.sh's golden-run
+    check pipes RUN's output through `grep '^RESULT'` before capturing it, so
+    that line -- and any reason at all -- is silently discarded; a caller
+    only ever sees "golden run FAILED: " with nothing after the colon. That
+    swallowed diagnostic is a pre-existing wart in the script's own error
+    reporting, independent of this bug; left alone here rather than expanding
+    scope beyond the .algc fix."""
+    faults = find_engine_dir() / "faults.example.txt"
+    bundle_dir = tmp_path / "bundle"
+    _run_script([
+        "set_memory 8 8",
+        f"load_faults {faults}",
+        f"export_tb {bundle_dir}",
+    ])
+    algc = bundle_dir / "march_x.algc"
+    assert algc.exists(), "export_tb should have written march_x.algc"
+
+    def run_campaign() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "run_campaign.sh", "faults.txt", "march_x"],
+            cwd=bundle_dir, capture_output=True, text=True, check=False, timeout=300,
+        )
+
+    result = run_campaign()
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "golden: clean" in result.stdout, combined
+    # March X's measured coverage against faults.example.txt at 8x8 -- see
+    # docs/source/algo-shell-guide.md's "How `either` gets resolved".
+    assert "coverage: 13 / 19 detected" in result.stdout, combined
+
+    algc.unlink()
+    broken = run_campaign()
+    assert broken.returncode == 1, broken.stdout + broken.stderr
+    assert "golden run FAILED" in broken.stdout, broken.stdout + broken.stderr
+
+
+def test_run_campaign_sh_still_uses_the_builtin_table_with_no_algc_present(tmp_path: Path) -> None:
+    """The fix's fallback branch: run_campaign.sh's ORIGINAL, still-documented
+    use is running the engine's 3 fixed built-in tables directly (no exported
+    bundle, no .algc files around at all) -- e.g. straight from
+    src/autombist/engine. That path must be untouched by the .algc-preferring
+    fix above. Uses MARCHCM, whose built-in table is march_c's -- and, since
+    the either-direction fix landed earlier this session, is now provably
+    identical to march_c.algc's content, so 14/19 is the correct expectation
+    either way this ever ran."""
+    faults = find_engine_dir() / "faults.example.txt"
+    bundle_dir = tmp_path / "bundle"
+    _run_script([
+        "set_memory 8 8",
+        f"load_faults {faults}",
+        f"export_tb {bundle_dir}",
+    ])
+    for algc in bundle_dir.glob("*.algc"):
+        algc.unlink()
+    assert not list(bundle_dir.glob("*.algc")), "must simulate a directory with no .algc files at all"
+
+    result = subprocess.run(
+        ["bash", "run_campaign.sh", "faults.txt", "MARCHCM"],
+        cwd=bundle_dir, capture_output=True, text=True, check=False, timeout=300,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "golden: clean" in result.stdout, combined
+    assert "coverage: 14 / 19 detected" in result.stdout, combined
 
 
 # --------------------------------------------------------------------------- #
