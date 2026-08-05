@@ -248,10 +248,18 @@ unchanged under `num_ports=2`:
     up   r1               # read every word, on port 0 (implicit)
 
 `AlgSpec.to_numeric()`/`Element.numeric_line()` emit the plain `DIR NOPS
-OP0..OP7` numeric format (byte-identical to pre-multi-port output) when
-every op in the spec is on port 0, and only switch to the extended format
-(additional trailing `PORT0..PORT7` columns, with a `PORT0..PORT7` header
-suffix) when a non-zero port is actually used somewhere in the spec.
+OP0..OP7` numeric format (byte-identical to pre-multi-port output for the
+OP.../PORT... columns) when every op in the spec is on port 0, and only
+switch to the extended format (additional trailing `PORT0..PORT7` columns,
+with a `PORT0..PORT7` header suffix) when a non-zero port is actually used
+somewhere in the spec.
+
+The DIR column differs by entry point: `to_numeric()` resolves any `either`
+element to a concrete up/down first (`alg_spec.resolve_directions()` -- see
+"How `either` gets resolved" in the algo-shell guide), so the `.algc` file the
+engine reads never contains a literal `2`. Calling `Element.numeric_line()`
+directly, without going through `to_numeric()`, instead emits that element's
+`.direction` verbatim -- `either` (2) included.
 
 ### 9-field fault-list format and coupling semantics
 

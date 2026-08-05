@@ -60,9 +60,26 @@ def test_expand_direction_down_walks_high_to_low() -> None:
 
 
 def test_expand_direction_either_treated_as_up() -> None:
+    """A LEADING either has no previous element, so the canonical rule
+    (resolve_directions) defaults it to up -- same result the old always-up
+    rule gave for this specific (default) case."""
     spec = parse_alg("either w0", "e")
     steps = expand_expected_trace(spec, depth=3)
     assert [s.addr for s in steps] == [0, 1, 2]
+
+
+def test_expand_direction_trailing_either_inherits_the_previous_direction() -> None:
+    """The case the old rule got wrong: a TRAILING either after a `down`
+    element must inherit `down`, not reset to `up`. This is exactly the
+    march_x/march_c/march_ss divergence alg_spec.resolve_directions unified
+    away -- expand_expected_trace now agrees with what the compiled engine
+    (and the hand-written classic RTL) actually run."""
+    spec = parse_alg("down w0\neither r0\n", "t")
+    steps = expand_expected_trace(spec, depth=3)
+    down_addrs = [s.addr for s in steps[:3]]     # element 0: down w0
+    either_addrs = [s.addr for s in steps[3:]]   # element 1: either r0, inherits down
+    assert down_addrs == [2, 1, 0]
+    assert either_addrs == [2, 1, 0]
 
 
 def test_expand_carries_port_suffix() -> None:
@@ -78,6 +95,26 @@ def test_expand_rejects_nonpositive_depth() -> None:
     spec = resolve_algo("march_c")
     with pytest.raises(AlgSpecError):
         expand_expected_trace(spec, depth=0)
+
+
+# --------------------------------------------------------------------------- #
+# expand_expected_blocks -- orderings[0] is always the canonical direction
+# --------------------------------------------------------------------------- #
+def test_expected_blocks_orderings_are_derived_from_the_canonical_rule() -> None:
+    """orderings[0] must be the canonical direction (resolve_directions), not
+    a hardcoded ascending -- this is what lets a divergence message report the
+    right "expected" side (seq_check.py's `canon = block.orderings[0]`), and
+    is exactly what keeps this leniency a documented RELAXATION of the
+    canonical rule rather than a second rule that can silently disagree with
+    it, the way the engine and the classic RTL used to disagree on march_x."""
+    spec = parse_alg("down w0\neither r0\n", "t")
+    blocks = expand_expected_blocks(spec, depth=3)
+    trailing = blocks[1]
+    assert len(trailing.orderings) == 2
+    canonical_addrs = [s.addr for s in trailing.orderings[0]]
+    other_addrs = [s.addr for s in trailing.orderings[1]]
+    assert canonical_addrs == [2, 1, 0]  # inherits element 0's `down`
+    assert other_addrs == [0, 1, 2]
 
 
 # --------------------------------------------------------------------------- #

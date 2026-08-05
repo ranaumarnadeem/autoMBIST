@@ -13,6 +13,7 @@ from autombist.alg_spec import (
     load_alg_file,
     parse_alg,
     resolve_algo,
+    resolve_directions,
 )
 
 
@@ -158,6 +159,62 @@ def test_expand_element_wait_only_element_produces_no_steps() -> None:
     assert steps == []
 
 
+# --------------------------------------------------------------------------- #
+# resolve_directions -- the ONE canonical rule for what `either` resolves to.
+# `either` inherits the previous element's direction, defaulting to up. This
+# is the rule that makes generated RTL (and, after resolution, the numeric
+# form the SystemVerilog engines read) match the hand-written classic tables;
+# see the function's docstring for the measured consequence of getting it
+# wrong. Moved here from tests/software/test_algo_rtl_gen.py -- the rule now
+# lives in alg_spec.py, not algo_rtl_gen.py, so its tests do too.
+# --------------------------------------------------------------------------- #
+def _dirs(text: str) -> list[int]:
+    return resolve_directions(parse_alg(text, "t").elements)
+
+
+def test_explicit_directions_pass_straight_through() -> None:
+    assert _dirs("up w0\ndown r0\nup r1\n") == [0, 1, 0]
+
+
+def test_leading_either_defaults_to_up() -> None:
+    assert _dirs("either w0\ndown r0\n") == [0, 1]
+
+
+def test_trailing_either_inherits_the_previous_direction() -> None:
+    """The case where the engine and the hand-written classic RTL used to
+    disagree before this rule was unified: a trailing `either` inherits
+    `down`, it is not forced back to `up`."""
+    assert _dirs("up w0\ndown r0\neither r1\n") == [0, 1, 1]
+
+
+def test_consecutive_either_all_inherit_the_same_direction() -> None:
+    assert _dirs("down w0\neither r0\neither r1\neither w1\n") == [1, 1, 1, 1]
+
+
+def test_all_either_spec_is_entirely_up() -> None:
+    assert _dirs("either w0\neither r0\neither w1\n") == [0, 0, 0]
+
+
+def test_either_between_two_explicit_directions_takes_the_earlier_one() -> None:
+    assert _dirs("down w0\neither r0\nup r1\n") == [1, 1, 0]
+
+
+@pytest.mark.parametrize(
+    "algo_name,expected",
+    [
+        # Exactly the direction sequences the hand-written classic-path RTL
+        # tables encode -- proven behaviourally identical to a rendered table
+        # by tests/integration/test_algo_table_equivalence.py's exhaustive
+        # simulation sweep.
+        ("march_c", [0, 0, 0, 1, 1, 1]),
+        ("march_x", [0, 0, 1, 1]),
+        ("mats_plus", [0, 0, 1]),
+    ],
+)
+def test_builtin_directions_match_the_hand_written_rtl(algo_name: str, expected: list[int]) -> None:
+    assert resolve_directions(resolve_algo(algo_name).elements) == expected
+
+
 def test_load_alg_file_missing_path_raises(tmp_path: Path) -> None:
     with pytest.raises(AlgSpecError, match="algorithm spec not found"):
         load_alg_file(tmp_path / "does_not_exist.alg")
@@ -250,6 +307,17 @@ def test_to_numeric_extended_header_when_port_present() -> None:
 # made to alg_spec.py (see the task's verification requirement) -- the
 # strongest proof that every existing built-in .alg file's numeric
 # serialization is byte-identical to its pre-phase value.
+#
+# They ALSO predate AlgSpec.resolved(): back then to_numeric() emitted each
+# element's direction verbatim, so an `either` element's DIR column is a
+# literal "2" in every one of these strings. Once to_numeric() started
+# resolving directions first, that stopped being true -- but overwriting the
+# strings would destroy the evidence they were captured to preserve (that the
+# multi-port change touched nothing else). So they stay exactly as captured,
+# and the two tests below use them DIFFERENTIALLY instead of asserting
+# byte-identity: every column must still match except the DIR of a resolved
+# `either`, and that DIR must match resolve_directions() exactly -- not just
+# "some value 0 or 1". See _assert_numeric_matches_pre_resolution_golden.
 _GOLDEN_TO_NUMERIC = {
     "march_c": "# march_c  (10n)  DIR NOPS OP0..OP7\n2 1 2 0 0 0 0 0 0 0\n0 2 0 3 0 0 0 0 0 0\n0 2 1 2 0 0 0 0 0 0\n1 2 0 3 0 0 0 0 0 0\n1 2 1 2 0 0 0 0 0 0\n2 1 0 0 0 0 0 0 0 0\n",
     "march_ss": "# march_ss  (22n)  DIR NOPS OP0..OP7\n2 1 2 0 0 0 0 0 0 0\n0 5 0 0 2 0 3 0 0 0\n0 5 1 1 3 1 2 0 0 0\n1 5 0 0 2 0 3 0 0 0\n1 5 1 1 3 1 2 0 0 0\n2 1 0 0 0 0 0 0 0 0\n",
@@ -259,13 +327,48 @@ _GOLDEN_TO_NUMERIC = {
 
 # Golden length_n values, likewise pinned before any change (mirrors the
 # reference lengths already asserted in test_builtins_resolve_and_match_reference_lengths).
+# Unaffected by direction resolution -- length_n never reads .direction -- so
+# these stay a byte-identity assertion, not a differential one.
 _GOLDEN_LENGTH_N = {"march_c": 10, "march_ss": 22, "march_x": 6, "mats_plus": 5}
 
 
+def _numeric_body_rows(text: str) -> list[list[str]]:
+    """Split a to_numeric()-shaped string into its per-element body rows'
+    whitespace-separated columns, skipping the leading `# ...` header line."""
+    lines = text.splitlines()
+    assert lines and lines[0].startswith("#"), "expected a leading header comment line"
+    return [line.split() for line in lines[1:] if line]
+
+
+def _assert_numeric_matches_pre_resolution_golden(golden: str, actual: str, elements) -> None:
+    """Prove `actual` (today's to_numeric(), which resolves `either` first)
+    differs from `golden` (captured before resolution existed) in NOTHING but
+    the DIR column of rows the golden encoded as `either` (DIR=2) -- and that
+    the resolved value in each such row is exactly what resolve_directions()
+    computes, not merely "some value 0 or 1". Every other column, on every
+    row, must be byte-identical to the golden -- preserving the original
+    byte-identity evidence for everything resolution did not touch."""
+    golden_rows = _numeric_body_rows(golden)
+    actual_rows = _numeric_body_rows(actual)
+    assert len(golden_rows) == len(actual_rows) == len(elements), "element count changed"
+    expected_dirs = resolve_directions(elements)
+    resolved_any = False
+    for golden_row, actual_row, expected_dir in zip(golden_rows, actual_rows, expected_dirs):
+        assert actual_row[1:] == golden_row[1:], (golden_row, actual_row)  # NOPS/OP.../PORT... untouched
+        if golden_row[0] == "2":
+            resolved_any = True
+            assert actual_row[0] == str(expected_dir), (golden_row, actual_row, expected_dir)
+        else:
+            assert actual_row[0] == golden_row[0], (golden_row, actual_row)  # fixed direction untouched
+    assert resolved_any, "golden has no `either` element -- differential test is pointless here"
+
+
 @pytest.mark.parametrize("algo_name", sorted(_GOLDEN_TO_NUMERIC))
-def test_builtin_alg_to_numeric_byte_identical_to_pre_phase_golden(algo_name: str) -> None:
+def test_builtin_alg_to_numeric_matches_pre_resolution_golden_except_either_dir(algo_name: str) -> None:
     spec = resolve_algo(algo_name)
-    assert spec.to_numeric() == _GOLDEN_TO_NUMERIC[algo_name]
+    _assert_numeric_matches_pre_resolution_golden(
+        _GOLDEN_TO_NUMERIC[algo_name], spec.to_numeric(), spec.elements
+    )
 
 
 @pytest.mark.parametrize("algo_name", sorted(_GOLDEN_LENGTH_N))
@@ -277,7 +380,10 @@ def test_builtin_alg_length_n_byte_identical_to_pre_phase_golden(algo_name: str)
 # March B is pinned SEPARATELY from the two _GOLDEN_* maps above rather than
 # added to them: those exist specifically to prove the four PRE-EXISTING built-in
 # .alg files serialize byte-identically to their pre-multi-port values, and
-# folding a newer file into that set would blur what they attest to.
+# folding a newer file into that set would blur what they attest to. Captured
+# before either-direction resolution existed, same as _GOLDEN_TO_NUMERIC, so it
+# is compared the same differential way rather than overwritten -- see
+# _assert_numeric_matches_pre_resolution_golden.
 _MARCH_B_NUMERIC = (
     "# march_b  (17n)  DIR NOPS OP0..OP7\n"
     "2 1 2 0 0 0 0 0 0 0\n"
@@ -308,5 +414,6 @@ def test_march_b_element_shape() -> None:
     ]
 
 
-def test_march_b_numeric_serialization() -> None:
-    assert resolve_algo("march_b").to_numeric() == _MARCH_B_NUMERIC
+def test_march_b_numeric_serialization_matches_pre_resolution_golden() -> None:
+    spec = resolve_algo("march_b")
+    _assert_numeric_matches_pre_resolution_golden(_MARCH_B_NUMERIC, spec.to_numeric(), spec.elements)

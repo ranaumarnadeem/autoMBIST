@@ -89,8 +89,15 @@ module march_engine_mp #(
     bg_value = background_mask ^ {DW{v}};
   endfunction
 
-  // op codes: 0=r0 1=r1 2=w0 3=w1 ; dir: 0=up 1=down 2=either(run up)
+  // op codes: 0=r0 1=r1 2=w0 3=w1 ; dir: 0=up 1=down
   // port: 0 or 1, parallel to ops.
+  // (2="either" is still ACCEPTED below in the +ALG_FILE parser, for any
+  // hand-written .algc from before this rule existed -- an either element
+  // there runs ascending, same as always. But nothing in this repo EMITS it
+  // any more: the tables below are pre-resolved via the same rule Python's
+  // alg_spec.resolve_directions() applies -- inherit the previous element's
+  // direction, defaulting to up -- so a built-in run and a +ALG_FILE run of
+  // the same algorithm always agree. See docs/source/algo-shell-guide.md.)
   typedef struct {
     int dir;
     int nops;
@@ -108,27 +115,27 @@ module march_engine_mp #(
     case (a)
       "MATSP": begin // {either(w0); up(r0,w1); down(r1,w0)}   5n
         nelem = 3;
-        prog[0] = '{dir:2, nops:1, ops:'{2,0,0,0,0,0,0,0}, ports:'{default:0}};
+        prog[0] = '{dir:0, nops:1, ops:'{2,0,0,0,0,0,0,0}, ports:'{default:0}};  // either -> up (no previous element)
         prog[1] = '{dir:0, nops:2, ops:'{0,3,0,0,0,0,0,0}, ports:'{default:0}};
         prog[2] = '{dir:1, nops:2, ops:'{1,2,0,0,0,0,0,0}, ports:'{default:0}};
       end
       "MARCHCM": begin // March C-   10n
         nelem = 6;
-        prog[0] = '{dir:2, nops:1, ops:'{2,0,0,0,0,0,0,0}, ports:'{default:0}};
+        prog[0] = '{dir:0, nops:1, ops:'{2,0,0,0,0,0,0,0}, ports:'{default:0}};  // either -> up (no previous element)
         prog[1] = '{dir:0, nops:2, ops:'{0,3,0,0,0,0,0,0}, ports:'{default:0}};
         prog[2] = '{dir:0, nops:2, ops:'{1,2,0,0,0,0,0,0}, ports:'{default:0}};
         prog[3] = '{dir:1, nops:2, ops:'{0,3,0,0,0,0,0,0}, ports:'{default:0}};
         prog[4] = '{dir:1, nops:2, ops:'{1,2,0,0,0,0,0,0}, ports:'{default:0}};
-        prog[5] = '{dir:2, nops:1, ops:'{0,0,0,0,0,0,0,0}, ports:'{default:0}};
+        prog[5] = '{dir:1, nops:1, ops:'{0,0,0,0,0,0,0,0}, ports:'{default:0}};  // either -> inherits prog[4]'s down
       end
       "MARCHSS": begin // March SS   22n
         nelem = 6;
-        prog[0] = '{dir:2, nops:1, ops:'{2,0,0,0,0,0,0,0}, ports:'{default:0}};
+        prog[0] = '{dir:0, nops:1, ops:'{2,0,0,0,0,0,0,0}, ports:'{default:0}};  // either -> up (no previous element)
         prog[1] = '{dir:0, nops:5, ops:'{0,0,2,0,3,0,0,0}, ports:'{default:0}};
         prog[2] = '{dir:0, nops:5, ops:'{1,1,3,1,2,0,0,0}, ports:'{default:0}};
         prog[3] = '{dir:1, nops:5, ops:'{0,0,2,0,3,0,0,0}, ports:'{default:0}};
         prog[4] = '{dir:1, nops:5, ops:'{1,1,3,1,2,0,0,0}, ports:'{default:0}};
-        prog[5] = '{dir:2, nops:1, ops:'{0,0,0,0,0,0,0,0}, ports:'{default:0}};
+        prog[5] = '{dir:1, nops:1, ops:'{0,0,0,0,0,0,0,0}, ports:'{default:0}};  // either -> inherits prog[4]'s down
       end
       default: begin
         $display("FATAL: unknown +ALG=%s", a);
