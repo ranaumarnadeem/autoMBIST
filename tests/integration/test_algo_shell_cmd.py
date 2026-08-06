@@ -125,16 +125,14 @@ def test_run_campaign_sh_runs_a_non_builtin_algo_from_its_own_bundle(tmp_path: P
     demonstrate could never actually be run from it.
 
     Verified negative control: delete the .algc file the fix depends on and
-    confirm the ORIGINAL failure reproduces exactly, proving the fix (not
+    confirm the ORIGINAL failure mode reproduces, proving the fix (not
     something else -- a different Verilator version, a stale build) is what
-    makes the positive case pass. Note the simulator's own "FATAL: unknown
-    +ALG=march_x" text never reaches this level: run_campaign.sh's golden-run
-    check pipes RUN's output through `grep '^RESULT'` before capturing it, so
-    that line -- and any reason at all -- is silently discarded; a caller
-    only ever sees "golden run FAILED: " with nothing after the colon. That
-    swallowed diagnostic is a pre-existing wart in the script's own error
-    reporting, independent of this bug; left alone here rather than expanding
-    scope beyond the .algc fix."""
+    makes the positive case pass. Also pins a second, related fix: the
+    golden-run check used to pipe RUN's output straight through
+    `grep '^RESULT'` before capturing it, so a crash with no RESULT line at
+    all -- like this one -- left the caller with "golden run FAILED: " and no
+    reason. It now captures the raw output first, so the simulator's own
+    "FATAL: unknown +ALG=march_x" is what a caller actually sees."""
     faults = find_engine_dir() / "faults.example.txt"
     bundle_dir = tmp_path / "bundle"
     _run_script([
@@ -162,7 +160,7 @@ def test_run_campaign_sh_runs_a_non_builtin_algo_from_its_own_bundle(tmp_path: P
     algc.unlink()
     broken = run_campaign()
     assert broken.returncode == 1, broken.stdout + broken.stderr
-    assert "golden run FAILED" in broken.stdout, broken.stdout + broken.stderr
+    assert "golden run FAILED: FATAL: unknown +ALG=march_x" in broken.stdout, broken.stdout + broken.stderr
 
 
 def test_run_campaign_sh_still_uses_the_builtin_table_with_no_algc_present(tmp_path: Path) -> None:

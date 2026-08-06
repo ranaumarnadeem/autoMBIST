@@ -49,10 +49,15 @@ echo "campaign: $NF faults, alg=$ALG, sim=$SIM"
 
 echo "idx,type,result,elem,op,addr" > "$CSV"
 
-G=$(RUN "$ALG_PLUSARG" | grep '^RESULT')
+# Capture the FULL raw output before filtering for a RESULT line: piping
+# straight into grep (as this used to) discards everything else, so a crash
+# with no RESULT line at all (e.g. the FATAL this script's ALG handling used
+# to produce) left $G empty and "golden run FAILED: " with no reason.
+RAW=$(RUN "$ALG_PLUSARG")
+G=$(echo "$RAW" | grep '^RESULT')
 case "$G" in
   *ESCAPED*) echo "golden: clean" ;;
-  *)         echo "golden run FAILED: $G"; exit 1 ;;
+  *)         echo "golden run FAILED: ${G:-$RAW}"; exit 1 ;;
 esac
 
 DET=0
