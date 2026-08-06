@@ -61,6 +61,7 @@ case "$G" in
 esac
 
 DET=0
+ERR=0
 for i in $(seq 0 $((NF - 1))); do
   OUT=$(RUN "$ALG_PLUSARG" +FAULTS="$FAULTS" +FAULT_INDEX="$i")
   TYPE=$(echo "$OUT" | sed -n 's/^FAULT_LOADED.*type=\([A-Z_0-9]*\).*/\1/p')
@@ -71,9 +72,22 @@ for i in $(seq 0 $((NF - 1))); do
     A=$(echo "$RES" | sed -n 's/.*addr=\([0-9]*\).*/\1/p')
     echo "$i,$TYPE,DETECTED,$E,$O,$A" >> "$CSV"
     DET=$((DET + 1))
+  elif [ -z "$RES" ]; then
+    # No RESULT line at all means this run never got that far -- a crash, not
+    # a genuine non-detection. Recording it as ESCAPED would silently corrupt
+    # the coverage number with an infrastructure failure; ERROR keeps the two
+    # apart in the CSV, and the raw output goes to stderr so the reason is
+    # not lost the way it used to be for the golden run.
+    echo "$i,$TYPE,ERROR,,," >> "$CSV"
+    echo "fault $i produced no RESULT line: ${OUT:-<no output>}" >&2
+    ERR=$((ERR + 1))
   else
     echo "$i,$TYPE,ESCAPED,,," >> "$CSV"
   fi
 done
 
-echo "coverage: $DET / $NF detected  ->  $CSV"
+if [ "$ERR" -gt 0 ]; then
+  echo "coverage: $DET / $NF detected ($ERR run(s) errored, see $CSV and stderr)  ->  $CSV"
+else
+  echo "coverage: $DET / $NF detected  ->  $CSV"
+fi

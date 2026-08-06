@@ -193,6 +193,88 @@ def test_run_campaign_sh_still_uses_the_builtin_table_with_no_algc_present(tmp_p
     assert "coverage: 14 / 19 detected" in result.stdout, combined
 
 
+# A fault-list line whose type isn't in the registry makes fault_ram.sv's
+# whole-file parse FATAL (see "unknown fault type" in fault_ram.sv) -- and it
+# does so for EVERY +FAULT_INDEX invocation, since the entire file is
+# re-parsed from scratch before the index is even applied. That gives a
+# deterministic, no-RESULT-line crash for a per-fault run, which is exactly
+# the scenario the golden-run fix's sibling bug needed: the loop that used to
+# write these to the CSV as ESCAPED, indistinguishable from a genuine
+# non-detection.
+_ONE_BAD_FAULT_TYPE = "SA0 0 0 0 0 0 0\nNOT_A_REAL_TYPE 0 0 0 0 0 0\n"
+
+
+def _bundle_with_builtin_algo(tmp_path: Path, name: str) -> Path:
+    faults = find_engine_dir() / "faults.example.txt"
+    bundle_dir = tmp_path / name
+    _run_script([
+        "set_memory 8 8",
+        f"load_faults {faults}",
+        f"export_tb {bundle_dir}",
+    ])
+    (bundle_dir / "faults.txt").write_text(_ONE_BAD_FAULT_TYPE, encoding="utf-8")
+    return bundle_dir
+
+
+def test_run_campaign_sh_marks_a_crashed_fault_run_as_error_not_escaped(tmp_path: Path) -> None:
+    """The per-fault loop's own version of the golden-run bug: it already had
+    the FULL raw output in $OUT (unlike the golden-run pipe-straight-into-grep
+    case), but never used it -- a crashed run (no RESULT line) fell through
+    to the same `else` branch as a genuine non-detection and was written to
+    the CSV as ESCAPED, silently. That understates coverage with an
+    infrastructure failure with no visible sign anywhere in the output.
+
+    Verified against the actual pre-fix behaviour (not just by inspection):
+    the last commit's run_campaign.sh -- which already has the golden-run
+    fix, but not this one -- really does write ESCAPED with no warning for
+    this exact fixture."""
+    bundle_dir = _bundle_with_builtin_algo(tmp_path, "bundle")
+
+    result = subprocess.run(
+        ["bash", "run_campaign.sh", "faults.txt", "march_c"],
+        cwd=bundle_dir, capture_output=True, text=True, check=False, timeout=300,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined  # golden run doesn't touch faults.txt at all
+    assert "golden: clean" in result.stdout, combined
+
+    csv_rows = (bundle_dir / "campaign_march_c.csv").read_text(encoding="utf-8").splitlines()
+    # $finish is deferred (per the LRM: end of time step, not synchronous), so
+    # fault_ram.sv's initial block keeps running its own zero-delay code past
+    # the FATAL: index 0 is still in range of the partially-built fault queue
+    # (only the bad line 2 failed to push), so it prints FAULT_LOADED type=SA0
+    # before the queued finish lands; index 1 is then out of range against
+    # that same partial queue, hits a SECOND fatal, and reads an out-of-bounds
+    # (zero-filled) entry with an empty type. Both still end up with no
+    # RESULT line either way -- confirmed empirically, not assumed, after an
+    # initial version of this test got the exact row values wrong.
+    assert csv_rows[1:] == ["0,SA0,ERROR,,,", "1,,ERROR,,,"], csv_rows
+    assert result.stderr.count("produced no RESULT line") == 2, combined
+    assert "NOT_A_REAL_TYPE" in result.stderr, combined
+    assert "coverage: 0 / 2 detected (2 run(s) errored" in result.stdout, combined
+
+    old_script = subprocess.run(
+        ["git", "show", "HEAD:src/autombist/engine/run_campaign.sh"],
+        cwd=find_engine_dir(), capture_output=True, text=True, check=True,
+    ).stdout
+    old_bundle = _bundle_with_builtin_algo(tmp_path, "bundle_old")
+    (old_bundle / "run_campaign.sh").write_text(old_script, encoding="utf-8")
+    (old_bundle / "run_campaign.sh").chmod(0o755)
+
+    old_result = subprocess.run(
+        ["bash", "run_campaign.sh", "faults.txt", "march_c"],
+        cwd=old_bundle, capture_output=True, text=True, check=False, timeout=300,
+    )
+    old_combined = old_result.stdout + old_result.stderr
+    old_csv_rows = (old_bundle / "campaign_march_c.csv").read_text(encoding="utf-8").splitlines()
+    # Same TYPE values as the fixed run (that extraction logic is unchanged);
+    # only the classification differs -- ESCAPED instead of ERROR, and no
+    # stderr warning at all, for both rows.
+    assert old_csv_rows[1:] == ["0,SA0,ESCAPED,,,", "1,,ESCAPED,,,"], old_combined
+    assert "produced no RESULT line" not in old_combined, old_combined
+    assert "coverage: 0 / 2 detected  ->" in old_result.stdout, old_combined
+
+
 # --------------------------------------------------------------------------- #
 # Multi-port (Phase 6): the shell's own command surface must be able to set up
 # a 2-port memory, define a genuine cross-port coupling fault, and run a real
