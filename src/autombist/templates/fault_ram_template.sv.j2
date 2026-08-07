@@ -19,12 +19,18 @@
 {% if num_ports == 2 %}
 // Fault line format (decimal, '#' comments):
 //   TYPE  VADDR VBIT  AADDR ABIT  P0 P1  [VPORT [APORT]]
-// VPORT/APORT are optional and default to 0 when absent. They select which
-// port's access the victim/aggressor condition is matched against; only the
-// coupling-class primitives (CFIN/CFID/CFST/CFDS) reference APORT (aggressor
-// side) -- see write_op()/read_op()'s `port` parameter below. Port matching is
-// always concrete (no wildcard): a fault instance always names a specific
-// aggressor port (0 or 1), defaulting to 0.
+// VPORT/APORT are optional and default to 0 when absent.
+//
+// APORT selects which port's access the AGGRESSOR condition is matched against,
+// via `FQ[i].ap != port` -- see write_op()/read_op()'s `port` parameter below.
+// It is honoured by CFIN/CFID (write-aggressor loop) and CFDS (both loops).
+// NOT by CFST: CFST is a static clamp, and clamp_static() re-asserts storage on
+// every access with no port in scope, so a per-port gate has nowhere to sit.
+//
+// VPORT is parsed into FQ[i].vp but NOT YET HONOURED -- no expression in this
+// module reads it, so setting it is currently a no-op for every fault type. The
+// victim-side guards match on address/bit alone. Reserved for a future
+// per-port victim gate; do not rely on it to scope a fault today.
 {% else %}
 // Fault line format (decimal, '#' comments):
 //   TYPE  VADDR VBIT  AADDR ABIT  P0 P1
@@ -80,11 +86,13 @@ module fault_ram #(
     int aa, ab; // aggressor address / bit (coupling, alias target)
     int p0, p1; // type-specific parameters
 {% if num_ports == 2 %}
-    int vp, ap; // victim / aggressor port (0 or 1). Meaningful only for the
-                // coupling-class primitives (CFIN/CFID/CFST/CFDS); every
-                // other fault type's match is port-agnostic by construction
-                // (it never references vp/ap). Defaults to 0 when a fault
-                // line omits the trailing port fields.
+    int vp, ap; // victim / aggressor port (0 or 1), default 0 when a fault
+                // line omits the trailing fields. `ap` gates the aggressor
+                // match for CFIN/CFID (write-aggressor loop) and CFDS (both
+                // loops) -- NOT for CFST, whose arm sits in the portless
+                // clamp_static(). `vp` is parsed but read by nothing in this
+                // module; see the header. Every non-coupling fault type is
+                // port-agnostic by construction.
 {% endif %}
     int hits;   // activation count
   } fault_s;

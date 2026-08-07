@@ -42,7 +42,7 @@ from .algo_reporting import (
     write_syndrome_report,
 )
 from .fault_primitives import FaultPrimitive, FaultPrimitiveError, default_registry, from_dict, validate
-from .fault_ram_gen import render_and_write
+from .fault_ram_gen import conflicting_port_faults, render_and_write
 from .fsm_harness import check_ports, gather_sibling_sources
 from .synth_engine import synthesize_alg, synth_verification_faults
 
@@ -188,6 +188,15 @@ class AlgoShell(cmd.Cmd):
         2-port session gets a fault_ram.sv shaped for march_engine_mp.sv,
         matching what _resolve_engine_sources dispatches to."""
         num_ports = self.session.mem.num_ports if self.session.mem is not None else 1
+        # Every run path funnels through here with both the registry and the
+        # loaded fault list in hand, which is the only place the two can be
+        # cross-checked. A fault whose APORT contradicts its type's
+        # sensitize.port can never activate, and would otherwise score as an
+        # ordinary ESCAPE -- indistinguishable from a genuine one.
+        for message in conflicting_port_faults(
+            self.session.registry, self.session.faults, num_ports=num_ports
+        ):
+            self._out(f"warning: {message}")
         return render_and_write(self.session.registry, workdir / "fault_ram.sv", num_ports=num_ports)
 
     # -- cmd.Cmd overrides ---------------------------------------------------

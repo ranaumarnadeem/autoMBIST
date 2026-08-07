@@ -162,7 +162,10 @@ def test_default_registry_all_primitives_have_wildcard_port() -> None:
 
 @pytest.mark.parametrize("port", ["0", "1", "x"])
 def test_validate_accepts_each_valid_port_token(port: str) -> None:
-    prim = _prim(sensitize=Sensitize(port=port))
+    # write_effect, not _prim's static_clamp default: a port-qualified static
+    # clamp is now rejected outright (see below), so this must exercise a
+    # category where the constraint is actually meaningful.
+    prim = _prim(category="write_effect", sensitize=Sensitize(port=port))
     validate(prim, existing_names=set())  # must not raise
 
 
@@ -170,6 +173,43 @@ def test_validate_rejects_bad_port_token() -> None:
     prim = _prim(sensitize=Sensitize(port="2"))
     with pytest.raises(FaultPrimitiveError, match="sensitize.port must be one of"):
         validate(prim, existing_names=set())
+
+
+@pytest.mark.parametrize("port", ["0", "1"])
+def test_static_clamp_rejects_port_qualification(port: str) -> None:
+    """A static clamp is a storage-level invariant, not an access event: its arm
+    is emitted into clamp_static(), which rewrites mem[] and is re-asserted after
+    every access on every port. Gating that on a port would still corrupt the
+    stored cell for both ports -- the opposite of a port-specific defect -- so it
+    is refused rather than silently mis-modelled."""
+    prim = _prim(category="static_clamp", sensitize=Sensitize(port=port))
+    with pytest.raises(FaultPrimitiveError, match="not meaningful for a static_clamp"):
+        validate(prim, existing_names=set())
+
+
+@pytest.mark.parametrize("port", ["0", "1"])
+def test_raw_sv_rejects_port_qualification(port: str) -> None:
+    """The port gate is emitted by wrapping the generated arm's condition, and a
+    raw_sv body is copied verbatim -- so the constraint would be silently
+    dropped. Note this is checked BEFORE raw_sv's early return, which otherwise
+    skips every DSL field."""
+    prim = _prim(
+        category="write_effect",
+        sensitize=Sensitize(port=port),
+        raw_sv="if (1'b1) begin mem[FQ[i].va][FQ[i].vb] = 1'b0; FQ[i].hits++; end",
+    )
+    with pytest.raises(FaultPrimitiveError, match="cannot be combined with raw_sv"):
+        validate(prim, existing_names=set())
+
+
+def test_raw_sv_with_wildcard_port_still_accepted() -> None:
+    """The rejection above must be specific to a port-qualified raw_sv -- an
+    ordinary raw_sv primitive keeps working."""
+    prim = _prim(
+        category="write_effect",
+        raw_sv="if (1'b1) begin mem[FQ[i].va][FQ[i].vb] = 1'b0; FQ[i].hits++; end",
+    )
+    validate(prim, existing_names=set())  # must not raise
 
 
 def test_to_dict_includes_port_field() -> None:

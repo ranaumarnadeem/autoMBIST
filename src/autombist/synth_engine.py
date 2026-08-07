@@ -58,12 +58,21 @@ genuinely matches it (see :func:`_golden_state_after` and the candidate
 builders below) -- never by trying both literals and letting a downstream
 comparison sort out which one was sound.
 
-``Sensitize.port`` (per-port sensitizing) is not modeled here, matching
-``fault_ram_gen.py``'s own codegen, which likewise never references it for
-any of the three DSL-coverable categories -- single-port only, by the same
-scope this project's classic-path multi-port support (march-1r1w/march-2rw)
-has not yet extended research mode to (see Workstream J's own "Deferred"
-section).
+``Sensitize.port`` (per-port sensitizing) is not modeled here, and a
+port-qualified primitive is REJECTED as a synthesis target rather than
+silently treated as port-agnostic. This synthesizer is single-port: its
+2-cell model has one access stream with no notion of which port issued an
+op, so a ``port="0"``/``"1"`` constraint has nothing to bind to and a
+synthesized algorithm's coverage claim for such a type would be unsound.
+``fault_ram_gen.render_fault_ram`` refuses the same combination at
+``num_ports=1`` for the concrete reason that the single-port engine's
+``write_op()``/``read_op()`` have no ``port`` argument at all.
+
+(This docstring previously justified the omission as "matching
+``fault_ram_gen.py``'s own codegen, which likewise never references it".
+That was true only because the field was silently inert there -- a bug,
+now fixed: codegen honours it for ``write_effect``/``read_effect`` at
+``num_ports=2``.)
 """
 from __future__ import annotations
 
@@ -544,6 +553,19 @@ def synthesize_elements(
         raise ValueError(
             f"max_elements must be >= 2 (need room for the mandatory init+final "
             f"brackets), got {max_elements}"
+        )
+    # See the module docstring: this synthesizer is single-port, so a per-port
+    # sensitizing constraint has nothing to bind to in its 2-cell model. Refuse
+    # rather than quietly synthesize an algorithm whose coverage claim for that
+    # type would not hold.
+    port_qualified = [p.name for p in target if p.sensitize.port != "x"]
+    if port_qualified:
+        raise ValueError(
+            f"fault type(s) {port_qualified} set sensitize.port, which this "
+            "single-port synthesizer cannot model: its 2-cell walk has no notion "
+            "of which port issued an op, so any coverage it claimed for them "
+            "would be unsound. Drop them from the target set, or set "
+            "sensitize.port='x'"
         )
     elements: list[Element] = [Element(direction=DIR_EITHER, ops=[OP_W0])]
     golden_v, golden_a = _golden_state_after(elements, aggressor_gt_victim=aggressor_gt_victim, init_val=init_val)
