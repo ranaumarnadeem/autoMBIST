@@ -206,12 +206,38 @@ ports:
 redundancy:
   num_spare_rows: 1
   num_spare_cols: 1
-repair_ports:
-  - {name: row_repair_en, width: 1, dir: input}
-  - {name: faulty_row_addr, width: 2, dir: input}   # num_spare_rows * addr_width
-  - {name: col_repair_en, width: 1, dir: input}     # num_spare_cols
-  - {name: faulty_bit, width: 2, dir: input}        # num_spare_cols * bit_index_width
 ```
+
+### Declaring `spare_wen` without column repair
+
+`spare_wen` is required when `num_spare_cols > 0`, but it is **allowed, and
+recommended, whenever the memory physically has the pin** — even with no column
+repair, and even with no `redundancy:` block at all. The role states a fact
+about the macro, not an intent to repair with it.
+
+Declare it and the wrapper ties the pin off (`'0`, spare-column writes
+disabled). Omit it and the wrapper cannot connect the pin at all, leaving a real
+macro's input **floating** — an OpenRAM macro compiled with spare columns has
+`spare_wen0` whether or not your design uses it.
+
+```yaml
+ports:
+  clk: clk0
+  addr: addr0
+  din: din0
+  dout: dout0
+  we: web0
+  csb: csb0
+  spare_wen: spare_wen0        # tied off -- no redundancy block at all
+```
+
+The same applies with row repair but no column repair: declare `spare_wen`
+alongside `num_spare_rows` and it is tied off rather than left dangling.
+
+Declaring the column *repair pins* (`col_repair_en`/`faulty_bit`) without
+`num_spare_cols` is still an error — unlike `spare_wen`, those exist only to
+carry a repair value, so declaring them with nowhere for it to go is
+unambiguously a mistake.
 
 `repair.analyze()` has always been a 2D solver; `repair.encode_repair()` packs
 both halves of its verdict into these pins. (`repair.encode_row_repair()` is

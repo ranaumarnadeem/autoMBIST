@@ -647,33 +647,22 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
                     f"repair_remap_col's input port), got {entry['dir']!r}"
                 )
     else:
-        # The biconditional has to run BOTH ways. Everything above only fires
-        # when num_spare_cols > 0, so a config that declares the whole column
-        # surface but forgets num_spare_cols (or sets it to 0) would otherwise
-        # generate happily: no repair_remap_col, the memory's spare_wen left
-        # unconnected, and col_repair_en/faulty_bit declared as wrapper inputs
-        # bound to nothing -- the tester drives a repair register into dead
-        # nets and column repair silently does nothing.
+        # ports.spare_wen with no column repair is NOT an error: it states a
+        # fact about the macro ("this memory has a spare-column write enable"),
+        # which is independent of whether this design uses column repair. A
+        # stock OpenRAM macro compiled with spare columns has the pin whether or
+        # not you intend to repair with it.
         #
-        # This also restores a rejection that existed before column repair:
-        # _is_legacy_flat_ports used to reject an unknown `spare_wen` key
-        # outright (with a misleading message). Widening that set fixed the
-        # message but removed the only thing catching this config.
-        # Every port, not just the first -- on the 1r1w shape (the only 2-port
-        # shape that reaches here, via onchip_selfrepair) the read port sorts
-        # first and structurally cannot carry spare_wen, so checking one port
-        # would sail straight past a write port that declares it.
-        offenders = [
-            name for name, pdata in loaded["normalized_ports"].items()
-            if "spare_wen" in pdata
-        ]
-        if offenders:
-            raise ConfigError(
-                f"ports.{offenders[0]}.spare_wen is declared but "
-                "redundancy.num_spare_cols is 0 -- the spare-column write enable "
-                "would never be driven. Set num_spare_cols > 0 to enable column "
-                "repair, or drop the spare_wen port role"
-            )
+        # This used to raise, advising "drop the spare_wen port role" -- advice
+        # that made things worse: undeclared, the wrapper cannot connect the pin
+        # at all and leaves a real macro's input FLOATING. Declared, the wrapper
+        # now ties it off (wrapper_template.j2's memory instantiations), which is
+        # the only safe value: spare-column writes disabled.
+        #
+        # The misconfiguration the old rejection was really aimed at -- declaring
+        # the column surface but forgetting num_spare_cols -- is still caught,
+        # by the repair_ports check below. Those pins are the ones that would
+        # reach the wrapper boundary bound to nothing; spare_wen never does.
         stray = [e["name"] for e in loaded.get("repair_ports", []) if e["name"] in _COL_REPAIR_PINS]
         if stray:
             raise ConfigError(

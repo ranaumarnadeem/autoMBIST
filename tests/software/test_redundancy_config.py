@@ -207,12 +207,18 @@ def test_column_pin_widths_are_validated_strictly(tmp_path: Path, pin: str, bad_
 
 
 # --- The biconditional must run BOTH ways (adversarial-review findings 1-3) --- #
-def test_spare_wen_port_role_without_spare_columns_rejected(tmp_path: Path) -> None:
-    """Regression: declaring the column surface but forgetting num_spare_cols
-    used to generate happily -- no repair_remap_col, the memory's spare_wen
-    unconnected, and col_repair_en/faulty_bit on the boundary bound to nothing.
-    A tester would drive the repair register into dead nets."""
-    with pytest.raises(ConfigError, match="spare_wen is declared but"):
+def test_column_repair_pins_without_spare_columns_still_rejected(tmp_path: Path) -> None:
+    """Declaring the column surface but forgetting num_spare_cols must still
+    fail: col_repair_en/faulty_bit would reach the wrapper boundary bound to
+    nothing, and a tester would drive the repair register into dead nets.
+
+    This is the half of the old spare_wen guard that remains an error. The
+    spare_wen half became a tie-off -- see the tests below -- because
+    ports.spare_wen states a fact about the MACRO (it has that pin), which is
+    independent of whether this design uses column repair. These pins are
+    different: they exist only to carry a repair value, so declaring them
+    without somewhere for that value to go is unambiguously a mistake."""
+    with pytest.raises(ConfigError, match="are column-repair pins but"):
         _load(tmp_path, {
             **COL_BASE,
             "redundancy": {"num_spare_rows": 1},   # num_spare_cols omitted -> 0
@@ -220,25 +226,65 @@ def test_spare_wen_port_role_without_spare_columns_rejected(tmp_path: Path) -> N
         })
 
 
-def test_spare_wen_on_a_non_first_port_without_spare_columns_rejected(tmp_path: Path) -> None:
-    """The guard above used to read only `next(iter(normalized_ports))`. On the
-    1r1w shape -- the one 2-port shape that reaches this code, via
-    onchip_selfrepair -- the READ port sorts first and structurally cannot carry
-    spare_wen (OPTIONAL_PORT_KEYS_BY_TYPE gives "r" no optional keys), so the
-    check always landed on the port that could not trip it and sailed past the
-    write port that did. The macro's spare-column write-enable was then left
-    dangling while the user believed column repair was on."""
+def test_spare_wen_is_tied_off_when_column_repair_is_off(tmp_path: Path) -> None:
+    """A stock OpenRAM macro compiled with spare columns has a spare_wen pin
+    whether or not you intend to repair with it. Declaring it with no column
+    repair used to RAISE, advising "drop the spare_wen port role" -- advice that
+    made things worse, because undeclared the wrapper cannot connect the pin at
+    all and leaves a real macro's input floating. It must now tie off instead."""
+    outdir = tmp_path / "out"
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(yaml.safe_dump({
+        **COL_BASE,
+        "redundancy": {"num_spare_rows": 1},   # rows only, no column repair
+        "repair_ports": [
+            {"name": "row_repair_en", "width": 1, "dir": "input"},
+            {"name": "faulty_row_addr", "width": 4, "dir": "input"},
+        ],
+    }, sort_keys=False), encoding="utf-8")
+
+    wrapper = generate_from_config(config_path, outdir, algo="march-c")
+    text = wrapper.read_text(encoding="utf-8")
+    assert ".spare_wen0('0)" in text, text
+    # And it must NOT be wired to a repair signal -- there is no column repair.
+    assert "sram_spare_wen" not in text, text
+
+
+def test_spare_wen_tied_off_with_no_redundancy_block_at_all(tmp_path: Path) -> None:
+    """The plainest case, and the one a first-time user hits: no redundancy
+    anywhere, but the macro still physically has the pin. This shape did not
+    even raise before -- it generated happily and silently dropped the
+    declaration, leaving the pin floating with no diagnostic at all."""
+    outdir = tmp_path / "out"
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(yaml.safe_dump(COL_BASE, sort_keys=False), encoding="utf-8")
+
+    wrapper = generate_from_config(config_path, outdir, algo="march-c")
+    assert ".spare_wen0('0)" in wrapper.read_text(encoding="utf-8")
+
+
+def test_spare_wen_tied_off_on_a_non_first_port(tmp_path: Path) -> None:
+    """The multi-port case, preserving what the old rejection test was really
+    guarding. The guard it replaced read only `next(iter(normalized_ports))`,
+    and on the 1r1w shape the READ port sorts first and structurally cannot
+    carry spare_wen (OPTIONAL_PORT_KEYS_BY_TYPE gives "r" no optional keys) --
+    so anything that inspects one port sails past the write port that has it.
+    The tie-off has to reach the write port for the same reason."""
     ports = {
         **MULTI_PORTS,
         "w0": {**MULTI_PORTS["w0"], "spare_wen": "spare_wen1"},
     }
     assert next(iter(ports)) == "r0", "fixture must keep the read port first, or it proves nothing"
-    with pytest.raises(ConfigError, match="spare_wen is declared but"):
-        _load(tmp_path, {
-            **BASE,
-            "ports": ports,
-            "redundancy": {"num_spare_rows": 1, "onchip_selfrepair": True},
-        })
+    outdir = tmp_path / "out"
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(yaml.safe_dump({
+        **BASE,
+        "ports": ports,
+        "redundancy": {"num_spare_rows": 1, "onchip_selfrepair": True},
+    }, sort_keys=False), encoding="utf-8")
+
+    wrapper = generate_from_config(config_path, outdir, algo="march-1r1w")
+    assert ".spare_wen1('0)" in wrapper.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("pin", ["row_repair_en", "faulty_row_addr"])

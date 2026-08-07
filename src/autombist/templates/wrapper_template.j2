@@ -285,6 +285,12 @@ module {{ wrapper_module_name }} #(
         .{{ pdata.din }}(sram_din),
         .{{ pdata.we }}(sram_we),
         .{{ pdata.dout }}(sram_dout)
+{% if pdata.spare_wen %}
+      // Macro has a spare-column write enable but this design does not use
+      // column repair. Tie it off rather than leave a real macro's input
+      // floating -- '0 disables spare-column writes.
+      , .{{ pdata.spare_wen }}('0)
+{% endif %}
 {% endif %}
     );
 {% else %}
@@ -298,6 +304,12 @@ module {{ wrapper_module_name }} #(
         .{{ pdata.din }}(sram_din),
         .{{ pdata.we }}(sram_we),
         .{{ pdata.dout }}(sram_dout)
+{% if pdata.spare_wen %}
+      // Macro has a spare-column write enable but this design has no
+      // redundancy at all. Tie it off rather than leave a real macro's
+      // input floating -- '0 disables spare-column writes.
+      , .{{ pdata.spare_wen }}('0)
+{% endif %}
     );
 {% endif %}
     {% endfor %}
@@ -564,6 +576,9 @@ module {{ wrapper_module_name }} #(
         .{{ pdata.csb }}(sram_csb{{ suffix }}),
         .{{ pdata.we }}(sram_we{{ suffix }}),
         .{{ pdata.addr }}({{ port_addr }}),
+        {% if pdata.spare_wen %}
+        .{{ pdata.spare_wen }}('0),   // tied off: no column repair on this design
+        {% endif %}
         .{{ pdata.din }}(sram_din{{ suffix }}){{ "," if not loop.last }}
         {% elif pdata.type == "rw" %}
         .{{ pdata.clk }}(mbist_sram_clk{{ suffix }}),
@@ -571,6 +586,9 @@ module {{ wrapper_module_name }} #(
         .{{ pdata.we }}(sram_we{{ suffix }}),
         .{{ pdata.addr }}({{ port_addr }}),
         .{{ pdata.din }}(sram_din{{ suffix }}),
+        {% if pdata.spare_wen %}
+        .{{ pdata.spare_wen }}('0),   // tied off: no column repair on this design
+        {% endif %}
         .{{ pdata.dout }}(sram_dout{{ suffix }}){{ "," if not loop.last }}
         {% endif %}
     {% endfor %}
