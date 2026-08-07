@@ -220,6 +220,62 @@ def test_spare_wen_port_role_without_spare_columns_rejected(tmp_path: Path) -> N
         })
 
 
+def test_spare_wen_on_a_non_first_port_without_spare_columns_rejected(tmp_path: Path) -> None:
+    """The guard above used to read only `next(iter(normalized_ports))`. On the
+    1r1w shape -- the one 2-port shape that reaches this code, via
+    onchip_selfrepair -- the READ port sorts first and structurally cannot carry
+    spare_wen (OPTIONAL_PORT_KEYS_BY_TYPE gives "r" no optional keys), so the
+    check always landed on the port that could not trip it and sailed past the
+    write port that did. The macro's spare-column write-enable was then left
+    dangling while the user believed column repair was on."""
+    ports = {
+        **MULTI_PORTS,
+        "w0": {**MULTI_PORTS["w0"], "spare_wen": "spare_wen1"},
+    }
+    assert next(iter(ports)) == "r0", "fixture must keep the read port first, or it proves nothing"
+    with pytest.raises(ConfigError, match="spare_wen is declared but"):
+        _load(tmp_path, {
+            **BASE,
+            "ports": ports,
+            "redundancy": {"num_spare_rows": 1, "onchip_selfrepair": True},
+        })
+
+
+@pytest.mark.parametrize("pin", ["row_repair_en", "faulty_row_addr"])
+def test_row_pin_must_be_dir_input(tmp_path: Path, pin: str) -> None:
+    """The row twin of test_column_pin_must_be_dir_input. repair_remap_row's
+    every bindable port is an input, so `output` declares a wrapper-boundary
+    wire driven by nothing and gives the tester no pin -- the same failure the
+    column check was added to prevent. The existing laxity comment excuses
+    unvalidated row *widths* for back-compat; `dir` was never covered by that,
+    since `input` is the only value that has ever worked."""
+    ports = [
+        {**e, "dir": "output"} if e["name"] == pin else e
+        for e in REPAIR_PORTS
+    ]
+    with pytest.raises(ConfigError, match="must be dir: input"):
+        _load(tmp_path, {
+            **BASE,
+            "redundancy": {"num_spare_rows": 2},
+            "repair_ports": ports,
+        })
+
+
+def test_row_pin_dir_is_checked_on_the_2d_path_too(tmp_path: Path) -> None:
+    """The row check sits outside the num_spare_cols split, so it must fire for
+    a row+column config as well -- not just row-only."""
+    ports = [
+        {**e, "dir": "output"} if e["name"] == "row_repair_en" else e
+        for e in COL_REPAIR_PORTS
+    ]
+    with pytest.raises(ConfigError, match="must be dir: input"):
+        _load(tmp_path, {
+            **COL_BASE,
+            "redundancy": {"num_spare_rows": 1, "num_spare_cols": 1},
+            "repair_ports": ports,
+        })
+
+
 @pytest.mark.parametrize("pin", ["col_repair_en", "faulty_bit"])
 def test_column_repair_pins_without_spare_columns_rejected(tmp_path: Path, pin: str) -> None:
     """The other half of the same hole: a column-repair pin name in a row-only

@@ -204,6 +204,20 @@ def test_rejects_signal_role_collision_within_single_port() -> None:
         _normalize_ports(ports)
 
 
+def test_rejects_signal_role_collision_in_the_legacy_flat_form() -> None:
+    """The flat spelling used to skip the collision check entirely: its branch
+    returned before reaching the call, so the SAME memory was validated on one
+    spelling and not the other.
+
+    Note the test above does NOT cover this despite its name -- it wraps its
+    ports in {"p0": {...}}, whose value is a dict, so _is_legacy_flat_ports is
+    False and it takes the named path. That blind spot is why the gap survived.
+    This one passes the bare flat dict (all values strings), which really does
+    route to the flat branch."""
+    with pytest.raises(ConfigError, match="used for both role"):
+        _normalize_ports({**LEGACY_PORTS, "addr": LEGACY_PORTS["clk"]})
+
+
 def test_rejects_duplicate_yaml_key_in_ports_map(tmp_path: Path) -> None:
     # Hand-write raw YAML with a literal duplicate key -- not expressible via
     # a Python dict, so this has to bypass yaml.safe_dump.
