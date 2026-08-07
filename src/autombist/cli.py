@@ -360,8 +360,11 @@ def generate(
 
     Output: out/<memory_name>/
       - <memory_name>_mbist.v (main wrapper)
-      - mbist_algo.sv, mbist_fsm.sv, mbist_top.sv (core MBIST RTL)
-      - march_c/ or march_raw/ (algorithm-specific files)
+      - <algo>/ e.g. march_c/ -- the selected algorithm's RTL only
+        (<algo>_algo.sv, <algo>_fsm.sv, <algo>_top.sv)
+      - sram_model.sv and the shared repair/self-repair RTL
+        (repair_remap_row.sv, repair_remap_col.sv, sram_model_spares.sv,
+        onchip_row_repair_analyzer.sv, onchip_selfrepair_ctrl.sv, ...)
       - [with --test] <memory_name>_saboteur.v (fault injection wrapper)
       - [with --test] faults/*.hex (fault masks)
       - [with --test] Makefile (for running simulation)

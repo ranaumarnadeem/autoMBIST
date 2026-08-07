@@ -114,11 +114,17 @@ class FaultRecord:
     abit: int = 0
     p0: int = 0
     p1: int = 0
-    vport: int = 0          # victim port. Meaningful only for the coupling-class
-    aport: int = 0          # primitives (CFIN/CFID/CFST/CFDS): vport==aport is
-                             # today's only mode (same-port coupling); vport!=aport
-                             # means the aggressor op (on aport) disturbs a victim
-                             # reachable via a different port (aport).
+    vport: int = 0          # NOT YET HONOURED -- parsed and carried through to
+                             # FQ[i].vp, but no expression in the generated engine
+                             # reads it, so setting it is a no-op for every fault
+                             # type today. Reserved for a future per-port victim
+                             # gate; the victim-side guards match on address/bit
+                             # alone. See fault_ram_template.sv.j2's header.
+    aport: int = 0          # aggressor port, and the one that IS load-bearing:
+                             # gates the aggressor match via `FQ[i].ap != port`.
+                             # Honoured by CFIN/CFID (write-aggressor loop) and
+                             # CFDS (both loops) -- but NOT by CFST, whose arm
+                             # lives in the portless clamp_static().
     weight: float | None = None   # optional relative-likelihood weight for a future
                                     # IFA/SPICE-derived campaign (see fault_primitives.py's
                                     # module docstring for the adapter contract this feeds).
