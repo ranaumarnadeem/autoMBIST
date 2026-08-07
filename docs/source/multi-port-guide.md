@@ -271,17 +271,27 @@ add_fault TYPE VADDR VBIT AADDR ABIT P0 P1 VPORT APORT
 
 `VPORT`/`APORT` default to 0 when omitted, so every pre-existing 7-token
 fault definition keeps its original (same-port) meaning under a 2-port
-session too. They are only meaningful for the four coupling-class
-primitives — CFIN, CFID, CFST, CFDS; every other primitive's semantics don't
-depend on which port is used.
+session too.
 
-- **Same-port coupling** (`VPORT == APORT`, or both omitted/0): aggressor and
-  victim are both sensed against the same physical port — the ordinary,
-  pre-multi-port behavior.
-- **Cross-port coupling** (`VPORT != APORT`): the aggressor's sensitizing op
-  is issued on a *different* physical port than the one used to observe the
-  victim — e.g. a write on port 1 disturbing a cell later read back via port
-  0. This is the case that only a genuine dual-port fault model can express.
+**`APORT` is the load-bearing one.** It gates the aggressor match, and is
+honoured by three of the four coupling primitives — CFIN and CFID (in the
+write-aggressor loop) and CFDS (in both loops). **CFST does not honour it**:
+CFST is a static clamp, so its arm is emitted into `clamp_static()`, which
+re-asserts stored state on every access and has no `port` in scope. Every
+non-coupling primitive is port-agnostic by construction.
+
+**`VPORT` is parsed but not yet honoured.** No expression in the generated
+engine reads it — the victim-side guards match on address and bit alone — so
+setting it currently changes nothing for any fault type. It is reserved for a
+future per-port victim gate. Scope a fault to a port with `APORT`.
+
+- **Same-port coupling** (`APORT` omitted/0): the aggressor's sensitizing op is
+  evaluated against port 0 — the ordinary, pre-multi-port behavior.
+- **Cross-port coupling** (`APORT` naming the other port): the aggressor's
+  sensitizing op is issued on a *different* physical port than the one used to
+  observe the victim — e.g. a write on port 1 disturbing a cell later read back
+  via port 0. This is the case that only a genuine dual-port fault model can
+  express.
 
 Example — a cross-port CFIN (aggressor on port 1, victim sensed on port 0):
 

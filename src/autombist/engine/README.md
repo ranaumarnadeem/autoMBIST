@@ -263,21 +263,26 @@ directly, without going through `to_numeric()`, instead emits that element's
 
 ### 9-field fault-list format and coupling semantics
 
-The `VPORT`/`APORT` columns select which physical port the victim/aggressor
-side of a fault is sensed/triggered on. They are meaningful only for the
-four coupling-class primitives (CFIN, CFID, CFST, CFDS) -- every other
-primitive's semantics are unaffected by which port is used (a static clamp,
-transition fault, etc. is the same fault regardless of access port).
+The `APORT` column selects which physical port the **aggressor** side of a
+fault is triggered on. `VPORT` is parsed but **not yet honoured** -- see the
+subsection below.
 
-- **Same-port coupling** (`VPORT == APORT`, or both omitted/0): the
-  aggressor's sensitizing op and the victim's disturbance are both
-  evaluated against the same physical port -- today's only pre-multi-port
-  mode, reproduced unchanged through `march_engine_mp.sv` in its degenerate
-  single-port use.
-- **Cross-port coupling** (`VPORT != APORT`): the aggressor op is issued on
-  a *different* physical port than the one used to sense the victim -- e.g.
-  a write on port 1 disturbing a cell later read back via port 0. This is
-  the genuinely new capability `march_engine_mp.sv` adds: the aggressor-side
+`APORT` is meaningful only for the coupling-class primitives, and only for
+**three** of the four: CFIN and CFID (matched in `write_op()`'s aggressor
+loop) and CFDS (matched in both loops). **CFST does not honour it** -- CFST
+is a static clamp, so its arm is emitted into `clamp_static()`, which
+re-asserts stored state on every access and takes no `port` argument, leaving
+nowhere for a per-port gate to sit. Every non-coupling primitive is
+port-agnostic by construction (a transition fault is the same fault
+regardless of access port).
+
+- **Same-port coupling** (`APORT` omitted/0): the aggressor's sensitizing op
+  is evaluated against port 0 -- today's only pre-multi-port mode, reproduced
+  unchanged through `march_engine_mp.sv` in its degenerate single-port use.
+- **Cross-port coupling** (`APORT` naming the other port): the aggressor op is
+  issued on a *different* physical port than the one used to sense the victim
+  -- e.g. a write on port 1 disturbing a cell later read back via port 0. This
+  is the genuinely new capability `march_engine_mp.sv` adds: the aggressor-side
   match in `write_op()`'s aggressor loop checks the fault's `ap` (aport)
   field against the *actual issuing port* of the current op, so a fault
   only fires when the algorithm really does drive the claimed aggressor
@@ -286,6 +291,15 @@ transition fault, etc. is the same fault regardless of access port).
   `tests/integration/test_march_engine_mp_cross_port_coupling.py` for the
   full differential proof (same-port detected, cross-port detected, and the
   escape control).
+
+#### `VPORT` is reserved, not load-bearing
+
+`VPORT` is parsed into the engine's `FQ[i].vp` field and carried through
+`FaultRecord`, but **no expression in the generated module reads it**. The
+victim-side guards in `write_op()`/`read_op()` match on address and bit alone.
+Setting `VPORT` therefore changes nothing for any fault type today; it is
+reserved for a future per-port victim gate. The cross-port test above fixes
+`vport` at 0 throughout and varies only `aport`, for exactly this reason.
 
 `autombist algo`'s `add_fault` command exposes `VPORT`/`APORT` directly
 (`add_fault CFIN 5 1 6 1 2 0 0 1` defines a cross-port CFIN with aport=1),
