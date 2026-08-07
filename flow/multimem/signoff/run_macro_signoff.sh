@@ -31,7 +31,54 @@
 #   ./run_macro_signoff.sh <name> ...      # specific macro dir name(s)
 # Env: MACRO_OUT (default ~/sky130_macro_out), PDK_ROOT (default ~/.ciel),
 #      OUTDIR (default ~/macro_signoff)
+#
+# EXIT CODE contract: 0 only when every macro's LVS reported a genuine match.
+# LVS is what gates, because per the box above it is the meaningful check here
+# and the raw-GDS DRC count is not. The DRC count is reported (and its three
+# outcomes -- a number, or "could not determine" -- kept distinct) but is
+# deliberately NOT gated on: gating it would fail every real macro on the ~1M
+# spurious violations the box describes. A magic crash still fails the run,
+# transitively: no extracted spice means LVS cannot run, and an LVS that could
+# not run does not pass.
 set -u
+
+# --- parsing helpers -------------------------------------------------------
+# Defined before the source guard below so tests can source this file and call
+# them without running the flow (see tests/software/test_macro_signoff_parse.py).
+
+# Echo magic's DRC total from a drc.log; return 1 (echoing nothing) when no
+# count can be determined, so "clean" and "magic never got there" stay apart.
+parse_drc_count() {
+  local log="$1" region line
+  [ -f "$log" ] || return 1
+  # Strictly BETWEEN the sentinels. `grep -A2 DRC_COUNT_BEGIN` printed the
+  # sentinel line FIRST, and "DRC_COUNT_BEGIN" itself matches a case-insensitive
+  # /count/ -- so head -1 always selected the sentinel, which has no digits, and
+  # the count was always empty. The 2-line window was also too narrow for
+  # magic's real output.
+  region=$(awk '/DRC_COUNT_BEGIN/{f=1;next} /DRC_COUNT_END/{f=0} f' "$log")
+  line=$(printf '%s\n' "$region" | grep -iE "total|error tiles|count" | grep -E "[0-9]" | tail -1)
+  [ -n "$line" ] || return 1
+  printf '%s\n' "$line" | grep -oE "[0-9]+" | tail -1
+}
+
+# Echo MATCH / MISMATCH / UNKNOWN for a netgen lvs.out.
+classify_lvs() {
+  local out="$1"
+  [ -f "$out" ] || { echo UNKNOWN; return 0; }
+  # Negative FIRST: "Circuits do not match." also contains the substring
+  # "match", so any positive test has to run second or it swallows a real
+  # mismatch -- which is precisely how the old code could print
+  # "Circuits do not match." and still exit 0.
+  if grep -qiE "do not match|mismatch" "$out"; then echo MISMATCH; return 0; fi
+  if grep -qiE "circuits match|netlists match" "$out"; then echo MATCH;    return 0; fi
+  echo UNKNOWN
+}
+
+# Sourced (by a test) rather than executed: stop here, expose only the helpers.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  return 0
+fi
 
 MACRO_OUT="${MACRO_OUT:-$HOME/sky130_macro_out}"
 PDK_ROOT="${PDK_ROOT:-$HOME/.ciel}"
@@ -83,20 +130,33 @@ ext2spice -o $WD/$M.ext.spice
 quit -noprompt
 EOF
 
-  drc=$(grep -A2 "DRC_COUNT_BEGIN" "$WD/drc.log" | grep -iE "Total|error tiles|count" | head -1)
-  drc_n=$(echo "$drc" | grep -oE "[0-9]+" | head -1)
-  echo "[$M] DRC: ${drc:-<no count line>}  (see $WD/drc.log)"
+  # Reported, never gated -- see the EXIT CODE contract note in the header.
+  if drc_n=$(parse_drc_count "$WD/drc.log"); then
+    echo "[$M] DRC: $drc_n violation(s) -- INDICATIVE ONLY, not signoff  (see $WD/drc.log)"
+  else
+    echo "[$M] DRC: COULD NOT DETERMINE -- no count in magic's output  (see $WD/drc.log)"
+  fi
 
   # ---- LVS (netgen: extracted layout vs OpenRAM schematic .lvs.sp) ----
   if [ -f "$WD/$M.ext.spice" ] && [ -f "$SRC" ]; then
     netgen -batch lvs "$WD/$M.ext.spice $M" "$SRC $M" "$NETGEN_SETUP" "$WD/lvs.out" > "$WD/lvs.log" 2>&1
-    lvs=$(grep -iE "Circuits match|do not match|uniquely|Netlists match|Final result" "$WD/lvs.out" 2>/dev/null | tail -1)
-    echo "[$M] LVS: ${lvs:-<see $WD/lvs.log>}"
+    lvs_rc=$?
+    case "$(classify_lvs "$WD/lvs.out")" in
+      MATCH)
+        echo "[$M] LVS: MATCH  (see $WD/lvs.out)" ;;
+      MISMATCH)
+        echo "[$M] LVS: MISMATCH -- extracted layout differs from $SRC  (see $WD/lvs.out)"
+        overall=1 ;;
+      *)
+        echo "[$M] LVS: COULD NOT DETERMINE -- netgen rc=$lvs_rc  (see $WD/lvs.log)"
+        overall=1 ;;
+    esac
   else
-    echo "[$M] LVS: SKIP (missing extracted spice or $SRC)"
+    # Not a pass: a check that never ran cannot be signed off on.
+    echo "[$M] LVS: SKIP -- no extracted spice or no $SRC  (see $WD/drc.log for the magic run)"
+    overall=1
   fi
 
-  [ "${drc_n:-1}" != "0" ] && overall=1
   echo
 done
 
