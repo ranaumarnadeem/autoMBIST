@@ -129,13 +129,23 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
             f"category must be one of {_VALID_CATEGORIES} (addr_decoder-style faults are not "
             "supported by add_fault_type; AF_NOACC/AF_ALIAS remain the only address-decoder faults)"
         )
+    # Checked before the raw_sv early return below: port is the one DSL field
+    # that still constrains a raw_sv primitive, because codegen cannot inject a
+    # port gate into a verbatim arm body.
+    if prim.sensitize.port not in _VALID_PORTS:
+        raise FaultPrimitiveError(f"sensitize.port must be one of {_VALID_PORTS}")
     if prim.raw_sv is not None:
-        return  # DSL fields below are not codegen-relevant for a raw_sv primitive
+        if prim.sensitize.port != "x":
+            raise FaultPrimitiveError(
+                f"sensitize.port={prim.sensitize.port!r} cannot be combined with raw_sv: "
+                "the port gate is emitted by wrapping the generated arm's condition, and "
+                "a raw_sv arm body is copied verbatim. Gate on the arm's own `port` "
+                "argument inside the raw_sv text instead, and leave sensitize.port='x'"
+            )
+        return  # remaining DSL fields are not codegen-relevant for a raw_sv primitive
 
     if prim.sensitize.on not in _VALID_ON:
         raise FaultPrimitiveError(f"sensitize.on must be one of {_VALID_ON}")
-    if prim.sensitize.port not in _VALID_PORTS:
-        raise FaultPrimitiveError(f"sensitize.port must be one of {_VALID_PORTS}")
     if prim.sensitize.pre not in _VALID_BIT_TOKENS:
         raise FaultPrimitiveError(f"sensitize.pre must be one of {_VALID_BIT_TOKENS}")
     if prim.sensitize.written not in _VALID_BIT_TOKENS:
@@ -152,6 +162,21 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
     if prim.category == "static_clamp":
         if prim.effect.kind != "force":
             raise FaultPrimitiveError("static_clamp primitives must use effect.kind='force'")
+        if prim.sensitize.port != "x":
+            # A static clamp is a STORAGE-level invariant, not an access event:
+            # its arm is emitted into clamp_static(), which rewrites mem[] and is
+            # re-asserted after every access on every port. Gating that on a port
+            # would still corrupt the stored cell for BOTH ports -- the opposite
+            # of a port-specific defect -- so the constraint is rejected rather
+            # than silently mis-modelled. (This is the same structural reason
+            # CFST cannot honour a fault line's APORT.)
+            raise FaultPrimitiveError(
+                f"sensitize.port={prim.sensitize.port!r} is not meaningful for a "
+                "static_clamp: the clamp rewrites stored state, which every port "
+                "then sees, so it cannot be scoped to one port. Model a "
+                "port-specific read-path defect as category='read_effect' "
+                "(which corrupts only the accessing port's returned value)"
+            )
     elif prim.category == "write_effect":
         if prim.sensitize.on == "victim" and prim.effect.kind not in ("force", "block_write"):
             raise FaultPrimitiveError("write_effect on=victim primitives must use force or block_write")

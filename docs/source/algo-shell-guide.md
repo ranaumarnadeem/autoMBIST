@@ -371,7 +371,22 @@ A fault primitive is a JSON object with this shape:
   - `port` — which physical port the sensitizing op must occur on: `"0"`,
     `"1"`, or `"x"` (wildcard — matches on address alone, the implicit
     behavior of every existing built-in). Only meaningful in a 2-port
-    (`set_memory --ports 2`) session.
+    (`set_memory --ports 2`) session; a non-`"x"` port is **rejected** when
+    the session is single-port, because the generated engine has no `port`
+    argument to gate on there.
+
+    Two further restrictions, both refused at `add_fault_type` time rather
+    than silently ignored:
+    - **not for `static_clamp`.** A clamp rewrites *stored* state and is
+      re-asserted after every access, so every port would see the corruption
+      anyway — port-scoping it is not expressible. Model a port-specific
+      read-path defect as `read_effect`, whose effect lands on the returned
+      value and so is naturally per-port. (Same structural reason the built-in
+      CFST cannot honour a fault line's `APORT`.)
+    - **not with `raw_sv`.** The gate is emitted by wrapping the generated
+      arm's condition; a `raw_sv` body is copied verbatim, so the constraint
+      would be dropped. Gate on the arm's own `port` argument inside your
+      `raw_sv` text and leave `port` as `"x"`.
 - **`effect`** — what happens to the victim when sensitized:
   - `kind` — `force` (clamp to a value), `invert` (flip the bit),
     `block_write` (the write silently fails to update the cell),

@@ -146,6 +146,83 @@ def test_render_fault_ram_num_ports_1_is_byte_identical_to_pre_phase_golden() ->
     assert digest == "a4abde7a60b3a5555fb6ffae3f84ee9062903072c21e68a15e1a4d154493874f"
 
 
+# --------------------------------------------------------------------------- #
+# sensitize.port: the type-level per-port sensitizing constraint. Distinct from
+# a fault line's APORT, which is instance-level and reaches only the aggressor
+# site. Was validated and documented but never read by codegen, so a
+# port-qualified type fired on BOTH ports and inflated the coverage number.
+# --------------------------------------------------------------------------- #
+def _port_prim(name: str, category: str, sensitize: Sensitize, effect: Effect) -> FaultPrimitive:
+    return FaultPrimitive(name, category, sensitize, effect)
+
+
+@pytest.mark.parametrize(
+    "name,category,sensitize,effect,expected",
+    [
+        (
+            "PV", "write_effect", Sensitize(pre="0", written="1", on="victim", port="1"),
+            Effect(kind="force", value="0"),
+            "T_PV: if (old[b] == 1'b0 && d[b] == 1'b1 && port == 1) "
+            "begin nxt[b] = 1'b0; FQ[i].hits++; end",
+        ),
+        (
+            "PA", "write_effect", Sensitize(transition="either", on="aggressor", port="1"),
+            Effect(kind="invert"),
+            "T_PA: if ((up || dn) && port == 1) begin mem[FQ[i].va][FQ[i].vb] = "
+            "~mem[FQ[i].va][FQ[i].vb]; FQ[i].hits++; end",
+        ),
+        (
+            "PR", "read_effect", Sensitize(pre="1", on="victim", port="0"),
+            Effect(kind="corrupt_read", value="0"),
+            "T_PR: if (old[b] == 1'b1 && port == 0) begin rv[b] = 1'b0; FQ[i].hits++; end",
+        ),
+    ],
+)
+def test_port_clause_emitted_at_each_supported_site(
+    name: str, category: str, sensitize: Sensitize, effect: Effect, expected: str
+) -> None:
+    text = render_fault_ram(default_registry() + [_port_prim(name, category, sensitize, effect)],
+                            num_ports=2)
+    arm = next(ln.strip() for ln in text.splitlines() if f"T_{name}:" in ln)
+    assert arm == expected
+
+
+def test_port_clause_replaces_rather_than_ands_the_empty_condition() -> None:
+    """_cond_clauses yields the literal 1'b1 for a primitive that constrains
+    nothing; the port clause must take its place rather than produce the
+    tautological `1'b1 && port == 1`."""
+    prim = _port_prim("PB", "write_effect", Sensitize(on="victim", port="1"),
+                      Effect(kind="force", value="0"))
+    text = render_fault_ram(default_registry() + [prim], num_ports=2)
+    arm = next(ln.strip() for ln in text.splitlines() if "T_PB:" in ln)
+    assert arm == "T_PB: if (port == 1) begin nxt[b] = 1'b0; FQ[i].hits++; end"
+
+
+def test_wildcard_port_emits_no_clause_so_builtin_render_is_unchanged() -> None:
+    """Every built-in is port='x'. This is the regression check for the whole
+    change: if _with_port ever stopped short-circuiting on the wildcard, every
+    generated module in the project would shift."""
+    for num_ports in (1, 2):
+        text = render_fault_ram(default_registry(), num_ports=num_ports)
+        generated_arms = [ln for ln in text.splitlines() if ln.strip().startswith("T_")]
+        assert generated_arms, "sanity: arms must exist to make this meaningful"
+        offenders = [ln.strip() for ln in generated_arms
+                     if "port == 0" in ln or "port == 1" in ln]
+        # T_SOF's per-port output-keeper is fixed template text, not a rendered
+        # sensitize.port clause, so it is the one legitimate match.
+        assert all("T_SOF:" in ln for ln in offenders), offenders
+
+
+def test_single_port_render_rejects_a_port_qualified_type() -> None:
+    """Not merely meaningless single-port: the 1-port write_op()/read_op() take
+    no `port` argument, so an emitted clause would not compile. Refusing beats
+    silently dropping the constraint the user asked for."""
+    prim = _port_prim("PV", "write_effect", Sensitize(on="victim", port="1"),
+                      Effect(kind="force", value="0"))
+    with pytest.raises(ValueError, match="requires a 2-port memory"):
+        render_fault_ram(default_registry() + [prim], num_ports=1)
+
+
 def test_render_fault_ram_num_ports_1_has_unsuffixed_single_port_bus() -> None:
     text = render_fault_ram(default_registry(), num_ports=1)
     assert "input  logic                    clk,\n" in text
@@ -255,3 +332,62 @@ def test_render_fault_ram_num_ports_2_still_has_drf_guard_but_not_hsd() -> None:
     text = render_fault_ram(default_registry(), num_ports=2)
     assert "DRF is not yet supported for num_ports=2" in text
     assert "HSD is not yet supported for num_ports=2" not in text
+
+
+# --------------------------------------------------------------------------- #
+# conflicting_port_faults: sensitize.port (type-level) and a fault line's APORT
+# (instance-level) both gate the aggressor's port, and meet at exactly one site.
+# ANDing them is correct, but a disagreement yields a permanently dead arm that
+# would otherwise score as an ordinary ESCAPE.
+# --------------------------------------------------------------------------- #
+def _aggressor_prim(port: str) -> FaultPrimitive:
+    return FaultPrimitive(
+        "PA", "write_effect", Sensitize(transition="either", on="aggressor", port=port),
+        Effect(kind="invert"),
+    )
+
+
+def _rec(ftype: str, aport: int):
+    from autombist.algo_engine import FaultRecord
+    return FaultRecord(type=ftype, vaddr=5, vbit=1, aaddr=6, abit=1, p0=2, p1=0, aport=aport)
+
+
+def test_conflicting_port_faults_reports_a_dead_arm() -> None:
+    from autombist.fault_ram_gen import conflicting_port_faults
+
+    msgs = conflicting_port_faults([_aggressor_prim("1")], [_rec("PA", aport=0)], num_ports=2)
+    assert len(msgs) == 1
+    assert "can never activate" in msgs[0]
+
+
+def test_conflicting_port_faults_silent_when_they_agree() -> None:
+    from autombist.fault_ram_gen import conflicting_port_faults
+
+    assert conflicting_port_faults([_aggressor_prim("1")], [_rec("PA", aport=1)], num_ports=2) == []
+
+
+def test_conflicting_port_faults_ignores_wildcard_types() -> None:
+    """A port='x' type imposes no constraint, so no APORT can contradict it."""
+    from autombist.fault_ram_gen import conflicting_port_faults
+
+    assert conflicting_port_faults([_aggressor_prim("x")], [_rec("PA", aport=1)], num_ports=2) == []
+
+
+def test_conflicting_port_faults_ignores_non_aggressor_sites() -> None:
+    """Only the write_effect/aggressor arm has an APORT gate to collide with;
+    a victim-site port constraint is orthogonal to the fault line's APORT."""
+    from autombist.fault_ram_gen import conflicting_port_faults
+
+    victim = FaultPrimitive(
+        "PA", "write_effect", Sensitize(pre="0", written="1", on="victim", port="1"),
+        Effect(kind="force", value="0"),
+    )
+    assert conflicting_port_faults([victim], [_rec("PA", aport=0)], num_ports=2) == []
+
+
+def test_conflicting_port_faults_silent_single_port() -> None:
+    """sensitize.port is rejected outright at num_ports=1, and the single-port
+    engine never consults a fault line's ports."""
+    from autombist.fault_ram_gen import conflicting_port_faults
+
+    assert conflicting_port_faults([_aggressor_prim("1")], [_rec("PA", aport=0)], num_ports=1) == []

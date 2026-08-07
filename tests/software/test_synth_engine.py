@@ -337,3 +337,25 @@ def test_synth_verification_faults_one_per_target_no_type_collisions():
     records = synth_verification_faults(mem, default_registry())
     assert len(records) == 15
     assert {r.type for r in records} == set(REGISTRY)
+
+
+def test_synthesize_elements_rejects_a_port_qualified_target():
+    """This synthesizer is single-port: its 2-cell walk has no notion of which
+    port issued an op, so a sensitize.port constraint has nothing to bind to and
+    any coverage claimed for such a type would be unsound. Refused rather than
+    silently treated as port-agnostic -- which is exactly what the codegen bug
+    this accompanies used to do."""
+    prim = FaultPrimitive(
+        "PORTF", "write_effect",
+        Sensitize(pre="0", written="1", on="victim", port="1"),
+        Effect(kind="force", value="0"),
+    )
+    with pytest.raises(ValueError, match="single-port synthesizer cannot model"):
+        synthesize_elements([prim])
+
+
+def test_synthesize_elements_still_accepts_wildcard_port_targets():
+    """The rejection must be specific to a port-qualified target: every built-in
+    is port='x' and must keep synthesizing."""
+    elements, _ = synthesize_elements([p for p in default_registry() if p.name == "TF0"])
+    assert elements, "a wildcard-port target must still synthesize"
