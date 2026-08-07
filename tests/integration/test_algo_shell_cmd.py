@@ -224,10 +224,16 @@ def test_run_campaign_sh_marks_a_crashed_fault_run_as_error_not_escaped(tmp_path
     the CSV as ESCAPED, silently. That understates coverage with an
     infrastructure failure with no visible sign anywhere in the output.
 
-    Verified against the actual pre-fix behaviour (not just by inspection):
-    the last commit's run_campaign.sh -- which already has the golden-run
-    fix, but not this one -- really does write ESCAPED with no warning for
-    this exact fixture."""
+    The control against over-classification -- that ERROR is specific to
+    crashes and not applied blanket -- is the sibling test below, which runs
+    the same script over a VALID fault list and requires DETECTED/ESCAPED with
+    no warnings at all.
+
+    (An earlier version of this test fetched the pre-fix script via
+    `git show HEAD:...` to demonstrate the old ESCAPED behaviour. That was
+    self-invalidating: once the fix was committed, HEAD became the fixed
+    script and the control compared it against itself. A negative control must
+    not be anchored to a moving reference.)"""
     bundle_dir = _bundle_with_builtin_algo(tmp_path, "bundle")
 
     result = subprocess.run(
@@ -253,26 +259,37 @@ def test_run_campaign_sh_marks_a_crashed_fault_run_as_error_not_escaped(tmp_path
     assert "NOT_A_REAL_TYPE" in result.stderr, combined
     assert "coverage: 0 / 2 detected (2 run(s) errored" in result.stdout, combined
 
-    old_script = subprocess.run(
-        ["git", "show", "HEAD:src/autombist/engine/run_campaign.sh"],
-        cwd=find_engine_dir(), capture_output=True, text=True, check=True,
-    ).stdout
-    old_bundle = _bundle_with_builtin_algo(tmp_path, "bundle_old")
-    (old_bundle / "run_campaign.sh").write_text(old_script, encoding="utf-8")
-    (old_bundle / "run_campaign.sh").chmod(0o755)
 
-    old_result = subprocess.run(
-        ["bash", "run_campaign.sh", "faults.txt", "march_c"],
-        cwd=old_bundle, capture_output=True, text=True, check=False, timeout=300,
+def test_run_campaign_sh_still_reports_escaped_for_a_genuine_non_detection(tmp_path: Path) -> None:
+    """The control against the opposite failure: ERROR must be specific to a
+    crashed run, not applied to anything that isn't DETECTED. Runs the same
+    script over a VALID two-fault list -- SA0, which March C- catches, and SOF,
+    which it genuinely misses (see the coverage table in engine/README.md) --
+    and requires the classic DETECTED/ESCAPED split with no error path taken.
+
+    Without this, the crash test above would still pass if the script simply
+    labelled every non-detection ERROR."""
+    bundle_dir = _bundle_with_builtin_algo(tmp_path, "bundle_valid")
+    (bundle_dir / "faults.txt").write_text(
+        "SA0 10 3 0 0 0 0\nSOF 70 5 0 0 0 0\n", encoding="utf-8"
     )
-    old_combined = old_result.stdout + old_result.stderr
-    old_csv_rows = (old_bundle / "campaign_march_c.csv").read_text(encoding="utf-8").splitlines()
-    # Same TYPE values as the fixed run (that extraction logic is unchanged);
-    # only the classification differs -- ESCAPED instead of ERROR, and no
-    # stderr warning at all, for both rows.
-    assert old_csv_rows[1:] == ["0,SA0,ESCAPED,,,", "1,,ESCAPED,,,"], old_combined
-    assert "produced no RESULT line" not in old_combined, old_combined
-    assert "coverage: 0 / 2 detected  ->" in old_result.stdout, old_combined
+
+    result = subprocess.run(
+        ["bash", "run_campaign.sh", "faults.txt", "march_c"],
+        cwd=bundle_dir, capture_output=True, text=True, check=False, timeout=300,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "golden: clean" in result.stdout, combined
+
+    csv_rows = (bundle_dir / "campaign_march_c.csv").read_text(encoding="utf-8").splitlines()
+    assert csv_rows[1].startswith("0,SA0,DETECTED,"), csv_rows
+    assert csv_rows[2] == "1,SOF,ESCAPED,,,", csv_rows
+    # No ERROR row, no warning, and the summary keeps its original wording --
+    # the errored-run suffix must appear only when a run actually errored.
+    assert "ERROR" not in "\n".join(csv_rows), csv_rows
+    assert "produced no RESULT line" not in combined, combined
+    assert "coverage: 1 / 2 detected  ->" in result.stdout, combined
 
 
 # --------------------------------------------------------------------------- #
