@@ -243,6 +243,7 @@ def render_fault_ram(registry: list[FaultPrimitive], num_ports: int = 1) -> str:
 
     context: dict[str, Any] = {
         "type_table": type_table,
+        "valid_type_names": ", ".join(name for name, _ in type_table),
         "static_clamp_arms": sites["static_clamp"],
         "write_victim_arms": sites["write_victim"],
         "write_aggressor_arms": sites["write_aggressor"],
