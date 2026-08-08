@@ -70,3 +70,26 @@ def test_cli_simulate_json_prints_parseable_report(tmp_path: Path) -> None:
     payload = json.loads(result.output)
     assert payload["status"] == "pass"
     assert payload["summary"].startswith("autombist: simulation")
+
+
+def test_relative_out_works_across_separate_generate_and_simulate_invocations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard: `--out out` (relative, exactly as README.md and
+    quickstart.md instruct) used to die with a raw 'make: No rule to make
+    target'. OUTDIR was passed to `make -C hardware_dir` unresolved, and that
+    subprocess runs with cwd=project_root (the dev/installed package root),
+    not the caller's actual working directory -- so a relative OUTDIR
+    resolved against the wrong directory entirely, no matter how the wrapper
+    was actually generated. Every other test in this file passes
+    `str(tmp_path / "out")`, which is already absolute and never exercised
+    this path -- this one drives the CLI with a relative --out from a chdir'd
+    cwd, matching a fresh checkout followed literally."""
+    monkeypatch.chdir(tmp_path)
+    Path("config.yml").write_text(yaml.safe_dump(CONFIG, sort_keys=False), encoding="utf-8")
+
+    generate_result = runner.invoke(app, ["generate", "--config", "config.yml", "--out", "out"])
+    assert generate_result.exit_code == 0, generate_result.output
+
+    result = runner.invoke(app, ["simulate", "--out", "out"])
+    assert result.exit_code == 0, result.output
