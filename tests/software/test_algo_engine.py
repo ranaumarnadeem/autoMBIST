@@ -15,6 +15,7 @@ from autombist.algo_engine import (
     parse_result_line,
     run_fsm_campaign,
     write_fault_list,
+    _validate_fault_addresses,
 )
 
 
@@ -40,6 +41,44 @@ def test_write_fault_list_roundtrip(tmp_path: Path) -> None:
     records = [FaultRecord("SA1", 17, 0, 0, 0, 0, 0), FaultRecord("CFIN", 100, 2, 101, 2, 2, 0)]
     path = write_fault_list(records, tmp_path / "faults.txt")
     assert parse_fault_list(path.read_text()) == records
+
+
+def test_validate_fault_addresses_accepts_in_range_records() -> None:
+    mem = MemoryParams(addr_width=4, data_width=8)  # depth=16
+    _validate_fault_addresses(mem, [
+        FaultRecord("SA0", vaddr=0, vbit=0, aaddr=15, abit=7, p0=0, p1=0),
+        FaultRecord("SA1", vaddr=15, vbit=7, aaddr=0, abit=0, p0=0, p1=0),
+    ])  # must not raise
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        FaultRecord("SA0", vaddr=16, vbit=0, aaddr=0, abit=0, p0=0, p1=0),   # vaddr == depth
+        FaultRecord("SA0", vaddr=999, vbit=0, aaddr=0, abit=0, p0=0, p1=0),  # vaddr >> depth
+        FaultRecord("SA0", vaddr=0, vbit=8, aaddr=0, abit=0, p0=0, p1=0),    # vbit == data_width
+        FaultRecord("SA0", vaddr=0, vbit=0, aaddr=16, abit=0, p0=0, p1=0),   # aaddr out of range
+        FaultRecord("SA0", vaddr=0, vbit=0, aaddr=0, abit=8, p0=0, p1=0),    # abit out of range
+        FaultRecord("SA0", vaddr=-1, vbit=0, aaddr=0, abit=0, p0=0, p1=0),   # negative
+    ],
+)
+def test_validate_fault_addresses_rejects_out_of_range_fields(record: FaultRecord) -> None:
+    """A hand-authored --faults file bypasses generate_all_types_faults/
+    generate_random_faults (which construct in-range addresses by their own
+    modulo arithmetic) -- an out-of-range value here used to reach the
+    generated testbench unchecked and silently wrap (Verilog truncation onto
+    an ADDR_WIDTH/DATA_WIDTH-bit register) instead of failing loudly."""
+    mem = MemoryParams(addr_width=4, data_width=8)  # depth=16
+    with pytest.raises(CampaignError, match="out of range"):
+        _validate_fault_addresses(mem, [record])
+
+
+def test_validate_fault_addresses_rejects_out_of_range_port() -> None:
+    mem = MemoryParams(addr_width=4, data_width=8, num_ports=1)
+    with pytest.raises(CampaignError, match="aport=1 is out of range"):
+        _validate_fault_addresses(
+            mem, [FaultRecord("CFIN", vaddr=0, vbit=0, aaddr=1, abit=0, p0=0, p1=0, aport=1)]
+        )
 
 
 def test_parse_result_line_detected() -> None:
@@ -316,7 +355,7 @@ def test_generate_all_types_faults_excludes_hsd_at_default_words_per_row() -> No
     mem = MemoryParams(addr_width=4, data_width=8)
     records = generate_all_types_faults(mem)
     assert not any(r.type == "HSD" for r in records)
-    assert len(records) == 19
+    assert len(records) == 20  # 19 BUILTIN_FAULT_TYPES + DRF (single-port)
 
 
 def test_generate_all_types_faults_includes_hsd_when_words_per_row_over_1() -> None:
@@ -326,8 +365,33 @@ def test_generate_all_types_faults_includes_hsd_when_words_per_row_over_1() -> N
     records = generate_all_types_faults(mem)
     hsd = [r for r in records if r.type == "HSD"]
     assert len(hsd) == 1
-    assert len(records) == 20
+    assert len(records) == 21  # 19 BUILTIN_FAULT_TYPES + DRF + HSD
     assert hsd[0].aaddr == 0 and hsd[0].abit == 0  # no fixed aggressor address
+
+
+def test_generate_all_types_faults_includes_drf_for_single_port() -> None:
+    from autombist.algo_engine import generate_all_types_faults
+
+    mem = MemoryParams(addr_width=4, data_width=8, num_ports=1)
+    records = generate_all_types_faults(mem)
+    drf = [r for r in records if r.type == "DRF"]
+    assert len(drf) == 1
+    assert drf[0].aaddr == 0 and drf[0].abit == 0  # unused, matches SOF/AF_NOACC
+    assert drf[0].p0 > 0  # idle-cycle threshold, not a polarity selector
+
+
+def test_generate_all_types_faults_excludes_drf_for_multi_port() -> None:
+    """DRF's idle-cycle tracking is single-port only -- a fault list that
+    actually LOADS a DRF entry against a num_ports=2 fault_ram.sv fails loud
+    (FATAL + $finish, see fault_ram_template.sv.j2's header). Unconditionally
+    including DRF here would crash `gen_faults --all-types` for every
+    multi-port memory, which is exactly why it's gated on mem.num_ports == 1
+    the same way HSD is gated on mem.words_per_row > 1."""
+    from autombist.algo_engine import generate_all_types_faults
+
+    mem = MemoryParams(addr_width=4, data_width=8, num_ports=2)
+    records = generate_all_types_faults(mem)
+    assert not any(r.type == "DRF" for r in records)
 
 
 def test_generate_all_types_faults_hsd_p0_opposite_of_init_val() -> None:
