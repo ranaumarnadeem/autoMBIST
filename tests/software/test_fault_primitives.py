@@ -121,11 +121,24 @@ def _prim(**overrides: object) -> FaultPrimitive:
         ({"effect": Effect(kind="bogus")}, "effect.kind must be one of"),
         ({"effect": Effect(kind="force", value="bogus")}, "effect.value must be one of"),
         ({"effect": Effect(kind="force", value="0", also_read="bogus")}, "effect.also_read must be one of"),
+        ({"effect": Effect(kind="force", value="0", target="aggressor")}, "effect.target must be 'victim'"),
     ],
 )
 def test_validate_rejects_each_invalid_dsl_field(overrides: dict, match: str) -> None:
     with pytest.raises(FaultPrimitiveError, match=match):
         validate(_prim(**overrides), existing_names=set())
+
+
+def test_validate_rejects_effect_target_even_when_otherwise_valid() -> None:
+    """effect.target was parsed, serialised, and round-tripped, but never read
+    by any codegen arm -- a custom fault type declaring target='aggressor'
+    was silently accepted and behaved exactly like the (correct) default,
+    with no error or warning telling the author their setting did nothing."""
+    prim = FaultPrimitive(
+        "MYAGG", "write_effect", Sensitize(on="aggressor"), Effect(kind="invert", target="aggressor"),
+    )
+    with pytest.raises(FaultPrimitiveError, match="no codegen arm can target the aggressor"):
+        validate(prim, existing_names=set())
 
 
 def test_validate_rejects_write_effect_victim_with_bad_kind() -> None:

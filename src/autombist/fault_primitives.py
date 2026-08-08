@@ -101,7 +101,8 @@ class Effect:
     kind: str                       # force|invert|block_write|corrupt_read|force_read
     value: str | None = None        # "0"|"1"|"p0"|"p1"
     also_read: str | None = None    # force_read only (DRDF-style): mem gets `value`, read returns this
-    target: str = "victim"          # victim | aggressor (only "victim" is used by any built-in)
+    target: str = "victim"          # must be "victim" -- validate() rejects anything else, since
+                                     # no codegen arm can target the aggressor's own storage
 
 
 @dataclass(slots=True)
@@ -158,6 +159,21 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
         raise FaultPrimitiveError("effect.value must be one of '0','1','p0','p1' (required unless kind=invert)")
     if prim.effect.also_read is not None and prim.effect.also_read not in _VALID_BIT_TOKENS[:-1]:
         raise FaultPrimitiveError("effect.also_read must be one of '0','1','p0','p1'")
+    if prim.effect.target != "victim":
+        # Every codegen arm (fault_ram_gen.py's render_*_arm functions) writes
+        # only to the victim's own cell/register -- rv[b]/nxt[b]/mem[addr] at
+        # the victim's address -- with no code path that ever targets the
+        # aggressor's storage. "aggressor" would be silently accepted and
+        # applied to the victim anyway, exactly like an unread config key.
+        # A coupling fault's aggressor-triggered condition is already
+        # expressed by sensitize.on='aggressor'; the effect landing on the
+        # victim is the whole point of a coupling fault, not a gap to fill.
+        raise FaultPrimitiveError(
+            f"effect.target must be 'victim' (got {prim.effect.target!r}) -- no "
+            "codegen arm can target the aggressor's own storage. Use "
+            "sensitize.on='aggressor' to gate the sensitizing condition on the "
+            "aggressor's access; the effect still lands on the victim"
+        )
 
     if prim.category == "static_clamp":
         if prim.effect.kind != "force":
