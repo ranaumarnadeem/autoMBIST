@@ -15,6 +15,8 @@ from autombist.algo_engine import (
     parse_result_line,
     run_fsm_campaign,
     write_fault_list,
+    _engine_cache_enabled,
+    _source_digest,
     _validate_fault_addresses,
 )
 
@@ -79,6 +81,69 @@ def test_validate_fault_addresses_rejects_out_of_range_port() -> None:
         _validate_fault_addresses(
             mem, [FaultRecord("CFIN", vaddr=0, vbit=0, aaddr=1, abit=0, p0=0, p1=0, aport=1)]
         )
+
+
+def test_engine_cache_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AUTOMBIST_ENGINE_CACHE", raising=False)
+    assert _engine_cache_enabled() is True
+
+
+@pytest.mark.parametrize("value", ["0", "off", "OFF", "false", "False", "no"])
+def test_engine_cache_disabled_via_env_var(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("AUTOMBIST_ENGINE_CACHE", value)
+    assert _engine_cache_enabled() is False
+
+
+@pytest.mark.parametrize("value", ["1", "on", "/some/path", ""])
+def test_engine_cache_enabled_for_non_disable_values(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    # Anything that isn't a recognized disable token (including an empty
+    # string, e.g. AUTOMBIST_ENGINE_CACHE="" left over from an unset export)
+    # leaves caching on -- only an explicit "0"/"off"/"false"/"no" opts out.
+    monkeypatch.setenv("AUTOMBIST_ENGINE_CACHE", value)
+    assert _engine_cache_enabled() is True
+
+
+def test_source_digest_is_sensitive_to_content(tmp_path: Path) -> None:
+    a = tmp_path / "a.sv"
+    b = tmp_path / "b.sv"
+    a.write_text("module a; endmodule\n", encoding="utf-8")
+    b.write_text("module b; endmodule\n", encoding="utf-8")
+    assert _source_digest([a]) != _source_digest([b])
+
+
+def test_source_digest_is_stable_for_identical_name_and_content(tmp_path: Path) -> None:
+    """Only the file's name (not its full path/directory) and byte content
+    feed the digest, so two files that are otherwise indistinguishable to
+    verilator's --top-module/source-list handling -- same name, same bytes,
+    different location on disk -- must produce the same digest."""
+    a = tmp_path / "same_name.sv"
+    a.write_text("module m; endmodule\n", encoding="utf-8")
+    renamed = tmp_path / "elsewhere" / "same_name.sv"
+    renamed.parent.mkdir()
+    renamed.write_text("module m; endmodule\n", encoding="utf-8")
+    assert _source_digest([a]) == _source_digest([renamed])
+
+
+def test_source_digest_is_sensitive_to_filename_even_with_identical_content(tmp_path: Path) -> None:
+    """The digest folds in each file's name, not just its bytes, deliberately
+    -- march_engine.sv and march_engine_mp.sv (or a caller-supplied
+    fault_ram_sv override with a different name) must never collide in the
+    cache purely because their content happened to match; what a source is
+    CALLED is part of what verilator actually compiles (affects
+    --top-module resolution and is a real input, not incidental metadata)."""
+    a = tmp_path / "a.sv"
+    b = tmp_path / "b.sv"
+    a.write_text("module m; endmodule\n", encoding="utf-8")
+    b.write_text("module m; endmodule\n", encoding="utf-8")
+    assert _source_digest([a]) != _source_digest([b])
+
+
+def test_source_digest_is_sensitive_to_order(tmp_path: Path) -> None:
+    a = tmp_path / "a.sv"
+    b = tmp_path / "b.sv"
+    a.write_text("module a; endmodule\n", encoding="utf-8")
+    b.write_text("module b; endmodule\n", encoding="utf-8")
+    assert _source_digest([a, b]) != _source_digest([b, a])
 
 
 def test_parse_result_line_detected() -> None:
