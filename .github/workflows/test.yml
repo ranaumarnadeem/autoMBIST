@@ -37,6 +37,34 @@ jobs:
       - name: Enable Nix binary cache
         uses: DeterminateSystems/magic-nix-cache-action@main
 
+      # Two DIFFERENT caches, both content-addressed internally, so a stale
+      # restore is harmless -- neither depends on this key beyond "give me
+      # back whatever accumulated last time; entries that no longer match
+      # anything just sit unused until GitHub's own cache eviction reclaims
+      # them" (per-repo actions/cache storage is capped at 10GB, LRU-evicted
+      # automatically, so this is not unbounded):
+      #   ~/.cache/ccache             -- OBJCACHE=ccache (flake.nix's devShell
+      #                                  shellHook), speeds up verilator's own
+      #                                  internal C++ compile step even when
+      #                                  the layer below misses (e.g. a
+      #                                  different memory geometry still
+      #                                  shares verilator's runtime library
+      #                                  translation units).
+      #   /tmp/autombist-engine-cache -- compile_engine's own content-
+      #                                  addressed build cache (see
+      #                                  algo_engine.py's _engine_build_cache_key)
+      #                                  -- a full hit skips calling verilator
+      #                                  at all, not just its C++ step.
+      - name: Cache verilator build artifacts (ccache + engine build cache)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ccache
+            /tmp/autombist-engine-cache
+          key: ${{ runner.os }}-autombist-buildcache-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-autombist-buildcache-
+
       - name: Run test suite with coverage gate
         run: |
           nix develop --command \
