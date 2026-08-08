@@ -94,10 +94,12 @@ characteristic as `fault_ram.sv`'s documented 1-cycle read latency, not a
 bug. `P0` is reused directly as the idle-cycle threshold; `P1`/`AADDR`/
 `ABIT` are unused (0). Detecting a DRF therefore requires a `.alg` spec
 with an explicit wait element between the write that arms it and the read
-that observes it -- no built-in march algorithm (MATS+, March C-, March SS)
-contains a wait op, so DRF always escapes them regardless of `P0` (this is
-expected, not a coverage gap: those algorithms were never designed to test
-retention).
+that observes it -- none of the built-in march algorithms (MATS+, March B,
+March C-, March SS, March X) contain a wait op, so DRF always escapes them
+regardless of `P0` (this is expected, not a coverage gap: those algorithms
+were never designed to test retention). `gen_faults --all-types` still
+includes a DRF entry for single-port memories precisely so this shows up as
+an honest ESCAPED result rather than being silently absent from the list.
 
 **The idle counter runs from simulation time 0, not from a first arming
 write.** There is no "wait for the first write before counting" gate --
@@ -208,12 +210,22 @@ expose a `WORDS_PER_ROW` top parameter to Verilator's `-G` override; the
 generated FSM harness does not (a mechanical plumbing gap, not a modeling
 question, unlike DRF's num_ports=2 deferral).
 
-**`gen_faults --all-types`** includes HSD only when `words_per_row > 1`
-(unlike DRF's unconditional exclusion): at the default, no row-mate address
-exists at all, so an included HSD entry would always report zero hits; at
-`words_per_row > 1`, a real march algorithm's own traversal detects it fine
-(confirmed directly against `march_c`), so excluding it there would be an
-unnecessary gap rather than a real limitation.
+**`gen_faults --all-types`** includes HSD only when `words_per_row > 1`, and
+DRF only when `num_ports == 1` (the same conditional-inclusion mechanism,
+`_effective_all_types`, gates both -- see its own comment). HSD: at the
+default, no row-mate address exists at all, so an included HSD entry would
+always report zero hits; at `words_per_row > 1`, a real march algorithm's own
+traversal detects it fine (confirmed directly against `march_c`), so
+excluding it there would be an unnecessary gap rather than a real limitation.
+DRF: excluding it whenever no BUILT-IN march algorithm has a wait op was
+tried first and rejected -- that conflates "structurally undetectable"
+(HSD's actual condition at the default) with "the algorithm about to run
+doesn't happen to look for this" (true of every fault type here for some
+algorithm; a coverage report is supposed to say so, not omit the fault).
+`num_ports == 1` is the real, structural constraint: DRF's idle-cycle
+tracking is a single scalar register not yet extended to `num_ports=2` (see
+below), and a fault list that actually loads a DRF entry there fails loud
+rather than silently.
 
 **Provably inert at the default (`words_per_row=1`)**, exactly like DRF at
 `num_ports=2`: `row(addr) = addr` for every address there, so "a different

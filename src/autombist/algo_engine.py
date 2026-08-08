@@ -29,14 +29,27 @@ from .seq_check import SequenceResult, compare_trace, parse_observed_trace
 # The 19 functional fault primitives fault_ram.sv implements natively (see
 # engine/README.md). P6 (add_fault_type) will let researchers extend this set.
 #
-# DRF and HSD (Workstreams K/L) are deliberately absent from this STATIC tuple,
-# for different reasons: DRF is unconditionally absent (no built-in march
-# algorithm contains a wait op, so it can never be detected regardless of
-# mem.*). HSD's fireability instead depends on mem.words_per_row at call time
-# (it needs another same-row address to ever be written) -- generate_all_
-# types_faults/generate_random_faults below include it CONDITIONALLY when
-# mem.words_per_row > 1, rather than baking a runtime-dependent fact into this
-# module-level constant.
+# DRF and HSD (Workstreams K/L) are deliberately absent from this STATIC
+# tuple: both depend on a mem.* property at call time, so generate_all_types_
+# faults/generate_random_faults below include each CONDITIONALLY via
+# _effective_all_types rather than baking a runtime-dependent fact into this
+# module-level constant. DRF needs mem.num_ports == 1 -- its idle-cycle
+# tracking is a single scalar register not yet extended to num_ports=2, and a
+# fault list that actually loads a DRF entry against a num_ports=2
+# fault_ram.sv fails loud (FATAL + $finish, see fault_ram_template.sv.j2) --
+# unconditionally including it here would crash `gen_faults --all-types` for
+# every multi-port memory. HSD needs mem.words_per_row > 1 -- it needs
+# another same-row address to ever be written, which does not exist at the
+# default words_per_row=1 (see engine/README.md).
+#
+# Excluding DRF whenever an algorithm CAN'T detect it (no built-in march
+# algorithm contains a wait op) was tried first and is the wrong fix: that
+# conflates "the memory structurally cannot exhibit this" (HSD's actual
+# condition) with "the algorithm about to run happens not to look for this"
+# (every fault type in this list has algorithms that miss it -- that is what
+# a coverage report is FOR). It silently dropped DRF from `gen_faults
+# --all-types` even for a caller with their own wait-containing custom
+# algorithm, understating what "all types" actually covers.
 BUILTIN_FAULT_TYPES: tuple[str, ...] = (
     "SA0", "SA1", "TF0", "TF1", "WDF0", "WDF1", "RDF0", "RDF1", "DRDF0", "DRDF1",
     "IRF0", "IRF1", "SOF", "AF_NOACC", "AF_ALIAS", "CFIN", "CFID", "CFST", "CFDS",
@@ -335,24 +348,52 @@ def write_fault_list(records: list[FaultRecord], path: Path) -> Path:
     return path
 
 
+def _validate_fault_addresses(mem: MemoryParams, faults: list[FaultRecord]) -> None:
+    """A fault record's address/bit/port fields feed registers in the
+    generated testbench that are exactly ADDR_WIDTH/DATA_WIDTH/num_ports bits
+    wide, with no bounds check downstream -- an out-of-range value (most
+    likely from a hand-authored --faults file; the generator functions above
+    all construct addresses in range by their own arithmetic) silently wraps
+    via Verilog truncation onto some OTHER, unintended cell instead of
+    failing loudly. generate_all_types_faults/generate_random_faults never
+    trip this, since depth/dw-modulo construction keeps them in range by
+    definition -- this exists for the one path that bypasses them: a
+    user-supplied fault-list file loaded via load_fault_list.
+    """
+    for i, f in enumerate(faults):
+        for label, value, bound in (
+            ("vaddr", f.vaddr, mem.depth),
+            ("aaddr", f.aaddr, mem.depth),
+            ("vbit", f.vbit, mem.data_width),
+            ("abit", f.abit, mem.data_width),
+            ("vport", f.vport, mem.num_ports),
+            ("aport", f.aport, mem.num_ports),
+        ):
+            if not (0 <= value < bound):
+                raise CampaignError(
+                    f"fault #{i} ({f.type} vaddr={f.vaddr} vbit={f.vbit} aaddr={f.aaddr} "
+                    f"abit={f.abit}): {label}={value} is out of range for this memory "
+                    f"({label} must be in [0, {bound}))"
+                )
+
+
 def _effective_all_types(mem: MemoryParams) -> tuple[str, ...]:
-    """BUILTIN_FAULT_TYPES, plus HSD when (and only when) mem.words_per_row > 1
-    -- unlike DRF (unconditionally excluded, see BUILTIN_FAULT_TYPES' own
-    comment), HSD's fireability genuinely depends on mem at call time: at the
-    default words_per_row=1 no row-mate address exists at all (see
-    engine/README.md), so including it there would always emit an
-    always-zero-hits entry; at words_per_row>1 a real march algorithm's
-    natural traversal detects it fine, so excluding it there would be an
-    unnecessary gap, not a real limitation like DRF's."""
+    """BUILTIN_FAULT_TYPES, plus DRF when mem.num_ports == 1 and HSD when
+    mem.words_per_row > 1 -- see BUILTIN_FAULT_TYPES' own comment for why
+    each is conditional rather than static."""
+    types = BUILTIN_FAULT_TYPES
+    if mem.num_ports == 1:
+        types = types + ("DRF",)
     if mem.words_per_row > 1:
-        return BUILTIN_FAULT_TYPES + ("HSD",)
-    return BUILTIN_FAULT_TYPES
+        types = types + ("HSD",)
+    return types
 
 
 def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
     """One instance of every built-in fault primitive, spread across the memory
     (mirrors the shape of engine/faults.example.txt, scaled to this memory).
-    Includes HSD only when mem.words_per_row > 1 (see _effective_all_types)."""
+    Includes DRF only when mem.num_ports == 1 and HSD only when
+    mem.words_per_row > 1 (see _effective_all_types)."""
     depth = mem.depth
     dw = mem.data_width
     records: list[FaultRecord] = []
@@ -372,6 +413,19 @@ def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
             p0 = 4  # any read disturbs
         elif t == "AF_ALIAS":
             aa = (va + 2) % depth
+        elif t == "DRF":
+            # AADDR/ABIT unused (matches SOF/AF_NOACC's convention). P0 is the
+            # idle-cycle threshold, not a polarity/direction selector like
+            # every other type here -- 20 is an arbitrary but comfortably
+            # small value (see engine/README.md's "wait ops repeat once per
+            # address" cost note): it never fires against any built-in march
+            # algorithm (none contains a wait op, so this always reports
+            # ESCAPED there, which is the honest, expected result -- see
+            # BUILTIN_FAULT_TYPES' own comment), only against a caller's own
+            # wait-containing custom algorithm, where it needs to be small
+            # enough that a modest wait duration exceeds it.
+            aa, ab = 0, 0
+            p0 = 20
         elif t == "HSD":
             # No fixed aggressor address (unlike the coupling types above) --
             # AADDR/ABIT unused, write 0 (matches SOF/AF_NOACC's convention).
@@ -385,7 +439,8 @@ def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
 
 def generate_random_faults(mem: MemoryParams, n: int, seed: int = 0) -> list[FaultRecord]:
     """N faults with a random type/site each, for stress-testing an algorithm.
-    Includes HSD only when mem.words_per_row > 1 (see _effective_all_types)."""
+    Includes DRF only when mem.num_ports == 1 and HSD only when
+    mem.words_per_row > 1 (see _effective_all_types)."""
     rng = random.Random(seed)
     depth = mem.depth
     dw = mem.data_width
@@ -718,6 +773,7 @@ def run_algo_campaign(
     (default) uses the existing march_engine.sv unmodified; num_ports==2
     uses the new march_engine_mp.sv against a num_ports=2 fault_ram.sv.
     """
+    _validate_fault_addresses(mem, faults)
     own_tmp: tempfile.TemporaryDirectory[str] | None = None
     if workdir is None:
         own_tmp = tempfile.TemporaryDirectory(prefix="autombist-algo-")
@@ -767,6 +823,7 @@ def run_background_campaign(
     background must still report ESCAPED, since bg_value() applies the same
     mask to both the write side and the read-assertion side.
     """
+    _validate_fault_addresses(mem, faults)
     backgrounds = backgrounds if backgrounds is not None else standard_backgrounds(mem.data_width)
     if not backgrounds:
         raise CampaignError("run_background_campaign: no backgrounds to run")
@@ -933,6 +990,7 @@ def run_fsm_campaign(
     """
     from .fsm_harness import HARNESS_TOP, check_ports, parse_ports, render_harness, render_harness_mp
 
+    _validate_fault_addresses(mem, faults)
     own_tmp: tempfile.TemporaryDirectory[str] | None = None
     if workdir is None:
         own_tmp = tempfile.TemporaryDirectory(prefix="autombist-fsm-")

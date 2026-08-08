@@ -204,7 +204,7 @@ def test_gen_faults_all_types() -> None:
     shell = _shell()
     shell.onecmd("set_memory 8 8")
     shell.onecmd("gen_faults --all-types")
-    assert len(shell.session.faults) == 19  # one of each built-in primitive
+    assert len(shell.session.faults) == 20  # 19 built-in primitives + DRF (single-port)
 
 
 def test_gen_faults_random_is_seed_reproducible() -> None:
