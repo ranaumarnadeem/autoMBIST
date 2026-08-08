@@ -69,6 +69,16 @@ always rebuild, exactly like every call did before this existed. Every
 `compile_engine`/`run_*_campaign` caller also accepts an explicit
 `cache_dir=` argument, mainly useful for test isolation.
 
+A different, complementary layer sits underneath: `flake.nix`'s devShell
+exports `OBJCACHE=ccache` (verilator's own built-in hook for this, read
+straight out of its generated `verilated.mk`), so even a cache MISS above
+still gets a faster verilator build wherever a compiled translation unit --
+verilator's own runtime library sources, shared across every design -- comes
+out identical to a previous build. CI (`.github/workflows/test.yml`) persists
+both `~/.cache/ccache` and `/tmp/autombist-engine-cache` across runs via
+`actions/cache`, so this benefit isn't limited to one machine's local dev
+loop.
+
 ## Fault list format
 
 One fault per line, all fields decimal, `#` comments:
