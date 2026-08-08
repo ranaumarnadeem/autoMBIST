@@ -14,6 +14,10 @@ we_active_low: true
 ports: { ... }                      # see below
 ```
 
+Unknown top-level keys are rejected (with a suggestion when one is close to a
+real key) rather than silently ignored — a typo like `adr_width` used to sit
+there unread while `addr_width` quietly kept its default.
+
 ## Single-port memories
 
 ```yaml
@@ -160,6 +164,11 @@ repair_ports:
   - {name: row_repair_en, width: 2, dir: input}
   - {name: faulty_row_addr, width: 20, dir: input}   # num_spare_rows * addr_width
 ```
+
+`row_repair_en` and `faulty_row_addr` are required by name on this path, with
+the exact widths shown above (`num_spare_rows` and `num_spare_rows *
+addr_width`) — a missing or mis-sized entry is rejected at config load rather
+than generating a wrapper whose repair pin is left unconnected.
 
 **Autonomous on-chip self-repair** — no `repair_ports:`; the wrapper gains
 `self_repair_start` / `self_repair_done` / `self_repair_fail` /
