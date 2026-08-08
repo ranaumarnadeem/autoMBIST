@@ -299,6 +299,11 @@ class TclShell:
         coverage = result.report.get("fault_metrics", {}).get("coverage_percent")
         ok, _ = sim_coverage_meets_threshold(result.report, min_coverage)
         if not ok:
+            if coverage is None:
+                raise RuntimeError(
+                    f"-min-coverage {min_coverage:.2f}% was requested but the simulator "
+                    "reported no coverage number to check it against"
+                )
             raise RuntimeError(f"coverage {coverage:.2f}% is below -min-coverage {min_coverage:.2f}%")
         return _none_to_empty(coverage)
 
