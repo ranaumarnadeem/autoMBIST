@@ -68,6 +68,12 @@ def _resolve_config_path(config: Path | None) -> Path:
 
 
 def _resolve_module_outdir(out: Path) -> Path:
+    # Every path this returns eventually becomes OUTDIR in a `make -C
+    # hardware_dir ...` invocation (runner.py's _build_clean_command/
+    # _build_fault_command) that runs with cwd=project_root, not the caller's
+    # cwd -- a relative --out (the default) would then resolve against the
+    # wrong directory and die with a raw "No rule to make target".
+    out = out.resolve()
     has_wrapper = any(out.glob("*_mbist.v"))
     has_config_snapshot = (out / "config.yml").exists()
     has_fault_makefile = (out / "Makefile").exists()
@@ -165,6 +171,11 @@ def _generate(
     pulse_width_ns: int,
     algo: str,
 ) -> Path:
+    # See _resolve_module_outdir's comment -- the generated wrapper's directory
+    # feeds the same make invocation, so a relative --out has to become
+    # absolute here too, before generate_from_config ever joins it with the
+    # memory name.
+    out = out.resolve()
     try:
         return generate_from_config(
             config,
