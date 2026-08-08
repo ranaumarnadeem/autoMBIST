@@ -12,6 +12,7 @@ queues, ``foreach``, and ``final`` blocks, none of which Icarus Verilog supports
 """
 from __future__ import annotations
 
+import concurrent.futures
 import functools
 import hashlib
 import math
@@ -806,6 +807,98 @@ def _common_plusargs(mem: MemoryParams, background: DataBackground | None = None
     return args
 
 
+_FAULT_CONCURRENCY_ENV = "AUTOMBIST_FAULT_CONCURRENCY"
+# Deliberately modest, not os.cpu_count(): a per-fault run_one() call spawns
+# an already-COMPILED verilator binary (the heavy, memory-hungry step is the
+# BUILD -- compile_engine's own verilator invocation, which stays strictly
+# single-threaded per artifact regardless of this setting, protected by its
+# own build cache). Nothing in this repo's history documents a specific prior
+# concurrency-related OOM incident to size this against -- start conservative
+# and let AUTOMBIST_FAULT_CONCURRENCY raise it on a box known to tolerate
+# more, rather than guessing a number this code can't justify. "1" recovers
+# the original fully-sequential behavior exactly.
+_DEFAULT_FAULT_CONCURRENCY = 4
+
+
+def _fault_concurrency() -> int:
+    raw = os.environ.get(_FAULT_CONCURRENCY_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_FAULT_CONCURRENCY
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _DEFAULT_FAULT_CONCURRENCY
+
+
+def _run_faults_concurrently(
+    faults: list[FaultRecord],
+    run_one_fault: Callable[[int, FaultRecord], FaultResult],
+    progress_callback: Callable[[int, int], None] | None,
+    max_workers: int,
+) -> list[FaultResult]:
+    """Runs `run_one_fault(i, record)` for every fault and returns results in
+    ORIGINAL fault-list order, regardless of completion order -- callers
+    (report rendering, coverage matrices, `result.faults[i]`) all assume
+    index i corresponds to the i-th entry of the fault list they passed in.
+
+    `run_one_fault` must be safe to call concurrently: true today for every
+    caller of this helper, since each call is a read-only run_one() subprocess
+    invocation against an already-built, never-mutated artifact.exe/alg_file/
+    fault_file (see algo_engine.py's own per-fault loops) -- no shared mutable
+    state between faults beyond the artifact and the two files, both written
+    once before any fault runs and only ever read afterward.
+
+    max_workers<=1 (or a single-fault campaign) takes the plain sequential
+    path -- byte-identical to before this existed, and the only path exercised
+    when AUTOMBIST_FAULT_CONCURRENCY=1. Above that, ThreadPoolExecutor is
+    enough (not multiprocessing): run_one's subprocess.run call blocks on I/O
+    and releases the GIL while waiting, so this is genuinely concurrent
+    despite the GIL, with none of multiprocessing's pickling/IPC overhead.
+
+    Progress reporting uses a monotonically increasing completed-COUNT (this
+    function's own local counter), not the fault's index i -- under
+    concurrent, out-of-order completion, reporting index-based "progress"
+    could visibly regress (fault 9 finishing before fault 3 would flash "9"
+    then "3"). The counter only ever increases, exactly like the original
+    sequential loop's i+1 did.
+
+    A raised exception from any one fault propagates via future.result() (the
+    same CampaignError a sequential loop would raise), but -- unlike the old
+    loop, which stopped launching entirely at the first failure -- futures
+    already submitted before the failing one is observed keep running to
+    completion before this function's ThreadPoolExecutor context manager
+    exits; their results are simply discarded once the exception propagates.
+    This trades a modest amount of wasted work on the (expected-rare) error
+    path for not needing an active-cancellation mechanism verilator's
+    subprocess.run doesn't cleanly support anyway.
+    """
+    total = len(faults)
+    if max_workers <= 1 or total <= 1:
+        results: list[FaultResult] = []
+        for i, record in enumerate(faults):
+            results.append(run_one_fault(i, record))
+            if progress_callback is not None:
+                progress_callback(i + 1, total)
+        return results
+
+    results_by_index: list[FaultResult | None] = [None] * total
+    completed = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_index = {
+            executor.submit(run_one_fault, i, record): i for i, record in enumerate(faults)
+        }
+        # as_completed() itself yields on this (the calling) thread, one at a
+        # time -- results_by_index/completed/progress_callback are never
+        # touched from more than one thread, so none of this needs a lock.
+        for future in concurrent.futures.as_completed(future_to_index):
+            i = future_to_index[future]
+            results_by_index[i] = future.result()
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(completed, total)
+    return results_by_index  # type: ignore[return-value]  # every slot filled: one future per index, all awaited above
+
+
 def _resolve_engine_sources(mem: MemoryParams, engine_dir: Path, workdir: Path,
                              fault_ram_sv: Path | None) -> tuple[list[Path], str]:
     """Dispatch on mem.num_ports for the algo front.
@@ -852,11 +945,16 @@ def _run_campaign_against_artifact(
     verbose: bool = False,
     background: DataBackground | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
+    max_workers: int | None = None,
 ) -> CampaignResult:
     """Golden pass + one run per fault against an already-compiled artifact.
     Factored out of run_algo_campaign so run_background_campaign can reuse a
     single compiled binary across multiple backgrounds instead of
-    recompiling once per background."""
+    recompiling once per background.
+
+    ``max_workers`` (None = AUTOMBIST_FAULT_CONCURRENCY / the default) bounds
+    how many faults run concurrently -- see _run_faults_concurrently.
+    """
     alg_file = alg.write_numeric(workdir / f"{alg.name}.algc")
     fault_file = write_fault_list(faults, workdir / "faults.txt") if faults else None
     plusargs = _common_plusargs(mem, background)
@@ -872,8 +970,7 @@ def _run_campaign_against_artifact(
             f"(no faults were injected). The algorithm spec or engine is broken.\n{golden_out}"
         )
 
-    results: list[FaultResult] = []
-    for i, record in enumerate(faults):
+    def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
         out = run_one(
             artifact, alg_file=alg_file, fault_file=fault_file, index=i,
             verbose=verbose, extra_plusargs=plusargs,
@@ -883,14 +980,15 @@ def _run_campaign_against_artifact(
         if verbose:
             hits = parse_fault_hits(out)
             activations = hits[2] if hits else None
-        results.append(
-            FaultResult(
-                index=i, record=record, detected=detected,
-                elem=elem, op=op, addr=addr, xor=xor_bits, activations=activations,
-            )
+        return FaultResult(
+            index=i, record=record, detected=detected,
+            elem=elem, op=op, addr=addr, xor=xor_bits, activations=activations,
         )
-        if progress_callback is not None:
-            progress_callback(i + 1, len(faults))
+
+    results = _run_faults_concurrently(
+        faults, _run_one_fault, progress_callback,
+        max_workers if max_workers is not None else _fault_concurrency(),
+    )
 
     run_seconds = time.time() - start
     detected_count = sum(1 for r in results if r.detected)
@@ -915,6 +1013,7 @@ def run_algo_campaign(
     fault_ram_sv: Path | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
     cache_dir: Path | None = None,
+    max_workers: int | None = None,
 ) -> CampaignResult:
     """Compile march_engine once, run a golden pass, then one run per fault.
 
@@ -932,6 +1031,11 @@ def run_algo_campaign(
     location (see _default_engine_cache_root), which is what every real
     caller wants; tests pass an isolated tmp_path here to observe cache-hit
     behavior deterministically without touching the shared cache.
+
+    ``max_workers`` (opt-in) overrides how many faults run concurrently --
+    None uses AUTOMBIST_FAULT_CONCURRENCY / the default (see
+    _run_faults_concurrently); pass 1 to force the original fully-sequential
+    behavior.
     """
     _validate_fault_addresses(mem, faults)
     own_tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -953,7 +1057,7 @@ def run_algo_campaign(
 
         return _run_campaign_against_artifact(
             artifact, mem, alg, faults, workdir=workdir, sim=sim, verbose=verbose,
-            progress_callback=progress_callback,
+            progress_callback=progress_callback, max_workers=max_workers,
         )
     finally:
         if own_tmp is not None:
@@ -972,6 +1076,7 @@ def run_background_campaign(
     fault_ram_sv: Path | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
     cache_dir: Path | None = None,
+    max_workers: int | None = None,
 ) -> dict[str, CampaignResult]:
     """Runs the same algorithm/fault-list once per data background (default:
     standard_backgrounds(mem.data_width)), reusing ONE compiled artifact,
@@ -984,7 +1089,7 @@ def run_background_campaign(
     background must still report ESCAPED, since bg_value() applies the same
     mask to both the write side and the read-assertion side.
 
-    ``cache_dir``: see run_algo_campaign's docstring.
+    ``cache_dir``/``max_workers``: see run_algo_campaign's docstring.
     """
     _validate_fault_addresses(mem, faults)
     backgrounds = backgrounds if backgrounds is not None else standard_backgrounds(mem.data_width)
@@ -1013,6 +1118,7 @@ def run_background_campaign(
             results[background.name] = _run_campaign_against_artifact(
                 artifact, mem, alg, faults, workdir=workdir, sim=sim, verbose=verbose,
                 background=background, progress_callback=progress_callback,
+                max_workers=max_workers,
             )
         return results
     finally:
@@ -1128,6 +1234,7 @@ def run_fsm_campaign(
     expected_spec: AlgSpec | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
     cache_dir: Path | None = None,
+    max_workers: int | None = None,
 ) -> CampaignResult:
     """Compile FSM + openram_shim + fault_ram (via a generated harness) once,
     golden-gate, then one run per fault. Detection is bist_fail only -- no
@@ -1152,7 +1259,7 @@ def run_fsm_campaign(
     after each per-fault run -- e.g. to drive a CLI progress bar. Default None
     keeps every existing caller byte-identical.
 
-    ``cache_dir``: see run_algo_campaign's docstring.
+    ``cache_dir``/``max_workers``: see run_algo_campaign's docstring.
     """
     from .fsm_harness import HARNESS_TOP, check_ports, parse_ports, render_harness, render_harness_mp
 
@@ -1242,15 +1349,15 @@ def run_fsm_campaign(
                 blocks, observed, data_width=mem.data_width, num_ports=mem.num_ports,
             )
 
-        results: list[FaultResult] = []
-        for i, record in enumerate(faults):
+        def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
             out = run_one(artifact, fault_file=fault_file, index=i, extra_plusargs=plusargs)
             detected, elem, op, addr, xor_bits = parse_result_line(out)
-            results.append(
-                FaultResult(index=i, record=record, detected=detected, elem=elem, op=op, addr=addr, xor=xor_bits)
-            )
-            if progress_callback is not None:
-                progress_callback(i + 1, len(faults))
+            return FaultResult(index=i, record=record, detected=detected, elem=elem, op=op, addr=addr, xor=xor_bits)
+
+        results = _run_faults_concurrently(
+            faults, _run_one_fault, progress_callback,
+            max_workers if max_workers is not None else _fault_concurrency(),
+        )
 
         run_seconds = time.time() - start
         detected_count = sum(1 for r in results if r.detected)
