@@ -1260,3 +1260,67 @@ def test_cli_smoke_march_raw_wrapper_missing_marker_fails(
 
     assert result.exit_code == 1
     assert "[smoke] FAIL: wrapper missing march_raw_top" in result.output
+
+
+# --------------------------------------------------------------------------- #
+# memory_has_fixed_geometry -- a real compiled macro keeps its own widths.
+#
+# Found by running the tool on sky130_sram_8b1024w: the wrapper passed
+# .ADDR_WIDTH(10)/.DATA_WIDTH(8) into a macro whose compiled values are 11 and
+# 9, so the behavioural model RESIZED to 1024x8 and the macro's real spare
+# column and spare rows vanished from the simulation. Harmless for plain MBIST
+# (which only exercises the logical array either way -- measured), but it meant
+# there was no way to say "this geometry is baked in, do not override it".
+# --------------------------------------------------------------------------- #
+def _wrapper_for(tmp_path: Path, config: dict[str, object], name: str) -> str:
+    config_path = tmp_path / f"{name}.yml"
+    _write_yaml(config_path, config)
+    wrapper = generate_from_config(config_path, tmp_path / name, algo="march-c")
+    return wrapper.read_text(encoding="utf-8")
+
+
+def test_memory_is_parameterized_by_default(tmp_path: Path, base_config: dict[str, object]) -> None:
+    text = _wrapper_for(tmp_path, base_config, "default")
+    assert "sram_1rw #(" in text, text
+
+
+def test_absent_flag_is_byte_identical_to_explicit_false(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    """The zero-blast-radius claim: adding the key changed nothing for configs
+    that do not set it."""
+    absent = _wrapper_for(tmp_path, base_config, "absent")
+    explicit = _wrapper_for(
+        tmp_path, {**base_config, "memory_has_fixed_geometry": False}, "explicit"
+    )
+    assert absent == explicit
+
+
+def test_fixed_geometry_omits_the_memory_parameter_block(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    text = _wrapper_for(
+        tmp_path, {**base_config, "memory_has_fixed_geometry": True}, "fixed"
+    )
+    assert "sram_1rw #(" not in text, text
+    assert "sram_1rw u_sram (" in text, text
+
+
+def test_fixed_geometry_still_parameterizes_our_own_controller(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    """The flag is about the MEMORY only. march_c_top is this project's own RTL
+    and must keep tracking the config's widths -- an over-broad implementation
+    that stripped every parameter block would break the controller."""
+    text = _wrapper_for(
+        tmp_path, {**base_config, "memory_has_fixed_geometry": True}, "ctrl"
+    )
+    assert "march_c_top #(" in text, text
+    assert ".ADDR_WIDTH(ADDR_WIDTH)" in text, text
+
+
+def test_fixed_geometry_must_be_a_boolean(tmp_path: Path, base_config: dict[str, object]) -> None:
+    config_path = tmp_path / "bad.yml"
+    _write_yaml(config_path, {**base_config, "memory_has_fixed_geometry": "yes"})
+    with pytest.raises(ConfigError, match="memory_has_fixed_geometry must be a boolean"):
+        load_config(config_path)

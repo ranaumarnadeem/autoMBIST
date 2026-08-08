@@ -263,6 +263,12 @@ module {{ wrapper_module_name }} #(
 {% endif %}
 {% endif %}
 
+{% if memory_has_fixed_geometry %}
+    // memory_has_fixed_geometry: the memory's widths are compiled in (a real
+    // OpenRAM macro), so no parameter overrides -- passing them would resize a
+    // behavioural model away from the geometry that would actually be built.
+    {{ memory_name }} u_sram (
+{% else %}
     {{ memory_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
@@ -273,6 +279,7 @@ module {{ wrapper_module_name }} #(
         .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
 {% endif %}
     ) u_sram (
+{% endif %}
         .{{ pdata.clk }}(mbist_sram_clk),
         .{{ pdata.csb }}(sram_csb),
         .{{ pdata.addr }}(sram_addr_phys),
@@ -294,10 +301,16 @@ module {{ wrapper_module_name }} #(
 {% endif %}
     );
 {% else %}
+{% if memory_has_fixed_geometry %}
+    // memory_has_fixed_geometry: see the note on the redundancy instantiation
+    // above -- a real compiled macro keeps its own widths.
+    {{ memory_name }} u_sram (
+{% else %}
     {{ memory_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH)
     ) u_sram (
+{% endif %}
         .{{ pdata.clk }}(mbist_sram_clk),
         .{{ pdata.csb }}(sram_csb),
         .{{ pdata.addr }}(sram_addr),
@@ -556,6 +569,10 @@ module {{ wrapper_module_name }} #(
         .dbg_blocked_bits(sram_dbg_blocked_bits)
     );
 {% else %}
+{% if memory_has_fixed_geometry %}
+    // memory_has_fixed_geometry: a real compiled macro keeps its own widths.
+    {{ memory_name }} u_sram (
+{% else %}
     {{ memory_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH)
@@ -563,6 +580,7 @@ module {{ wrapper_module_name }} #(
       , .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
 {% endif %}
     ) u_sram (
+{% endif %}
     {% for pname, pdata in normalized_ports.items() %}
         {% set suffix = algo_port_suffixes[pname] %}
         {% set port_addr = "sram_addr_phys" if has_onchip_selfrepair else "sram_addr" ~ suffix %}
