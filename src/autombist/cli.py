@@ -227,11 +227,19 @@ def _simulate(
 
     ok, coverage = coverage_meets_threshold(result.report, min_coverage)
     if not ok:
-        typer.secho(
-            f"autombist: coverage {coverage:.2f}% is below --min-coverage {min_coverage:.2f}%",
-            err=True,
-            fg=typer.colors.RED,
-        )
+        if coverage is None:
+            typer.secho(
+                f"autombist: --min-coverage {min_coverage:.2f}% was requested but the "
+                "simulator reported no coverage number to check it against",
+                err=True,
+                fg=typer.colors.RED,
+            )
+        else:
+            typer.secho(
+                f"autombist: coverage {coverage:.2f}% is below --min-coverage {min_coverage:.2f}%",
+                err=True,
+                fg=typer.colors.RED,
+            )
         raise typer.Exit(code=1)
 
 

@@ -219,6 +219,31 @@ def test_simulate_command_min_coverage_gate_raises_catchable_error(
     assert "below -min-coverage" in caught
 
 
+def test_simulate_command_min_coverage_gate_fails_when_coverage_was_never_reported(
+    shell: TclShell, tmp_path: Path, monkeypatch
+) -> None:
+    """The Tcl twin of test_run_min_coverage_gate_fails_when_coverage_was_never_
+    reported in test_cli.py: a gate that was actually requested must not
+    silently pass just because coverage_percent is missing, and the error
+    path must not crash trying to format None with :.2f."""
+    module_outdir = tmp_path / "out" / "sram_1rw"
+    module_outdir.mkdir(parents=True)
+    (module_outdir / "sram_1rw_mbist.v").write_text("// stub\n", encoding="utf-8")
+    (module_outdir / "config.yml").write_text("memory_name: sram_1rw\n", encoding="utf-8")
+
+    class _FakeResult:
+        report = {"fault_metrics": {}, "status": "pass"}
+
+    monkeypatch.setattr(tcl_shell_mod, "run_simulation", lambda outdir, **kw: _FakeResult())
+    monkeypatch.setattr(tcl_shell_mod, "format_simulation_summary", lambda report: "SUMMARY")
+
+    caught = shell.eval(
+        f"if {{[catch {{simulate -out {_q(tmp_path / 'out')} -min-coverage 90}} err]}} "
+        "{ set result $err } else { set result {NO ERROR} }"
+    )
+    assert "reported no coverage number" in caught
+
+
 def test_run_command_generates_then_simulates(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "config.yml"
     config_path.write_text("memory_name: sram_1rw\n", encoding="utf-8")

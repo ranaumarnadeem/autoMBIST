@@ -112,6 +112,39 @@ def test_run_min_coverage_gate_passes_on_sufficient_coverage(tmp_path: Path, mon
     assert result.exit_code == 0
 
 
+def test_run_min_coverage_gate_fails_when_coverage_was_never_reported(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A gate that was actually requested must not silently pass just because
+    the simulator reported no coverage number to check it against (e.g. a
+    fault mode/type whose stdout never prints "Fault coverage: X/Y (Z%)").
+    Also guards against a crash: the old code path would have tried to
+    format None with :.2f once this case correctly started failing the gate."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text("memory_name: sram_1rw\n", encoding="utf-8")
+    wrapper_path = tmp_path / "out" / "sram_1rw" / "sram_1rw_mbist.v"
+    wrapper_path.parent.mkdir(parents=True)
+    wrapper_path.write_text("// stub\n", encoding="utf-8")
+
+    monkeypatch.setattr(cli_mod, "generate_from_config", _stub_generate(wrapper_path))
+    monkeypatch.setattr(
+        cli_mod, "run_simulation", lambda module_outdir, verbose=False: _fake_result(None)
+    )
+
+    result = runner.invoke(
+        cli_mod.app,
+        [
+            "run",
+            "--config", str(config_path),
+            "--out", str(tmp_path / "out"),
+            "--min-coverage", "90",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "reported no coverage number" in result.output
+
+
 # ---------------------------------------------------------------------------
 # `--json`: simulate/run print the structured report to stdout instead of
 # the human summary.

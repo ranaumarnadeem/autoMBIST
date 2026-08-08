@@ -16,7 +16,10 @@ def test_coverage_meets_threshold_gate() -> None:
     assert coverage_meets_threshold(rep, 90.0) == (True, 100.0)       # above
     ok, cov = coverage_meets_threshold({"fault_metrics": {"coverage_percent": 75.0}}, 90.0)
     assert ok is False and cov == 75.0                                # below
-    assert coverage_meets_threshold({"fault_metrics": {}}, 90.0) == (True, None)  # not reported
+    # A gate that was actually requested must not silently pass just because
+    # the simulator reported no coverage number to check it against -- see
+    # test_coverage_meets_threshold_fails_closed_when_unmeasured below.
+    assert coverage_meets_threshold({"fault_metrics": {}}, 90.0) == (False, None)
 
 
 def test_parse_junit_xml_handles_malformed(tmp_path: Path) -> None:
