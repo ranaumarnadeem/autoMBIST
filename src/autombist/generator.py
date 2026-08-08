@@ -303,11 +303,44 @@ def _is_legacy_flat_ports(ports: dict[str, Any]) -> bool:
     form every redundancy config uses -- would fail this subset test, get
     misrouted to the named-multi-port path, and surface as a bogus
     "ports 'clk' must be a mapping" instead of anything actionable.
+
+    Also robust to a single TYPO'd flat key (e.g. ``csbb`` instead of
+    ``csb``): the exact-subset test above would otherwise reject the whole
+    dict over one misspelling and misroute it to the named-multi-port
+    validator too -- which would then blame an unrelated, correctly-spelled
+    key (``clk``, alphabetically first) as "must be a mapping", true only
+    because THAT validator expects a per-port dict a flat config never has,
+    not because anything is wrong with clk. At least 5 of the 6 required
+    flat roles already present is "recognizably an attempted flat config" --
+    loose enough to tolerate exactly one typo, tight enough that an
+    unrelated named-port mistake (sharing none of the flat roles) still
+    falls through to the named-port validator's own, more relevant error.
     """
     if any(isinstance(value, dict) for value in ports.values()):
         return False
     allowed = set(REQUIRED_PORT_KEYS) | set(_ALL_OPTIONAL_PORT_KEYS)
-    return set(ports.keys()) <= allowed
+    keys = set(ports.keys())
+    if keys <= allowed:
+        return True
+    return len(keys & set(REQUIRED_PORT_KEYS)) >= len(REQUIRED_PORT_KEYS) - 1
+
+
+def _reject_unknown_flat_port_keys(ports: dict[str, Any]) -> None:
+    """Names the ACTUAL typo directly, with a did-you-mean, rather than
+    leaving a stray key (e.g. ``csbb``) to surface only indirectly as
+    "Missing required keys in ports: csb" -- true, but a person reading it
+    has to notice the typo themselves; this says so outright."""
+    allowed = set(REQUIRED_PORT_KEYS) | set(_ALL_OPTIONAL_PORT_KEYS)
+    unknown = sorted(set(ports) - allowed)
+    if not unknown:
+        return
+    key = unknown[0]
+    suggestion = difflib.get_close_matches(key, allowed, n=1)
+    hint = f" -- did you mean {suggestion[0]!r}?" if suggestion else ""
+    raise ConfigError(
+        f"ports.{key!r} is not a recognized port-signal role{hint}. "
+        f"Valid roles: {', '.join(sorted(allowed))}"
+    )
 
 
 def _validate_port(name: str, pdata: Any, section: str) -> dict[str, Any]:
@@ -412,6 +445,7 @@ def _normalize_ports(ports: dict[str, Any]) -> dict[str, dict[str, Any]]:
         raise ConfigError("ports must be a non-empty mapping")
 
     if _is_legacy_flat_ports(ports):
+        _reject_unknown_flat_port_keys(ports)
         _require_keys(ports, REQUIRED_PORT_KEYS, "ports")
         for key in REQUIRED_PORT_KEYS:
             value = ports[key]

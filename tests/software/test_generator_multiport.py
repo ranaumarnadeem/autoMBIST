@@ -177,6 +177,55 @@ def test_rejects_empty_string_signal() -> None:
         _normalize_ports(ports)
 
 
+# ---------------------------------------------------------------------------
+# A single typo'd flat key must not misroute to the named-multi-port
+# validator, which would then blame an unrelated, correctly-spelled key
+# -------------------------------------------------------------------------- #
+
+
+def test_typo_d_flat_key_names_the_actual_typo_not_an_unrelated_key() -> None:
+    """csbb instead of csb used to fail _is_legacy_flat_ports's exact-subset
+    test, misrouting the whole dict to the named-multi-port validator, which
+    then reported "ports 'clk' must be a mapping" -- clk was never the
+    problem; the validator only got that far because it expected a per-port
+    dict a flat config never has. The error must name csbb, not clk."""
+    ports = {**{k: v for k, v in LEGACY_PORTS.items() if k != "csb"}, "csbb": "csb0"}
+    with pytest.raises(ConfigError, match="'csbb'") as exc_info:
+        _normalize_ports(ports)
+    message = str(exc_info.value)
+    assert "clk" not in message or "must be a mapping" not in message
+    assert "did you mean 'csb'" in message
+
+
+def test_typo_d_flat_key_lists_valid_roles() -> None:
+    ports = {**{k: v for k, v in LEGACY_PORTS.items() if k != "we"}, "wee": "we0"}
+    with pytest.raises(ConfigError) as exc_info:
+        _normalize_ports(ports)
+    message = str(exc_info.value)
+    assert "not a recognized port-signal role" in message
+    assert "did you mean 'we'" in message
+
+
+def test_genuinely_named_port_with_wrong_type_value_keeps_its_own_error() -> None:
+    """The edge case the typo-tolerance heuristic deliberately does NOT
+    absorb: a single named port sharing none of the flat roles still gets
+    the named-port validator's own error, not a flat-path "missing 6 keys"
+    message that would be less on-point for what the user actually wrote."""
+    ports = {"p0": "not-a-dict"}
+    with pytest.raises(ConfigError, match="must be a mapping"):
+        _normalize_ports(ports)
+
+
+def test_generate_from_config_rejects_typo_d_flat_key_end_to_end(tmp_path: Path) -> None:
+    config = dict(BASE_CONFIG)
+    config["ports"] = {**{k: v for k, v in LEGACY_PORTS.items() if k != "csb"}, "csbb": "csb0"}
+    config_path = tmp_path / "config.yml"
+    _write_yaml(config_path, config)
+
+    with pytest.raises(ConfigError, match="'csbb'"):
+        load_config(config_path)
+
+
 def test_rejects_invalid_port_identifier() -> None:
     ports = {"1bad-name": {"type": "rw", **LEGACY_PORTS}}
     with pytest.raises(ConfigError, match="valid identifier"):
