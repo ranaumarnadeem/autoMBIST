@@ -74,6 +74,17 @@ async def _functional_fail_scan(dut, addr_width, data_width, read_latency):
     return sorted(fails)
 
 
+async def _wait_bist_done(dut):
+    """Mirrors test_repair_row.py's tester-side poll -- used only by the
+    held_bist_start scenario to drive a genuine tester-owned BIST run before
+    self_repair_start ever gets raised."""
+    while True:
+        await RisingEdge(dut.clk)
+        await Timer(1, unit="ns")
+        if int(dut.bist_done.value) == 1:
+            return
+
+
 async def _run_self_repair_once(dut):
     """Pulse-then-hold self_repair_start until self_repair_done reads back
     high (polled every clock edge, mirroring the existing _wait_bist_done
@@ -117,6 +128,59 @@ async def _run_self_repair_once(dut):
     return self_repair_fail
 
 
+async def _run_held_bist_start_scenario(dut):
+    """Reproduces a tester that holds bist_start through its own run's
+    completion and then ALSO raises self_repair_start before ever releasing
+    it -- the exact race the S_IDLE `!bist_done` arbitration term exists for
+    (see onchip_selfrepair_ctrl.sv's header comment).
+
+    First runs a real tester-driven BIST pass (test_mode/bist_start held,
+    mirroring test_repair_row.py's tester flow) against the same defect
+    `repairable` uses. Once bist_done reads high, bist_start is deliberately
+    NOT dropped -- self_repair_start is raised on top of it instead.
+
+    Proves the negative first: self-repair must NOT falsely complete while
+    the tester still holds bist_start -- self_repair_busy and
+    self_repair_done must both read 0 for several cycles, even though
+    bist_done itself is already (stale-)high. Only once the tester finally
+    relinquishes control (bist_start dropped) can self-repair legitimately
+    proceed; that run must be a genuine one, polled and returned exactly like
+    _run_self_repair_once's tail.
+    """
+    dut.test_mode.value = 1
+    dut.bist_start.value = 1
+    await with_timeout(_wait_bist_done(dut), 500_000, "ns")
+
+    # bist_start is deliberately held past bist_done -- this is the reproduction.
+    dut.self_repair_start.value = 1
+    for _ in range(20):
+        await RisingEdge(dut.clk)
+        await Timer(1, unit="ns")
+        assert int(dut.self_repair_busy.value) == 0, (
+            "self-repair entered ANALYZE while the tester still held bist_start -- "
+            "the S_IDLE !bist_done guard did not block it"
+        )
+        assert int(dut.self_repair_done.value) == 0, (
+            "self-repair falsely reported done while the tester still held bist_start"
+        )
+
+    # The tester finally relinquishes control: effective_bist_start genuinely
+    # drops, letting the algo FSM's stale ST_DONE settle back to ST_IDLE
+    # (bist_done deasserts) before self-repair's own genuine run kicks off.
+    dut.bist_start.value = 0
+    dut.test_mode.value = 0
+
+    while True:
+        await RisingEdge(dut.clk)
+        await Timer(1, unit="ns")
+        if int(dut.self_repair_done.value) == 1:
+            break
+    self_repair_fail = int(dut.self_repair_fail.value)
+    dut.self_repair_start.value = 0
+    await ClockCycles(dut.clk, 2)
+    return self_repair_fail
+
+
 @cocotb.test()
 async def test_onchip_selfrepair(dut):
     """One test, gated by SELFREPAIR_SCENARIO, mirroring test_repair_row.py's
@@ -135,6 +199,17 @@ async def test_onchip_selfrepair(dut):
         the independent re-scan must show EXACTLY ONE of the two original
         defect coordinates still failing -- proving the documented
         fail-open-partially behaviour is real, not just asserted.
+      * SELFREPAIR_SCENARIO=held_bist_start -- sram_spares_tiny.v (same DUT as
+        `repairable`). A tester runs its OWN bist_start-driven march first
+        (mirroring test_repair_row.py's tester flow) and, unlike every other
+        scenario here, does NOT drop bist_start after bist_done reads high --
+        it stays held while self_repair_start is also raised. Regression
+        guard for the S_IDLE `!bist_done` arbitration term
+        (onchip_selfrepair_ctrl.sv): first proves self-repair does NOT
+        falsely complete while the tester still owns bist_start (self_repair_
+        busy/done must stay 0 for several cycles), THEN the tester finally
+        relinquishes (bist_start dropped) and self-repair must still reach a
+        genuine, correct repair -- exactly like `repairable`.
     """
     scenario = os.getenv("SELFREPAIR_SCENARIO", "repairable").strip().lower()
     addr_width = int(os.getenv("ADDR_WIDTH", "2"))
@@ -155,7 +230,10 @@ async def test_onchip_selfrepair(dut):
     dut.rst_n.value = 1
     await ClockCycles(dut.clk, 2)
 
-    self_repair_fail = await with_timeout(_run_self_repair_once(dut), 500_000, "ns")
+    if scenario == "held_bist_start":
+        self_repair_fail = await with_timeout(_run_held_bist_start_scenario(dut), 500_000, "ns")
+    else:
+        self_repair_fail = await with_timeout(_run_self_repair_once(dut), 500_000, "ns")
 
     if scenario == "retrigger":
         # Re-run the ENTIRE sequence a second time, no reset in between --

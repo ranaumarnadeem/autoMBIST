@@ -52,14 +52,31 @@
 //     these two states to "fix" the staleness a different way could silently
 //     reintroduce a verify-kickoff hang.
 //   * Tester/autonomous arbitration: S_IDLE only exits to S_ANALYZE_KICK when
-//     `self_repair_start && !mbist_busy` (won't hijack an in-progress tester-
-//     driven run); the wrapper additionally composes the tester's own
-//     bist_start with `(ctrl_state == S_IDLE)` before it reaches the algo FSM,
-//     so a tester's bist_start is ignored while this sequencer owns the algo
-//     FSM rather than corrupting either flow (a bist_start pulse arriving
-//     while the algo FSM is mid-run is silently dropped by march_c_fsm's own
-//     ST_IDLE-only start check, and this sequencer would otherwise end up
-//     waiting on a bist_done that belongs to a run it didn't start).
+//     `self_repair_start && !mbist_busy && !bist_done` (won't hijack an
+//     in-progress tester-driven run, and won't mistake one for complete); the
+//     wrapper additionally composes the tester's own bist_start with
+//     `(ctrl_state == S_IDLE)` before it reaches the algo FSM, so a tester's
+//     bist_start is ignored while this sequencer owns the algo FSM rather than
+//     corrupting either flow (a bist_start pulse arriving while the algo FSM
+//     is mid-run is silently dropped by march_c_fsm's own ST_IDLE-only start
+//     check, and this sequencer would otherwise end up waiting on a bist_done
+//     that belongs to a run it didn't start). The `!bist_done` term exists for
+//     a narrower race the `!mbist_busy` term alone does not cover: if a tester
+//     HOLDS its own bist_start high straight through its run's completion (not
+//     dropping it before the caller also raises self_repair_start), the algo
+//     FSM is parked in a STALE ST_DONE -- march_c_fsm's ST_DONE->ST_IDLE
+//     transition needs `!start` observed first, so a start line that never
+//     drops never edges, and mbist_busy already reads 0 in ST_DONE. Without
+//     `!bist_done`, S_IDLE would exit anyway; S_ANALYZE_KICK's own
+//     ctrl_bist_start pulse would then bridge seamlessly on top of the
+//     tester's still-held contribution (no genuine low-then-high edge reaches
+//     the algo FSM), so the "analyze" pass never actually runs a single march
+//     cycle, and S_ANALYZE_WAIT reads the stale bist_done as if a fresh pass
+//     had just completed -- reporting a result for a march that never
+//     happened. Blocking on `!bist_done` instead makes self-repair correctly
+//     WAIT for the tester to genuinely relinquish bist_start (which drops
+//     bist_done for one real cycle en route back to ST_IDLE) before starting
+//     its own genuine run, rather than trusting a result it never produced.
 //   * registrar_enable is asserted from S_ANALYZE_KICK (not S_ANALYZE_WAIT) as
 //     defensive margin: march-c's phase 0 is a pure write so fail_valid
 //     provably cannot assert before S_ANALYZE_WAIT begins either way, but this
@@ -124,7 +141,7 @@ module onchip_selfrepair_ctrl (
         end else begin
             case (ctrl_state)
                 S_IDLE: begin
-                    if (self_repair_start && !mbist_busy) begin
+                    if (self_repair_start && !mbist_busy && !bist_done) begin
                         ctrl_state <= S_ANALYZE_KICK;
                     end
                 end

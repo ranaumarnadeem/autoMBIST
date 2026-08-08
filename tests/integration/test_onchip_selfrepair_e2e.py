@@ -123,6 +123,24 @@ def test_two_defects_one_spare_is_flagged_not_silently_passed(tmp_path: Path, al
 
 
 @pytest.mark.parametrize("algo", SELFREPAIR_ALGOS)
+def test_held_tester_bist_start_does_not_skip_the_repair(tmp_path: Path, algo: str) -> None:
+    """Regression guard for the S_IDLE `!bist_done` arbitration term in
+    onchip_selfrepair_ctrl.sv: a tester that runs its own bist_start-driven
+    march and then holds bist_start high straight through raising
+    self_repair_start must NOT let self-repair mistake the tester's stale,
+    still-held bist_done for a completed analyze pass -- see
+    test_onchip_selfrepair.py's held_bist_start scenario for the cycle-by-
+    cycle proof (self_repair_busy/done must read 0 while bist_start is
+    held). Once the tester relinquishes bist_start, self-repair must still
+    reach a genuine, correct repair -- same DUT and defect as
+    test_one_defect_two_spares_is_autonomously_repaired."""
+    wrapper = _generate(tmp_path, _config("sram_spares_tiny", "sram_spares_tiny_mbist", 2), "held", algo=algo)
+    result = _run(wrapper, "held_bist_start")
+    assert result.returncode == 0, result.stdout
+    assert fail_cells(result.report) == set()
+
+
+@pytest.mark.parametrize("algo", SELFREPAIR_ALGOS)
 def test_retrigger_gives_the_same_result_both_times(tmp_path: Path, algo: str) -> None:
     """Running the autonomous sequence twice in one simulation (no reset in
     between) must reach the SAME verdict both times -- proves the analyzer's
