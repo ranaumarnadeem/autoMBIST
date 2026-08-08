@@ -731,6 +731,14 @@ def load_config(config_path: Path) -> dict[str, Any]:
     if "read_latency" in loaded:
         _validate_non_negative_int(loaded, "read_latency")
 
+    # Optional, default False (today's behaviour). True means "this memory's
+    # geometry is compiled in, do not override it at instantiation" -- see the
+    # memory instantiations in wrapper_template.j2.
+    if "memory_has_fixed_geometry" in loaded and not isinstance(
+        loaded["memory_has_fixed_geometry"], bool
+    ):
+        raise ConfigError("memory_has_fixed_geometry must be a boolean")
+
     ports = loaded["ports"]
     if not isinstance(ports, dict):
         raise ConfigError("ports must be a mapping")
@@ -875,6 +883,9 @@ def generate_from_config(
 
     render_config = dict(config)
     render_config["read_latency"] = config.get("read_latency", 1)
+    render_config["memory_has_fixed_geometry"] = config.get(
+        "memory_has_fixed_geometry", False
+    )
     render_config["use_saboteur"] = use_saboteur
     render_config["pulse_width_ns"] = pulse_width_ns
     render_config["algo"] = algo

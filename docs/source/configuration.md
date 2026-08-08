@@ -108,6 +108,38 @@ especially a "phantom" unrepairable on a known-good memory — a mismatched
 `read_latency` is the first thing to check. `flow/multimem/mbist/` (the real
 sky130 macro subsystem) sets `read_latency: 0` for exactly this reason.
 
+## `memory_has_fixed_geometry` — real macros keep their own widths
+
+```yaml
+memory_has_fixed_geometry: true   # optional, default false
+```
+
+By default the wrapper instantiates the memory with
+`#(.ADDR_WIDTH(...), .DATA_WIDTH(...))` taken from the config. That is right for
+this project's behavioral models, which size their internal array from those
+parameters. It is **wrong for a real compiled macro**, whose widths are baked in
+at compile time and cannot be resized.
+
+Concretely: `sky130_sram_8b1024w` is declared as 1024 words of 8 bits, but its
+model has `DATA_WIDTH = 9` (a spare column) and `ADDR_WIDTH = 11` (spare rows).
+Passing `10`/`8` resizes it to a plain 1024x8 array — the spares disappear, and
+you are no longer simulating the macro you would fabricate.
+
+Set `memory_has_fixed_geometry: true` and the memory is instantiated without a
+parameter block, keeping its real geometry. The wrapper's narrower nets meet the
+macro's wider ports the way real hardware would: the address zero-extends to the
+logical words, `din` zero-extends (the spare column takes 0, and `spare_wen` is
+tied off unless column repair drives it), and `dout` truncates the spare back
+off.
+
+This affects only the memory. The MBIST controller is this project's own RTL and
+stays parameterized either way.
+
+Note the practical scope: for plain MBIST both settings behave identically,
+because the march only ever exercises the logical array. The flag matters when
+you want the simulated model to *be* the compiled macro — including its spare
+rows and spare column — rather than a resized stand-in.
+
 ## Redundancy repair (BIRA/BISR)
 
 Opt-in via a `redundancy:` block, paired with either `repair_ports:`
