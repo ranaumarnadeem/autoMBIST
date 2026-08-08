@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import importlib.resources
 import re
 import shutil
@@ -23,6 +24,42 @@ REQUIRED_TOP_KEYS = (
     "we_active_low",
     "ports",
 )
+OPTIONAL_TOP_KEYS = (
+    "read_latency",
+    "memory_has_fixed_geometry",
+    "repair_ports",
+    "redundancy",
+)
+# load_config is reused to re-parse generate_from_config's own written-out
+# config.yml snapshot (runner.py's _load_simulation_config), not just a user's
+# hand-written source file -- so the unknown-key check below has to allow
+# every key that function ever writes to render_config, on top of what a user
+# may write themselves. Keep this in sync with generate_from_config's
+# render_config[...] assignments.
+_SNAPSHOT_ONLY_TOP_KEYS = (
+    "normalized_ports",
+    "use_saboteur",
+    "pulse_width_ns",
+    "algo",
+    "fault_type",
+    "autombist_use_saboteur",
+    "autombist_faults",
+    "autombist_fault_seed",
+    "autombist_fault_type",
+    "autombist_pulse_width_ns",
+    "autombist_algo",
+    "algo_dir",
+    "algo_top_module",
+    "algo_port_suffixes",
+    "sa0_faults_file",
+    "sa1_faults_file",
+    "tf_up_faults_file",
+    "tf_down_faults_file",
+    "pc_faults_file",
+    "fault_count",
+    "fault_seed",
+)
+_ALL_TOP_KEYS = frozenset(REQUIRED_TOP_KEYS) | frozenset(OPTIONAL_TOP_KEYS) | frozenset(_SNAPSHOT_ONLY_TOP_KEYS)
 REQUIRED_PORT_KEYS = ("clk", "addr", "din", "dout", "we", "csb")
 
 # Per-port-type required signal keys for the named multi-port config shape
@@ -205,6 +242,32 @@ def _require_keys(data: dict[str, Any], required: tuple[str, ...], section: str)
     if missing:
         missing_keys = ", ".join(missing)
         raise ConfigError(f"Missing required keys in {section}: {missing_keys}")
+
+
+_USER_FACING_TOP_KEYS = frozenset(REQUIRED_TOP_KEYS) | frozenset(OPTIONAL_TOP_KEYS)
+
+
+def _reject_unknown_top_keys(loaded: dict[str, Any]) -> None:
+    """A typo'd top-level key (e.g. adr_width) previously just sat there,
+    unread and unused, while the real key it was meant to override kept its
+    default -- no error, no warning, a wrapper generated as if the typo'd
+    line were never written at all.
+
+    Accepts against `_ALL_TOP_KEYS` (user-facing keys plus the machine-only
+    ones generate_from_config round-trips through its own config.yml
+    snapshot -- see that constant's comment), but the error only advertises
+    `_USER_FACING_TOP_KEYS`: a human editing config.yml by hand should never
+    be told to consider writing autombist_fault_seed themselves."""
+    unknown = sorted(set(loaded) - _ALL_TOP_KEYS)
+    if not unknown:
+        return
+    key = unknown[0]
+    suggestion = difflib.get_close_matches(key, _USER_FACING_TOP_KEYS, n=1)
+    hint = f" -- did you mean {suggestion[0]!r}?" if suggestion else ""
+    raise ConfigError(
+        f"Unknown config key {key!r}{hint}. Valid top-level keys: "
+        f"{', '.join(sorted(_USER_FACING_TOP_KEYS))}"
+    )
 
 
 def _validate_positive_int(data: dict[str, Any], key: str) -> None:
@@ -579,8 +642,6 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
     # wrapper boundary with no pin for the tester to drive, exactly the failure
     # the column check below prevents. This sits outside the num_spare_cols
     # split because row pins are required on the tester-driven path either way.
-    # Widths deliberately stay unvalidated here: tightening those would reject
-    # existing configs, whereas `input` is the only value that has ever worked.
     for entry in loaded.get("repair_ports", []):
         if entry["name"] in _COL_REPAIR_PINS:
             continue
@@ -589,6 +650,34 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
                 f"repair_ports {entry['name']!r} must be dir: input (it drives "
                 f"repair_remap_row's input port), got {entry['dir']!r}"
             )
+
+    if not onchip_selfrepair:
+        # repair_remap_row's instantiation connects repair_ports entries by
+        # NAME (wrapper_template.j2: `.{{ rp.name }}({{ rp.name }})`), so a
+        # typo'd or missing row_repair_en/faulty_row_addr is a hard
+        # elaboration error under iverilog -- but Yosys accepts an unmatched
+        # named port connection and leaves the real row_repair_en/
+        # faulty_row_addr floating, so `autombist harden` elaborates clean
+        # and the repair never actually applies. Mirrors the column block's
+        # strictness below, which this same gap would otherwise leave the row
+        # side without.
+        expected_row_widths = {
+            "row_repair_en": num_spare_rows,
+            "faulty_row_addr": num_spare_rows * int(loaded["addr_width"]),
+        }
+        for pin, expected in expected_row_widths.items():
+            entry = by_name.get(pin)
+            if entry is None:
+                raise ConfigError(
+                    f"redundancy requires a repair_ports entry named {pin!r} "
+                    f"(width {expected}) to drive repair_remap_row"
+                )
+            if entry["width"] != expected:
+                raise ConfigError(
+                    f"repair_ports {pin!r} width must be {expected} for "
+                    f"num_spare_rows={num_spare_rows}, addr_width="
+                    f"{loaded['addr_width']} (got {entry['width']})"
+                )
 
     try:
         geometry = SpareGeometry(
@@ -715,6 +804,7 @@ def load_config(config_path: Path) -> dict[str, Any]:
         raise ConfigError("Config must be a YAML mapping")
 
     _require_keys(loaded, REQUIRED_TOP_KEYS, "root")
+    _reject_unknown_top_keys(loaded)
 
     _validate_non_empty_str(loaded, "memory_name")
     _validate_non_empty_str(loaded, "wrapper_module_name")

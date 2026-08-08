@@ -33,6 +33,13 @@ REPAIR_PORTS = [
     {"name": "row_repair_en", "width": 2, "dir": "input"},
     {"name": "faulty_row_addr", "width": 4, "dir": "input"},
 ]
+# Sized for num_spare_rows: 1 (row_repair_en width == num_spare_rows,
+# faulty_row_addr width == num_spare_rows * addr_width(2)) -- most tests below
+# use num_spare_rows: 1, while REPAIR_PORTS above is sized for rows: 2.
+REPAIR_PORTS_1ROW = [
+    {"name": "row_repair_en", "width": 1, "dir": "input"},
+    {"name": "faulty_row_addr", "width": 2, "dir": "input"},
+]
 MULTI_PORTS = {
     "r0": {"type": "r", "clk": "clk0", "addr": "addr0", "dout": "dout0", "csb": "csb0"},
     "w0": {"type": "w", "clk": "clk1", "addr": "addr1", "din": "din1", "csb": "csb1", "we": "we1"},
@@ -110,7 +117,7 @@ def test_repair_ports_without_redundancy_rejected(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 COL_PORTS = {**BASE["ports"], "spare_wen": "spare_wen0"}
 COL_REPAIR_PORTS = [
-    *REPAIR_PORTS,
+    *REPAIR_PORTS_1ROW,
     {"name": "col_repair_en", "width": 1, "dir": "input"},
     {"name": "faulty_bit", "width": 2, "dir": "input"},   # 1 spare * bit_index_width(2)
 ]
@@ -237,10 +244,7 @@ def test_spare_wen_is_tied_off_when_column_repair_is_off(tmp_path: Path) -> None
     config_path.write_text(yaml.safe_dump({
         **COL_BASE,
         "redundancy": {"num_spare_rows": 1},   # rows only, no column repair
-        "repair_ports": [
-            {"name": "row_repair_en", "width": 1, "dir": "input"},
-            {"name": "faulty_row_addr", "width": 4, "dir": "input"},
-        ],
+        "repair_ports": REPAIR_PORTS_1ROW,
     }, sort_keys=False), encoding="utf-8")
 
     wrapper = generate_from_config(config_path, outdir, algo="march-c")
@@ -292,9 +296,10 @@ def test_row_pin_must_be_dir_input(tmp_path: Path, pin: str) -> None:
     """The row twin of test_column_pin_must_be_dir_input. repair_remap_row's
     every bindable port is an input, so `output` declares a wrapper-boundary
     wire driven by nothing and gives the tester no pin -- the same failure the
-    column check was added to prevent. The existing laxity comment excuses
-    unvalidated row *widths* for back-compat; `dir` was never covered by that,
-    since `input` is the only value that has ever worked."""
+    column check was added to prevent. `dir` has always been checked, since
+    `input` is the only value that has ever worked; presence and width are
+    checked too now -- see test_redundancy_requires_the_canonical_row_pins and
+    test_row_pin_widths_are_validated_strictly below."""
     ports = [
         {**e, "dir": "output"} if e["name"] == pin else e
         for e in REPAIR_PORTS
@@ -322,6 +327,31 @@ def test_row_pin_dir_is_checked_on_the_2d_path_too(tmp_path: Path) -> None:
         })
 
 
+@pytest.mark.parametrize("missing", ["row_repair_en", "faulty_row_addr"])
+def test_redundancy_requires_the_canonical_row_pins(tmp_path: Path, missing: str) -> None:
+    """The row twin of test_num_spare_cols_requires_the_canonical_column_pins.
+    repair_remap_row's instantiation connects repair_ports entries by NAME
+    (wrapper_template.j2), so a config missing row_repair_en or
+    faulty_row_addr used to generate and elaborate clean under Yosys (an
+    unmatched named port connection is not an error there) and never
+    actually repair anything -- only iverilog's stricter elaboration caught
+    it, and only by accident of which pin was missing."""
+    ports = [e for e in REPAIR_PORTS_1ROW if e["name"] != missing]
+    with pytest.raises(ConfigError, match=missing):
+        _load(tmp_path, {**BASE, "redundancy": {"num_spare_rows": 1}, "repair_ports": ports})
+
+
+@pytest.mark.parametrize("pin,bad_width", [("row_repair_en", 2), ("faulty_row_addr", 3)])
+def test_row_pin_widths_are_validated_strictly(tmp_path: Path, pin: str, bad_width: int) -> None:
+    """The row twin of test_column_pin_widths_are_validated_strictly. A wrong
+    width is a silent truncation/extension in the named port connection under
+    both iverilog and Yosys -- neither toolchain's elaboration catches it, so
+    this has to be a config-validation-time rejection."""
+    ports = [{**e, "width": bad_width} if e["name"] == pin else e for e in REPAIR_PORTS_1ROW]
+    with pytest.raises(ConfigError, match="width must be"):
+        _load(tmp_path, {**BASE, "redundancy": {"num_spare_rows": 1}, "repair_ports": ports})
+
+
 @pytest.mark.parametrize("pin", ["col_repair_en", "faulty_bit"])
 def test_column_repair_pins_without_spare_columns_rejected(tmp_path: Path, pin: str) -> None:
     """The other half of the same hole: a column-repair pin name in a row-only
@@ -333,7 +363,7 @@ def test_column_repair_pins_without_spare_columns_rejected(tmp_path: Path, pin: 
         _load(tmp_path, {
             **BASE,   # no spare_wen role, so the check above cannot fire first
             "redundancy": {"num_spare_rows": 1, "num_spare_cols": 0},
-            "repair_ports": [*REPAIR_PORTS, {"name": pin, "width": 1, "dir": "input"}],
+            "repair_ports": [*REPAIR_PORTS_1ROW, {"name": pin, "width": 1, "dir": "input"}],
         })
 
 
@@ -364,7 +394,7 @@ def test_column_pin_must_be_dir_input(tmp_path: Path, pin: str) -> None:
 
 
 def test_words_per_row_defaults_to_one(tmp_path: Path) -> None:
-    loaded = _load(tmp_path, {**BASE, "redundancy": {"num_spare_rows": 1}, "repair_ports": REPAIR_PORTS})
+    loaded = _load(tmp_path, {**BASE, "redundancy": {"num_spare_rows": 1}, "repair_ports": REPAIR_PORTS_1ROW})
     assert loaded["redundancy"]["words_per_row"] == 1
 
 

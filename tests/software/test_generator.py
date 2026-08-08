@@ -169,6 +169,59 @@ def test_read_latency_omitted_is_unset(
     assert "read_latency" not in load_config(config_path)
 
 
+def test_unknown_top_level_key_rejected(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    """A typo'd top-level key used to sit there unread while the real key it
+    was meant to override silently kept its default -- no error at all."""
+    invalid = dict(base_config)
+    invalid["adr_width"] = 10
+
+    config_path = tmp_path / "typo.yml"
+    _write_yaml(config_path, invalid)
+
+    with pytest.raises(ConfigError, match="Unknown config key 'adr_width'") as exc_info:
+        load_config(config_path)
+    assert "did you mean 'addr_width'" in str(exc_info.value)
+
+
+def test_unknown_top_level_key_error_lists_only_user_facing_keys(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    """The error's suggested key list must stay to what a human can actually
+    write in config.yml -- not autombist_fault_seed and friends, which only
+    ever appear in generate_from_config's own machine-written snapshot."""
+    invalid = dict(base_config)
+    invalid["totally_bogus_key"] = 1
+
+    config_path = tmp_path / "bogus.yml"
+    _write_yaml(config_path, invalid)
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(config_path)
+    message = str(exc_info.value)
+    assert "autombist_" not in message
+    assert "redundancy" in message and "read_latency" in message
+
+
+def test_generate_from_config_round_trips_through_its_own_snapshot(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    """Regression guard for the unknown-top-key check above: generate_from_
+    config writes its OWN config.yml snapshot back into the output directory
+    (with machine-added keys like normalized_ports/algo/autombist_algo), and
+    run_simulation later re-parses that exact file through this same
+    load_config -- so the check must not reject its own round trip."""
+    config_path = tmp_path / "config.yml"
+    _write_yaml(config_path, base_config)
+
+    wrapper_path = generate_from_config(config_path, tmp_path / "out", use_saboteur=True, faults=5)
+
+    snapshot_path = wrapper_path.parent / "config.yml"
+    reloaded = load_config(snapshot_path)
+    assert reloaded["memory_name"] == base_config["memory_name"]
+
+
 def test_generate_with_saboteur_creates_fault_assets(
     tmp_path: Path, base_config: dict[str, object]
 ) -> None:
