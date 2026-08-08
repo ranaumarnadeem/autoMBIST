@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -8,6 +10,7 @@ from autombist.alg_spec import parse_alg
 from autombist.algo_engine import (
     CampaignError,
     FaultRecord,
+    FaultResult,
     MemoryParams,
     parse_fault_hits,
     parse_fault_list,
@@ -16,6 +19,8 @@ from autombist.algo_engine import (
     run_fsm_campaign,
     write_fault_list,
     _engine_cache_enabled,
+    _fault_concurrency,
+    _run_faults_concurrently,
     _source_digest,
     _validate_fault_addresses,
 )
@@ -144,6 +149,139 @@ def test_source_digest_is_sensitive_to_order(tmp_path: Path) -> None:
     a.write_text("module a; endmodule\n", encoding="utf-8")
     b.write_text("module b; endmodule\n", encoding="utf-8")
     assert _source_digest([a, b]) != _source_digest([b, a])
+
+
+def _fake_fault_record(i: int) -> FaultRecord:
+    return FaultRecord("SA0", vaddr=i, vbit=0, aaddr=0, abit=0, p0=0, p1=0)
+
+
+def test_fault_concurrency_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AUTOMBIST_FAULT_CONCURRENCY", raising=False)
+    assert _fault_concurrency() == 4
+
+
+@pytest.mark.parametrize("value,expected", [("1", 1), ("8", 8), ("0", 1), ("-3", 1)])
+def test_fault_concurrency_env_var_override(monkeypatch: pytest.MonkeyPatch, value: str, expected: int) -> None:
+    # 0/negative are clamped up to 1 (still fully sequential, never zero/negative workers).
+    monkeypatch.setenv("AUTOMBIST_FAULT_CONCURRENCY", value)
+    assert _fault_concurrency() == expected
+
+
+def test_fault_concurrency_env_var_ignores_garbage(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTOMBIST_FAULT_CONCURRENCY", "not-a-number")
+    assert _fault_concurrency() == 4
+
+
+def test_run_faults_concurrently_preserves_input_order_despite_reversed_completion(
+) -> None:
+    """The decisive ordering proof: faults are deliberately made to COMPLETE
+    in the opposite order from how they were submitted (fault 0 sleeps
+    longest, fault N-1 finishes first) -- the returned list must still be in
+    original fault-list order, not completion order."""
+    n = 8
+
+    def run_one_fault(i: int, record: FaultRecord) -> FaultResult:
+        time.sleep((n - i) * 0.01)  # earlier index -> longer sleep -> finishes LAST
+        return FaultResult(index=i, record=record, detected=(i % 2 == 0))
+
+    faults = [_fake_fault_record(i) for i in range(n)]
+    results = _run_faults_concurrently(faults, run_one_fault, None, max_workers=4)
+
+    assert [r.index for r in results] == list(range(n))
+    assert [r.record for r in results] == faults
+    assert [r.detected for r in results] == [i % 2 == 0 for i in range(n)]
+
+
+def test_run_faults_concurrently_actually_overlaps_above_max_workers_1() -> None:
+    """Proves real concurrency happens, not just a claim: tracks the peak
+    number of simultaneously in-flight calls and requires it to exceed 1
+    (impossible under the old strictly-sequential loop) while never
+    exceeding the requested bound."""
+    n = 12
+    max_workers = 3
+    lock = threading.Lock()
+    state = {"current": 0, "peak": 0}
+
+    def run_one_fault(i: int, record: FaultRecord) -> FaultResult:
+        with lock:
+            state["current"] += 1
+            state["peak"] = max(state["peak"], state["current"])
+        try:
+            time.sleep(0.03)
+            return FaultResult(index=i, record=record, detected=True)
+        finally:
+            with lock:
+                state["current"] -= 1
+
+    faults = [_fake_fault_record(i) for i in range(n)]
+    results = _run_faults_concurrently(faults, run_one_fault, None, max_workers=max_workers)
+
+    assert [r.index for r in results] == list(range(n))
+    assert 1 < state["peak"] <= max_workers
+
+
+def test_run_faults_concurrently_max_workers_1_is_strictly_sequential() -> None:
+    """max_workers=1 must behave exactly like the original loop: never more
+    than one call in flight at a time, byte-identical to before threading
+    existed."""
+    n = 6
+    lock = threading.Lock()
+    state = {"current": 0, "peak": 0}
+
+    def run_one_fault(i: int, record: FaultRecord) -> FaultResult:
+        with lock:
+            state["current"] += 1
+            state["peak"] = max(state["peak"], state["current"])
+        try:
+            time.sleep(0.01)
+            return FaultResult(index=i, record=record, detected=True)
+        finally:
+            with lock:
+                state["current"] -= 1
+
+    faults = [_fake_fault_record(i) for i in range(n)]
+    _run_faults_concurrently(faults, run_one_fault, None, max_workers=1)
+    assert state["peak"] == 1
+
+
+def test_run_faults_concurrently_progress_callback_never_regresses() -> None:
+    """format_simulation_summary-style progress bars use an ABSOLUTE
+    completed-count, not a delta -- if reordered completion ever leaked the
+    fault INDEX into the callback instead of a monotonic counter, the
+    reported "progress" could visibly jump backward."""
+    n = 10
+    seen: list[int] = []
+    lock = threading.Lock()
+
+    def run_one_fault(i: int, record: FaultRecord) -> FaultResult:
+        time.sleep((n - i) * 0.005)  # reversed completion order again
+        return FaultResult(index=i, record=record, detected=True)
+
+    def progress_callback(completed: int, total: int) -> None:
+        with lock:
+            seen.append(completed)
+        assert total == n
+
+    faults = [_fake_fault_record(i) for i in range(n)]
+    _run_faults_concurrently(faults, run_one_fault, progress_callback, max_workers=4)
+
+    assert seen == sorted(seen), f"progress regressed: {seen}"
+    assert seen == list(range(1, n + 1))
+
+
+def test_run_faults_concurrently_propagates_exception() -> None:
+    def run_one_fault(i: int, record: FaultRecord) -> FaultResult:
+        if i == 2:
+            raise CampaignError("simulated failure for fault 2")
+        return FaultResult(index=i, record=record, detected=True)
+
+    faults = [_fake_fault_record(i) for i in range(5)]
+    with pytest.raises(CampaignError, match="simulated failure for fault 2"):
+        _run_faults_concurrently(faults, run_one_fault, None, max_workers=3)
+
+
+def test_run_faults_concurrently_empty_fault_list() -> None:
+    assert _run_faults_concurrently([], lambda i, r: FaultResult(index=i, record=r, detected=False), None, 4) == []
 
 
 def test_parse_result_line_detected() -> None:
