@@ -435,6 +435,41 @@ def test_run_simulation_failure_hint_when_fault_sim_log_has_trigger_substring(
     assert "autombist generate --test" in str(exc_info.value)
 
 
+def test_run_simulation_failure_hint_when_clean_run_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A clean (fault-free, use_saboteur=False) run failing MBIST is the exact
+    symptom of a mismatched read_latency (docs/source/configuration.md#read-latency):
+    the controller samples dout at the wrong moment and reports a phantom
+    failure on a perfectly good memory. Without this hint, the user only sees
+    a bare "exit code 2. See simulate.log." and has to open the log and
+    recognize cocotb's assertion themselves."""
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, _base_config())
+    wrapper_path = generate_from_config(config_path, outdir, use_saboteur=False)
+    module_outdir = wrapper_path.parent
+
+    # use_saboteur=False means backend_log_path IS log_path (both "simulate.log"):
+    # run_simulation overwrites that file with the subprocess's own
+    # stdout/stderr before reading it back as backend_log_contents, so (unlike
+    # the dbg_actual_word test above, which uses a use_saboteur=True bundle and
+    # a distinctly-named fault_sim.log) the trigger text has to come from the
+    # mocked subprocess result, not a pre-seeded file on disk.
+    trigger = "  100.00ns WARNING  cocotb.Test test_clean.test_clean  MBIST reported fail in clean mode\n"
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(args=command, returncode=2, stdout=trigger, stderr="")
+
+    monkeypatch.setattr(runner_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("autombist.runner.subprocess.run", fake_run)
+
+    with pytest.raises(SimulationError) as exc_info:
+        run_simulation(module_outdir, verbose=False)
+
+    assert "read_latency" in str(exc_info.value)
+
+
 # ---------------------------------------------------------------------------
 # Preflight tool guard + missing-tool failure hint (C-A correctness fixes)
 # ---------------------------------------------------------------------------
