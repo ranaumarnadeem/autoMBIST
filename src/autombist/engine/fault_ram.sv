@@ -100,11 +100,15 @@ module fault_ram #(
     return -1;
   endfunction
 
+  // KEPT IN SYNC MANUALLY with type_code() above (same caveat as T_DRF/T_HSD).
+  localparam string VALID_FAULT_TYPES = "SA0, SA1, TF0, TF1, WDF0, WDF1, RDF0, RDF1, DRDF0, DRDF1, IRF0, IRF1, SOF, AF_NOACC, AF_ALIAS, CFIN, CFID, CFST, CFDS, DRF, HSD";
+
   int init_val;
 
   initial begin
     string  fpath, line, ts;
     int     fd, n, idx, sel;
+    bit     had_fatal;
     fault_s f;
 
     if (!$value$plusargs("INIT=%d", init_val)) init_val = 1;
@@ -118,18 +122,30 @@ module fault_ram #(
         $finish;
       end
       idx = 0;
+      had_fatal = 1'b0;
+      // $finish does not synchronously abort this block -- it schedules
+      // termination but lets the rest of the initial block's zero-delay
+      // statements keep running, which would otherwise cascade into further,
+      // misleading FATALs (e.g. FAULT_INDEX out of range, because the
+      // malformed line was never queued). The explicit had_fatal flag +
+      // break/guard below make the halt real.
       while ($fgets(line, fd) != 0) begin
         n = $sscanf(line, "%s %d %d %d %d %d %d",
                     ts, f.va, f.vb, f.aa, f.ab, f.p0, f.p1);
         if (n < 1 || ts.substr(0,0) == "#") continue;
         f.t = type_code(ts);
         if (f.t < 0) begin
-          $display("FATAL: unknown fault type '%s' (line %0d)", ts, idx);
+          $display("FATAL: unknown fault type '%s' (line %0d). Valid types: %s",
+                    ts, idx, VALID_FAULT_TYPES);
+          had_fatal = 1'b1;
           $finish;
+          break;
         end
         if (n < 7) begin
           $display("FATAL: fault line %0d has %0d fields, need 7", idx, n);
+          had_fatal = 1'b1;
           $finish;
+          break;
         end
         f.hits = 0;
         FQ.push_back(f);
@@ -138,25 +154,28 @@ module fault_ram #(
       end
       $fclose(fd);
 
-      if (!$value$plusargs("FAULT_INDEX=%d", sel)) sel = -1;
-      if (sel >= 0) begin
-        if (sel >= FQ.size()) begin
-          $display("FATAL: FAULT_INDEX %0d out of range (%0d faults)", sel, FQ.size());
-          $finish;
+      if (!had_fatal) begin
+        if (!$value$plusargs("FAULT_INDEX=%d", sel)) sel = -1;
+        if (sel >= 0) begin
+          if (sel >= FQ.size()) begin
+            $display("FATAL: FAULT_INDEX %0d out of range (%0d faults)", sel, FQ.size());
+            $finish;
+          end else begin
+            f = FQ[sel];
+            ts = FNAME[sel];
+            FQ.delete(); FNAME.delete();
+            FQ.push_back(f); FNAME.push_back(ts);
+            $display("FAULT_LOADED idx=%0d type=%s v=%0d.%0d a=%0d.%0d p0=%0d p1=%0d",
+                     sel, ts, f.va, f.vb, f.aa, f.ab, f.p0, f.p1);
+          end
+        end else begin
+          for (int i = 0; i < FQ.size(); i++)
+            $display("FAULT_LOADED idx=%0d type=%s v=%0d.%0d a=%0d.%0d p0=%0d p1=%0d",
+                     i, FNAME[i], FQ[i].va, FQ[i].vb, FQ[i].aa, FQ[i].ab, FQ[i].p0, FQ[i].p1);
         end
-        f = FQ[sel];
-        ts = FNAME[sel];
-        FQ.delete(); FNAME.delete();
-        FQ.push_back(f); FNAME.push_back(ts);
-        $display("FAULT_LOADED idx=%0d type=%s v=%0d.%0d a=%0d.%0d p0=%0d p1=%0d",
-                 sel, ts, f.va, f.vb, f.aa, f.ab, f.p0, f.p1);
-      end else begin
-        for (int i = 0; i < FQ.size(); i++)
-          $display("FAULT_LOADED idx=%0d type=%s v=%0d.%0d a=%0d.%0d p0=%0d p1=%0d",
-                   i, FNAME[i], FQ[i].va, FQ[i].vb, FQ[i].aa, FQ[i].ab, FQ[i].p0, FQ[i].p1);
+        // Apply stuck faults to the initial state as well.
+        clamp_static();
       end
-      // Apply stuck faults to the initial state as well.
-      clamp_static();
     end
   end
 

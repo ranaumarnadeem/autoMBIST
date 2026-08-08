@@ -245,16 +245,14 @@ def test_run_campaign_sh_marks_a_crashed_fault_run_as_error_not_escaped(tmp_path
     assert "golden: clean" in result.stdout, combined
 
     csv_rows = (bundle_dir / "campaign_march_c.csv").read_text(encoding="utf-8").splitlines()
-    # $finish is deferred (per the LRM: end of time step, not synchronous), so
-    # fault_ram.sv's initial block keeps running its own zero-delay code past
-    # the FATAL: index 0 is still in range of the partially-built fault queue
-    # (only the bad line 2 failed to push), so it prints FAULT_LOADED type=SA0
-    # before the queued finish lands; index 1 is then out of range against
-    # that same partial queue, hits a SECOND fatal, and reads an out-of-bounds
-    # (zero-filled) entry with an empty type. Both still end up with no
-    # RESULT line either way -- confirmed empirically, not assumed, after an
-    # initial version of this test got the exact row values wrong.
-    assert csv_rows[1:] == ["0,SA0,ERROR,,,", "1,,ERROR,,,"], csv_rows
+    # Every +FAULT_INDEX=N run re-parses the SAME 2-line fault list from
+    # scratch, so the type-check FATAL on the bad line 2 fires on every run
+    # regardless of which index it's seeking. fault_ram.sv's had_fatal guard
+    # (the fatal-cascade fix) now skips the whole FAULT_INDEX/FAULT_LOADED
+    # section once that FATAL fires, so neither run ever prints a
+    # FAULT_LOADED line -- both rows have an empty type, not just index 1's.
+    # Confirmed empirically, not assumed.
+    assert csv_rows[1:] == ["0,,ERROR,,,", "1,,ERROR,,,"], csv_rows
     assert result.stderr.count("produced no RESULT line") == 2, combined
     assert "NOT_A_REAL_TYPE" in result.stderr, combined
     assert "coverage: 0 / 2 detected (2 run(s) errored" in result.stdout, combined

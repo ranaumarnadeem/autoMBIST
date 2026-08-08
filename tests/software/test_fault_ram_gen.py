@@ -132,18 +132,19 @@ def test_render_fault_ram_num_ports_1_implicit_and_explicit_are_identical() -> N
 
 def test_render_fault_ram_num_ports_1_is_byte_identical_to_pre_phase_golden() -> None:
     """Pins render_fault_ram(default_registry()) to its exact sha256. Deliberately
-    re-pinned across both Workstream K (DRF) and Workstream L (HSD): each added
-    a new fixed type with its own RTL insertion site and (for K) a mid-phase
-    FAULT_VERBOSE attribution fix, so num_ports=1 text growth each time is the
-    expected, intended outcome of that phase, not a regression. Any *future*
-    edit that changes a byte of this rendering must still fail this test and
-    prompt a deliberate re-pin, exactly as these were."""
+    re-pinned across both Workstream K (DRF) and Workstream L (HSD), and again
+    for the fatal-cascade fix (had_fatal guard + valid-type-name list in the
+    unknown-fault-type message): each added a new fixed type or a real text
+    change, so num_ports=1 text growth each time is the expected, intended
+    outcome, not a regression. Any *future* edit that changes a byte of this
+    rendering must still fail this test and prompt a deliberate re-pin, exactly
+    as these were."""
     import hashlib
 
     text = render_fault_ram(default_registry())
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    assert len(text) == 14050
-    assert digest == "a4abde7a60b3a5555fb6ffae3f84ee9062903072c21e68a15e1a4d154493874f"
+    assert len(text) == 14791
+    assert digest == "2a9e8cfc124a5b82f86d3abde87016fb0d7cb7e7704b14ff7377f326816f5079"
 
 
 # --------------------------------------------------------------------------- #
