@@ -35,6 +35,7 @@ This is a property of Tcl itself, not something this module can fix.
 """
 from __future__ import annotations
 
+import difflib
 import sys
 import traceback
 from pathlib import Path
@@ -125,7 +126,12 @@ def _parse_flags(args: tuple[str, ...]) -> dict[str, str]:
     while i < len(args):
         token = args[i]
         if not _is_flag_token(token):
-            raise ValueError(f"expected a -flag token, got {token!r}")
+            # RuntimeError, not ValueError: this is a user-input mistake (a
+            # stray token, or a typo'd flag), not a program bug, and _wrap
+            # treats RuntimeError as "expected" -- no traceback dumped to
+            # stderr for it. Every other raise in this flag-parsing section
+            # follows the same rule for the same reason.
+            raise RuntimeError(f"expected a -flag token, got {token!r}")
         if i + 1 < len(args) and not _is_flag_token(args[i + 1]):
             flags[token] = args[i + 1]
             i += 2
@@ -141,18 +147,39 @@ def _pop_str(flags: dict[str, str], name: str, default: str | None = None) -> st
 
 def _pop_required(flags: dict[str, str], name: str) -> str:
     if name not in flags:
-        raise ValueError(f"missing required flag {name}")
+        # A typo'd flag (e.g. -confi for -config) parses fine as ITS OWN flag
+        # (any -prefixed token is a valid flag token to _parse_flags), so it
+        # sits in `flags` under its own misspelled name while -config is
+        # simply absent -- the naive message ("missing required flag
+        # -config") is true but blames the wrong thing: the user DID pass a
+        # value, just under the wrong key. Check the flags actually present
+        # for a close spelling match and name it directly, the same
+        # did-you-mean style used for a typo'd port key or fault type
+        # elsewhere in this tool.
+        close = difflib.get_close_matches(name, flags.keys(), n=1)
+        hint = f" -- got {close[0]!r}, did you mean {name!r}?" if close else ""
+        raise RuntimeError(f"missing required flag {name}{hint}")
     return flags.pop(name)
 
 
 def _pop_int(flags: dict[str, str], name: str, default: int | None = None) -> int | None:
     value = flags.pop(name, None)
-    return int(value) if value is not None else default
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        raise RuntimeError(f"flag {name} expects an integer, got {value!r}") from None
 
 
 def _pop_float(flags: dict[str, str], name: str, default: float | None = None) -> float | None:
     value = flags.pop(name, None)
-    return float(value) if value is not None else default
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        raise RuntimeError(f"flag {name} expects a number, got {value!r}") from None
 
 
 def _pop_bool(flags: dict[str, str], name: str, default: bool = False) -> bool:
@@ -164,7 +191,7 @@ def _pop_bool(flags: dict[str, str], name: str, default: bool = False) -> bool:
 
 def _reject_unknown(flags: dict[str, str]) -> None:
     if flags:
-        raise ValueError(f"unknown flag(s): {', '.join(sorted(flags))}")
+        raise RuntimeError(f"unknown flag(s): {', '.join(sorted(flags))}")
 
 
 def _none_to_empty(value: Any) -> Any:
