@@ -23,14 +23,33 @@ used only once, at the end, by a caller (``algo_shell.py``'s ``do_synth
 --verify``) to confirm the synthesized result for real.
 
 The reference-memory model: a 2-cell abstract pair ``(v, a)`` -- victim and
-aggressor -- with a WLOG convention ``addr(a) > addr(v)`` (matching this
-project's own existing fixtures: ``engine/faults.example.txt``'s CFIN
-100->101/CFID 110->111/CFST 120->121, and ``algo_engine.
-generate_all_types_faults``'s ``aa = (va + 1) % depth``). Within one march
-Element, the address-traversal direction resolves which role's op-list runs
-first: ``up`` visits the lower address (v) first, then the higher (a);
-``down`` visits a first, then v. Single-cell faults (SA0/SA1/TF/WDF/RDF/
-IRF/DRDF) never reference ``a`` at all -- the model is uniform.
+aggressor. Within one march Element, the address-traversal direction resolves
+which role's op-list runs first: ``up`` visits the lower address first, then
+the higher; ``down`` visits the higher first, then the lower (see
+:func:`_role_order`). Single-cell faults (SA0/SA1/TF/WDF/RDF/IRF/DRDF) never
+reference ``a`` at all -- the model is uniform for them regardless of which
+physical address is higher.
+
+For coupling faults (``sensitize.on == "aggressor"``: CFIN/CFID/CFST), which
+address is higher is NOT free to assume away. A real array has coupling
+defects with the aggressor cell on either side of the victim, and a march
+test that only detects one placement is unsound for the other -- this module
+used to get this wrong (every coupling candidate was built assuming the
+aggressor sits above the victim, addr(a) > addr(v), a convention its own
+module docstring called "WLOG" even though it demonstrably was not: the same
+synthesized spec scored 15/15 on real faults placed that way and 12/15 on the
+identical faults mirrored, with CFST/CFIN/CFID the ones that escaped --
+measured via ``run_algo_campaign``, not assumed). The candidate builders for
+coupling categories (:func:`_combo_candidates`, :func:`_aggressor_clamp_candidates`)
+now construct a chained pair of elements per targeted primitive -- one
+engineered for the aggressor-above placement, one for aggressor-below -- and
+:func:`synthesize_elements`'s scoring only credits a primitive as covered once
+:func:`detects` confirms it under BOTH ``aggressor_gt_victim=True`` and
+``aggressor_gt_victim=False``. :func:`synth_verification_faults` mirrors this:
+every coupling primitive gets two real fault records, one per placement, so
+``do_synth --verify``'s Verilator campaign can actually falsify a
+placement-asymmetric result instead of only ever exercising the one placement
+the search happened to assume.
 
 Excluded from synthesis targeting: the six fixed types
 (SOF/AF_NOACC/AF_ALIAS/CFDS/DRF/HSD -- see ``fault_primitives.py``'s module
@@ -305,16 +324,35 @@ def detects(elements: list[Element], fault: FaultPrimitive, *,
 # generated candidate is sound (is_golden_sound-true) by design, never by
 # accident or by post-hoc filtering.
 # --------------------------------------------------------------------------- #
-def _golden_state_after(elements: list[Element], *, aggressor_gt_victim: bool = True, init_val: int = 1) -> tuple[int, int]:
-    """(v, a) after replaying ``elements`` with no fault -- the starting
-    point for building the next candidate."""
-    v = a = init_val
+def _advance_golden(v: int, a: int, elements: list[Element], *, aggressor_gt_victim: bool) -> tuple[int, int]:
+    """(v, a) after replaying ``elements`` with no fault, starting from an
+    ARBITRARY ``(v, a)`` rather than ``init_val`` -- the primitive
+    :func:`_golden_state_after` specializes to the whole-spec case. Used to
+    chain candidate construction across sub-groups (e.g. an aggressor-above
+    combo followed immediately by an aggressor-below combo for the same
+    coupling primitive -- see :func:`_combo_candidates`), where the second
+    sub-group's own setup logic needs the REAL state the first one left
+    behind, not a fresh ``init_val``.
+
+    Placement-invariant for the no-fault case: in :func:`_apply_op`, role
+    'a's pass has no side effect on v (and vice versa) when ``fault is
+    None`` -- every branch that lets one role's op influence the other is
+    gated on a specific fault category being active. Since the two roles'
+    passes don't interact, the ORDER ``_role_order`` puts them in cannot
+    change the result, so ``aggressor_gt_victim`` is accepted only for
+    interface symmetry and never actually changes the answer here."""
     for elem, direction in zip(elements, resolve_directions(elements)):
         for role in _role_order(direction, aggressor_gt_victim):
             for op in elem.ops:
                 v, a, _ = _apply_op(v, a, op, role, None)
                 v = _apply_static_clamp(v, a, None)
     return v, a
+
+
+def _golden_state_after(elements: list[Element], *, aggressor_gt_victim: bool = True, init_val: int = 1) -> tuple[int, int]:
+    """(v, a) after replaying ``elements`` with no fault, from ``init_val`` --
+    the starting point for building the next candidate."""
+    return _advance_golden(init_val, init_val, elements, aggressor_gt_victim=aggressor_gt_victim)
 
 
 def _bit_op(value: int, *, write: bool) -> int:
@@ -426,9 +464,9 @@ def _single_element_candidates(
     return out
 
 
-def _aggressor_clamp_candidates(
-    remaining: list[FaultPrimitive], golden_v: int, golden_a: int,
-) -> list[tuple[list[Element], int]]:
+def _aggressor_clamp_candidate_one(
+    p: FaultPrimitive, golden_a: int, direction: int,
+) -> tuple[list[Element], int]:
     """static_clamp/on=aggressor faults (CFST) are gated on role 'a'
     CURRENTLY holding a specific value -- a condition a single victim-only
     element (see :func:`_element_op_variants`) cannot reliably arrange,
@@ -445,81 +483,136 @@ def _aggressor_clamp_candidates(
     op-list also writes 'v' to that value, since both roles share it).
     Then the actual detecting element writes v to the OPPOSITE of the
     clamp's forced target and reads it back -- during that element's own
-    v-portion (which runs before its a-portion touches 'a' again), 'a'
-    still holds from the setup, so the clamp is guaranteed to fire and
-    force v back to the target, diverging from what a plain write would
-    have produced."""
+    'v'-labelled pass (which, per ``direction``, runs before the 'a'-labelled
+    pass touches 'a' again), 'a' still holds from the setup, so the clamp is
+    guaranteed to fire and force v back to the target, diverging from what a
+    plain write would have produced.
+
+    ``direction`` (not hardcoded): the caller picks ``DIR_UP`` to engineer
+    this for ``aggressor_gt_victim=True`` and ``DIR_DOWN`` for ``False`` --
+    ``_role_order(DIR_UP, True) == _role_order(DIR_DOWN, False) == ("v",
+    "a")``, so either choice reproduces the exact same "v-pass, then a-pass"
+    ordering this construction depends on; only the physical placement it is
+    valid for changes. See :func:`_aggressor_clamp_candidates`, the only
+    caller, for how both orientations get chained into one candidate."""
+    p0, p1 = resolve_params(p)
+    hold = _resolve_bit(p.sensitize.pre, p0, p1)
+    target = _resolve_bit(p.effect.value, p0, p1)
+
+    setup: list[Element] = []
+    a_state = golden_a
+    if a_state != hold:
+        setup.append(Element(direction=direction, ops=[_bit_op(hold, write=True)]))
+        a_state = hold
+
+    opposite = 1 - target
+    detect_elem = Element(direction=direction, ops=[_bit_op(opposite, write=True), _bit_op(opposite, write=False)])
+    return setup + [detect_elem], opposite
+
+
+def _aggressor_clamp_candidates(
+    remaining: list[FaultPrimitive], golden_v: int, golden_a: int,
+) -> list[tuple[list[Element], int]]:
+    """One CHAINED, bidirectional candidate per CFST-shaped primitive:
+    :func:`_aggressor_clamp_candidate_one` engineered for
+    aggressor-above (``DIR_UP``), immediately followed by the same shape
+    re-engineered for aggressor-below (``DIR_DOWN``) -- built from the REAL
+    golden state the first half leaves behind (:func:`_advance_golden`), not
+    independently from ``golden_a``, since the second half's own "does 'a'
+    already hold what I need" setup logic must see what actually happened.
+    Concatenating both into a single candidate (rather than offering them as
+    two separate options) is what lets one synthesized test detect a CFST
+    defect regardless of which side of the victim the aggressor cell is
+    physically on -- see the module docstring."""
     out: list[tuple[list[Element], int]] = []
     for p in remaining:
         if not (p.category == "static_clamp" and p.sensitize.on == "aggressor"):
             continue
-        p0, p1 = resolve_params(p)
-        hold = _resolve_bit(p.sensitize.pre, p0, p1)
-        target = _resolve_bit(p.effect.value, p0, p1)
-
-        setup: list[Element] = []
-        a_state = golden_a
-        if a_state != hold:
-            setup.append(Element(direction=DIR_UP, ops=[_bit_op(hold, write=True)]))
-            a_state = hold
-
-        opposite = 1 - target
-        detect_elem = Element(direction=DIR_UP, ops=[_bit_op(opposite, write=True), _bit_op(opposite, write=False)])
-        out.append((setup + [detect_elem], opposite))
+        above_group, _ = _aggressor_clamp_candidate_one(p, golden_a, DIR_UP)
+        mid_v, mid_a = _advance_golden(golden_v, golden_a, above_group, aggressor_gt_victim=True)
+        below_group, below_v = _aggressor_clamp_candidate_one(p, mid_a, DIR_DOWN)
+        out.append((above_group + below_group, below_v))
     return out
 
 
-def _combo_candidates(
-    remaining: list[FaultPrimitive], golden_v: int, golden_a: int,
-) -> list[tuple[list[Element], int]]:
+def _combo_candidate_one(
+    p: FaultPrimitive, golden_a: int, direction: int,
+) -> tuple[list[Element], int]:
     """write_effect/on=aggressor faults (CFIN/CFID) cannot self-report within
     one element: the aggressor-triggered mutation of v happens during a's
-    portion of the element, which for 'up' direction runs AFTER v's own
-    portion -- so any read in the SAME element already ran too early to see
-    it. The fix: an atomic group -- an 'up' write-element (v-portion writes
-    normally, then a-portion's write triggers the aggressor effect as the
-    LAST word on v within that element) immediately followed by an 'up'
-    read-only element asserting exactly what golden's v now holds (v-portion
-    read happens first, before that element's own a-portion, observing the
+    pass of the element, which for the "v-pass-first" role order runs AFTER
+    v's own pass -- so any read in the SAME element already ran too early to
+    see it. The fix: an atomic group -- a write-element (v-pass writes
+    normally, then a-pass's write triggers the aggressor effect as the LAST
+    word on v within that element) immediately followed by a read-only
+    element asserting exactly what golden's v now holds (v-pass read
+    happens first, before that element's own a-pass, observing the
     still-live divergence untouched).
 
     For a "force" (not "invert") effect kind -- CFID-style -- there is a
     second constraint beyond "a genuine transition on a": the write-
-    element's OWN v-portion write must NOT already happen to equal the
-    forced target, or the force is masked (the v-portion's normal write and
-    the aggressor-triggered force produce the identical value, so nothing
+    element's OWN v-pass write must NOT already happen to equal the forced
+    target, or the force is masked (the v-pass's normal write and the
+    aggressor-triggered force produce the identical value, so nothing
     observably changes). Both roles share one op-list, so the write value
     is simultaneously "whatever triggers a's transition" and "whatever v
     gets written to" -- these can conflict depending on golden_a's current
     state (concretely: if golden_a already equals 1-target, the only
     transition-triggering write value IS target, masking it). When that
     happens, an extra bare setup write flips 'a' first, so the actual
-    transition-write can pick the other, observable value."""
+    transition-write can pick the other, observable value.
+
+    ``direction`` (not hardcoded): every element here uses ``direction``
+    uniformly, so the "v-pass, then a-pass" ordering this construction
+    depends on holds for ``DIR_UP`` under ``aggressor_gt_victim=True`` and
+    equally for ``DIR_DOWN`` under ``False`` (``_role_order(DIR_UP, True) ==
+    _role_order(DIR_DOWN, False) == ("v", "a")``) -- only the physical
+    placement each is valid for changes. See :func:`_combo_candidates`, the
+    only caller, for how both get chained into one candidate."""
+    p0, p1 = resolve_params(p)
+    target = None if p.effect.kind == "invert" else _resolve_bit(p.effect.value, p0, p1)
+
+    setup: list[Element] = []
+    a_state = golden_a
+    if target is not None:
+        natural_write_val = 0 if a_state == 1 else 1
+        if natural_write_val == target:
+            setup_val = 1 - a_state
+            setup.append(Element(direction=direction, ops=[_bit_op(setup_val, write=True)]))
+            a_state = setup_val
+
+    # Any write whose value differs from a_state is a genuine transition
+    # (either direction is always accepted by this module's
+    # resolve_params -- see its docstring), guaranteeing the aggressor
+    # trigger fires; by construction (above), it's also never masked.
+    write_val = 0 if a_state == 1 else 1
+    write_elem = Element(direction=direction, ops=[_bit_op(write_val, write=True)])
+    golden_v_after = write_val  # v-pass's own write, in golden, always succeeds too
+    read_elem = Element(direction=direction, ops=[_bit_op(golden_v_after, write=False)])
+    return setup + [write_elem, read_elem], golden_v_after
+
+
+def _combo_candidates(
+    remaining: list[FaultPrimitive], golden_v: int, golden_a: int,
+) -> list[tuple[list[Element], int]]:
+    """One CHAINED, bidirectional candidate per CFIN/CFID-shaped primitive,
+    the write_effect/on=aggressor twin of :func:`_aggressor_clamp_candidates`:
+    :func:`_combo_candidate_one` engineered for aggressor-above (``DIR_UP``),
+    immediately followed by the same shape re-engineered for
+    aggressor-below (``DIR_DOWN``), built from the REAL golden state the
+    first half leaves behind (:func:`_advance_golden`) so the second half's
+    own masking check sees what actually happened rather than the state
+    before the first half ran. See the module docstring for why both
+    placements must be covered by ONE candidate rather than offered as
+    alternatives."""
     out: list[tuple[list[Element], int]] = []
     for p in remaining:
         if not (p.category == "write_effect" and p.sensitize.on == "aggressor"):
             continue
-        p0, p1 = resolve_params(p)
-        target = None if p.effect.kind == "invert" else _resolve_bit(p.effect.value, p0, p1)
-
-        setup: list[Element] = []
-        a_state = golden_a
-        if target is not None:
-            natural_write_val = 0 if a_state == 1 else 1
-            if natural_write_val == target:
-                setup_val = 1 - a_state
-                setup.append(Element(direction=DIR_UP, ops=[_bit_op(setup_val, write=True)]))
-                a_state = setup_val
-
-        # Any write whose value differs from a_state is a genuine transition
-        # (either direction is always accepted by this module's
-        # resolve_params -- see its docstring), guaranteeing the aggressor
-        # trigger fires; by construction (above), it's also never masked.
-        write_val = 0 if a_state == 1 else 1
-        write_elem = Element(direction=DIR_UP, ops=[_bit_op(write_val, write=True)])
-        golden_v_after = write_val  # v-portion's own write, in golden, always succeeds too
-        read_elem = Element(direction=DIR_UP, ops=[_bit_op(golden_v_after, write=False)])
-        out.append((setup + [write_elem, read_elem], golden_v_after))
+        above_group, _ = _combo_candidate_one(p, golden_a, DIR_UP)
+        mid_v, mid_a = _advance_golden(golden_v, golden_a, above_group, aggressor_gt_victim=True)
+        below_group, below_v = _combo_candidate_one(p, mid_a, DIR_DOWN)
+        out.append((above_group + below_group, below_v))
     return out
 
 
@@ -548,6 +641,18 @@ def synthesize_elements(
     above); the final ``either r0`` bracket only fires when golden's v is
     actually 0 at that point -- if not, an ``either r1`` bracket is emitted
     instead, so the mandatory trailing verify-read is never itself unsound.
+
+    A name only ever leaves ``uncovered_names`` once :func:`detects` confirms
+    it under BOTH ``aggressor_gt_victim=True`` and ``=False`` (see the scoring
+    loop below) -- unconditionally, regardless of what this function's own
+    ``aggressor_gt_victim`` parameter is set to. That parameter no longer
+    selects which placement gets covered (both always do, or the primitive is
+    reported uncovered); it now only threads through to the golden-state
+    bookkeeping and the final soundness assert, both of which are provably
+    placement-invariant (:func:`_advance_golden`'s docstring), so changing it
+    cannot change this function's result. It remains solely for internal
+    consistency with :func:`replay`/:func:`detects`, which genuinely do need
+    it when called directly on a hand-built spec outside a synthesis run.
     """
     if max_elements < 2:
         raise ValueError(
@@ -578,9 +683,21 @@ def synthesize_elements(
             if len(elements) + len(group) > max_elements - reserved:
                 continue
             trial = elements + group
+            # Detection under BOTH placements, unconditionally -- not gated on
+            # this function's own `aggressor_gt_victim` parameter (which now
+            # governs only the golden-state bookkeeping below, itself proven
+            # placement-invariant; see _advance_golden). A primitive credited
+            # here is credited because a fixed march sequence catches it
+            # regardless of which physical side the aggressor cell is on, not
+            # because the search happened to check the one side it assumed.
+            # Non-coupling primitives are placement-invariant by construction
+            # (see _apply_op: only sensitize.on=="aggressor" faults let one
+            # role's pass influence the other), so this costs them a redundant
+            # second oracle call, never a different answer.
             newly = {
                 name for name, p in remaining.items()
-                if detects(trial, p, aggressor_gt_victim=aggressor_gt_victim, init_val=init_val)
+                if detects(trial, p, aggressor_gt_victim=True, init_val=init_val)
+                and detects(trial, p, aggressor_gt_victim=False, init_val=init_val)
             }
             if not newly:
                 continue
@@ -598,9 +715,20 @@ def synthesize_elements(
             del remaining[name]
 
     elements.append(Element(direction=DIR_EITHER, ops=[_bit_op(golden_v, write=False)]))
-    assert is_golden_sound(elements, aggressor_gt_victim=aggressor_gt_victim, init_val=init_val), (
-        "synthesized spec is not golden-sound -- this is an internal bug in "
-        "synth_engine.py's candidate generation, not a user-facing condition"
+    # Checked under BOTH placements, not just the one `aggressor_gt_victim`
+    # names -- defense in depth for the module docstring's placement-invariance
+    # claim (_advance_golden), rather than resting on that proof alone. Golden
+    # soundness has no legitimate reason to depend on which side the abstract
+    # aggressor cell is on: a fault-free memory has no aggressor at all.
+    assert is_golden_sound(elements, aggressor_gt_victim=True, init_val=init_val), (
+        "synthesized spec is not golden-sound (aggressor-above) -- this is an "
+        "internal bug in synth_engine.py's candidate generation, not a "
+        "user-facing condition"
+    )
+    assert is_golden_sound(elements, aggressor_gt_victim=False, init_val=init_val), (
+        "synthesized spec is not golden-sound (aggressor-below) -- this is an "
+        "internal bug in synth_engine.py's candidate generation, not a "
+        "user-facing condition"
     )
     return elements, sorted(remaining.keys())
 
@@ -640,17 +768,31 @@ def synthesize_alg(
 # Verification-fault generation for the real (Verilator) confirmation pass.
 # --------------------------------------------------------------------------- #
 def synth_verification_faults(mem, targets: list[FaultPrimitive]) -> list:
-    """One concrete FaultRecord per targeted primitive, generalizing
+    """Concrete FaultRecords for a real Verilator confirmation of a
+    synthesized spec's coverage claim, generalizing
     algo_engine.generate_all_types_faults' hardcoded per-name p0/p1 choices
     via :func:`resolve_params` so custom add_fault_type primitives are
     covered too (generate_all_types_faults' fixed BUILTIN_FAULT_TYPES tuple
-    cannot reach them). Coupling-class primitives (sensitize.on=="aggressor")
-    are placed with the victim strictly below the aggressor address
-    (``aa = va + 1``, never wrapping) -- generate_all_types_faults' own
+    cannot reach them).
+
+    Single-cell primitives get one record each. Coupling-class primitives
+    (sensitize.on=="aggressor") get TWO -- one with the aggressor above the
+    victim, one with it below -- because :func:`synthesize_elements` now
+    requires a candidate to detect a coupling primitive under both
+    placements before crediting it as covered (see the module docstring for
+    why: a real array has coupling defects on both sides of a victim, and a
+    march test sound for only one placement is not a valid coverage claim).
+    A caller that ran only the first record, as this function used to,
+    could never falsify a placement-asymmetric result -- exactly the gap
+    that let this module claim "15/15, verified on real Verilator" for a
+    spec that missed 3 of 15 primitives on half of all coupling placements.
+
+    Both records reuse the SAME two addresses (``va``, ``va + 1``) with the
+    victim/aggressor roles swapped, rather than deriving a second pair
+    independently, so the existing never-wraps guarantee below covers both
+    without new range reasoning. (generate_all_types_faults' own
     ``aa = (va + 1) % depth`` can wrap for a victim placed at the last
-    address, silently violating the aggressor_gt_victim convention this
-    module's abstract search assumed when it verified detectability; that
-    latent gap is not reproduced here."""
+    address; that latent gap is not reproduced here.)"""
     from .algo_engine import FaultRecord  # local import: avoids a hard import-time
                                             # dependency from algo_engine -> synth_engine
                                             # on this pure-logic-vs-execution-engine module
@@ -659,15 +801,15 @@ def synth_verification_faults(mem, targets: list[FaultPrimitive]) -> list:
     coupling = [p for p in targets if p.sensitize.on == "aggressor"]
     single_cell = [p for p in targets if p.sensitize.on != "aggressor"]
     records = []
-    # Coupling-class: va drawn from [0, depth-1) so aa = va + 1 always stays
-    # in-bounds and strictly greater -- never wraps.
+    # Coupling-class: va drawn from [0, depth-1) so va + 1 always stays
+    # in-bounds -- never wraps, for either placement below.
     coupling_depth = max(depth - 1, 1)
     for i, p in enumerate(coupling):
         va = (i * 7 + 3) % coupling_depth
         vb = i % dw
-        aa, ab = va + 1, vb
         p0, p1 = resolve_params(p)
-        records.append(FaultRecord(p.name, va, vb, aa, ab, p0, p1))
+        records.append(FaultRecord(p.name, va, vb, va + 1, vb, p0, p1))       # aggressor above
+        records.append(FaultRecord(p.name, va + 1, vb, va, vb, p0, p1))       # aggressor below
     for i, p in enumerate(single_cell):
         va = (i * 7 + 3) % depth
         vb = i % dw

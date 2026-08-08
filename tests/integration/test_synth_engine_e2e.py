@@ -11,7 +11,10 @@ pytestmark = pytest.mark.skipif(
     reason="needs Verilator 5.x on PATH (the fault engine cannot run under Icarus)",
 )
 
+from autombist.algo_engine import FaultRecord, MemoryParams, run_algo_campaign  # noqa: E402
 from autombist.algo_shell import AlgoShell, Session  # noqa: E402
+from autombist.fault_primitives import default_registry  # noqa: E402
+from autombist.synth_engine import resolve_params, synthesize_alg  # noqa: E402
 
 
 def _run_script(lines: list[str]) -> tuple[AlgoShell, str]:
@@ -24,11 +27,18 @@ def _run_script(lines: list[str]) -> tuple[AlgoShell, str]:
 
 
 def test_synth_command_verify_reports_full_coverage() -> None:
+    # Campaign total is 18, not 15: 12 single-cell targets get one
+    # verification fault each, but the 3 coupling primitives (CFST/CFIN/CFID)
+    # now get TWO -- aggressor-above and aggressor-below -- because a
+    # synthesized spec must detect a coupling fault under both placements to
+    # be a valid coverage claim (see synth_engine.py's module docstring). The
+    # printed "covered: 15/15" line is unchanged -- that counts PRIMITIVES,
+    # not fault records, and 15 is still the right primitive count.
     shell, out = _run_script(["set_memory 8 8", "synth mytest --verify"])
     assert "error:" not in out
     assert "covered: 15/15" in out
     result = shell.session.last_results["mytest"]
-    assert (result.detected, result.total) == (15, 15)
+    assert (result.detected, result.total) == (18, 18)
 
 
 def test_synth_command_verify_reports_full_coverage_at_init_zero() -> None:
@@ -37,16 +47,19 @@ def test_synth_command_verify_reports_full_coverage_at_init_zero() -> None:
     # and CFST (gated on the aggressor's held value) needed a dedicated
     # setup that an earlier version of the synthesizer didn't have --
     # neither showed up when only the (also-supported, but not default)
-    # init_val=1 path was exercised.
+    # init_val=1 path was exercised. Total is 18 for the same reason as
+    # test_synth_command_verify_reports_full_coverage above.
     shell, out = _run_script(["set_memory 8 8 --init 0", "synth mytest --verify"])
     assert "error:" not in out
     assert "covered: 15/15" in out
     result = shell.session.last_results["mytest"]
-    assert (result.detected, result.total) == (15, 15)
+    assert (result.detected, result.total) == (18, 18)
     assert shell.session.last_op == ("run", "mytest")
 
 
 def test_synth_with_custom_fault_type_end_to_end() -> None:
+    # 4 coupling primitives now (CFST/CFIN/CFID + the custom MYCF, also
+    # write_effect/on=aggressor) x 2 records + 12 single-cell x 1 = 20.
     shell, out = _run_script([
         "set_memory 8 8",
         'add_fault_type {"name": "MYCF", "category": "write_effect", '
@@ -57,7 +70,52 @@ def test_synth_with_custom_fault_type_end_to_end() -> None:
     assert "targets 16/22" in out
     assert "covered: 16/16" in out
     result = shell.session.last_results["withcustom"]
-    assert (result.detected, result.total) == (16, 16)
+    assert (result.detected, result.total) == (20, 20)
+
+
+def test_synthesized_spec_detects_coupling_faults_at_both_placements() -> None:
+    """The headline regression guard for the WLOG bug, by real Verilator
+    campaign rather than the pure-Python oracle -- the same kind of gap this
+    project has hit before (research-mode engine vs. classic RTL disagreeing
+    on `either`) was only actually caught by simulating both sides, not by
+    reasoning about the code.
+
+    Before the fix (measured against this exact config): aggressor-above
+    100.00% (15/15), aggressor-below 80.00% (12/15) -- CFST/CFIN/CFID, the
+    three coupling primitives, the only ones that ever missed."""
+    mem = MemoryParams(addr_width=6, data_width=8)
+    registry = default_registry()
+    by_name = {p.name: p for p in registry}
+    result = synthesize_alg(registry, "t", init_val=1)
+    assert result.uncovered == []
+
+    coupling_names = [p.name for p in registry if p.sensitize.on == "aggressor"]
+    single_names = [p.name for p in registry if p.sensitize.on != "aggressor"]
+
+    def build_faults(*, aggressor_above: bool) -> list[FaultRecord]:
+        records = []
+        for i, name in enumerate(coupling_names):
+            p0, p1 = resolve_params(by_name[name])
+            va, vb = i, i % mem.data_width
+            if aggressor_above:
+                records.append(FaultRecord(name, va, vb, va + 1, vb, p0, p1))
+            else:
+                records.append(FaultRecord(name, va + 1, vb, va, vb, p0, p1))
+        for i, name in enumerate(single_names):
+            p0, p1 = resolve_params(by_name[name])
+            va, vb = (i * 7 + 3) % mem.depth, i % mem.data_width
+            records.append(FaultRecord(name, va, vb, 0, 0, p0, p1))
+        return records
+
+    above = run_algo_campaign(mem, result.spec, build_faults(aggressor_above=True), sim="verilator")
+    below = run_algo_campaign(mem, result.spec, build_faults(aggressor_above=False), sim="verilator")
+
+    above_missed = sorted(f.record.type for f in above.faults if not f.detected)
+    below_missed = sorted(f.record.type for f in below.faults if not f.detected)
+    assert above_missed == [], f"aggressor-above escapes: {above_missed}"
+    assert below_missed == [], f"aggressor-below escapes: {below_missed}"
+    assert (above.detected, above.total) == (15, 15)
+    assert (below.detected, below.total) == (15, 15)
 
 
 def test_synth_compare_against_march_ss() -> None:

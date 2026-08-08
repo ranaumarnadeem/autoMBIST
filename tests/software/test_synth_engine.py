@@ -17,7 +17,11 @@ from autombist.fault_primitives import (
     default_registry,
 )
 from autombist.synth_engine import (
+    _advance_golden,
+    _aggressor_clamp_candidate_one,
     _apply_op,
+    _combo_candidate_one,
+    _golden_state_after,
     detects,
     is_golden_sound,
     replay,
@@ -155,6 +159,111 @@ def test_detects_cfst_level_reapplies_after_every_op():
     # that element's own w0) is what makes the divergence observable.
     spec = _spec(Element(EITHER, [W0]), Element(UP, [R0]))
     assert detects(spec, REGISTRY["CFST"], init_val=1)
+
+
+# --------------------------------------------------------------------------- #
+# The WLOG bug: a coupling candidate built for one placement (aggressor
+# above/below the victim) used to be silently wrong for the other. Found by a
+# real Verilator campaign (15/15 aggressor-above, 12/15 aggressor-below, with
+# CFST/CFIN/CFID -- exactly the three coupling primitives -- escaping), not by
+# inspection. See synth_engine.py's module docstring.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("name", ["CFST", "CFIN", "CFID"])
+def test_synthesized_spec_detects_coupling_primitives_under_both_placements(name: str) -> None:
+    """The decisive property: the FULL synthesized spec (not a hand-built
+    single-purpose one) must detect every coupling primitive it claims to
+    cover under aggressor_gt_victim=True AND False. Before the fix, this held
+    only for True -- the search only ever checked the placement it assumed."""
+    result = synthesize_alg(default_registry(), "t")
+    assert name in result.covered
+    assert detects(result.spec.elements, REGISTRY[name], aggressor_gt_victim=True)
+    assert detects(result.spec.elements, REGISTRY[name], aggressor_gt_victim=False)
+
+
+@pytest.mark.parametrize("init_val", [0, 1])
+def test_synthesized_spec_is_golden_sound_under_both_placements(init_val: int) -> None:
+    """Golden soundness must hold either way too -- a spec that only passes
+    its own no-fault check for one placement would make run_algo_campaign's
+    golden pass fail depending on an assumption the campaign driver never
+    even models (there is no real "aggressor" in a clean memory)."""
+    result = synthesize_alg(default_registry(), "t", init_val=init_val)
+    assert is_golden_sound(result.spec.elements, aggressor_gt_victim=True, init_val=init_val)
+    assert is_golden_sound(result.spec.elements, aggressor_gt_victim=False, init_val=init_val)
+
+
+@pytest.mark.parametrize(
+    "name,builder",
+    [("CFST", _aggressor_clamp_candidate_one), ("CFIN", _combo_candidate_one), ("CFID", _combo_candidate_one)],
+)
+def test_bidirectional_candidate_builder_covers_both_placements_alone(name: str, builder) -> None:
+    """One level below the full-spec test above: the candidate builder
+    itself, given only the mandatory init bracket as context, must already
+    produce something that detects both placements -- proving the bidirectional
+    chaining (_advance_golden feeding the second half the REAL state the
+    first half left behind) is what does the work, not some interaction with
+    later elements in a full synthesis run."""
+    init_elements = [Element(EITHER, [OP_MAP["w0"]])]
+    golden_v, golden_a = _golden_state_after(init_elements, aggressor_gt_victim=True, init_val=1)
+    above_group, _ = builder(REGISTRY[name], golden_a, UP)
+    mid_v, mid_a = _advance_golden(golden_v, golden_a, above_group, aggressor_gt_victim=True)
+    below_group, _ = builder(REGISTRY[name], mid_a, DOWN)
+    trial = init_elements + above_group + below_group
+    assert detects(trial, REGISTRY[name], aggressor_gt_victim=True, init_val=1)
+    assert detects(trial, REGISTRY[name], aggressor_gt_victim=False, init_val=1)
+    assert is_golden_sound(trial, aggressor_gt_victim=True, init_val=1)
+    assert is_golden_sound(trial, aggressor_gt_victim=False, init_val=1)
+
+
+@pytest.mark.parametrize(
+    "name,builder",
+    [("CFST", _aggressor_clamp_candidate_one), ("CFIN", _combo_candidate_one), ("CFID", _combo_candidate_one)],
+)
+def test_one_directional_candidate_is_a_verified_negative_control(name: str, builder) -> None:
+    """Proves the bidirectional test above actually has teeth: the OLD
+    shape -- a single builder call, aggressor-above only, no chained
+    aggressor-below half -- must FAIL under aggressor_gt_victim=False. If this
+    ever started passing, the two tests above would no longer be able to tell
+    a fixed candidate from a broken one."""
+    init_elements = [Element(EITHER, [OP_MAP["w0"]])]
+    golden_v, golden_a = _golden_state_after(init_elements, aggressor_gt_victim=True, init_val=1)
+    above_only, _ = builder(REGISTRY[name], golden_a, UP)
+    trial = init_elements + above_only
+    assert detects(trial, REGISTRY[name], aggressor_gt_victim=True, init_val=1)
+    assert not detects(trial, REGISTRY[name], aggressor_gt_victim=False, init_val=1), (
+        f"{name}: a one-directional candidate unexpectedly detects both placements -- "
+        "the negative control no longer distinguishes fixed from broken"
+    )
+
+
+def test_synth_verification_faults_emits_two_records_per_coupling_primitive() -> None:
+    """The other half of the fix: do_synth --verify's real Verilator campaign
+    must actually exercise both placements, or a placement-asymmetric spec
+    could still print a false 'fully verified'. Single-cell primitives are
+    placement-invariant (see the module docstring) and stay at one record."""
+    from autombist.algo_engine import MemoryParams
+
+    mem = MemoryParams(addr_width=8, data_width=8)
+    targets = default_registry()
+    records = synth_verification_faults(mem, targets)
+    for p in targets:
+        count = sum(1 for r in records if r.type == p.name)
+        expected = 2 if p.sensitize.on == "aggressor" else 1
+        assert count == expected, f"{p.name}: expected {expected} record(s), got {count}"
+
+
+def test_synth_verification_faults_mirrored_records_never_wrap() -> None:
+    """Both placements reuse the same (va, va+1) address pair with roles
+    swapped -- confirm neither ever goes negative or exceeds depth-1, for a
+    tiny memory where an off-by-one would be immediately visible."""
+    from autombist.algo_engine import MemoryParams
+
+    mem = MemoryParams(addr_width=2, data_width=4)  # depth=4
+    coupling = [p for p in default_registry() if p.sensitize.on == "aggressor"]
+    records = synth_verification_faults(mem, coupling)
+    for r in records:
+        assert 0 <= r.vaddr < mem.depth, r
+        assert 0 <= r.aaddr < mem.depth, r
+        assert r.vaddr != r.aaddr, r  # a coupling fault needs two distinct cells
 
 
 def test_detects_sa0_sa1_basic():
@@ -320,22 +429,32 @@ def test_builtin_spec_to_text_roundtrips():
 # synth_verification_faults <-> resolve_params single-source-of-truth check
 # --------------------------------------------------------------------------- #
 def test_synth_verification_faults_matches_resolve_params():
+    # Was `zip(records, targets)`, silently assuming one record per target in
+    # order -- broke as soon as coupling primitives started producing two
+    # records each (see test_synth_verification_faults_emits_two_records_per_
+    # coupling_primitive below): the zip paired CFIN's second (aggressor-below)
+    # record against CFID's target instead of CFIN's own. p0/p1 don't depend
+    # on placement, so matching by rec.type rather than by position is both
+    # the fix and the more honest thing to assert.
     from autombist.algo_engine import MemoryParams
 
     mem = MemoryParams(addr_width=8, data_width=8)
     targets = [REGISTRY["CFIN"], REGISTRY["CFID"], REGISTRY["CFST"]]
+    by_name = {p.name: p for p in targets}
     records = synth_verification_faults(mem, targets)
-    for rec, prim in zip(records, targets):
-        assert (rec.p0, rec.p1) == resolve_params(prim)
-        assert rec.type == prim.name
+    assert records  # else the loop below would vacuously pass
+    for rec in records:
+        assert (rec.p0, rec.p1) == resolve_params(by_name[rec.type])
 
 
-def test_synth_verification_faults_one_per_target_no_type_collisions():
+def test_synth_verification_faults_every_type_is_a_valid_registry_name():
+    # Record COUNT per type is covered by
+    # test_synth_verification_faults_emits_two_records_per_coupling_primitive;
+    # this one keeps the original intent -- no stray/misspelled type name.
     from autombist.algo_engine import MemoryParams
 
     mem = MemoryParams(addr_width=8, data_width=8)
     records = synth_verification_faults(mem, default_registry())
-    assert len(records) == 15
     assert {r.type for r in records} == set(REGISTRY)
 
 
