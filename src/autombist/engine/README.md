@@ -45,6 +45,30 @@ Each run prints exactly one RESULT line:
 elem/op index into the March algorithm (element, operation within element),
 which gives you exact detection attribution per fault.
 
+## Build cache (Python driver only)
+
+The shell commands above always invoke `verilator` directly. `compile_engine`
+in `algo_engine.py` -- the function every `run_algo_campaign`/
+`run_background_campaign`/`run_fsm_campaign` call goes through, including the
+CLI's `autombist test` and the Tcl/Python shells' `run`/`compare_algo` -- adds
+a content-addressed build cache in front of it: the resolved source bytes
+(after any custom-registry `fault_ram.sv` render) + top module + addr_width/
+data_width/words_per_row + sim + `verilator --version` are hashed into a key,
+and an identical key reuses the previously compiled binary instead of
+recompiling. Compiling is the dominant cost of a campaign (seconds, vs.
+milliseconds to run an already-built binary against one more fault), so a
+research session or test run that repeats the same memory/algorithm/registry
+combination -- which most do -- pays for the verilator build once, not once
+per call.
+
+Cached binaries live under a plain subdirectory of the OS temp dir by
+default, persisting across separate process runs on one machine (not just
+within a single campaign). Set `AUTOMBIST_ENGINE_CACHE` to a directory path
+to relocate it, or to `0`/`off`/`false`/`no` to disable caching outright and
+always rebuild, exactly like every call did before this existed. Every
+`compile_engine`/`run_*_campaign` caller also accepts an explicit
+`cache_dir=` argument, mainly useful for test isolation.
+
 ## Fault list format
 
 One fault per line, all fields decimal, `#` comments:

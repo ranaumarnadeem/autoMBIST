@@ -12,7 +12,10 @@ queues, ``foreach``, and ``final`` blocks, none of which Icarus Verilog supports
 """
 from __future__ import annotations
 
+import functools
+import hashlib
 import math
+import os
 import random
 import re
 import shutil
@@ -557,6 +560,141 @@ def _validate_words_per_row(mem: MemoryParams) -> None:
         )
 
 
+_ENGINE_CACHE_ENV = "AUTOMBIST_ENGINE_CACHE"
+_ENGINE_CACHE_DISABLE_VALUES = {"0", "off", "false", "no"}
+
+
+def _engine_cache_enabled() -> bool:
+    return os.environ.get(_ENGINE_CACHE_ENV, "").strip().lower() not in _ENGINE_CACHE_DISABLE_VALUES
+
+
+def _default_engine_cache_root() -> Path:
+    # A plain subdirectory of the OS temp dir: persists across separate
+    # `pytest`/CLI invocations within one machine session (unlike each call's
+    # own per-run TemporaryDirectory, which is always fresh), with no new
+    # user-facing configuration required. AUTOMBIST_ENGINE_CACHE below
+    # overrides the location entirely (a CI job could point this at a
+    # restored actions/cache directory); set to "0"/"off" to disable caching
+    # outright and always rebuild, exactly like before this existed.
+    return Path(tempfile.gettempdir()) / "autombist-engine-cache"
+
+
+def _engine_cache_root() -> Path:
+    override = os.environ.get(_ENGINE_CACHE_ENV, "").strip()
+    if override and override.lower() not in _ENGINE_CACHE_DISABLE_VALUES:
+        return Path(override)
+    return _default_engine_cache_root()
+
+
+@functools.lru_cache(maxsize=1)
+def _verilator_version() -> str:
+    """Memoized: the installed verilator binary cannot change mid-process, and
+    this is called once per compile_engine invocation when caching is on."""
+    completed = subprocess.run(
+        ["verilator", "--version"], capture_output=True, text=True, check=False
+    )
+    text = (completed.stdout or completed.stderr or "").strip()
+    return text.splitlines()[0] if text else "unknown"
+
+
+def _source_digest(sources: list[Path]) -> str:
+    """Hashes the RESOLVED bytes of every source file, not e.g. a registry
+    object upstream of rendering -- covers a rendered fault_ram.sv (whose
+    content is a pure function of the registry + num_ports, but this way
+    also covers a future template change with no separate cache-invalidation
+    path to keep in sync) exactly the same as a static engine/*.sv file, and
+    is the one thing that provably determines the compiled binary's
+    behavior. Order-sensitive (sources are always passed in the same fixed
+    order by each _resolve_*_engine_sources call site), so this doubles as a
+    cheap sanity check against source-list reordering ever meaning something
+    it didn't before."""
+    h = hashlib.sha256()
+    for src in sources:
+        h.update(src.name.encode("utf-8"))
+        h.update(b"\0")
+        h.update(src.read_bytes())
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _engine_build_cache_key(
+    mem: MemoryParams, sources: list[Path], top_module: str, sim: str
+) -> str:
+    """Content-addressed: source bytes + top module + the only mem.* fields
+    that actually reach a verilator -G flag (addr_width/data_width/
+    words_per_row -- NOT num_ports, num_wmasks, or init_val, none of which
+    compile_engine's command line ever references) + sim + tool version."""
+    parts = [
+        sim,
+        _verilator_version(),
+        top_module,
+        str(mem.addr_width),
+        str(mem.data_width),
+        str(mem.words_per_row),
+        _source_digest(sources),
+    ]
+    digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+    return digest[:24]
+
+
+def _materialize_exe(cached_exe: Path, dest: Path) -> None:
+    """Puts a copy of the cached, already-built exe at `dest` (creating
+    parent dirs as needed) -- hardlinked when possible (same filesystem, no
+    data copy, and safe: the cache entry is never mutated after creation, so
+    an extra directory entry pointing at the same inode cannot corrupt it),
+    falling back to a real copy across filesystems (e.g. a user-configured
+    AUTOMBIST_ENGINE_CACHE on a different mount than the OS temp dir)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(cached_exe, dest)
+    except OSError:
+        shutil.copy2(cached_exe, dest)
+
+
+def _populate_engine_cache(cmd: list[str], cache_entry_dir: Path, exe_name: str) -> Path:
+    """Runs the real verilator build into a fresh scratch dir, then atomically
+    renames it into place as `cache_entry_dir` -- so a reader can only ever
+    see a fully-built entry, never a partial one from a build that crashed or
+    was still in progress. Returns the cached exe's path.
+
+    Not lock-protected: no test/CLI path in this codebase runs concurrent
+    compiles against the SAME cache key today (confirmed: no pytest-xdist,
+    no threading/multiprocessing anywhere in the campaign-driving code). If
+    two builders ever do race, os.replace's destination-must-be-empty
+    semantics make the loser's rename raise, which is caught below and
+    treated as "someone else already populated this key" -- their own
+    (functionally equivalent, same cache key) build is simply discarded
+    rather than corrupting the winner's entry.
+    """
+    cache_root = cache_entry_dir.parent
+    cache_root.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="build-", dir=str(cache_root)))
+    try:
+        log_path = scratch / "verilator_build.log"
+        start = time.time()
+        completed = _exec(cmd, cwd=scratch, log_path=log_path)
+        build_seconds = time.time() - start
+        if completed.returncode != 0:
+            raise CampaignError(f"verilator build failed (exit {completed.returncode}). See {log_path}.")
+        built_exe = scratch / "obj_dir" / exe_name
+        if not built_exe.exists():
+            raise CampaignError(f"verilator did not produce the expected binary: {built_exe}")
+        (scratch / "build_seconds.txt").write_text(f"{build_seconds}\n", encoding="utf-8")
+        try:
+            os.replace(str(scratch), str(cache_entry_dir))
+        except OSError:
+            # Lost a race, or cache_entry_dir is a non-empty leftover from a
+            # prior run under the same key -- either way, a build already
+            # sitting there under this exact content-addressed key is
+            # functionally identical to the one we just made; keep it.
+            if not (cache_entry_dir / "obj_dir" / exe_name).exists():
+                raise
+            return cache_entry_dir / "obj_dir" / exe_name
+        return cache_entry_dir / "obj_dir" / exe_name
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def compile_engine(
     mem: MemoryParams,
     *,
@@ -564,6 +702,7 @@ def compile_engine(
     top_module: str,
     workdir: Path,
     sim: str = "verilator",
+    cache_dir: Path | None = None,
 ) -> BuildArtifact:
     _require_verilator(sim)
     workdir = Path(workdir)
@@ -592,6 +731,20 @@ def compile_engine(
         *[str(s) for s in sources],
         "-o", exe_name,
     ]
+
+    if _engine_cache_enabled():
+        cache_root = Path(cache_dir) if cache_dir is not None else _engine_cache_root()
+        key = _engine_build_cache_key(mem, sources, top_module, sim)
+        cache_entry_dir = cache_root / key
+        cached_exe = cache_entry_dir / "obj_dir" / exe_name
+        start = time.time()
+        if not cached_exe.exists():
+            cached_exe = _populate_engine_cache(cmd, cache_entry_dir, exe_name)
+        exe = workdir / "obj_dir" / exe_name
+        _materialize_exe(cached_exe, exe)
+        build_seconds = time.time() - start
+        return BuildArtifact(exe=exe, workdir=workdir, top_module=top_module, build_seconds=build_seconds)
+
     log_path = workdir / "verilator_build.log"
     start = time.time()
     completed = _exec(cmd, cwd=workdir, log_path=log_path)
@@ -761,6 +914,7 @@ def run_algo_campaign(
     verbose: bool = False,
     fault_ram_sv: Path | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
+    cache_dir: Path | None = None,
 ) -> CampaignResult:
     """Compile march_engine once, run a golden pass, then one run per fault.
 
@@ -772,6 +926,12 @@ def run_algo_campaign(
     Dispatches on mem.num_ports (see _resolve_engine_sources): num_ports==1
     (default) uses the existing march_engine.sv unmodified; num_ports==2
     uses the new march_engine_mp.sv against a num_ports=2 fault_ram.sv.
+
+    ``cache_dir`` (opt-in) overrides where compile_engine looks for/populates
+    its content-addressed build cache -- None uses the shared default
+    location (see _default_engine_cache_root), which is what every real
+    caller wants; tests pass an isolated tmp_path here to observe cache-hit
+    behavior deterministically without touching the shared cache.
     """
     _validate_fault_addresses(mem, faults)
     own_tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -788,7 +948,7 @@ def run_algo_campaign(
 
         artifact = compile_engine(
             mem, sources=sources, top_module=top_module,
-            workdir=workdir, sim=sim,
+            workdir=workdir, sim=sim, cache_dir=cache_dir,
         )
 
         return _run_campaign_against_artifact(
@@ -811,6 +971,7 @@ def run_background_campaign(
     verbose: bool = False,
     fault_ram_sv: Path | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
+    cache_dir: Path | None = None,
 ) -> dict[str, CampaignResult]:
     """Runs the same algorithm/fault-list once per data background (default:
     standard_backgrounds(mem.data_width)), reusing ONE compiled artifact,
@@ -822,6 +983,8 @@ def run_background_campaign(
     _run_campaign_against_artifact): a fault-free run under a non-zero
     background must still report ESCAPED, since bg_value() applies the same
     mask to both the write side and the read-assertion side.
+
+    ``cache_dir``: see run_algo_campaign's docstring.
     """
     _validate_fault_addresses(mem, faults)
     backgrounds = backgrounds if backgrounds is not None else standard_backgrounds(mem.data_width)
@@ -842,7 +1005,7 @@ def run_background_campaign(
 
         artifact = compile_engine(
             mem, sources=sources, top_module=top_module,
-            workdir=workdir, sim=sim,
+            workdir=workdir, sim=sim, cache_dir=cache_dir,
         )
 
         results: dict[str, CampaignResult] = {}
@@ -964,6 +1127,7 @@ def run_fsm_campaign(
     fault_ram_sv: Path | None = None,
     expected_spec: AlgSpec | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
+    cache_dir: Path | None = None,
 ) -> CampaignResult:
     """Compile FSM + openram_shim + fault_ram (via a generated harness) once,
     golden-gate, then one run per fault. Detection is bist_fail only -- no
@@ -987,6 +1151,8 @@ def run_fsm_campaign(
     ``progress_callback`` (opt-in) is invoked as ``callback(completed, total)``
     after each per-fault run -- e.g. to drive a CLI progress bar. Default None
     keeps every existing caller byte-identical.
+
+    ``cache_dir``: see run_algo_campaign's docstring.
     """
     from .fsm_harness import HARNESS_TOP, check_ports, parse_ports, render_harness, render_harness_mp
 
@@ -1047,6 +1213,7 @@ def run_fsm_campaign(
             top_module=HARNESS_TOP,
             workdir=workdir,
             sim=sim,
+            cache_dir=cache_dir,
         )
 
         fault_file = write_fault_list(faults, workdir / "faults.txt") if faults else None
