@@ -7,21 +7,48 @@
 #   * magic GDS->spice extraction, then netgen LVS extracted-layout vs .lvs.sp
 # using the ciel-managed sky130A PDK's own magicrc / netgen setup.
 #
-# ┌── IMPORTANT: raw-GDS DRC here is INDICATIVE ONLY ─────────────────────────┐
-# │ Loading an OpenRAM GDS into ciel's STANDARD-flow magicrc (not OpenRAM's   │
-# │ own tech/cif setup) flags ~1M spurious violations -- a layer/cif-style    │
-# │ mismatch, NOT real defects (OpenRAM sky130 macros are DRC-clean by        │
-# │ construction). The AUTHORITATIVE macro DRC/LVS is OpenRAM's OWN flow,     │
-# │ which uses its exact tech setup:                                          │
-# │                                                                           │
-# │   python3 scripts/synthesize_sram.py --tech sky130 --run-drc-lvs \        │
-# │       --word-size W --num-words N --num-spare-rows 1 --num-spare-cols 1 \  │
-# │       --pdk-root ~/.ciel --output-name <name>                             │
-# │                                                                           │
-# │ (regenerates the macro WITH inline DRC/LVS; slower). Use this script's    │
-# │ LVS (extracted-vs-schematic) as a quick netlist cross-check; treat its    │
-# │ DRC count as a smoke signal, not signoff.                                 │
-# └───────────────────────────────────────────────────────────────────────────┘
+# IMPORTANT: raw-GDS DRC/LVS here is INDICATIVE ONLY -- and, as of 2026-08-09,
+# OpenRAM's own flow ALSO currently fails, for an unrelated, root-caused
+# reason. Read both paragraphs below before trusting either result.
+#
+# Loading an OpenRAM GDS into ciel's STANDARD-flow magicrc (not OpenRAM's own
+# tech/cif setup) flags ~1M spurious DRC violations and a spurious LVS
+# net-fragmentation mismatch -- a layer/cif-style tooling mismatch, not
+# evidence of a real defect on its own.
+#
+# The intended authority is OpenRAM's OWN flow (its exact tech/cif setup),
+# via the vendored checkout's real entry point (there is no
+# scripts/synthesize_sram.py in this vendored copy):
+#
+#   OPENRAM_HOME=OpenRAM/compiler OPENRAM_TECH=OpenRAM/technology \
+#     OpenRAM/miniconda/bin/python3 OpenRAM/sram_compiler.py -i <config.py>
+#
+# (a .py config with check_lvsdrc=True; -i/--inlinecheck; regenerates the
+# macro WITH inline DRC/LVS, slower). BUT: as of 2026-08-09 this ALSO fails,
+# for a confirmed, unrelated, root-caused reason, not a macro defect: the
+# vendored OpenRAM/ checkout (HEAD 449781d2, dated 2026-04-08) predates
+# upstream's own fix for a wordline-pin-numbering defect in the sky130
+# replica bitcell array. Reproduced directly: regenerating
+# sky130_sram_32b256w with check_lvsdrc=True fails inside OpenRAM's own
+# sky130_bitcell_array (the internal self-timing replica array, not the main
+# data array) with 16776 real DRC errors and a real netgen LVS failure --
+# wordline pins (wl_0_N) matched to the wrong index across
+# extracted-vs-schematic (topologically equivalent, scrambled
+# correspondence). Fixed upstream by commit 50772821 "count wordlines from
+# bottom going up" (2026-04-28, 20 days after the vendored HEAD) and
+# 8c4f4ef2 "when routing between the wordline drivers and the wordline pins
+# of the crba... to resolve drc violations" (2026-05-14) -- confirmed via
+# `git -C OpenRAM merge-base --is-ancestor <commit> HEAD` that neither is an
+# ancestor of the vendored checkout. The failure is entirely inside
+# OpenRAM's own bitcell-array module creation, before any openMBIST-authored
+# logic is reached.
+#
+# Until OpenRAM/ is updated past those two commits and every macro this
+# project depends on is re-verified, NEITHER this script's raw-GDS check NOR
+# OpenRAM's own regeneration gives a clean signoff answer -- the three
+# committed .gds/.lvs.sp pairs (generated with -n, check_lvsdrc=False, back
+# in July) remain genuinely unverified rather than confirmed either good or
+# bad.
 #
 # Requires magic + netgen on PATH (available in the LibreLane nix closure) and
 # the sky130 PDK at $PDK_ROOT (default ~/.ciel).
