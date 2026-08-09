@@ -332,12 +332,12 @@ _GOLDEN_TO_NUMERIC = {
 _GOLDEN_LENGTH_N = {"march_c": 10, "march_ss": 22, "march_x": 6, "mats_plus": 5}
 
 
-def _numeric_body_rows(text: str) -> list[list[str]]:
-    """Split a to_numeric()-shaped string into its per-element body rows'
-    whitespace-separated columns, skipping the leading `# ...` header line."""
+def _numeric_header_and_body_rows(text: str) -> tuple[str, list[list[str]]]:
+    """Split a to_numeric()-shaped string into its leading `# ...` header line
+    and its per-element body rows' whitespace-separated columns."""
     lines = text.splitlines()
     assert lines and lines[0].startswith("#"), "expected a leading header comment line"
-    return [line.split() for line in lines[1:] if line]
+    return lines[0], [line.split() for line in lines[1:] if line]
 
 
 def _assert_numeric_matches_pre_resolution_golden(golden: str, actual: str, elements) -> None:
@@ -347,9 +347,16 @@ def _assert_numeric_matches_pre_resolution_golden(golden: str, actual: str, elem
     the resolved value in each such row is exactly what resolve_directions()
     computes, not merely "some value 0 or 1". Every other column, on every
     row, must be byte-identical to the golden -- preserving the original
-    byte-identity evidence for everything resolution did not touch."""
-    golden_rows = _numeric_body_rows(golden)
-    actual_rows = _numeric_body_rows(actual)
+    byte-identity evidence for everything resolution did not touch.
+
+    The header line (algo name, `(Nn)` length, column-label text) is asserted
+    byte-identical too: it's untouched by direction resolution (unlike the
+    body rows), and none of these golden algos use non-default ports, so
+    there's no legitimate source of header drift to differentiate around --
+    a header-only regression should fail here, not slip through silently."""
+    golden_header, golden_rows = _numeric_header_and_body_rows(golden)
+    actual_header, actual_rows = _numeric_header_and_body_rows(actual)
+    assert actual_header == golden_header, (golden_header, actual_header)
     assert len(golden_rows) == len(actual_rows) == len(elements), "element count changed"
     expected_dirs = resolve_directions(elements)
     resolved_any = False
