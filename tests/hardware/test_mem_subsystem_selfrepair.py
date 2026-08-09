@@ -29,6 +29,7 @@ import json
 
 import cocotb
 from cocotb.clock import Clock
+from cocotb.handle import Force, Release
 from cocotb.triggers import ClockCycles, RisingEdge, Timer, with_timeout
 
 
@@ -67,6 +68,16 @@ async def _functional_fail_scan(dut, dout_handle, mem_sel_value, addr_width, dat
             await Timer(1, unit="ns")
             read_word = _safe_int(dout_handle)
             if read_word is None:
+                # An undefined (X/Z) read is not "no information" -- it's a
+                # failure at every bit of this address. sram_spares_intmem_*
+                # are 1-cycle registered models that hold their value
+                # indefinitely (see `hold` above), so they never legitimately
+                # decay to X the way a real OpenRAM macro's behavioral model
+                # does; any X seen here means a repair bug left this cell
+                # genuinely undriven (e.g. a broken spare-row read mux), not
+                # a benign sampling-timing artifact.
+                for bit in range(data_width):
+                    fails.add((addr, bit))
                 continue
             diff = (read_word ^ pattern) & data_mask
             bit = 0
@@ -147,4 +158,45 @@ async def test_two_memories_self_repair_independently(dut):
         f"memory B (defect was addr=20,bit=6) still shows failures after the "
         f"shared self-repair sequence: {fails_b} -- if A is clean but B is not "
         f"(or vice versa), the two memories' repairs are NOT independent"
+    )
+
+
+@cocotb.test()
+async def test_functional_fail_scan_detects_undefined_reads(dut):
+    """Positive control for _functional_fail_scan: proves the scan is
+    sensitive to X/Z, not just wrong DATA (data-mismatch sensitivity is
+    already exercised above by the two memories' real baked-in stuck-at
+    defects). Forces func_dout_a permanently to X -- standing in for an
+    unrepaired/undriven read (e.g. a broken spare-row read mux), the class of
+    defect a real repair bug would produce, as opposed to the stuck-at bits
+    the main test exercises. Must report every (addr, bit) as failing; before
+    this fix _functional_fail_scan's `if read_word is None: continue`
+    silently dropped every undefined read instead, so this scan would have
+    reported zero failures against a fully-undriven memory."""
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+
+    dut.rst_n.value = 0
+    dut.test_mode.value = 0
+    dut.bist_start.value = 0
+    dut.csb.value = 1
+    dut.we.value = 0
+    dut.mem_sel.value = 0
+    dut.addr.value = 0
+    dut.wdata.value = 0
+    dut.self_repair_start.value = 0
+    await ClockCycles(dut.clk, 4)
+    dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)
+
+    dut.func_dout_a.value = Force("x" * 8)
+    fails_a = await with_timeout(
+        _functional_fail_scan(dut, dut.func_dout_a, 0, addr_width=4, data_width=8), 1_000_000, "ns"
+    )
+    dut.func_dout_a.value = Release()
+
+    expected = {(addr, bit) for addr in range(16) for bit in range(8)}
+    assert set(fails_a) == expected, (
+        f"forced func_dout_a to X for every address/bit but the scan reported "
+        f"{sorted(fails_a)} -- an undefined (X/Z) read must be flagged as a "
+        f"failure at every bit of that address, not silently skipped"
     )
