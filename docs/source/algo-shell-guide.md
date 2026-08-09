@@ -53,7 +53,7 @@ autombist test --addr-width INTEGER --data-width INTEGER --faults PATH [OPTIONS]
 |---|---|---|
 | `--addr-width`, `-aw` (required) | — | Memory address width in bits |
 | `--data-width`, `-dw` (required) | — | Memory data width in bits |
-| `--algo TEXT` | `march_c` | Built-in algorithm name (`march_c`, `march_b`, `mats_plus`, `march_ss`, `march_x`) or a path to a `.alg` file |
+| `--algo TEXT` | `march_c` | Built-in algorithm name (`march_c`, `march_c_plus`, `march_y`, `march_b`, `mats_plus`, `march_ss`, `march_x`) or a path to a `.alg` file |
 | `--fsm PATH` | none | Validate a controller FSM `.sv` instead of an algorithm (takes precedence over `--algo`); sibling `.sv`/`.v` files in its directory are gathered automatically. No elem/op attribution in this mode — a black-box controller has no step counter to report |
 | `--faults PATH` (required) | — | Fault-list file: `TYPE VADDR VBIT AADDR ABIT P0 P1` per line (see §5 for the format, and the primitive table in §4) |
 | `--fault-types PATH` | none | JSON file with a list of custom fault-primitive specs, added to the built-in 19 (see §4 and `fault_primitives.py`'s module docstring for the schema) |
@@ -121,7 +121,7 @@ The top-level `autombist -q` flag suppresses `test`'s routine
 `algo` launches a `cmd.Cmd`-based REPL for iterative work: register one or
 more algorithms and/or FSMs, build up a fault list by hand or generated,
 run campaigns, compare algorithms side by side, and export reports or a
-standalone testbench bundle. Built-in algorithms (`march_c`, `march_b`,
+standalone testbench bundle. Built-in algorithms (`march_c`, `march_c_plus`, `march_y`, `march_b`,
 `mats_plus`, `march_ss`, `march_x`) are preloaded at start, so you can `run march_c`
 immediately without an `add_algo` call.
 
