@@ -294,6 +294,36 @@ def test_cli_help_mentions_version_and_options() -> None:
     assert "smoke" in output
 
 
+def test_generate_help_does_not_let_rich_markup_eat_the_with_test_annotations() -> None:
+    """generate's docstring uses "[with --test]" to mark which output files
+    are conditional on the --test flag -- but typer renders docstrings through
+    Rich, which treats a bare "[...]" as a (here, invalid) style tag and
+    silently drops it rather than erroring. Without the escape, --help ends up
+    unconditionally listing <memory_name>_saboteur.v/faults/*.hex/Makefile as
+    always-produced output, which is false for a plain (non --test) run."""
+    result = runner.invoke(
+        app, ["generate", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1", "TERM": "dumb"}
+    )
+    assert result.exit_code == 0
+    output = _plain(result.output)
+    assert "[with --test]" in output
+
+
+def test_shell_help_does_not_let_rich_markup_eat_the_tcl_command_examples() -> None:
+    """Same bug, worse consequence: shell's docstring uses Tcl's own
+    "[command ...]" substitution syntax in a worked example (`set cov
+    [simulate -out out]`) -- the SAME character Rich treats as markup, so the
+    entire embedded command used to vanish, leaving a syntactically-broken
+    Tcl fragment ("set cov" with nothing to assign) in --help output."""
+    result = runner.invoke(
+        app, ["shell", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1", "TERM": "dumb"}
+    )
+    assert result.exit_code == 0
+    output = _plain(result.output)
+    assert "set cov [simulate -out out]" in output
+    assert "puts [generate -config config.yml -out out]" in output
+
+
 def test_cli_version() -> None:
     result = runner.invoke(app, ["--version"])
 

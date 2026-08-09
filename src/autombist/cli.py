@@ -371,7 +371,7 @@ def generate(
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
     algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, march-2rw, march-x, or mats-plus"),
 ) -> None:
-    """Generate MBIST wrapper, RTL, and optionally fault masks.
+    r"""Generate MBIST wrapper, RTL, and optionally fault masks.
 
     This command creates SystemVerilog wrapper modules and copies the MBIST
     algorithm RTL into the output directory. Optionally generates fault masks
@@ -384,9 +384,9 @@ def generate(
       - sram_model.sv and the shared repair/self-repair RTL
         (repair_remap_row.sv, repair_remap_col.sv, sram_model_spares.sv,
         onchip_row_repair_analyzer.sv, onchip_selfrepair_ctrl.sv, ...)
-      - [with --test] <memory_name>_saboteur.v (fault injection wrapper)
-      - [with --test] faults/*.hex (fault masks)
-      - [with --test] Makefile (for running simulation)
+      - \[with --test] <memory_name>_saboteur.v (fault injection wrapper)
+      - \[with --test] faults/*.hex (fault masks)
+      - \[with --test] Makefile (for running simulation)
 
     Examples:
       autombist generate --config config.yml
@@ -1243,7 +1243,7 @@ def shell(
     doctor. Commands return Tcl-usable values (e.g. `simulate` returns the
     coverage percent) so sessions script naturally:
 
-        set cov [simulate -out out]
+        set cov \\[simulate -out out]
         if {$cov < 90} { error "coverage too low" }
 
     Failures raise real Tcl errors, catchable via Tcl's own `catch`. Without
@@ -1261,7 +1261,7 @@ def shell(
     Examples:
       autombist shell
       autombist shell --file session.tcl
-      printf 'puts [generate -config config.yml -out out]\\n' | autombist shell
+      printf 'puts \\[generate -config config.yml -out out]\\n' | autombist shell
     """
     from .tcl_shell import TclShellUnavailable
 
