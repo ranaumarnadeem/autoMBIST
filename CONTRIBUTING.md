@@ -111,12 +111,20 @@ If you only want the fast, tool-independent slice while iterating:
 PYTHONPATH=src ~/cocotb/bin/python -m pytest tests/software -q
 ```
 
-Two custom pytest markers (registered in `pyproject.toml`) label tool-gated tests:
+One custom pytest marker (registered in `pyproject.toml`) labels the single test
+that needs a full FaultFlow checkout:
 
-- `hardware` — needs Icarus Verilog/Verilator/cocotb on `PATH` (`tests/hardware`,
-  `tests/integration`)
-- `faultflow` — needs a built FaultFlow repo + Yosys on `PATH` (grade-controller
-  tests)
+- `faultflow` — needs a built FaultFlow repo + Yosys on `PATH`
+  (`test_grade_controller_full_flow`; skip it explicitly with
+  `pytest tests/integration -m "not faultflow"`, or select just it with
+  `-m faultflow`)
+
+Every other tool-gated test uses a per-test
+`skipif(shutil.which("iverilog"/"verilator"/"yosys") is None, ...)` instead of a
+marker -- more precise than a single boolean, since it names the exact missing
+tool. An earlier `hardware` marker existed for this but was never applied to any
+test (the skipif convention already covered it more precisely), so it was
+removed rather than left as dead registration.
 
 Adjust the `~/cocotb/bin/python` prefix to wherever you created your venv in step 2
 above; the `PYTHONPATH=src` prefix is needed for the same reason it appears in
