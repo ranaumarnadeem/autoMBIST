@@ -388,26 +388,40 @@ activates 10 times and still escapes.
 
 ## Measured results, faults.example.txt, INIT=1 (defaults)
 
-| Fault | MATS+ (5n) | March C- (10n) | March B (17n) | March SS (22n) |
-|---|---|---|---|---|
-| SA0, SA1 | D | D | D | D |
-| TF0, TF1 | D | D | D | D |
-| WDF0, WDF1 | E | E | E | D |
-| RDF0, RDF1 | D | D | D | D |
-| DRDF0, DRDF1 | E | E | E | D |
-| IRF0, IRF1 | D | D | D | D |
-| SOF | E | E | **D** | E |
-| AF_NOACC, AF_ALIAS | D | D | D | D |
-| CFIN | D | D | D | D |
-| CFID | E | D | D | D |
-| CFST | D | D | D | D |
-| CFDS (any-read) | E | D | D | D |
-| total | 12/19 | 14/19 | 15/19 | 18/19 |
+| Fault | MATS+ (5n) | March Y (8n) | March C- (10n) | March C+ (14n) | March B (17n) | March SS (22n) |
+|---|---|---|---|---|---|---|
+| SA0, SA1 | D | D | D | D | D | D |
+| TF0, TF1 | D | D | D | D | D | D |
+| WDF0, WDF1 | E | E | E | E | E | D |
+| RDF0, RDF1 | D | D | D | D | D | D |
+| DRDF0, DRDF1 | E | D | E | D | E | D |
+| IRF0, IRF1 | D | D | D | D | D | D |
+| SOF | E | D | E | D | **D** | E |
+| AF_NOACC, AF_ALIAS | D | D | D | D | D | D |
+| CFIN | D | D | D | D | D | D |
+| CFID | E | E | D | D | D | D |
+| CFST | D | D | D | D | D | D |
+| CFDS (any-read) | E | D | D | D | D | D |
+| total | 12/19 | 16/19 | 14/19 | 17/19 | 15/19 | 18/19 |
 
 These match the published coverage claims: March C- misses WDF (it never
 performs a non-transition write) and DRDF (no read-after-read); March SS
 adds both and covers all static simple faults. The MATS+ CFDS escape is a
 double-inversion masking between its up and down passes.
+
+**March Y (8n)** is March C- reshaped, not shortened for free: it trades a
+DRDF/SOF-exposing read-after-read at each visited cell (`up r0 w1 r1` / `down
+r1 w0 r0`) for one of March C-'s two up-transition writes (element 4's `down
+r0 w1` is gone), which is exactly the write March C- uses to catch CFID from
+above. Net: two fewer operations per cell than March C-, +2 detected here
+(DRDF0/DRDF1/SOF gained, CFID lost).
+
+**March C+ (14n)** is the un-reduced original March C that March C- is
+van de Goor's reduction of -- putting back the trailing verify-read of each
+middle element March C- drops. Strictly better than March C- on every fault
+this table tracks (+3, zero regressions): the restored reads create the same
+same-address, no-intervening-write double-read March Y's shorter form relies
+on for DRDF/SOF, without giving up March C-'s CFID-catching write.
 
 **March B is the one entry here whose headline number understates it.** Its
 15/19 beats March C- by exactly one fault, SOF — element 2 (`up r0 w1 r1 w0 r0
