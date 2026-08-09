@@ -81,7 +81,16 @@ if [ "${BASH_SOURCE[0]}" != "$0" ]; then
 fi
 
 MACRO_OUT="${MACRO_OUT:-$HOME/sky130_macro_out}"
-PDK_ROOT="${PDK_ROOT:-$HOME/.ciel}"
+# Exported, not just set: magic's own sky130A.magicrc bootstrap reads
+# $env(PDK_ROOT) directly (a Tcl `$env(...)` lookup only sees real
+# environment variables, not a plain shell variable of the same name) and,
+# if unset, silently falls back to a hardcoded volare-style path baked into
+# ciel's generated magicrc that does not exist on this system. That fallback
+# doesn't error -- magic just runs with no real PDK tech loaded ("technology
+# minimum"), so DRC trivially reports 0 (nothing was checked) and extraction
+# produces nothing or garbage, masquerading as a clean run or a spurious LVS
+# mismatch instead of the actual missing-PDK failure.
+export PDK_ROOT="${PDK_ROOT:-$HOME/.ciel}"
 OUTDIR="${OUTDIR:-$HOME/macro_signoff}"
 MAGICRC="$PDK_ROOT/sky130A/libs.tech/magic/sky130A.magicrc"
 NETGEN_SETUP="$PDK_ROOT/sky130A/libs.tech/netgen/sky130A_setup.tcl"

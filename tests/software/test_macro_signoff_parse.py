@@ -140,3 +140,82 @@ def test_lvs_unknown_on_empty_or_missing_output(tmp_path: Path) -> None:
 def test_lvs_unknown_on_unrecognized_output(tmp_path: Path) -> None:
     out = _log(tmp_path, "lvs.out", "netgen: some future message we don't parse\n")
     assert _call("classify_lvs", out) == (0, "UNKNOWN")
+
+
+# --------------------------------------------------------------------------- #
+# PDK_ROOT export -- a THIRD execution-coverage gap discovered the same way as
+# the two documented above: magic's own sky130A.magicrc bootstrap reads
+# $env(PDK_ROOT) directly (a Tcl `$env(...)` lookup only sees real
+# environment variables), and if unset falls back to a hardcoded volare-style
+# path that does not exist outside ciel-based installs. The script set
+# PDK_ROOT as a plain shell variable without `export`, so magic never saw it,
+# silently loaded "technology minimum" instead of the real sky130A tech, and
+# every DRC/LVS check ran against zero real PDK data while still producing
+# plausible-looking output (DRC trivially 0, LVS SKIP or a spurious
+# mismatch) -- confirmed by running the real flow against real cached
+# OpenRAM macros with magic/netgen from the LibreLane nix closure.
+#
+# This can't be tested by sourcing (the same technique the parser tests
+# above use): the source guard returns before reaching the export line. Runs
+# the script for real instead, with fake magic/netgen stand-ins on PATH that
+# report what environment they actually saw -- no real EDA tools needed.
+# --------------------------------------------------------------------------- #
+_FAKE_MAGIC = """#!/usr/bin/env bash
+cat > /dev/null  # consume the heredoc so the real script's pipe doesn't break
+echo "PDK_ROOT_SEEN=${PDK_ROOT:-<unset>}"
+echo "DRC_COUNT_BEGIN"
+echo "Total DRC errors found: 0"
+echo "DRC_COUNT_END"
+"""
+
+_FAKE_NETGEN = """#!/usr/bin/env bash
+exit 0
+"""
+
+
+def test_pdk_root_is_exported_before_magic_runs(tmp_path: Path) -> None:
+    """PDK_ROOT must be genuinely absent from the subprocess's own env=, not
+    merely pointed somewhere -- if the test itself pre-sets PDK_ROOT in
+    env=, bash imports it as ALREADY exported (any variable present in a
+    process's initial environment is exported by definition), so the
+    script's own bare `PDK_ROOT=...` reassignment (without `export`) would
+    stay exported regardless of whether the fix is present, and this test
+    would pass either way. The real bug only reproduces when the script's
+    own `${PDK_ROOT:-$HOME/.ciel}` default creates PDK_ROOT as a brand-new
+    shell variable -- so PDK_ROOT is deliberately left out of env here, and
+    the fake PDK tree is placed at $HOME/.ciel (the script's real default)
+    instead."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    magic_path = bin_dir / "magic"
+    magic_path.write_text(_FAKE_MAGIC, encoding="utf-8")
+    magic_path.chmod(0o755)
+    netgen_path = bin_dir / "netgen"
+    netgen_path.write_text(_FAKE_NETGEN, encoding="utf-8")
+    netgen_path.chmod(0o755)
+
+    pdk_root = tmp_path / ".ciel"
+    (pdk_root / "sky130A" / "libs.tech" / "magic").mkdir(parents=True)
+    (pdk_root / "sky130A" / "libs.tech" / "magic" / "sky130A.magicrc").write_text(
+        "", encoding="utf-8"
+    )
+
+    macro_out = tmp_path / "macro_out" / "some_macro"
+    macro_out.mkdir(parents=True)
+    (macro_out / "some_macro.gds").write_text("", encoding="utf-8")
+
+    outdir = tmp_path / "signoff_out"
+
+    env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "MACRO_OUT": str(tmp_path / "macro_out"),
+        "OUTDIR": str(outdir),
+        "HOME": str(tmp_path),  # PDK_ROOT's default is $HOME/.ciel -- no PDK_ROOT key here
+    }
+    subprocess.run(
+        ["bash", str(SCRIPT), "some_macro"],
+        capture_output=True, text=True, check=False, timeout=60, env=env,
+    )
+
+    drc_log = (outdir / "some_macro" / "drc.log").read_text(encoding="utf-8")
+    assert f"PDK_ROOT_SEEN={pdk_root}" in drc_log, drc_log
