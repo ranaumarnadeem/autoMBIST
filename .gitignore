@@ -96,3 +96,6 @@ plan-trans*.md
 # Planning/outline docs kept locally for reference, not published or tracked
 docs/paper-outline.md
 docs/redundancy-repair-roadmap.md
+
+# Cross-project handoff notes kept locally, not published or tracked
+handoffs/
