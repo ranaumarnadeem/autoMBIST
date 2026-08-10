@@ -314,7 +314,14 @@ def build_simulation_report(
     results_xml_path: Path,
 ) -> dict[str, Any]:
     metrics = parse_fault_metrics(stdout, stderr)
-    if metrics.injected_faults is None:
+    if metrics.injected_faults is None and use_saboteur:
+        # `faults` is the CLI's --faults COUNT REQUESTED, not an observed
+        # result -- it defaults to 50 and is threaded through generate/run
+        # regardless of --test, so falling back to it unconditionally here
+        # reported "injected faults: 50" on a plain clean run that never
+        # injected anything at all. A clean run's stdout never prints
+        # "Injected faults:"/"Fault count:" either, so this fallback is only
+        # meaningful when the saboteur path actually ran.
         metrics.injected_faults = faults
 
     report = {
@@ -568,14 +575,17 @@ def coverage_meets_threshold(
     """Gate a run on array fault coverage.
 
     Returns ``(ok, coverage)``. ``ok`` is True when no gate is set or the reported
-    coverage meets the threshold; ``coverage`` is the reported percent (or None if
-    the simulator reported none — which never fails the gate).
+    coverage meets the threshold. When a gate IS set but the simulator reported no
+    coverage number at all, ``ok`` is False -- a threshold nothing was measured
+    against must not silently pass -- and ``coverage`` stays None so the caller can
+    tell "measured but too low" apart from "never measured" and word its error
+    accordingly.
     """
     if min_coverage is None:
         return True, None
     coverage = report.get("fault_metrics", {}).get("coverage_percent")
     if coverage is None:
-        return True, None
+        return False, None
     return coverage >= min_coverage, coverage
 
 

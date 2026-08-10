@@ -20,7 +20,7 @@ def test_default_registry_has_15_entries_no_fixed_overlap() -> None:
     names = {p.name for p in reg}
     assert len(names) == 15
     assert names.isdisjoint(FIXED_TYPE_NAMES)
-    assert len(names | set(FIXED_TYPE_NAMES)) == 19  # union = all 19 built-ins
+    assert len(names | set(FIXED_TYPE_NAMES)) == 21  # union = all 21 built-ins
 
 
 def test_default_registry_all_individually_valid() -> None:
@@ -38,6 +38,22 @@ def test_validate_rejects_lowercase_name() -> None:
 
 def test_validate_rejects_fixed_type_name() -> None:
     prim = FaultPrimitive("SOF", "static_clamp", Sensitize(), Effect(kind="force", value="0"))
+    with pytest.raises(FaultPrimitiveError, match="cannot be redefined"):
+        validate(prim, existing_names=set())
+
+
+def test_drf_cannot_be_registered_as_custom_type() -> None:
+    # DRF (Workstream K) is a fixed built-in like SOF/AF_NOACC/AF_ALIAS/CFDS --
+    # confirms the generic fixed-name rejection covers it too, not just the
+    # four pre-existing fixed types.
+    prim = FaultPrimitive("DRF", "static_clamp", Sensitize(), Effect(kind="force", value="0"))
+    with pytest.raises(FaultPrimitiveError, match="cannot be redefined"):
+        validate(prim, existing_names=set())
+
+
+def test_hsd_cannot_be_registered_as_custom_type() -> None:
+    # HSD (Workstream L) is also a fixed built-in -- same reasoning as DRF above.
+    prim = FaultPrimitive("HSD", "static_clamp", Sensitize(), Effect(kind="force", value="0"))
     with pytest.raises(FaultPrimitiveError, match="cannot be redefined"):
         validate(prim, existing_names=set())
 
@@ -105,11 +121,24 @@ def _prim(**overrides: object) -> FaultPrimitive:
         ({"effect": Effect(kind="bogus")}, "effect.kind must be one of"),
         ({"effect": Effect(kind="force", value="bogus")}, "effect.value must be one of"),
         ({"effect": Effect(kind="force", value="0", also_read="bogus")}, "effect.also_read must be one of"),
+        ({"effect": Effect(kind="force", value="0", target="aggressor")}, "effect.target must be 'victim'"),
     ],
 )
 def test_validate_rejects_each_invalid_dsl_field(overrides: dict, match: str) -> None:
     with pytest.raises(FaultPrimitiveError, match=match):
         validate(_prim(**overrides), existing_names=set())
+
+
+def test_validate_rejects_effect_target_even_when_otherwise_valid() -> None:
+    """effect.target was parsed, serialised, and round-tripped, but never read
+    by any codegen arm -- a custom fault type declaring target='aggressor'
+    was silently accepted and behaved exactly like the (correct) default,
+    with no error or warning telling the author their setting did nothing."""
+    prim = FaultPrimitive(
+        "MYAGG", "write_effect", Sensitize(on="aggressor"), Effect(kind="invert", target="aggressor"),
+    )
+    with pytest.raises(FaultPrimitiveError, match="no codegen arm can target the aggressor"):
+        validate(prim, existing_names=set())
 
 
 def test_validate_rejects_write_effect_victim_with_bad_kind() -> None:
@@ -146,7 +175,10 @@ def test_default_registry_all_primitives_have_wildcard_port() -> None:
 
 @pytest.mark.parametrize("port", ["0", "1", "x"])
 def test_validate_accepts_each_valid_port_token(port: str) -> None:
-    prim = _prim(sensitize=Sensitize(port=port))
+    # write_effect, not _prim's static_clamp default: a port-qualified static
+    # clamp is now rejected outright (see below), so this must exercise a
+    # category where the constraint is actually meaningful.
+    prim = _prim(category="write_effect", sensitize=Sensitize(port=port))
     validate(prim, existing_names=set())  # must not raise
 
 
@@ -154,6 +186,43 @@ def test_validate_rejects_bad_port_token() -> None:
     prim = _prim(sensitize=Sensitize(port="2"))
     with pytest.raises(FaultPrimitiveError, match="sensitize.port must be one of"):
         validate(prim, existing_names=set())
+
+
+@pytest.mark.parametrize("port", ["0", "1"])
+def test_static_clamp_rejects_port_qualification(port: str) -> None:
+    """A static clamp is a storage-level invariant, not an access event: its arm
+    is emitted into clamp_static(), which rewrites mem[] and is re-asserted after
+    every access on every port. Gating that on a port would still corrupt the
+    stored cell for both ports -- the opposite of a port-specific defect -- so it
+    is refused rather than silently mis-modelled."""
+    prim = _prim(category="static_clamp", sensitize=Sensitize(port=port))
+    with pytest.raises(FaultPrimitiveError, match="not meaningful for a static_clamp"):
+        validate(prim, existing_names=set())
+
+
+@pytest.mark.parametrize("port", ["0", "1"])
+def test_raw_sv_rejects_port_qualification(port: str) -> None:
+    """The port gate is emitted by wrapping the generated arm's condition, and a
+    raw_sv body is copied verbatim -- so the constraint would be silently
+    dropped. Note this is checked BEFORE raw_sv's early return, which otherwise
+    skips every DSL field."""
+    prim = _prim(
+        category="write_effect",
+        sensitize=Sensitize(port=port),
+        raw_sv="if (1'b1) begin mem[FQ[i].va][FQ[i].vb] = 1'b0; FQ[i].hits++; end",
+    )
+    with pytest.raises(FaultPrimitiveError, match="cannot be combined with raw_sv"):
+        validate(prim, existing_names=set())
+
+
+def test_raw_sv_with_wildcard_port_still_accepted() -> None:
+    """The rejection above must be specific to a port-qualified raw_sv -- an
+    ordinary raw_sv primitive keeps working."""
+    prim = _prim(
+        category="write_effect",
+        raw_sv="if (1'b1) begin mem[FQ[i].va][FQ[i].vb] = 1'b0; FQ[i].hits++; end",
+    )
+    validate(prim, existing_names=set())  # must not raise
 
 
 def test_to_dict_includes_port_field() -> None:

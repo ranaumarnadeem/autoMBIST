@@ -14,11 +14,24 @@ from autombist.algo_engine import MemoryParams, load_fault_list, run_algo_campai
 
 # Reference coverage from src/autombist/engine/README.md "Measured results" table
 # (faults.example.txt, INIT=1 defaults).
+#
+# march_x is 13, not 12: before alg_spec.resolve_directions() unified how
+# `either` resolves (previously the engine ran every `either` ascending, while
+# the hand-written classic RTL ran a trailing one in the previous element's
+# direction), run_algo_campaign measured march_x's trailing `either r0`
+# ascending and missed CFDS 130 1 131 1 4 0 (aggressor above the victim),
+# which only a descending final read catches. 13/19 is what the algorithm
+# actually detects once run in the direction the shipped RTL uses. The other
+# three algorithms' totals were re-measured against the same fix and are
+# unchanged -- march_c and march_ss also have a trailing `either` that now
+# resolves to `down`, but neither one's detected-fault SET moved (confirmed
+# fault-by-fault, not just by total), and mats_plus/march_b have no trailing
+# `either` at all.
 REFERENCE_COVERAGE = {
     "march_c": (14, 19),
     "mats_plus": (12, 19),
     "march_ss": (18, 19),
-    "march_x": (12, 19),
+    "march_x": (13, 19),
 }
 
 

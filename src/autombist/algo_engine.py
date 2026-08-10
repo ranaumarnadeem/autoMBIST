@@ -12,7 +12,11 @@ queues, ``foreach``, and ``final`` blocks, none of which Icarus Verilog supports
 """
 from __future__ import annotations
 
+import concurrent.futures
+import functools
+import hashlib
 import math
+import os
 import random
 import re
 import shutil
@@ -23,11 +27,33 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .alg_spec import AlgSpec, expand_expected_blocks, find_engine_dir
+from .alg_spec import WAIT_BASE, AlgSpec, expand_expected_blocks, find_engine_dir
 from .seq_check import SequenceResult, compare_trace, parse_observed_trace
 
 # The 19 functional fault primitives fault_ram.sv implements natively (see
 # engine/README.md). P6 (add_fault_type) will let researchers extend this set.
+#
+# DRF and HSD (Workstreams K/L) are deliberately absent from this STATIC
+# tuple: both depend on a mem.* property at call time, so generate_all_types_
+# faults/generate_random_faults below include each CONDITIONALLY via
+# _effective_all_types rather than baking a runtime-dependent fact into this
+# module-level constant. DRF needs mem.num_ports == 1 -- its idle-cycle
+# tracking is a single scalar register not yet extended to num_ports=2, and a
+# fault list that actually loads a DRF entry against a num_ports=2
+# fault_ram.sv fails loud (FATAL + $finish, see fault_ram_template.sv.j2) --
+# unconditionally including it here would crash `gen_faults --all-types` for
+# every multi-port memory. HSD needs mem.words_per_row > 1 -- it needs
+# another same-row address to ever be written, which does not exist at the
+# default words_per_row=1 (see engine/README.md).
+#
+# Excluding DRF whenever an algorithm CAN'T detect it (no built-in march
+# algorithm contains a wait op) was tried first and is the wrong fix: that
+# conflates "the memory structurally cannot exhibit this" (HSD's actual
+# condition) with "the algorithm about to run happens not to look for this"
+# (every fault type in this list has algorithms that miss it -- that is what
+# a coverage report is FOR). It silently dropped DRF from `gen_faults
+# --all-types` even for a caller with their own wait-containing custom
+# algorithm, understating what "all types" actually covers.
 BUILTIN_FAULT_TYPES: tuple[str, ...] = (
     "SA0", "SA1", "TF0", "TF1", "WDF0", "WDF1", "RDF0", "RDF1", "DRDF0", "DRDF1",
     "IRF0", "IRF1", "SOF", "AF_NOACC", "AF_ALIAS", "CFIN", "CFID", "CFST", "CFDS",
@@ -48,6 +74,20 @@ class MemoryParams:
     num_wmasks: int = 1
     init_val: int = 1
     num_ports: int = 1
+    words_per_row: int = 1   # physical-row width for HSD (Half-Select Disturb,
+                               # Workstream L): row(addr) = addr / words_per_row.
+                               # Default 1 -> row(addr) = addr, so "different
+                               # address, same row" is mathematically unsatisfiable
+                               # and HSD is provably inert -- see engine/README.md
+                               # and flow/multimem/mbist/README.md's pre-existing
+                               # words_per_row finding (same term, same formula).
+                               # Validated (>=1, <=depth, depth%words_per_row==0)
+                               # at point-of-use (algo_shell.do_set_memory AND
+                               # compile_engine both call _validate_words_per_row),
+                               # not in this dataclass -- MemoryParams itself stays
+                               # a plain data holder, matching every other field
+                               # here (e.g. num_ports' own range check also lives
+                               # in its callers, not a dataclass __post_init__).
 
     @property
     def depth(self) -> int:
@@ -91,11 +131,17 @@ class FaultRecord:
     abit: int = 0
     p0: int = 0
     p1: int = 0
-    vport: int = 0          # victim port. Meaningful only for the coupling-class
-    aport: int = 0          # primitives (CFIN/CFID/CFST/CFDS): vport==aport is
-                             # today's only mode (same-port coupling); vport!=aport
-                             # means the aggressor op (on aport) disturbs a victim
-                             # reachable via a different port (aport).
+    vport: int = 0          # NOT YET HONOURED -- parsed and carried through to
+                             # FQ[i].vp, but no expression in the generated engine
+                             # reads it, so setting it is a no-op for every fault
+                             # type today. Reserved for a future per-port victim
+                             # gate; the victim-side guards match on address/bit
+                             # alone. See fault_ram_template.sv.j2's header.
+    aport: int = 0          # aggressor port, and the one that IS load-bearing:
+                             # gates the aggressor match via `FQ[i].ap != port`.
+                             # Honoured by CFIN/CFID (write-aggressor loop) and
+                             # CFDS (both loops) -- but NOT by CFST, whose arm
+                             # lives in the portless clamp_static().
     weight: float | None = None   # optional relative-likelihood weight for a future
                                     # IFA/SPICE-derived campaign (see fault_primitives.py's
                                     # module docstring for the adapter contract this feeds).
@@ -306,13 +352,56 @@ def write_fault_list(records: list[FaultRecord], path: Path) -> Path:
     return path
 
 
+def _validate_fault_addresses(mem: MemoryParams, faults: list[FaultRecord]) -> None:
+    """A fault record's address/bit/port fields feed registers in the
+    generated testbench that are exactly ADDR_WIDTH/DATA_WIDTH/num_ports bits
+    wide, with no bounds check downstream -- an out-of-range value (most
+    likely from a hand-authored --faults file; the generator functions above
+    all construct addresses in range by their own arithmetic) silently wraps
+    via Verilog truncation onto some OTHER, unintended cell instead of
+    failing loudly. generate_all_types_faults/generate_random_faults never
+    trip this, since depth/dw-modulo construction keeps them in range by
+    definition -- this exists for the one path that bypasses them: a
+    user-supplied fault-list file loaded via load_fault_list.
+    """
+    for i, f in enumerate(faults):
+        for label, value, bound in (
+            ("vaddr", f.vaddr, mem.depth),
+            ("aaddr", f.aaddr, mem.depth),
+            ("vbit", f.vbit, mem.data_width),
+            ("abit", f.abit, mem.data_width),
+            ("vport", f.vport, mem.num_ports),
+            ("aport", f.aport, mem.num_ports),
+        ):
+            if not (0 <= value < bound):
+                raise CampaignError(
+                    f"fault #{i} ({f.type} vaddr={f.vaddr} vbit={f.vbit} aaddr={f.aaddr} "
+                    f"abit={f.abit}): {label}={value} is out of range for this memory "
+                    f"({label} must be in [0, {bound}))"
+                )
+
+
+def _effective_all_types(mem: MemoryParams) -> tuple[str, ...]:
+    """BUILTIN_FAULT_TYPES, plus DRF when mem.num_ports == 1 and HSD when
+    mem.words_per_row > 1 -- see BUILTIN_FAULT_TYPES' own comment for why
+    each is conditional rather than static."""
+    types = BUILTIN_FAULT_TYPES
+    if mem.num_ports == 1:
+        types = types + ("DRF",)
+    if mem.words_per_row > 1:
+        types = types + ("HSD",)
+    return types
+
+
 def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
     """One instance of every built-in fault primitive, spread across the memory
-    (mirrors the shape of engine/faults.example.txt, scaled to this memory)."""
+    (mirrors the shape of engine/faults.example.txt, scaled to this memory).
+    Includes DRF only when mem.num_ports == 1 and HSD only when
+    mem.words_per_row > 1 (see _effective_all_types)."""
     depth = mem.depth
     dw = mem.data_width
     records: list[FaultRecord] = []
-    for i, t in enumerate(BUILTIN_FAULT_TYPES):
+    for i, t in enumerate(_effective_all_types(mem)):
         va = (i * 7 + 3) % depth
         vb = i % dw
         aa = (va + 1) % depth  # aggressor: different word, same bit lane
@@ -328,20 +417,43 @@ def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
             p0 = 4  # any read disturbs
         elif t == "AF_ALIAS":
             aa = (va + 2) % depth
+        elif t == "DRF":
+            # AADDR/ABIT unused (matches SOF/AF_NOACC's convention). P0 is the
+            # idle-cycle threshold, not a polarity/direction selector like
+            # every other type here -- 20 is an arbitrary but comfortably
+            # small value (see engine/README.md's "wait ops repeat once per
+            # address" cost note): it never fires against any built-in march
+            # algorithm (none contains a wait op, so this always reports
+            # ESCAPED there, which is the honest, expected result -- see
+            # BUILTIN_FAULT_TYPES' own comment), only against a caller's own
+            # wait-containing custom algorithm, where it needs to be small
+            # enough that a modest wait duration exceeds it.
+            aa, ab = 0, 0
+            p0 = 20
+        elif t == "HSD":
+            # No fixed aggressor address (unlike the coupling types above) --
+            # AADDR/ABIT unused, write 0 (matches SOF/AF_NOACC's convention).
+            # p0 = disturbed-toward polarity, chosen opposite of init_val so a
+            # real disturb is actually observable rather than a same-value no-op.
+            aa, ab = 0, 0
+            p0 = 0 if mem.init_val else 1
         records.append(FaultRecord(t, va, vb, aa, ab, p0, p1))
     return records
 
 
 def generate_random_faults(mem: MemoryParams, n: int, seed: int = 0) -> list[FaultRecord]:
-    """N faults with a random type/site each, for stress-testing an algorithm."""
+    """N faults with a random type/site each, for stress-testing an algorithm.
+    Includes DRF only when mem.num_ports == 1 and HSD only when
+    mem.words_per_row > 1 (see _effective_all_types)."""
     rng = random.Random(seed)
     depth = mem.depth
     dw = mem.data_width
+    types = _effective_all_types(mem)
     records: list[FaultRecord] = []
     for _ in range(n):
         records.append(
             FaultRecord(
-                type=rng.choice(BUILTIN_FAULT_TYPES),
+                type=rng.choice(types),
                 vaddr=rng.randrange(depth), vbit=rng.randrange(dw),
                 aaddr=rng.randrange(depth), abit=rng.randrange(dw),
                 p0=rng.randrange(3), p1=rng.randrange(2),
@@ -427,6 +539,163 @@ def _require_verilator(sim: str) -> None:
 # --------------------------------------------------------------------------- #
 # Build + run
 # --------------------------------------------------------------------------- #
+def _validate_words_per_row(mem: MemoryParams) -> None:
+    """words_per_row must describe a shape a real column-muxed macro could
+    actually have: >=1 (0/negative divides by zero or is meaningless), <=depth
+    and an exact divisor of depth (a partial trailing physical row can't exist
+    -- see flow/multimem/mbist/README.md's words_per_row finding, which derives
+    ADDR_WIDTH from an EXACT words+spares/words_per_row relationship). Called by
+    both compile_engine (algo front) and run_fsm_campaign's FSM-front guard."""
+    wpr = mem.words_per_row
+    if wpr < 1:
+        raise CampaignError(f"mem.words_per_row must be >= 1, got {wpr}")
+    if wpr > mem.depth:
+        raise CampaignError(
+            f"mem.words_per_row={wpr} exceeds depth={mem.depth} -- this would silently "
+            "degenerate 'same row' into 'same memory' rather than model a real row shape"
+        )
+    if mem.depth % wpr != 0:
+        raise CampaignError(
+            f"mem.words_per_row={wpr} does not evenly divide depth={mem.depth} -- a real "
+            "column-muxed macro's row decoder can't produce a partial trailing row"
+        )
+
+
+_ENGINE_CACHE_ENV = "AUTOMBIST_ENGINE_CACHE"
+_ENGINE_CACHE_DISABLE_VALUES = {"0", "off", "false", "no"}
+
+
+def _engine_cache_enabled() -> bool:
+    return os.environ.get(_ENGINE_CACHE_ENV, "").strip().lower() not in _ENGINE_CACHE_DISABLE_VALUES
+
+
+def _default_engine_cache_root() -> Path:
+    # A plain subdirectory of the OS temp dir: persists across separate
+    # `pytest`/CLI invocations within one machine session (unlike each call's
+    # own per-run TemporaryDirectory, which is always fresh), with no new
+    # user-facing configuration required. AUTOMBIST_ENGINE_CACHE below
+    # overrides the location entirely (a CI job could point this at a
+    # restored actions/cache directory); set to "0"/"off" to disable caching
+    # outright and always rebuild, exactly like before this existed.
+    return Path(tempfile.gettempdir()) / "autombist-engine-cache"
+
+
+def _engine_cache_root() -> Path:
+    override = os.environ.get(_ENGINE_CACHE_ENV, "").strip()
+    if override and override.lower() not in _ENGINE_CACHE_DISABLE_VALUES:
+        return Path(override)
+    return _default_engine_cache_root()
+
+
+@functools.lru_cache(maxsize=1)
+def _verilator_version() -> str:
+    """Memoized: the installed verilator binary cannot change mid-process, and
+    this is called once per compile_engine invocation when caching is on."""
+    completed = subprocess.run(
+        ["verilator", "--version"], capture_output=True, text=True, check=False
+    )
+    text = (completed.stdout or completed.stderr or "").strip()
+    return text.splitlines()[0] if text else "unknown"
+
+
+def _source_digest(sources: list[Path]) -> str:
+    """Hashes the RESOLVED bytes of every source file, not e.g. a registry
+    object upstream of rendering -- covers a rendered fault_ram.sv (whose
+    content is a pure function of the registry + num_ports, but this way
+    also covers a future template change with no separate cache-invalidation
+    path to keep in sync) exactly the same as a static engine/*.sv file, and
+    is the one thing that provably determines the compiled binary's
+    behavior. Order-sensitive (sources are always passed in the same fixed
+    order by each _resolve_*_engine_sources call site), so this doubles as a
+    cheap sanity check against source-list reordering ever meaning something
+    it didn't before."""
+    h = hashlib.sha256()
+    for src in sources:
+        h.update(src.name.encode("utf-8"))
+        h.update(b"\0")
+        h.update(src.read_bytes())
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _engine_build_cache_key(
+    mem: MemoryParams, sources: list[Path], top_module: str, sim: str
+) -> str:
+    """Content-addressed: source bytes + top module + the only mem.* fields
+    that actually reach a verilator -G flag (addr_width/data_width/
+    words_per_row -- NOT num_ports, num_wmasks, or init_val, none of which
+    compile_engine's command line ever references) + sim + tool version."""
+    parts = [
+        sim,
+        _verilator_version(),
+        top_module,
+        str(mem.addr_width),
+        str(mem.data_width),
+        str(mem.words_per_row),
+        _source_digest(sources),
+    ]
+    digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+    return digest[:24]
+
+
+def _materialize_exe(cached_exe: Path, dest: Path) -> None:
+    """Puts a copy of the cached, already-built exe at `dest` (creating
+    parent dirs as needed) -- hardlinked when possible (same filesystem, no
+    data copy, and safe: the cache entry is never mutated after creation, so
+    an extra directory entry pointing at the same inode cannot corrupt it),
+    falling back to a real copy across filesystems (e.g. a user-configured
+    AUTOMBIST_ENGINE_CACHE on a different mount than the OS temp dir)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(cached_exe, dest)
+    except OSError:
+        shutil.copy2(cached_exe, dest)
+
+
+def _populate_engine_cache(cmd: list[str], cache_entry_dir: Path, exe_name: str) -> Path:
+    """Runs the real verilator build into a fresh scratch dir, then atomically
+    renames it into place as `cache_entry_dir` -- so a reader can only ever
+    see a fully-built entry, never a partial one from a build that crashed or
+    was still in progress. Returns the cached exe's path.
+
+    Not lock-protected: no test/CLI path in this codebase runs concurrent
+    compiles against the SAME cache key today (confirmed: no pytest-xdist,
+    no threading/multiprocessing anywhere in the campaign-driving code). If
+    two builders ever do race, os.replace's destination-must-be-empty
+    semantics make the loser's rename raise, which is caught below and
+    treated as "someone else already populated this key" -- their own
+    (functionally equivalent, same cache key) build is simply discarded
+    rather than corrupting the winner's entry.
+    """
+    cache_root = cache_entry_dir.parent
+    cache_root.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="build-", dir=str(cache_root)))
+    try:
+        log_path = scratch / "verilator_build.log"
+        start = time.time()
+        completed = _exec(cmd, cwd=scratch, log_path=log_path)
+        build_seconds = time.time() - start
+        if completed.returncode != 0:
+            raise CampaignError(f"verilator build failed (exit {completed.returncode}). See {log_path}.")
+        built_exe = scratch / "obj_dir" / exe_name
+        if not built_exe.exists():
+            raise CampaignError(f"verilator did not produce the expected binary: {built_exe}")
+        (scratch / "build_seconds.txt").write_text(f"{build_seconds}\n", encoding="utf-8")
+        try:
+            os.replace(str(scratch), str(cache_entry_dir))
+        except OSError:
+            # Lost a race, or cache_entry_dir is a non-empty leftover from a
+            # prior run under the same key -- either way, a build already
+            # sitting there under this exact content-addressed key is
+            # functionally identical to the one we just made; keep it.
+            if not (cache_entry_dir / "obj_dir" / exe_name).exists():
+                raise
+            return cache_entry_dir / "obj_dir" / exe_name
+        return cache_entry_dir / "obj_dir" / exe_name
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def compile_engine(
     mem: MemoryParams,
     *,
@@ -434,11 +703,22 @@ def compile_engine(
     top_module: str,
     workdir: Path,
     sim: str = "verilator",
+    cache_dir: Path | None = None,
 ) -> BuildArtifact:
     _require_verilator(sim)
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     exe_name = f"{top_module}_sim"
+    # Only march_engine.sv/march_engine_mp.sv (the algo front) expose a
+    # WORDS_PER_ROW top parameter -- the FSM front's generated harness does
+    # not (run_fsm_campaign rejects a non-default words_per_row before ever
+    # reaching here; see its own guard). Omitting this flag entirely at the
+    # default (1) means an FSM campaign that never touches words_per_row is
+    # completely unaffected by HSD's existence, byte-identical to before.
+    words_per_row_flags: list[str] = []
+    if mem.words_per_row != 1:
+        _validate_words_per_row(mem)
+        words_per_row_flags = [f"-GWORDS_PER_ROW={mem.words_per_row}"]
     cmd = [
         "verilator", "--binary", "--timing",
         "-Wno-WIDTHTRUNC", "-Wno-WIDTHEXPAND",
@@ -447,10 +727,25 @@ def compile_engine(
         # unconnected by design, not by omission.
         "-Wno-PINMISSING",
         f"-GAW={mem.addr_width}", f"-GDW={mem.data_width}",
+        *words_per_row_flags,
         "--top-module", top_module,
         *[str(s) for s in sources],
         "-o", exe_name,
     ]
+
+    if _engine_cache_enabled():
+        cache_root = Path(cache_dir) if cache_dir is not None else _engine_cache_root()
+        key = _engine_build_cache_key(mem, sources, top_module, sim)
+        cache_entry_dir = cache_root / key
+        cached_exe = cache_entry_dir / "obj_dir" / exe_name
+        start = time.time()
+        if not cached_exe.exists():
+            cached_exe = _populate_engine_cache(cmd, cache_entry_dir, exe_name)
+        exe = workdir / "obj_dir" / exe_name
+        _materialize_exe(cached_exe, exe)
+        build_seconds = time.time() - start
+        return BuildArtifact(exe=exe, workdir=workdir, top_module=top_module, build_seconds=build_seconds)
+
     log_path = workdir / "verilator_build.log"
     start = time.time()
     completed = _exec(cmd, cwd=workdir, log_path=log_path)
@@ -512,6 +807,98 @@ def _common_plusargs(mem: MemoryParams, background: DataBackground | None = None
     return args
 
 
+_FAULT_CONCURRENCY_ENV = "AUTOMBIST_FAULT_CONCURRENCY"
+# Deliberately modest, not os.cpu_count(): a per-fault run_one() call spawns
+# an already-COMPILED verilator binary (the heavy, memory-hungry step is the
+# BUILD -- compile_engine's own verilator invocation, which stays strictly
+# single-threaded per artifact regardless of this setting, protected by its
+# own build cache). Nothing in this repo's history documents a specific prior
+# concurrency-related OOM incident to size this against -- start conservative
+# and let AUTOMBIST_FAULT_CONCURRENCY raise it on a box known to tolerate
+# more, rather than guessing a number this code can't justify. "1" recovers
+# the original fully-sequential behavior exactly.
+_DEFAULT_FAULT_CONCURRENCY = 4
+
+
+def _fault_concurrency() -> int:
+    raw = os.environ.get(_FAULT_CONCURRENCY_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_FAULT_CONCURRENCY
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _DEFAULT_FAULT_CONCURRENCY
+
+
+def _run_faults_concurrently(
+    faults: list[FaultRecord],
+    run_one_fault: Callable[[int, FaultRecord], FaultResult],
+    progress_callback: Callable[[int, int], None] | None,
+    max_workers: int,
+) -> list[FaultResult]:
+    """Runs `run_one_fault(i, record)` for every fault and returns results in
+    ORIGINAL fault-list order, regardless of completion order -- callers
+    (report rendering, coverage matrices, `result.faults[i]`) all assume
+    index i corresponds to the i-th entry of the fault list they passed in.
+
+    `run_one_fault` must be safe to call concurrently: true today for every
+    caller of this helper, since each call is a read-only run_one() subprocess
+    invocation against an already-built, never-mutated artifact.exe/alg_file/
+    fault_file (see algo_engine.py's own per-fault loops) -- no shared mutable
+    state between faults beyond the artifact and the two files, both written
+    once before any fault runs and only ever read afterward.
+
+    max_workers<=1 (or a single-fault campaign) takes the plain sequential
+    path -- byte-identical to before this existed, and the only path exercised
+    when AUTOMBIST_FAULT_CONCURRENCY=1. Above that, ThreadPoolExecutor is
+    enough (not multiprocessing): run_one's subprocess.run call blocks on I/O
+    and releases the GIL while waiting, so this is genuinely concurrent
+    despite the GIL, with none of multiprocessing's pickling/IPC overhead.
+
+    Progress reporting uses a monotonically increasing completed-COUNT (this
+    function's own local counter), not the fault's index i -- under
+    concurrent, out-of-order completion, reporting index-based "progress"
+    could visibly regress (fault 9 finishing before fault 3 would flash "9"
+    then "3"). The counter only ever increases, exactly like the original
+    sequential loop's i+1 did.
+
+    A raised exception from any one fault propagates via future.result() (the
+    same CampaignError a sequential loop would raise), but -- unlike the old
+    loop, which stopped launching entirely at the first failure -- futures
+    already submitted before the failing one is observed keep running to
+    completion before this function's ThreadPoolExecutor context manager
+    exits; their results are simply discarded once the exception propagates.
+    This trades a modest amount of wasted work on the (expected-rare) error
+    path for not needing an active-cancellation mechanism verilator's
+    subprocess.run doesn't cleanly support anyway.
+    """
+    total = len(faults)
+    if max_workers <= 1 or total <= 1:
+        results: list[FaultResult] = []
+        for i, record in enumerate(faults):
+            results.append(run_one_fault(i, record))
+            if progress_callback is not None:
+                progress_callback(i + 1, total)
+        return results
+
+    results_by_index: list[FaultResult | None] = [None] * total
+    completed = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_index = {
+            executor.submit(run_one_fault, i, record): i for i, record in enumerate(faults)
+        }
+        # as_completed() itself yields on this (the calling) thread, one at a
+        # time -- results_by_index/completed/progress_callback are never
+        # touched from more than one thread, so none of this needs a lock.
+        for future in concurrent.futures.as_completed(future_to_index):
+            i = future_to_index[future]
+            results_by_index[i] = future.result()
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(completed, total)
+    return results_by_index  # type: ignore[return-value]  # every slot filled: one future per index, all awaited above
+
+
 def _resolve_engine_sources(mem: MemoryParams, engine_dir: Path, workdir: Path,
                              fault_ram_sv: Path | None) -> tuple[list[Path], str]:
     """Dispatch on mem.num_ports for the algo front.
@@ -558,11 +945,16 @@ def _run_campaign_against_artifact(
     verbose: bool = False,
     background: DataBackground | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
+    max_workers: int | None = None,
 ) -> CampaignResult:
     """Golden pass + one run per fault against an already-compiled artifact.
     Factored out of run_algo_campaign so run_background_campaign can reuse a
     single compiled binary across multiple backgrounds instead of
-    recompiling once per background."""
+    recompiling once per background.
+
+    ``max_workers`` (None = AUTOMBIST_FAULT_CONCURRENCY / the default) bounds
+    how many faults run concurrently -- see _run_faults_concurrently.
+    """
     alg_file = alg.write_numeric(workdir / f"{alg.name}.algc")
     fault_file = write_fault_list(faults, workdir / "faults.txt") if faults else None
     plusargs = _common_plusargs(mem, background)
@@ -578,8 +970,7 @@ def _run_campaign_against_artifact(
             f"(no faults were injected). The algorithm spec or engine is broken.\n{golden_out}"
         )
 
-    results: list[FaultResult] = []
-    for i, record in enumerate(faults):
+    def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
         out = run_one(
             artifact, alg_file=alg_file, fault_file=fault_file, index=i,
             verbose=verbose, extra_plusargs=plusargs,
@@ -589,14 +980,15 @@ def _run_campaign_against_artifact(
         if verbose:
             hits = parse_fault_hits(out)
             activations = hits[2] if hits else None
-        results.append(
-            FaultResult(
-                index=i, record=record, detected=detected,
-                elem=elem, op=op, addr=addr, xor=xor_bits, activations=activations,
-            )
+        return FaultResult(
+            index=i, record=record, detected=detected,
+            elem=elem, op=op, addr=addr, xor=xor_bits, activations=activations,
         )
-        if progress_callback is not None:
-            progress_callback(i + 1, len(faults))
+
+    results = _run_faults_concurrently(
+        faults, _run_one_fault, progress_callback,
+        max_workers if max_workers is not None else _fault_concurrency(),
+    )
 
     run_seconds = time.time() - start
     detected_count = sum(1 for r in results if r.detected)
@@ -620,6 +1012,8 @@ def run_algo_campaign(
     verbose: bool = False,
     fault_ram_sv: Path | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
+    cache_dir: Path | None = None,
+    max_workers: int | None = None,
 ) -> CampaignResult:
     """Compile march_engine once, run a golden pass, then one run per fault.
 
@@ -631,7 +1025,19 @@ def run_algo_campaign(
     Dispatches on mem.num_ports (see _resolve_engine_sources): num_ports==1
     (default) uses the existing march_engine.sv unmodified; num_ports==2
     uses the new march_engine_mp.sv against a num_ports=2 fault_ram.sv.
+
+    ``cache_dir`` (opt-in) overrides where compile_engine looks for/populates
+    its content-addressed build cache -- None uses the shared default
+    location (see _default_engine_cache_root), which is what every real
+    caller wants; tests pass an isolated tmp_path here to observe cache-hit
+    behavior deterministically without touching the shared cache.
+
+    ``max_workers`` (opt-in) overrides how many faults run concurrently --
+    None uses AUTOMBIST_FAULT_CONCURRENCY / the default (see
+    _run_faults_concurrently); pass 1 to force the original fully-sequential
+    behavior.
     """
+    _validate_fault_addresses(mem, faults)
     own_tmp: tempfile.TemporaryDirectory[str] | None = None
     if workdir is None:
         own_tmp = tempfile.TemporaryDirectory(prefix="autombist-algo-")
@@ -646,12 +1052,12 @@ def run_algo_campaign(
 
         artifact = compile_engine(
             mem, sources=sources, top_module=top_module,
-            workdir=workdir, sim=sim,
+            workdir=workdir, sim=sim, cache_dir=cache_dir,
         )
 
         return _run_campaign_against_artifact(
             artifact, mem, alg, faults, workdir=workdir, sim=sim, verbose=verbose,
-            progress_callback=progress_callback,
+            progress_callback=progress_callback, max_workers=max_workers,
         )
     finally:
         if own_tmp is not None:
@@ -669,6 +1075,8 @@ def run_background_campaign(
     verbose: bool = False,
     fault_ram_sv: Path | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
+    cache_dir: Path | None = None,
+    max_workers: int | None = None,
 ) -> dict[str, CampaignResult]:
     """Runs the same algorithm/fault-list once per data background (default:
     standard_backgrounds(mem.data_width)), reusing ONE compiled artifact,
@@ -680,7 +1088,10 @@ def run_background_campaign(
     _run_campaign_against_artifact): a fault-free run under a non-zero
     background must still report ESCAPED, since bg_value() applies the same
     mask to both the write side and the read-assertion side.
+
+    ``cache_dir``/``max_workers``: see run_algo_campaign's docstring.
     """
+    _validate_fault_addresses(mem, faults)
     backgrounds = backgrounds if backgrounds is not None else standard_backgrounds(mem.data_width)
     if not backgrounds:
         raise CampaignError("run_background_campaign: no backgrounds to run")
@@ -699,7 +1110,7 @@ def run_background_campaign(
 
         artifact = compile_engine(
             mem, sources=sources, top_module=top_module,
-            workdir=workdir, sim=sim,
+            workdir=workdir, sim=sim, cache_dir=cache_dir,
         )
 
         results: dict[str, CampaignResult] = {}
@@ -707,6 +1118,7 @@ def run_background_campaign(
             results[background.name] = _run_campaign_against_artifact(
                 artifact, mem, alg, faults, workdir=workdir, sim=sim, verbose=verbose,
                 background=background, progress_callback=progress_callback,
+                max_workers=max_workers,
             )
         return results
     finally:
@@ -821,6 +1233,8 @@ def run_fsm_campaign(
     fault_ram_sv: Path | None = None,
     expected_spec: AlgSpec | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
+    cache_dir: Path | None = None,
+    max_workers: int | None = None,
 ) -> CampaignResult:
     """Compile FSM + openram_shim + fault_ram (via a generated harness) once,
     golden-gate, then one run per fault. Detection is bist_fail only -- no
@@ -844,9 +1258,12 @@ def run_fsm_campaign(
     ``progress_callback`` (opt-in) is invoked as ``callback(completed, total)``
     after each per-fault run -- e.g. to drive a CLI progress bar. Default None
     keeps every existing caller byte-identical.
+
+    ``cache_dir``/``max_workers``: see run_algo_campaign's docstring.
     """
     from .fsm_harness import HARNESS_TOP, check_ports, parse_ports, render_harness, render_harness_mp
 
+    _validate_fault_addresses(mem, faults)
     own_tmp: tempfile.TemporaryDirectory[str] | None = None
     if workdir is None:
         own_tmp = tempfile.TemporaryDirectory(prefix="autombist-fsm-")
@@ -856,6 +1273,21 @@ def run_fsm_campaign(
         workdir.mkdir(parents=True, exist_ok=True)
 
     check_sequence = expected_spec is not None
+    if check_sequence:
+        assert expected_spec is not None  # for type checkers
+        if any(op >= WAIT_BASE for e in expected_spec.elements for op in e.ops):
+            raise CampaignError(
+                "expected_spec contains a wait op -- FSM sequence comparison cannot observe "
+                "elapsed idle cycles on a real controller's bus trace; wait ops are "
+                "march_engine-front only in this phase"
+            )
+    if mem.words_per_row != 1:
+        raise CampaignError(
+            "mem.words_per_row != 1 (HSD/Half-Select Disturb) is not yet supported on the "
+            "FSM front -- only march_engine.sv/march_engine_mp.sv (the algo front) expose "
+            "a WORDS_PER_ROW top parameter to Verilator's -G override in this phase; the "
+            "generated FSM harness does not"
+        )
     try:
         engine_dir = find_engine_dir()
         resolved_fault_ram, shim_sv = _resolve_fsm_engine_sources(mem, engine_dir, workdir, fault_ram_sv)
@@ -888,6 +1320,7 @@ def run_fsm_campaign(
             top_module=HARNESS_TOP,
             workdir=workdir,
             sim=sim,
+            cache_dir=cache_dir,
         )
 
         fault_file = write_fault_list(faults, workdir / "faults.txt") if faults else None
@@ -916,15 +1349,15 @@ def run_fsm_campaign(
                 blocks, observed, data_width=mem.data_width, num_ports=mem.num_ports,
             )
 
-        results: list[FaultResult] = []
-        for i, record in enumerate(faults):
+        def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
             out = run_one(artifact, fault_file=fault_file, index=i, extra_plusargs=plusargs)
             detected, elem, op, addr, xor_bits = parse_result_line(out)
-            results.append(
-                FaultResult(index=i, record=record, detected=detected, elem=elem, op=op, addr=addr, xor=xor_bits)
-            )
-            if progress_callback is not None:
-                progress_callback(i + 1, len(faults))
+            return FaultResult(index=i, record=record, detected=detected, elem=elem, op=op, addr=addr, xor=xor_bits)
+
+        results = _run_faults_concurrently(
+            faults, _run_one_fault, progress_callback,
+            max_workers if max_workers is not None else _fault_concurrency(),
+        )
 
         run_seconds = time.time() - start
         detected_count = sum(1 for r in results if r.detected)

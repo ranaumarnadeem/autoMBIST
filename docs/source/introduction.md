@@ -2,7 +2,7 @@
 
 ## What autoMBIST is
 
-autoMBIST is actually **two independent subsystems** that share one CLI and one
+autoMBIST comprises **two independent subsystems** that share one CLI and one
 RTL library:
 
 1. **The wrapper generator** — takes a `config.yml` describing a real memory
@@ -35,11 +35,18 @@ other logic and needs no special macro views.
   brute-force oracle over 300 random instances.
 - **BISR** (Built-In Self-Repair) — two paths:
   - **Tester-driven**: `repair/bisr.py` encodes the BIRA solution into the
-    exact register layout the remap RTL expects; a tester loads it.
+    exact register layout the remap RTL expects; a tester loads it. This path
+    supports **row and column** repair: `rtl/repair_remap_row.sv` steers
+    addresses to spare rows, `rtl/repair_remap_col.sv` steers bit lanes onto
+    spare columns, and the two compose — a row-steered access still gets its
+    column steer, on the spare row's own spare columns.
   - **On-chip, autonomous**: `rtl/onchip_row_repair_analyzer.sv` +
     `rtl/onchip_selfrepair_ctrl.sv` run analyze → decide → verify entirely in
     silicon by asserting `self_repair_start` and holding it until
-    `self_repair_done` reads back, no tester involved.
+    `self_repair_done` reads back, no tester involved. Row-only for now — a 2D
+    on-chip analyzer additionally needs a per-bit fail dimension the controller
+    RTL does not yet emit, so column repair is rejected here rather than
+    silently no-opped.
 
 ## Proven under a real CPU
 

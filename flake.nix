@@ -46,19 +46,40 @@
             pkgs.yosys
             pkgs.gnumake   # runner.py drives cocotb's Makefile.sim via `make`
             pkgs.gcc       # verilator emits C++ that must be compiled
+            pkgs.ccache    # verilated.mk reads $OBJCACHE, empty by default (see below)
           ];
 
           # Resolve `import autombist` from the source tree (mirrors the
           # PYTHONPATH the hardware Makefile already sets) so no editable pip
           # install is needed; runner.py then drives the cocotb Makefile with
           # PYTHON_BIN=sys.executable = this env's python (which has cocotb).
+          #
+          # OBJCACHE=ccache: verilator --binary's generated verilated.mk calls
+          # `$(OBJCACHE) $(CXX) ... -c -o $@ $<` for every compile step
+          # (verilated.mk:269ff) -- OBJCACHE is verilator's own, built-in hook
+          # for exactly this, empty (a no-op prefix) by default. This is a
+          # different, complementary layer from algo_engine.py's own
+          # AUTOMBIST_ENGINE_CACHE: that one skips calling verilator AT ALL on
+          # an exact content-hash match; ccache still helps on a hash MISS
+          # (e.g. a different memory geometry) wherever a shared translation
+          # unit -- verilator's own runtime library sources, not this
+          # project's per-design generated code -- compiles identically
+          # regardless of which design triggered the build. Verified locally
+          # against this project's real fault_ram.sv/march_engine.sv: a
+          # from-scratch rebuild of identical sources went from 4/4 ccache
+          # misses (cold) to 4/4 hits (warm). CCACHE_DIR is left at ccache's
+          # own default ($XDG_CACHE_HOME/ccache, ~/.cache/ccache) rather than
+          # pinned here, so CI's cache step (test.yml) and local dev share the
+          # same convention with nothing to keep in sync.
           shellHook = ''
             export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
+            export OBJCACHE=ccache
             echo "autombist toolchain:"
             echo "  verilator $(verilator --version 2>/dev/null | head -1)"
             echo "  $(iverilog -V 2>/dev/null | head -1)"
             echo "  yosys $(yosys --version 2>/dev/null | head -1)"
             echo "  cocotb $(python -c 'import cocotb; print(cocotb.__version__)' 2>/dev/null)"
+            echo "  ccache $(ccache --version 2>/dev/null | head -1)"
           '';
         };
       });

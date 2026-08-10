@@ -7,8 +7,11 @@
 //                      byte-identical to every campaign that omits it)
 //   plus all fault_ram plusargs (+FAULTS, +FAULT_INDEX, +INIT, +FAULT_VERBOSE)
 //
-// AW/DW are top parameters so a driver can override at compile time
-// (Verilator: -GAW=<n> -GDW=<n>).
+// AW/DW/WORDS_PER_ROW are top parameters so a driver can override at compile
+// time (Verilator: -GAW=<n> -GDW=<n> -GWORDS_PER_ROW=<n>). WORDS_PER_ROW
+// defaults to 1 (byte-identical to before it existed) and is forwarded
+// straight through to fault_ram -- see that file's header comment for HSD
+// (Half-Select Disturb, Workstream L).
 //
 // Prints exactly one line beginning with RESULT:
 //   RESULT DETECTED alg=<a> elem=<e> op=<o> addr=<n> xor=<bits>
@@ -17,6 +20,10 @@
 // Numeric .alg line format (decimal, '#' comments):
 //   DIR NOPS OP0 OP1 OP2 OP3 OP4 OP5 OP6 OP7
 //   DIR: 0=up 1=down 2=either    OP: 0=r0 1=r1 2=w0 3=w1  (padded with 0)
+//   OP >= 4: wait/idle op, idle for (OP-4) clock cycles, no memory access
+//   (see alg_spec.py's WAIT_BASE; for Data Retention Fault modeling). Like
+//   every op, a wait executes once per address in the element's range -- an
+//   element with a single wait op idles (OP-4)*DEPTH cycles total, not once.
 //
 // Word background: under +BACKGROUND=<mask> (default 0, i.e. solid 0/1 as
 // before), a nominal w0/r0 drives/expects `mask` and w1/r1 drives/expects
@@ -31,7 +38,8 @@
 
 module march_engine #(
   parameter int AW = 8,
-  parameter int DW = 8
+  parameter int DW = 8,
+  parameter int WORDS_PER_ROW = 1
 );
 
   localparam int DEPTH = 1 << AW;
@@ -43,7 +51,7 @@ module march_engine #(
   logic [DW-1:0] din = '0, dout;
   logic [DW-1:0] background_mask = '0;
 
-  fault_ram #(.ADDR_WIDTH(AW), .DATA_WIDTH(DW)) dut (
+  fault_ram #(.ADDR_WIDTH(AW), .DATA_WIDTH(DW), .WORDS_PER_ROW(WORDS_PER_ROW)) dut (
     .clk(clk), .csb(csb), .web(web), .wmask(wmask),
     .addr(addr), .din(din), .dout(dout)
   );
@@ -57,7 +65,14 @@ module march_engine #(
     bg_value = background_mask ^ {DW{v}};
   endfunction
 
-  // op codes: 0=r0 1=r1 2=w0 3=w1 ; dir: 0=up 1=down 2=either(run up)
+  // op codes: 0=r0 1=r1 2=w0 3=w1 ; dir: 0=up 1=down
+  // (2="either" is still ACCEPTED below in the +ALG_FILE parser, for any
+  // hand-written .algc from before this rule existed -- an either element
+  // there runs ascending, same as always. But nothing in this repo EMITS it
+  // any more: the tables below are pre-resolved via the same rule Python's
+  // alg_spec.resolve_directions() applies -- inherit the previous element's
+  // direction, defaulting to up -- so a built-in run and a +ALG_FILE run of
+  // the same algorithm always agree. See docs/source/algo-shell-guide.md.)
   typedef struct {
     int dir;
     int nops;
@@ -73,27 +88,27 @@ module march_engine #(
     case (a)
       "MATSP": begin // {either(w0); up(r0,w1); down(r1,w0)}   5n
         nelem = 3;
-        prog[0] = '{dir:2, nops:1, ops:'{2,0,0,0,0,0,0,0}};
+        prog[0] = '{dir:0, nops:1, ops:'{2,0,0,0,0,0,0,0}};  // either -> up (no previous element)
         prog[1] = '{dir:0, nops:2, ops:'{0,3,0,0,0,0,0,0}};
         prog[2] = '{dir:1, nops:2, ops:'{1,2,0,0,0,0,0,0}};
       end
       "MARCHCM": begin // March C-   10n
         nelem = 6;
-        prog[0] = '{dir:2, nops:1, ops:'{2,0,0,0,0,0,0,0}};
+        prog[0] = '{dir:0, nops:1, ops:'{2,0,0,0,0,0,0,0}};  // either -> up (no previous element)
         prog[1] = '{dir:0, nops:2, ops:'{0,3,0,0,0,0,0,0}};
         prog[2] = '{dir:0, nops:2, ops:'{1,2,0,0,0,0,0,0}};
         prog[3] = '{dir:1, nops:2, ops:'{0,3,0,0,0,0,0,0}};
         prog[4] = '{dir:1, nops:2, ops:'{1,2,0,0,0,0,0,0}};
-        prog[5] = '{dir:2, nops:1, ops:'{0,0,0,0,0,0,0,0}};
+        prog[5] = '{dir:1, nops:1, ops:'{0,0,0,0,0,0,0,0}};  // either -> inherits prog[4]'s down
       end
       "MARCHSS": begin // March SS   22n
         nelem = 6;
-        prog[0] = '{dir:2, nops:1, ops:'{2,0,0,0,0,0,0,0}};
+        prog[0] = '{dir:0, nops:1, ops:'{2,0,0,0,0,0,0,0}};  // either -> up (no previous element)
         prog[1] = '{dir:0, nops:5, ops:'{0,0,2,0,3,0,0,0}};
         prog[2] = '{dir:0, nops:5, ops:'{1,1,3,1,2,0,0,0}};
         prog[3] = '{dir:1, nops:5, ops:'{0,0,2,0,3,0,0,0}};
         prog[4] = '{dir:1, nops:5, ops:'{1,1,3,1,2,0,0,0}};
-        prog[5] = '{dir:2, nops:1, ops:'{0,0,0,0,0,0,0,0}};
+        prog[5] = '{dir:1, nops:1, ops:'{0,0,0,0,0,0,0,0}};  // either -> inherits prog[4]'s down
       end
       default: begin
         $display("FATAL: unknown +ALG=%s", a);
@@ -150,6 +165,19 @@ module march_engine #(
     csb = 1; web = 1;
   endtask
 
+  // Idle for n full clock periods; csb stays deasserted throughout -- never
+  // touches the DUT, dout, or the detected/det_* bookkeeping. Same
+  // negedge-anchored one-period-per-iteration idiom as do_write/do_read, so
+  // N wait "ops" cost exactly the same simulated time as N ordinary r/w ops.
+  task automatic do_wait(input int n);
+    repeat (n) begin
+      @(negedge clk);
+      csb = 1;
+      @(posedge clk);
+      @(negedge clk);
+    end
+  endtask
+
   int det_elem, det_op, det_addr;
   logic [DW-1:0] det_xor;
   bit detected = 0;
@@ -191,7 +219,7 @@ module march_engine #(
             1: do_read (a, 1'b1, e, o);
             2: do_write(a, 1'b0);
             3: do_write(a, 1'b1);
-            default: ;
+            default: if (prog[e].ops[o] >= 4) do_wait(prog[e].ops[o] - 4);
           endcase
         end
       end

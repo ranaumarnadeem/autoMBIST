@@ -51,6 +51,5 @@ Issues = "https://github.com/ranaumarnadeem/autoMBIST/issues"
 
 [tool.pytest.ini_options]
 markers = [
-  "hardware: needs Icarus Verilog/Verilator/cocotb on PATH (tests/hardware, tests/integration)",
   "faultflow: needs a built FaultFlow repo + Yosys on PATH (grade-controller tests)",
 ]

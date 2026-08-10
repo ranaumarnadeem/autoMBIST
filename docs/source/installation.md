@@ -72,9 +72,13 @@ correctly before a real run.
 
 ## Legacy PyPI release
 
-A pre-BIRA/BISR release (`1.1.2`, MBIST generation and fault injection only —
-none of the redundancy/repair work) remains published on PyPI from before this
-project moved to Nix as its packaging path. It isn't kept up to date and isn't
-the recommended way to install autoMBIST; see the
+A pre-BIRA/BISR snapshot (MBIST generation and fault injection only — none of
+the redundancy/repair work) remains published on PyPI from before this
+project moved to Nix as its packaging path. It isn't kept up to date and
+isn't the recommended way to install autoMBIST. Note the package version
+string hasn't been bumped since that snapshot, so `autombist --version`
+can't currently be used to tell a fresh Nix checkout apart from the old PyPI
+release — go by installation method (Nix vs. `pip install autombist`), not
+the version number, and see the
 [GitHub Releases](https://github.com/ranaumarnadeem/autoMBIST/releases) page
 for version history.

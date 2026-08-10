@@ -108,8 +108,12 @@ autombist generate --config config.yml --out out --test --faults 50 --seed 1234 
 Written under `out/<memory_name>/` (e.g. `out/input_demo_8x16_scn4m/`):
 
 - `<memory_name>_mbist.v` — the main wrapper module
-- `mbist_algo.sv`, `mbist_fsm.sv`, `mbist_top.sv` — core MBIST RTL
-- `march_c/` or `march_raw/` (etc.) — algorithm-specific RTL for the selected `--algo`
+- `<algo>/` (e.g. `march_c/`) — RTL for the selected `--algo` **only**; the other
+  algorithm families are not copied. Each contains `<algo>_algo.sv`,
+  `<algo>_fsm.sv` and `<algo>_top.sv`
+- `sram_model.sv` plus the shared repair/self-repair RTL — `repair_remap_row.sv`,
+  `repair_remap_col.sv`, `sram_model_spares.sv`, `onchip_row_repair_analyzer.sv`,
+  `onchip_selfrepair_ctrl.sv` and the multi-port models — copied on every run
 - `config.yml` — a snapshot of the resolved config (also used by `simulate`/`run` to
   locate the module directory when you pass a parent `--out`)
 - With `--test`:
@@ -519,6 +523,11 @@ autombist macro-signoff sky130_sram_32b256w      # a specific macro dir
 autombist macro-signoff --show-command           # print, don't run
 ```
 
+For this repo's own demo macros, this currently does not produce a clean
+signoff answer — a stale vendored OpenRAM checkout, not a defect in this
+project's RTL; see `run_macro_signoff.sh`'s own header for the full root
+cause.
+
 ## doctor
 
 Report which external tools autombist can find on this system — a quick,
@@ -588,6 +597,10 @@ its backslashes. Use `{...}` brace-quoting instead, which is fully literal:
 ```text
 generate -config {C:\Users\me\config.yml} -out out
 ```
+
+A typo'd or missing required flag produces a clean error naming the flag you
+actually typed, with a did-you-mean suggestion when one is close to a real
+flag, rather than a raw Python traceback or a wrong-flag blame.
 
 ### Examples
 

@@ -93,9 +93,11 @@ Tests are split by how much of the toolchain they need:
   to skip cleanly when a tool is missing rather than hard-fail.
 - **`tests/hardware/`** — cocotb testbenches driven through the `tests/hardware/Makefile`
   (Icarus Verilog via `cocotb-tools`' `Makefile.sim`). These need the full WSL EDA
-  toolchain and are the slowest tier; they are **not** part of the CI job (see
-  below) and are typically run directly via `make` inside `tests/hardware/` rather
-  than through `pytest`.
+  toolchain and are the slowest tier. 10 of the 18 `test_*.py` modules here are
+  exercised in CI indirectly — `tests/integration/test_hardware_standalone_scripts_e2e.py`
+  subprocess-invokes their standalone `run_*_tb.py` drivers — but the rest still
+  require `make` inside `tests/hardware/` directly and aren't part of the CI job
+  (see below).
 
 Matching this project's actual convention (and CI), the software + integration
 tiers are run together with coverage:
@@ -111,12 +113,20 @@ If you only want the fast, tool-independent slice while iterating:
 PYTHONPATH=src ~/cocotb/bin/python -m pytest tests/software -q
 ```
 
-Two custom pytest markers (registered in `pyproject.toml`) label tool-gated tests:
+One custom pytest marker (registered in `pyproject.toml`) labels the single test
+that needs a full FaultFlow checkout:
 
-- `hardware` — needs Icarus Verilog/Verilator/cocotb on `PATH` (`tests/hardware`,
-  `tests/integration`)
-- `faultflow` — needs a built FaultFlow repo + Yosys on `PATH` (grade-controller
-  tests)
+- `faultflow` — needs a built FaultFlow repo + Yosys on `PATH`
+  (`test_grade_controller_full_flow`; skip it explicitly with
+  `pytest tests/integration -m "not faultflow"`, or select just it with
+  `-m faultflow`)
+
+Every other tool-gated test uses a per-test
+`skipif(shutil.which("iverilog"/"verilator"/"yosys") is None, ...)` instead of a
+marker -- more precise than a single boolean, since it names the exact missing
+tool. An earlier `hardware` marker existed for this but was never applied to any
+test (the skipif convention already covered it more precisely), so it was
+removed rather than left as dead registration.
 
 Adjust the `~/cocotb/bin/python` prefix to wherever you created your venv in step 2
 above; the `PYTHONPATH=src` prefix is needed for the same reason it appears in
@@ -127,10 +137,15 @@ source tree.
 
 `.github/workflows/test.yml` runs on every push/PR to `main` (Ubuntu):
 
-1. Install Nix (`DeterminateSystems/nix-installer-action`), with the FOSSi
-   Foundation binary cache enabled so pinned tools come prebuilt rather than
+1. Install Nix (`DeterminateSystems/nix-installer-action`), with
+   `magic-nix-cache-action` enabled so pinned tools come prebuilt rather than
    being rebuilt from source.
-2. `nix develop --command pytest tests/software tests/integration --cov=autombist --cov-report=term-missing --cov-fail-under=90`
+2. Restore `~/.cache/ccache` and `/tmp/autombist-engine-cache` from an
+   `actions/cache` step — the same ccache (`OBJCACHE`) and content-addressed
+   `compile_engine` build cache described in
+   [`src/autombist/engine/README.md`](src/autombist/engine/README.md)'s "Build
+   cache" section — so Verilator rebuilds stay fast across runs.
+3. `nix develop --command pytest tests/software tests/integration --cov=autombist --cov-report=term-missing --cov-fail-under=90`
 
 This replaced an earlier plain `apt-get install iverilog verilator yosys` +
 `pip install` setup, whose drifting tool versions caused exactly the
@@ -139,7 +154,9 @@ if you're on the non-Nix setup above and see that kind of mismatch, it's the
 first thing to suspect.
 
 Note CI enforces a **90% coverage gate** (`--cov-fail-under=90`) and does **not**
-run `tests/hardware` at all. A separate `.github/workflows/publish.yml` still
+run `tests/hardware`'s own `make` target at all — only the 10 modules covered
+indirectly through `test_hardware_standalone_scripts_e2e.py` (see above). A
+separate `.github/workflows/publish.yml` still
 exists and would fire on a new tagged release (`python -m build` + `twine
 check`, no tests) — it hasn't run since the last PyPI upload; Nix, not PyPI,
 is the documented/supported way to get autoMBIST (see [SECURITY.md](SECURITY.md)).
@@ -155,15 +172,25 @@ src/autombist/          Top-level Python modules: CLI (cli.py, main.py), RTL
                          generation (generator.py, fault_ram_gen.py), fault
                          injection (fault_gen.py, fault_primitives.py), the march
                          algorithm engine wrapper (algo_engine.py, algo_shell.py,
-                         alg_spec.py), simulation/reporting (runner.py,
-                         reporting.py, algo_reporting.py), and the OpenRAM/FaultFlow
-                         flow integrations (openram_flow.py, faultflow_flow.py).
+                         alg_spec.py, tcl_shell.py), simulation/reporting
+                         (runner.py, reporting.py, algo_reporting.py), physical
+                         signoff (signoff.py), and the OpenRAM/FaultFlow flow
+                         integrations (openram_flow.py, faultflow_flow.py).
 
 src/autombist/engine/   The algo-shell RTL + docs: fault_ram.sv (fault-injectable
                          behavioral RAM model, single- and multi-port),
                          march_engine.sv / march_engine_mp.sv (the programmable
                          march-algorithm runner, single- and multi-port), plus the
                          engine's own README.md and example fault lists.
+
+src/autombist/algos/    Built-in `.alg` march-algorithm specs for the research
+                         engine (march_b, march_c, march_c_plus, march_ss,
+                         march_x, march_y, mats_plus).
+
+src/autombist/repair/   The BIRA/BISR Python library (bira.py and friends) —
+                         redundancy analysis and repair-signature encoding
+                         shared between the tester-driven and on-chip repair
+                         paths.
 
 src/autombist/templates/  Jinja2 templates that generator.py renders into the
                            emitted RTL/Makefiles under out/<memory>/ (wrapper,

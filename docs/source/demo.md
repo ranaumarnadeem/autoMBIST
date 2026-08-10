@@ -79,10 +79,18 @@ autombist fix-lef-units macro.lef
 autombist harden --config flow/multimem/mbist/harden.yml --run
 ```
 
-Reference result (from [`flow/multimem/mbist/README.md`](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flow/multimem/mbist/README.md)):
+Reference result (die area/std-cell counts from the top-level
+[`README.md`](https://github.com/ranaumarnadeem/autoMBIST/blob/main/README.md);
+DRC counts from [`flow/multimem/mbist/README.md`](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flow/multimem/mbist/README.md)):
 the self-repair-wrapped subsystem closes in LibreLane 3.0.5 at **0.91 mm² die, 7,189 std
 cells, 0 detailed-routing violations, LVS-clean including power** (589 Magic / 3194 KLayout
 macro-internal DRC, explicitly non-fatal by config — a known OpenRAM/open_pdks quirk, not a
 design defect; see {doc}`librelane`). The same three macros
 without the MBIST wrap (from [`flow/multimem/README.md`](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flow/multimem/README.md)) harden
 the same way at **0.78 mm² die, ~51% memory area, 4,158 std cells.**
+
+This is the top-level LibreLane place-and-route closure, which treats each
+macro as opaque hard IP. Per-macro DRC/LVS signoff for these macros' own GDS
+is a separate, currently-unresolved question — see
+[`flow/multimem/mbist/README.md`](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flow/multimem/mbist/README.md#honest-signoff-caveats)'s
+"Honest signoff caveats" for the root cause.

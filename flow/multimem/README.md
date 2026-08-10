@@ -11,9 +11,16 @@ autoMBIST's MBIST + on-chip self-repair wrappers target.
 | 2 | `sky130_sram_8b1024w` | 8b × 1024 (1 KB) | `A=11, D=9, no wmask` | 468 × 285 µm |
 
 Each macro carries **1 spare row** (addressable at the top of its address space —
-the repair target) and 1 spare column (unused; tied off — sky130's paired array
-tiling forces both spare dims odd). Macro `DATA_WIDTH` is the logical word +1
-(the spare column bit); the subsystem pads/drops it per slot.
+the repair target) and **1 spare column** (sky130's paired array tiling forces
+both spare dims odd). Macro `DATA_WIDTH` is the logical word +1 (the spare
+column bit).
+
+The spare column is **unused by the designs in this directory**, which all use
+autonomous on-chip self-repair — that analyzer is row-only. The `sram_wrap_*`
+adapters take a `NUM_SPARE_COLS` parameter (default 0) that surfaces the
+macro's `spare_wen0` as a real port instead of tying it low, so a tester-driven
+column-repair wrapper can drive it; at the default they pad/drop the top macro
+bit per slot exactly as before.
 
 ## Files
 

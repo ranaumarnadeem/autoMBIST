@@ -15,7 +15,10 @@ autonomous MBIST + self-repair block, hardened together as one subsystem.
 
 Each macro is generated with one spare row + one spare column via OpenRAM
 (`scripts/synthesize_sram.py`), giving every memory a real, addressable spare
-to repair into — not a behavioral stand-in.
+to repair into — not a behavioral stand-in. This example uses the *autonomous
+on-chip* self-repair path, which is row-only, so its spare column is present in
+silicon but unused here; column repair is tester-driven (see
+{doc}`configuration`).
 
 ## Generate a self-repairing wrapper
 
@@ -87,8 +90,14 @@ autombist harden --config flow/multimem/mbist/harden.yml --run
 
 Result, as of this writing: **DRT 0 violations, LVS-clean including power**,
 die 0.91 mm², 7,189 standard cells (the self-repair logic across all three
-memories) plus the three macros at their fixed area. Full recipe and the
-gotchas it took to get there: {doc}`librelane`.
+memories) plus the three macros at their fixed area. This is the top-level
+LibreLane place-and-route closure, which treats each macro as opaque hard
+IP; per-macro DRC/LVS signoff for these three macros' own GDS is currently
+unresolved (a stale vendored OpenRAM checkout, not a defect in this
+project's RTL) — see
+[`flow/multimem/mbist/README.md`](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flow/multimem/mbist/README.md#honest-signoff-caveats)
+for the root cause. Full recipe and the gotchas it took to get there:
+{doc}`librelane`.
 
 ## Under a real CPU
 
@@ -106,7 +115,9 @@ and against the real hardened OpenRAM macros
 That directory's `soc_top_hw` — the CPU plus both self-repair wrappers plus
 the real macros — is itself hardened clean through the same LibreLane recipe
 as the plain subsystem above, not just simulated against real macros: routing
-and LVS close with no CPU-specific issues.
+and LVS close with no CPU-specific issues (same per-macro signoff caveat as
+above — this is the top-level closure, not the macros' own standalone
+signoff).
 
 ## Where to go from here
 
@@ -114,7 +125,8 @@ and LVS close with no CPU-specific issues.
   tester-driven repair flow rather than autonomous.
 - Swap in your own OpenRAM-compiled macro — same config shape.
 - Grade the underlying march algorithm against the full fault model first,
-  with no macro at all: `autombist test --algo march_c --faults faults.txt`.
+  with no macro at all: `autombist test --addr-width 8 --data-width 8 --algo
+  march_c --faults faults.txt`.
 - march-C isn't the only self-repair-capable algorithm: `onchip_selfrepair`
   also works with `march-raw`, `march-x`, `mats-plus`, and (as a multi-port
   scaffold) `march-1r1w` — only `march-2rw`'s concurrent same-cycle dual

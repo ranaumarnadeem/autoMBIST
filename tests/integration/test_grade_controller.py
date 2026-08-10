@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import shutil
 from pathlib import Path
 
 import pytest
@@ -61,11 +59,15 @@ def test_grade_controller_emit_only(tmp_path: Path) -> None:
         assert (bundle / name).exists(), f"missing {name}"
 
 
-@pytest.mark.skipif(
-    shutil.which("yosys") is None or not os.environ.get("FAULTFLOW_HOME"),
-    reason="full e2e needs Yosys + a built FaultFlow ($FAULTFLOW_HOME) on a Linux/WSL host",
+@pytest.mark.faultflow
+@pytest.mark.skip(
+    reason="not yet implemented -- see test_grade_controller_emit_only for the "
+    "cross-platform coverage this bundle gets today; a real synth + ATPG run needs "
+    "a live FaultFlow checkout with MBIST support, which doesn't exist yet (see "
+    "the faultflow-tool project memory). Was previously a skipif gated on Yosys + "
+    "$FAULTFLOW_HOME whose body was an unconditional pytest.skip() regardless of "
+    "whether that gate passed -- so it never ran in any environment. Track real "
+    "FaultFlow MBIST integration before reviving this."
 )
 def test_grade_controller_full_flow() -> None:
-    # The full synth + ATPG flow runs from the WSL integration job against a real
-    # `autombist generate` collar; asserting u_sram survival + controller_grading there.
-    pytest.skip("run from the WSL integration job with a generated collar")
+    pass

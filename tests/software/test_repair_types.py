@@ -51,6 +51,49 @@ def test_mem_addr_width_table(base_words: int, num_spare_rows: int, expected: in
     assert g.mem_addr_width == expected
 
 
+# --------------------------------------------------------------------------- #
+# Column-side derivations (Workstream M.1). bit_index_width is the exact analogue
+# of addr_width and must equal repair_remap_col.sv's $clog2(DATA_WIDTH);
+# mem_data_width is the physical bus width incl. spare columns.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "word_size,expected",
+    [
+        (1, 1),    # max(1, ...) floor -- $clog2(1) is 0, which would be a zero-width port
+        (2, 1),
+        (4, 2),
+        (5, 3),    # non-power-of-two rounds up
+        (8, 3),
+        (32, 5),
+    ],
+)
+def test_bit_index_width_table(word_size: int, expected: int) -> None:
+    g = SpareGeometry(base_words=16, word_size=word_size)
+    assert g.bit_index_width == expected
+
+
+def test_bit_index_width_is_independent_of_spare_columns() -> None:
+    """A spare column is never itself "faulty", so a signature only ever names a
+    LOGICAL bit index -- exactly the reasoning addr_width documents for rows."""
+    plain = SpareGeometry(base_words=16, word_size=8)
+    with_spares = SpareGeometry(base_words=16, word_size=8, num_spare_cols=3)
+    assert plain.bit_index_width == with_spares.bit_index_width == 3
+
+
+@pytest.mark.parametrize(
+    "word_size,num_spare_cols,expected",
+    [
+        (8, 0, 8),     # no spares -> exactly word_size, no special case needed
+        (8, 1, 9),
+        (32, 1, 33),   # matches flow/multimem/sky130_sram_32b512w.v's real DATA_WIDTH
+        (4, 2, 6),
+    ],
+)
+def test_mem_data_width_table(word_size: int, num_spare_cols: int, expected: int) -> None:
+    g = SpareGeometry(base_words=16, word_size=word_size, num_spare_cols=num_spare_cols)
+    assert g.mem_data_width == expected
+
+
 def test_rejects_nonpositive_dimensions() -> None:
     with pytest.raises(SpareGeometryError):
         SpareGeometry(base_words=0, word_size=8)
