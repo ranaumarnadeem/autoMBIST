@@ -16,7 +16,7 @@ entry point (`autombist`), but not much else at runtime:
 | Entry points | `autombist generate` / `simulate` / `run` | `autombist test` / `autombist algo` |
 | Simulator | Icarus Verilog, via cocotb | Verilator 5.x (direct `--binary` build) |
 | Subject under test | An actual memory macro (e.g. OpenRAM-generated) wrapped in a generated MBIST harness | A behavioral fault-injectable RAM model (`fault_ram.sv`), independent of any real macro |
-| Fault model | Structural array faults: stuck-at (`SA0`/`SA1`), transition (up/down), inter-port coupling | 19 functional fault primitives (stuck-at, transition, write/read-disturb, address-decoder, four coupling classes) |
+| Fault model | Structural array faults: stuck-at (`SA0`/`SA1`), transition (up/down), inter-port coupling | 21 functional fault primitives (stuck-at, transition, write/read-disturb, address-decoder, four coupling classes, data retention, half-select disturb) |
 | Purpose | Production-style test insertion: generate synthesizable MBIST RTL around a specific memory instance | Research/validation: develop and grade march algorithms (or controller FSMs) against a fault model, independent of any specific memory |
 | Report builder | `reporting.py` (`build_simulation_report`, JSON schema `1.2.0`) | `algo_reporting.py` (per-campaign / matrix / diagnosis, schema `1.0.0`) |
 
@@ -75,40 +75,55 @@ grade a march algorithm's fault coverage against a well-defined functional
 fault model. Its pieces:
 
 - **`fault_primitives.py`** — a declarative DSL describing a memory
-  functional fault as a `(category, sensitize, effect)` triple. 15 of the 19
+  functional fault as a `(category, sensitize, effect)` triple. 15 of the 21
   built-in fault types (SA0/SA1, TF0/TF1, WDF0/WDF1, CFIN/CFID/CFST, IRF0/IRF1,
-  RDF0/RDF1, DRDF0/DRDF1) are expressible this way; the other four (SOF,
-  AF_NOACC, AF_ALIAS, CFDS) are fixed hand-written scaffolding because they
-  don't fit the DSL's per-bit-site model (cross-op state, address-decoder
-  pre-pass, or a union of several sensitizing conditions). `add_fault_type`
-  in the shell lets a researcher register a *new* fault type from this DSL
-  without writing SystemVerilog by hand.
+  RDF0/RDF1, DRDF0/DRDF1) are expressible this way; the other six (SOF,
+  AF_NOACC, AF_ALIAS, CFDS, DRF, HSD) are fixed hand-written scaffolding
+  because they don't fit the DSL's per-bit-site model: SOF/AF_NOACC/AF_ALIAS
+  need cross-op state or an address-decoder pre-pass, CFDS is a union of
+  several sensitizing conditions, DRF is sensitized by elapsed idle time with
+  no memory access at all, and HSD's aggressor selection is row co-membership
+  rather than a fixed address/bit pair. `add_fault_type` in the shell lets a
+  researcher register a *new* fault type from this DSL without writing
+  SystemVerilog by hand.
 - **`fault_ram_gen.py`** (not read in depth here, but the consumer of
-  `fault_primitives.py`) renders the DSL registry plus the four fixed types
+  `fault_primitives.py`) renders the DSL registry plus the six fixed types
   into `fault_ram.sv` — the actual behavioral RAM.
 - **`algo_engine.py`** is the shared campaign engine: it compiles
   `fault_ram.sv` plus either `march_engine.sv` (algorithm front, driven by a
   `.alg` file) or a generated harness around a researcher's controller FSM
   (FSM front) with Verilator, runs one golden pass and one pass per fault,
   and parses the single `RESULT DETECTED`/`RESULT ESCAPED` line each run
-  prints into structured `FaultResult`/`CampaignResult` objects.
+  prints into structured `FaultResult`/`CampaignResult` objects. Compilation
+  goes through a content-addressed build cache (`compile_engine`, keyed on
+  the resolved source + toolchain version) so a repeated memory/algorithm
+  combination pays for the Verilator build once, and the per-fault loop
+  itself runs with bounded concurrency (`AUTOMBIST_FAULT_CONCURRENCY`,
+  default 4) — see `src/autombist/engine/README.md` for both.
+- **`synth_engine.py`** automatically synthesizes a march test from a target
+  fault set: a Pattern-Graph greedy-walk algorithm (Benso et al., ETS
+  2005/DATE 2006) that builds up march elements until the requested faults
+  are covered, exposed as the shell's `synth` command and callable from
+  `autombist algo`.
 - **`algo_shell.py`** is the interactive `cmd.Cmd`-based shell
   (`autombist algo`) tying it together: `set_memory`, `add_algo`, `add_fsm`,
   `add_fault_type`, `add_fault`/`gen_faults`/`load_faults`, `run`,
-  `compare_algo`, `write_report`, `write_diagnosis`, `export_tb`. Session
-  state is a plain dataclass (`Session`), so the same commands work
-  interactively or scripted (`autombist algo --script FILE`).
+  `compare_algo`, `synth`, `write_report`, `write_diagnosis`,
+  `write_syndrome`, `export_tb`. Session state is a plain dataclass
+  (`Session`), so the same commands work interactively or scripted
+  (`autombist algo --script FILE`).
 - **`algo_reporting.py`** builds three independent report families from a
   `CampaignResult`: a per-fault detail table (`write_campaign_report`), a
   multi-algorithm comparison matrix (`write_matrix_report`), and a sparse
   per-(address, bit) diagnosis / fail-bitmap table
   (`write_diagnosis_report`) — each in md/csv/json.
 - **`src/autombist/engine/README.md`** is the engine's own reference: exact
-  fault-list grammar, the semantics table for all 19 primitives, measured
-  MATS+/March C-/March SS coverage against `faults.example.txt`, and the
-  full multi-port (`march_engine_mp.sv`) syntax. This document doesn't repeat
-  that table — see it for the authoritative per-primitive semantics and
-  worked coverage numbers.
+  fault-list grammar, the semantics table for all 21 primitives, measured
+  coverage for six of the seven built-in march algorithms (MATS+, March Y,
+  March C-, March C+, March B, March SS) against `faults.example.txt`, and
+  the full multi-port (`march_engine_mp.sv`) syntax. This document doesn't
+  repeat that table — see it for the authoritative per-primitive semantics
+  and worked coverage numbers.
 
 ```
 .alg file ──┐                              ┌──► RESULT DETECTED/ESCAPED (per fault)
@@ -218,7 +233,7 @@ a full hardening kit for an SRAM — synthesizable/behavioral Verilog, LEF, and
 Liberty timing views — for a given address/data width and port configuration.
 `autombist ram-synth` drives OpenRAM directly from an `openram.yml` config,
 and `autombist init` scaffolds a starter `config.yml` + `openram.yml` +
-`Makefile` for a new project.
+`Makefile` + a sample SRAM model for a new project.
 
 Two integration points exist, one per subsystem:
 
@@ -250,7 +265,7 @@ purely to make that interoperation frictionless on the algo-shell side.
 ## See also
 
 - `src/autombist/engine/README.md` — the algo-shell engine's own reference:
-  exact fault-list/`.alg` grammar, the full 19-primitive semantics table,
+  exact fault-list/`.alg` grammar, the full 21-primitive semantics table,
   measured coverage numbers, multi-port (`march_engine_mp.sv`) syntax, and
   notes on using Cadence Xcelium instead of Verilator.
 - The repository README — installation, prerequisites, and the full command

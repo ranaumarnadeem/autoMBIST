@@ -31,7 +31,10 @@ ports:
 ```
 
 This flat form is the legacy shape and still renders byte-identical output —
-no existing config needs to change if you started here.
+no existing config needs to change if you started here. Unknown port keys
+are rejected the same way as unknown top-level keys — a typo like `csbb`
+raises `ports.'csbb' is not a recognized port-signal role -- did you mean
+'csb'?` rather than misrouting into a confusing "must be a mapping" error.
 
 ## Multi-port memories
 

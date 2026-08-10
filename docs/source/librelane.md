@@ -17,8 +17,9 @@ each wrapped in the autonomous MBIST + self-repair block described in
 - Die: 0.91 mm² (self-repair-wrapped variant), 7,189 standard cells across the
   three repair-wrapped memories
 
-This isn't a toy design: it's the actual self-repair RTL from {doc}`introduction`,
-placed and routed around real, spare-augmented memory macros — and the same
+This uses the production self-repair RTL from {doc}`introduction`, not a
+simplified test design, placed and routed around real, spare-augmented
+memory macros — and the same
 recipe isn't march-C-specific. It's now proven clean against real OpenRAM
 macros for two more hand-written algorithms, plus a full SoC built on top of
 the same self-repaired memories:
@@ -95,6 +96,17 @@ directly — the macro-internal check owed when a macro is generated with `-n`
 autombist macro-signoff sky130_sram_32b256w
 ```
 
+For this repo's own demo macros, this currently does **not** produce a clean
+signoff answer. The vendored `OpenRAM/` checkout predates two upstream fixes
+for a wordline-pin-numbering defect in the sky130 replica bitcell array, so
+neither this raw-GDS check nor OpenRAM's own authoritative regeneration flow
+gives a trustworthy result — the committed `.gds`/`.lvs.sp` pairs remain
+genuinely unverified rather than confirmed either good or bad. This doesn't
+implicate autoMBIST's own generated RTL; see
+`flow/multimem/signoff/run_macro_signoff.sh`'s header, or
+`flow/multimem/mbist/README.md`'s "Honest signoff caveats", for the full
+root cause.
+
 ## What isn't proven yet
 
 Full timing signoff (a real Liberty `.lib` for each macro — today's runs
@@ -102,14 +114,18 @@ black-box memory timing) and a merged full-hierarchy DRC pass that includes
 macro polygons directly are both open. See {doc}`challenges` for what we ran
 into trying to close those, and {doc}`roadmap` for where they sit.
 
+A third item, distinct from both: macro-internal DRC/LVS signoff itself
+(`macro-signoff`, above) is currently unresolved for the demo macros, blocked
+on the vendored OpenRAM update described above.
+
 march-1r1w's self-repair wrapper is also not part of the "proven" list above,
 but not for lack of a real macro to test it against — a genuinely dual-port
 sky130 OpenRAM macro (`sky130_sram_1r1w_32b256w`) was generated and
 hardened. That run completes all 80 stages with LVS and Antenna both
-passing; DRC is not clean, and the dominant issue (Magic's `nwell.4`
-"missing N+ tap" rule) traces to a documented, currently-unresolved
-OpenROAD/sky130 tapcell limitation ([OpenROAD#7118](https://github.com/The-OpenROAD-Project/OpenROAD/issues/7118),
+passing; DRC is not clean, and the dominant issue (Magic's `nwell.4` rule,
+"nwells must contain metal-connected N+ taps") traces to a documented,
+currently-unresolved OpenROAD/sky130 tapcell limitation ([OpenROAD#7118](https://github.com/The-OpenROAD-Project/OpenROAD/issues/7118),
 [OpenLane#1140](https://github.com/The-OpenROAD-Project/OpenLane/issues/1140)),
-confirmed by four independent config-level attempts that didn't move it. See
+confirmed by three independent config-level attempts that didn't move it. See
 `flow/newalgo/README.md`'s "march-1r1w: real, genuinely-dual-port macro"
 section for the full breakdown.

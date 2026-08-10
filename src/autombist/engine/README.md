@@ -79,6 +79,18 @@ both `~/.cache/ccache` and `/tmp/autombist-engine-cache` across runs via
 `actions/cache`, so this benefit isn't limited to one machine's local dev
 loop.
 
+## Fault-simulation concurrency
+
+Once a campaign's binary is built (or reused from cache), the per-fault
+simulation loop itself runs with bounded concurrency: `run_algo_campaign`,
+`run_background_campaign`, and `run_fsm_campaign` all dispatch faults through
+a `ThreadPoolExecutor` sized by `AUTOMBIST_FAULT_CONCURRENCY` (default 4).
+Compilation stays single-threaded regardless of this setting -- only running
+the already-built binary against each fault is parallelized. Set
+`AUTOMBIST_FAULT_CONCURRENCY=1` to restore the original fully-sequential
+behavior (useful when debugging a flaky fault or comparing timings against
+older runs).
+
 ## Fault list format
 
 One fault per line, all fields decimal, `#` comments:
@@ -406,7 +418,10 @@ activates 10 times and still escapes.
 
 These match the published coverage claims: March C- misses WDF (it never
 performs a non-transition write) and DRDF (no read-after-read); March SS
-adds both and covers all static simple faults. The MATS+ CFDS escape is a
+adds both and covers all static simple faults *in this fault list* — the
+19-primitive model above, which does not yet include the two-cell coupling
+family (CFtr/CFwd/CFrd/CFdrd/CFir) or dynamic (two-operation) faults; both
+are designed but not yet implemented. The MATS+ CFDS escape is a
 double-inversion masking between its up and down passes.
 
 **March Y (8n)** is March C- reshaped, not shortened for free: it trades a

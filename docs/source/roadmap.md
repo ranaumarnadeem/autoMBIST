@@ -9,7 +9,9 @@ progress, and what's further out.
 - MBIST wrapper generation for single- and multi-port memories (`march-c`,
   `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, `mats-plus`)
 - A 19-primitive functional fault model and research shell, independent of
-  any real memory macro
+  any real memory macro, with seven built-in march algorithms (`march_b`,
+  `march_c`, `march_c_plus`, `march_ss`, `march_x`, `march_y`, `mats_plus`) —
+  a separate list from the classic-path wrapper-generation algorithms above
 - BIRA (redundancy analysis) as a 2D solver, both row and column allocation
 - BISR — tester-driven, and (for every algo except `march-2rw`: `march-c`,
   `march-raw`, `march-x`, `mats-plus`, and the multi-port `march-1r1w`) a
@@ -21,10 +23,13 @@ progress, and what's further out.
   (`onchip_repair_persistence: true`)
 - A proven LibreLane hardening recipe for real OpenRAM sky130 macros,
   including self-repair-wrapped variants across multiple algorithms
-  (march-c, march-x, mats-plus)
+  (march-c, march-x, mats-plus) — this is the top-level place-and-route
+  closure, which treats each macro as opaque hard IP; per-macro DRC/LVS
+  signoff for the macros' own GDS is separately tracked below
 - An SoC-level demonstration: an unmodified RV32I core (PicoRV32) booting and
   running a real program through self-repaired memory, both against
-  defect-injectable behavioral models and the real hardened OpenRAM macros
+  defect-injectable behavioral models and the hardened OpenRAM macros (same
+  per-macro signoff caveat as above)
 
 ## In progress
 
@@ -32,6 +37,10 @@ progress, and what's further out.
   memory timing rather than using measured numbers)
 - A merged full-hierarchy DRC pass that checks macro polygons directly
   instead of treating the macro as an opaque boundary
+- Macro-level DRC/LVS signoff for the demo macros' own GDS — currently
+  blocked on updating the vendored `OpenRAM/` checkout past two upstream
+  fixes for a wordline-pin-numbering defect in the sky130 replica bitcell
+  array; see {doc}`challenges` for the root cause
 - Extending on-chip self-repair to `march-2rw` (needs new arbiter RTL: its two
   concurrent same-cycle compares break the analyzer's single-fail-per-cycle
   assumption, unlike `march-1r1w`'s single shared compare)
