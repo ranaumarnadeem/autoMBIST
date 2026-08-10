@@ -354,11 +354,15 @@ class AlgoShell(cmd.Cmd):
 
     def do_add_fault(self, arg: str) -> None:
         """add_fault TYPE VADDR VBIT [AADDR ABIT P0 P1 [VPORT APORT]]
-        Append one fault instance to the current fault list. VPORT/APORT
-        (default 0) select which physical port the victim/aggressor access is
-        on -- meaningful only for the coupling-class primitives (CFIN/CFID/
-        CFST/CFDS) in a 2-port memory (see set_memory --ports); a VPORT !=
-        APORT defines a genuine cross-port coupling fault."""
+        Append one fault instance to the current fault list. AADDR/ABIT/P0/P1
+        default to 0 0 0 0 when omitted (valid for single-parameter faults
+        like SA0/SA1). APORT (default 0) selects which physical port the
+        aggressor access is on -- meaningful only for the coupling-class
+        primitives (CFIN/CFID/CFST/CFDS) in a 2-port memory (see set_memory
+        --ports). VPORT is parsed but not yet honoured by the generated
+        engine -- the victim-side guards match on address and bit alone, so
+        setting it currently changes nothing for any fault type; it is
+        reserved for a future per-port victim gate."""
         tokens = _tokenize(arg)
         if len(tokens) not in (3, 7, 9):
             raise ValueError("usage: add_fault TYPE VADDR VBIT [AADDR ABIT P0 P1 [VPORT APORT]]")
