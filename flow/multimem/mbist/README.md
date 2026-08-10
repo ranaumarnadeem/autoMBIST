@@ -91,6 +91,28 @@ blackboxes, and `mem_subsystem_mbist.sv`.
   non-fatal and lets `harden --run` exit 0 reproducibly.
   Top-level integration P&Rs LVS-clean; see [../](../) for the full recipe
   write-up and [../signoff](../signoff) for the per-macro scripts.
+- **Macro-internal DRC/LVS signoff for these three macros' own GDS is
+  currently unresolved — a separate, more serious question than the DRC
+  noise above.** `../signoff/run_macro_signoff.sh` (the per-macro
+  DRC/LVS check) was found to have never actually run against real PDK
+  data — `PDK_ROOT` was set but not `export`ed, so magic's "clean" 0-count
+  result meant "nothing was checked," not "nothing was found" (fixed in
+  commit `fb2c1a3`). Fixing that surfaced a real LVS mismatch, root-caused
+  (not merely worked around, commit `64076af`) to the vendored `OpenRAM/`
+  checkout predating two upstream fixes (2026-04-28, 2026-05-14) for a
+  wordline-pin-numbering defect in the sky130 replica bitcell array.
+  Reproducing OpenRAM's own authoritative regeneration flow independently
+  confirms the same failure inside OpenRAM's own module, before any
+  openMBIST-authored logic runs. Net effect: until `OpenRAM/` is updated
+  past those two commits, neither this script's raw-GDS check nor OpenRAM's
+  own regeneration gives a clean signoff answer, and the three committed
+  `.gds`/`.lvs.sp` pairs (generated with `-n`, back in July) remain
+  genuinely unverified rather than confirmed either good or bad. This does
+  not implicate autoMBIST's own generated RTL — physical macro signoff is
+  the memory generator's responsibility, not the integrator's — and it does
+  not affect the top-level P&R LVS-clean result above, which treats the
+  macro as opaque hard IP. See `../signoff/run_macro_signoff.sh`'s header
+  for the full root-cause writeup.
 - **Self-repair timing against the real macros — `read_latency: 0` required,
   now fixed and tested.** This subsystem was originally only
   elaboration-checked (see "Two build views" above), never simulated with

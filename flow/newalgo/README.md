@@ -101,7 +101,7 @@ passes.** DRC does not:
   N+ taps"):** this one is real and NOT macro-internal noise -- the
   surviving march-C real-macro run log shows genuinely zero Magic/KLayout
   violations, so clean is the actual bar, not something to round down from.
-  Four independent, targeted attempts failed to clear it:
+  Three independent, targeted attempts failed to clear it:
   - Bigger die/more margin (1000x850->1200x1000): Magic's count got
     *worse* (539->837, roughly proportional to added area), KLayout's
     stayed byte-identical (520->520) -- ruling margin size in as
@@ -113,14 +113,16 @@ passes.** DRC does not:
   - Bigger macro halo (15um default -> 40um, matching the reported
     working value in the issue below): count went from 539 to 605, no
     improvement.
-  - This matches a documented, currently-unresolved, maintainer-acknowledged
-    OpenROAD/sky130 toolchain limitation, not a config knob under this
-    project's control: [OpenROAD#7118](https://github.com/The-OpenROAD-Project/OpenROAD/issues/7118)
-    ("tap deserts" with sky130 tapcell insertion) and
-    [OpenLane#1140](https://github.com/The-OpenROAD-Project/OpenLane/issues/1140)
-    ("thin areas of sky130 met1 rails have no tap cells" near macro
-    halos), both open, both labeled as real bugs by the OpenROAD/OpenLane
-    maintainers, neither with a working fix as of this writing.
+
+  None of the three moved the needle, which matches a documented,
+  currently-unresolved, maintainer-acknowledged OpenROAD/sky130 toolchain
+  limitation, not a config knob under this project's control:
+  [OpenROAD#7118](https://github.com/The-OpenROAD-Project/OpenROAD/issues/7118)
+  ("tap deserts" with sky130 tapcell insertion) and
+  [OpenLane#1140](https://github.com/The-OpenROAD-Project/OpenLane/issues/1140)
+  ("thin areas of sky130 met1 rails have no tap cells" near macro
+  halos), both open, both labeled as real bugs by the OpenROAD/OpenLane
+  maintainers, neither with a working fix as of this writing.
 
 So: march-1r1w's self-repair wrapper is proven to integrate with, place,
 route, and pass LVS/Antenna against a real dual-port OpenRAM macro through
