@@ -53,9 +53,9 @@ autombist test --addr-width INTEGER --data-width INTEGER --faults PATH [OPTIONS]
 |---|---|---|
 | `--addr-width`, `-aw` (required) | — | Memory address width in bits |
 | `--data-width`, `-dw` (required) | — | Memory data width in bits |
-| `--algo TEXT` | `march_c` | Built-in algorithm name (`march_c`, `mats_plus`, `march_ss`, `march_x`) or a path to a `.alg` file |
+| `--algo TEXT` | `march_c` | Built-in algorithm name (`march_c`, `march_c_plus`, `march_y`, `march_b`, `mats_plus`, `march_ss`, `march_x`) or a path to a `.alg` file |
 | `--fsm PATH` | none | Validate a controller FSM `.sv` instead of an algorithm (takes precedence over `--algo`); sibling `.sv`/`.v` files in its directory are gathered automatically. No elem/op attribution in this mode — a black-box controller has no step counter to report |
-| `--faults PATH` (required) | — | Fault-list file: `TYPE VADDR VBIT AADDR ABIT P0 P1` per line (see §5 for the format, and the primitive table in §4) |
+| `--faults PATH` (required) | — | Fault-list file: `TYPE VADDR VBIT AADDR ABIT P0 P1` per line (see the `add_fault`/`load_faults` entries in §3 for the full grammar, and the primitive table in §4) |
 | `--fault-types PATH` | none | JSON file with a list of custom fault-primitive specs, added to the built-in 19 (see §4 and `fault_primitives.py`'s module docstring for the schema) |
 | `--init INTEGER` | `1` | Memory init value (0 or 1) |
 | `--sim TEXT` | `verilator` | Simulator backend — Verilator only; Icarus cannot run the SV fault engine (it uses `foreach`, queues, and `final` blocks) |
@@ -116,13 +116,22 @@ The top-level `autombist -q` flag suppresses `test`'s routine
 `autombist test: ...`/coverage summary lines the same way `--json` does
 (results/errors still print).
 
+The `build:`/`run:` split above reflects two independent speedups: `build:`
+is usually a cache hit (a content-addressed build cache keyed on the
+resolved source + toolchain version, so a repeated memory/algorithm
+combination pays for the Verilator build once), and `run:` benefits from the
+per-fault simulation loop's bounded concurrency (`AUTOMBIST_FAULT_CONCURRENCY`,
+default 4 workers). Both apply identically to `autombist algo`'s `run`/
+`compare_algo`. See `src/autombist/engine/README.md` for the full detail on
+either.
+
 ## 3. `autombist algo` — the interactive research shell
 
 `algo` launches a `cmd.Cmd`-based REPL for iterative work: register one or
 more algorithms and/or FSMs, build up a fault list by hand or generated,
 run campaigns, compare algorithms side by side, and export reports or a
-standalone testbench bundle. Built-in algorithms (`march_c`, `mats_plus`,
-`march_ss`, `march_x`) are preloaded at start, so you can `run march_c`
+standalone testbench bundle. Built-in algorithms (`march_c`, `march_c_plus`, `march_y`, `march_b`,
+`mats_plus`, `march_ss`, `march_x`) are preloaded at start, so you can `run march_c`
 immediately without an `add_algo` call.
 
 ```bash
@@ -147,9 +156,12 @@ memory set: 8x8, init=1, ports=1
 
 algo> list
 algos:
+  march_b  (17n, 5 elements)
   march_c  (10n, 6 elements)
+  march_c_plus  (14n, 6 elements)
   march_ss  (22n, 6 elements)
   march_x  (6n, 4 elements)
+  march_y  (8n, 4 elements)
   mats_plus  (5n, 3 elements)
 fsms:
   (none registered; use add_fsm)
@@ -242,14 +254,17 @@ regenerated from the updated registry each time.
 **`add_fault TYPE VADDR VBIT [AADDR ABIT P0 P1 [VPORT APORT]]`**
 Append one fault instance to the current fault list. `AADDR ABIT P0 P1`
 default to `0 0 0 0` when omitted (valid for single-parameter faults like
-`SA0`/`SA1`). `VPORT`/`APORT` (default 0) select which physical port the
-victim/aggressor access is on — meaningful only for the coupling-class
-primitives (`CFIN`/`CFID`/`CFST`/`CFDS`) in a 2-port memory; a `VPORT !=
-APORT` defines a genuine cross-port coupling fault.
+`SA0`/`SA1`). `APORT` (default 0) selects which physical port the aggressor
+access is on — meaningful only for the coupling-class primitives
+(`CFIN`/`CFID`/`CFST`/`CFDS`) in a 2-port memory. `VPORT` is parsed but not
+yet honoured by the generated engine — the victim-side guards match on
+address and bit alone, so setting it currently changes nothing for any fault
+type; it is reserved for a future per-port victim gate. See
+{doc}`multi-port-guide` §3b for the full same-port-vs-cross-port semantics.
 
 **`load_faults <path> [--append]`**
-Load a fault-list file (§5 format), replacing the current list unless
-`--append`.
+Load a fault-list file (`add_fault`'s grammar, above), replacing the current
+list unless `--append`.
 
 **`gen_faults [--all-types] [--n N --seed S]`**
 Generate a fault list: one instance of each of the 19 built-in types
@@ -371,7 +386,22 @@ A fault primitive is a JSON object with this shape:
   - `port` — which physical port the sensitizing op must occur on: `"0"`,
     `"1"`, or `"x"` (wildcard — matches on address alone, the implicit
     behavior of every existing built-in). Only meaningful in a 2-port
-    (`set_memory --ports 2`) session.
+    (`set_memory --ports 2`) session; a non-`"x"` port is **rejected** when
+    the session is single-port, because the generated engine has no `port`
+    argument to gate on there.
+
+    Two further restrictions, both refused at `add_fault_type` time rather
+    than silently ignored:
+    - **not for `static_clamp`.** A clamp rewrites *stored* state and is
+      re-asserted after every access, so every port would see the corruption
+      anyway — port-scoping it is not expressible. Model a port-specific
+      read-path defect as `read_effect`, whose effect lands on the returned
+      value and so is naturally per-port. (Same structural reason the built-in
+      CFST cannot honour a fault line's `APORT`.)
+    - **not with `raw_sv`.** The gate is emitted by wrapping the generated
+      arm's condition; a `raw_sv` body is copied verbatim, so the constraint
+      would be dropped. Gate on the arm's own `port` argument inside your
+      `raw_sv` text and leave `port` as `"x"`.
 - **`effect`** — what happens to the victim when sensitized:
   - `kind` — `force` (clamp to a value), `invert` (flip the bit),
     `block_write` (the write silently fails to update the cell),
@@ -469,6 +499,48 @@ each (the SystemVerilog engine's fixed-size `prog[16]`/`ops[8]` arrays).
 
 Load one with `add_algo my_march.alg` in the shell, or pass its path
 directly to `--algo` on `autombist test`.
+
+### How `either` gets resolved
+
+`either` is a statement about the *algorithm* — this element detects what it
+detects regardless of address order — so a consumer that needs one concrete
+address order has to pick. Every consumer in this project picks the same way,
+via one function: **an `either` element inherits the direction of the
+previous element, defaulting to up when there is none**
+(`alg_spec.resolve_directions()`). The numeric form the SystemVerilog engines
+read (`AlgSpec.to_numeric()`), the classic-path RTL table renderer, the FSM
+reference trace, and the synthesizer's internal replay model all call this
+one function rather than resolving independently.
+
+So March C-'s trailing `either r0` resolves to **down** — it follows two
+`down` elements — both when `march_engine.sv` runs the algorithm from a
+campaign and in the hand-written classic RTL that ships to silicon.
+
+This rule is not arbitrary. It is the one real silicon already implements —
+proven by an exhaustive simulation sweep comparing the rendered classic-path
+table against the hand-written one it replaces, for every algorithm that has
+both a `.alg` spec and hand-written RTL (`march_c`, `march_x`, `mats_plus`)
+(`tests/integration/test_algo_table_equivalence.py`, 32/32 vectors per
+algorithm) — and it has a hardware rationale: continuing in the same direction
+means the address counter never has to rewind between elements.
+
+**Getting this right is not cosmetic.** Before the rule was unified,
+`march_engine.sv` ran every `either` element ascending regardless of context.
+On `faults.example.txt` at `addr_width=8`/`data_width=8`, that made
+`run_algo_campaign` under-report March X's coverage as 12/19 instead of the
+13/19 the algorithm actually detects: `CFDS 130 1 131 1 4 0` (aggressor above
+the victim) is caught only by a descending final read, and March X's trailing
+`either r0` is exactly that read. March C-'s own trailing `either` happens to
+be direction-insensitive for every fault in that list — which is why the two
+subsystems could disagree there for years without a coverage number ever
+looking wrong.
+
+The one place `either`'s freedom is still honored rather than collapsed to a
+single answer is the FSM sequence checker (`--check-sequence`): it validates
+an arbitrary hand-written controller against a spec, and a controller is free
+to choose either address order for a genuine `either` element, so it accepts
+both — with the direction `resolve_directions()` picks reported first in any
+divergence message.
 
 ### Port suffixes (multi-port)
 

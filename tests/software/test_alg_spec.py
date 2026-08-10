@@ -4,7 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from autombist.alg_spec import AlgSpecError, _find_pkg_subdir, builtin_algos, load_alg_file, parse_alg, resolve_algo
+from autombist.alg_spec import (
+    WAIT_BASE,
+    AlgSpecError,
+    _find_pkg_subdir,
+    _expand_element,
+    builtin_algos,
+    load_alg_file,
+    parse_alg,
+    resolve_algo,
+    resolve_directions,
+)
 
 
 def test_parse_human_elements() -> None:
@@ -67,6 +77,142 @@ def test_parse_alg_rejects_too_many_elements() -> None:
 def test_element_human_form() -> None:
     spec = parse_alg("up r0 w1\n", "t")
     assert spec.elements[0].human() == "up r0 w1"
+
+
+# --------------------------------------------------------------------------- #
+# Wait/idle op (Workstream K)
+# --------------------------------------------------------------------------- #
+def test_wait_token_parses_to_wait_op_code() -> None:
+    spec = parse_alg("either t5\n", "t")
+    assert spec.elements[0].ops == [WAIT_BASE + 5]
+    assert spec.elements[0].ports == [0]
+
+
+def test_wait_token_human_roundtrip() -> None:
+    spec = parse_alg("either t5\n", "t")
+    assert spec.elements[0].human() == "either t5"
+
+
+def test_wait_token_case_insensitive() -> None:
+    spec = parse_alg("either T5\n", "t")
+    assert spec.elements[0].ops == [WAIT_BASE + 5]
+
+
+def test_wait_token_zero_count_rejected() -> None:
+    with pytest.raises(AlgSpecError, match="wait count"):
+        parse_alg("either t0\n", "t")
+
+
+def test_wait_token_exceeds_max_rejected() -> None:
+    with pytest.raises(AlgSpecError, match="exceeds engine max"):
+        parse_alg("either t65536\n", "t")
+
+
+def test_wait_token_rejects_port_suffix() -> None:
+    with pytest.raises(AlgSpecError, match="do not take a"):
+        parse_alg("either t5.1\n", "t")
+
+
+def test_wait_op_mixed_with_ordinary_ops_in_one_element() -> None:
+    spec = parse_alg("either w0 t20 r0\n", "t")
+    assert spec.elements[0].ops == [2, WAIT_BASE + 20, 0]
+    assert spec.elements[0].human() == "either w0 t20 r0"
+
+
+def test_wait_op_excluded_from_length_n() -> None:
+    spec = parse_alg("either w0\neither t1000\neither r0\n", "t")
+    assert spec.length_n == 2
+
+
+def test_wait_op_still_occupies_a_max_ops_slot() -> None:
+    text = "up " + " ".join(["r0"] * 7 + ["t1"])  # exactly MAX_OPS=8
+    spec = parse_alg(text + "\n", "t")
+    assert len(spec.elements[0].ops) == 8
+    with pytest.raises(AlgSpecError, match="exceeds engine max"):
+        parse_alg(text + " r0\n", "t")  # 9th op, one over MAX_OPS
+
+
+def test_numeric_line_for_wait_op() -> None:
+    spec = parse_alg("either t5\n", "t")
+    assert spec.elements[0].numeric_line() == "2 1 9 0 0 0 0 0 0 0"  # WAIT_BASE+5=9
+
+
+def test_wait_spec_to_text_roundtrips_through_parse_alg() -> None:
+    spec = parse_alg("either w0\nup t20 r0\ndown r1 t5\n", "t")
+    reparsed = parse_alg(spec.to_text(), "t")
+    assert reparsed.elements == spec.elements
+
+
+# --------------------------------------------------------------------------- #
+# Wait ops and the FSM-comparison front (_expand_element)
+# --------------------------------------------------------------------------- #
+def test_expand_element_skips_wait_ops() -> None:
+    spec = parse_alg("up w0 t20 r0\n", "t")
+    steps = _expand_element(spec.elements[0], elem_idx=0, depth=1, direction=0)
+    # Only the w0 and r0 ops produce steps -- the wait has zero bus activity.
+    assert [s.op for s in steps] == [2, 0]
+
+
+def test_expand_element_wait_only_element_produces_no_steps() -> None:
+    spec = parse_alg("either t20\n", "t")
+    steps = _expand_element(spec.elements[0], elem_idx=0, depth=4, direction=0)
+    assert steps == []
+
+
+# --------------------------------------------------------------------------- #
+# resolve_directions -- the ONE canonical rule for what `either` resolves to.
+# `either` inherits the previous element's direction, defaulting to up. This
+# is the rule that makes generated RTL (and, after resolution, the numeric
+# form the SystemVerilog engines read) match the hand-written classic tables;
+# see the function's docstring for the measured consequence of getting it
+# wrong. Moved here from tests/software/test_algo_rtl_gen.py -- the rule now
+# lives in alg_spec.py, not algo_rtl_gen.py, so its tests do too.
+# --------------------------------------------------------------------------- #
+def _dirs(text: str) -> list[int]:
+    return resolve_directions(parse_alg(text, "t").elements)
+
+
+def test_explicit_directions_pass_straight_through() -> None:
+    assert _dirs("up w0\ndown r0\nup r1\n") == [0, 1, 0]
+
+
+def test_leading_either_defaults_to_up() -> None:
+    assert _dirs("either w0\ndown r0\n") == [0, 1]
+
+
+def test_trailing_either_inherits_the_previous_direction() -> None:
+    """The case where the engine and the hand-written classic RTL used to
+    disagree before this rule was unified: a trailing `either` inherits
+    `down`, it is not forced back to `up`."""
+    assert _dirs("up w0\ndown r0\neither r1\n") == [0, 1, 1]
+
+
+def test_consecutive_either_all_inherit_the_same_direction() -> None:
+    assert _dirs("down w0\neither r0\neither r1\neither w1\n") == [1, 1, 1, 1]
+
+
+def test_all_either_spec_is_entirely_up() -> None:
+    assert _dirs("either w0\neither r0\neither w1\n") == [0, 0, 0]
+
+
+def test_either_between_two_explicit_directions_takes_the_earlier_one() -> None:
+    assert _dirs("down w0\neither r0\nup r1\n") == [1, 1, 0]
+
+
+@pytest.mark.parametrize(
+    "algo_name,expected",
+    [
+        # Exactly the direction sequences the hand-written classic-path RTL
+        # tables encode -- proven behaviourally identical to a rendered table
+        # by tests/integration/test_algo_table_equivalence.py's exhaustive
+        # simulation sweep.
+        ("march_c", [0, 0, 0, 1, 1, 1]),
+        ("march_x", [0, 0, 1, 1]),
+        ("mats_plus", [0, 0, 1]),
+    ],
+)
+def test_builtin_directions_match_the_hand_written_rtl(algo_name: str, expected: list[int]) -> None:
+    assert resolve_directions(resolve_algo(algo_name).elements) == expected
 
 
 def test_load_alg_file_missing_path_raises(tmp_path: Path) -> None:
@@ -161,6 +307,17 @@ def test_to_numeric_extended_header_when_port_present() -> None:
 # made to alg_spec.py (see the task's verification requirement) -- the
 # strongest proof that every existing built-in .alg file's numeric
 # serialization is byte-identical to its pre-phase value.
+#
+# They ALSO predate AlgSpec.resolved(): back then to_numeric() emitted each
+# element's direction verbatim, so an `either` element's DIR column is a
+# literal "2" in every one of these strings. Once to_numeric() started
+# resolving directions first, that stopped being true -- but overwriting the
+# strings would destroy the evidence they were captured to preserve (that the
+# multi-port change touched nothing else). So they stay exactly as captured,
+# and the two tests below use them DIFFERENTIALLY instead of asserting
+# byte-identity: every column must still match except the DIR of a resolved
+# `either`, and that DIR must match resolve_directions() exactly -- not just
+# "some value 0 or 1". See _assert_numeric_matches_pre_resolution_golden.
 _GOLDEN_TO_NUMERIC = {
     "march_c": "# march_c  (10n)  DIR NOPS OP0..OP7\n2 1 2 0 0 0 0 0 0 0\n0 2 0 3 0 0 0 0 0 0\n0 2 1 2 0 0 0 0 0 0\n1 2 0 3 0 0 0 0 0 0\n1 2 1 2 0 0 0 0 0 0\n2 1 0 0 0 0 0 0 0 0\n",
     "march_ss": "# march_ss  (22n)  DIR NOPS OP0..OP7\n2 1 2 0 0 0 0 0 0 0\n0 5 0 0 2 0 3 0 0 0\n0 5 1 1 3 1 2 0 0 0\n1 5 0 0 2 0 3 0 0 0\n1 5 1 1 3 1 2 0 0 0\n2 1 0 0 0 0 0 0 0 0\n",
@@ -170,16 +327,100 @@ _GOLDEN_TO_NUMERIC = {
 
 # Golden length_n values, likewise pinned before any change (mirrors the
 # reference lengths already asserted in test_builtins_resolve_and_match_reference_lengths).
+# Unaffected by direction resolution -- length_n never reads .direction -- so
+# these stay a byte-identity assertion, not a differential one.
 _GOLDEN_LENGTH_N = {"march_c": 10, "march_ss": 22, "march_x": 6, "mats_plus": 5}
 
 
+def _numeric_header_and_body_rows(text: str) -> tuple[str, list[list[str]]]:
+    """Split a to_numeric()-shaped string into its leading `# ...` header line
+    and its per-element body rows' whitespace-separated columns."""
+    lines = text.splitlines()
+    assert lines and lines[0].startswith("#"), "expected a leading header comment line"
+    return lines[0], [line.split() for line in lines[1:] if line]
+
+
+def _assert_numeric_matches_pre_resolution_golden(golden: str, actual: str, elements) -> None:
+    """Prove `actual` (today's to_numeric(), which resolves `either` first)
+    differs from `golden` (captured before resolution existed) in NOTHING but
+    the DIR column of rows the golden encoded as `either` (DIR=2) -- and that
+    the resolved value in each such row is exactly what resolve_directions()
+    computes, not merely "some value 0 or 1". Every other column, on every
+    row, must be byte-identical to the golden -- preserving the original
+    byte-identity evidence for everything resolution did not touch.
+
+    The header line (algo name, `(Nn)` length, column-label text) is asserted
+    byte-identical too: it's untouched by direction resolution (unlike the
+    body rows), and none of these golden algos use non-default ports, so
+    there's no legitimate source of header drift to differentiate around --
+    a header-only regression should fail here, not slip through silently."""
+    golden_header, golden_rows = _numeric_header_and_body_rows(golden)
+    actual_header, actual_rows = _numeric_header_and_body_rows(actual)
+    assert actual_header == golden_header, (golden_header, actual_header)
+    assert len(golden_rows) == len(actual_rows) == len(elements), "element count changed"
+    expected_dirs = resolve_directions(elements)
+    resolved_any = False
+    for golden_row, actual_row, expected_dir in zip(golden_rows, actual_rows, expected_dirs):
+        assert actual_row[1:] == golden_row[1:], (golden_row, actual_row)  # NOPS/OP.../PORT... untouched
+        if golden_row[0] == "2":
+            resolved_any = True
+            assert actual_row[0] == str(expected_dir), (golden_row, actual_row, expected_dir)
+        else:
+            assert actual_row[0] == golden_row[0], (golden_row, actual_row)  # fixed direction untouched
+    assert resolved_any, "golden has no `either` element -- differential test is pointless here"
+
+
 @pytest.mark.parametrize("algo_name", sorted(_GOLDEN_TO_NUMERIC))
-def test_builtin_alg_to_numeric_byte_identical_to_pre_phase_golden(algo_name: str) -> None:
+def test_builtin_alg_to_numeric_matches_pre_resolution_golden_except_either_dir(algo_name: str) -> None:
     spec = resolve_algo(algo_name)
-    assert spec.to_numeric() == _GOLDEN_TO_NUMERIC[algo_name]
+    _assert_numeric_matches_pre_resolution_golden(
+        _GOLDEN_TO_NUMERIC[algo_name], spec.to_numeric(), spec.elements
+    )
 
 
 @pytest.mark.parametrize("algo_name", sorted(_GOLDEN_LENGTH_N))
 def test_builtin_alg_length_n_byte_identical_to_pre_phase_golden(algo_name: str) -> None:
     spec = resolve_algo(algo_name)
     assert spec.length_n == _GOLDEN_LENGTH_N[algo_name]
+
+
+# March B is pinned SEPARATELY from the two _GOLDEN_* maps above rather than
+# added to them: those exist specifically to prove the four PRE-EXISTING built-in
+# .alg files serialize byte-identically to their pre-multi-port values, and
+# folding a newer file into that set would blur what they attest to. Captured
+# before either-direction resolution existed, same as _GOLDEN_TO_NUMERIC, so it
+# is compared the same differential way rather than overwritten -- see
+# _assert_numeric_matches_pre_resolution_golden.
+_MARCH_B_NUMERIC = (
+    "# march_b  (17n)  DIR NOPS OP0..OP7\n"
+    "2 1 2 0 0 0 0 0 0 0\n"
+    "0 6 0 3 1 2 0 3 0 0\n"
+    "0 3 1 2 3 0 0 0 0 0\n"
+    "1 4 1 2 3 2 0 0 0 0\n"
+    "1 3 0 3 2 0 0 0 0 0\n"
+)
+
+
+def test_march_b_is_exactly_17n() -> None:
+    """The literature figure for Suk & Reddy's March B, and the one number an
+    earlier planning note got wrong: it recorded the same quoted sequence as
+    summing to 18n and deferred the algorithm over the discrepancy. The sequence
+    is 1 + 6 + 3 + 4 + 3 = 17."""
+    assert resolve_algo("march_b").length_n == 17
+
+
+def test_march_b_element_shape() -> None:
+    """Pins the actual op sequence, not just its length -- a different sequence
+    that happened to total 17 ops would otherwise slip through."""
+    assert [e.human() for e in resolve_algo("march_b").elements] == [
+        "either w0",
+        "up r0 w1 r1 w0 r0 w1",
+        "up r1 w0 w1",
+        "down r1 w0 w1 w0",
+        "down r0 w1 w0",
+    ]
+
+
+def test_march_b_numeric_serialization_matches_pre_resolution_golden() -> None:
+    spec = resolve_algo("march_b")
+    _assert_numeric_matches_pre_resolution_golden(_MARCH_B_NUMERIC, spec.to_numeric(), spec.elements)

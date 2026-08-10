@@ -1,0 +1,59 @@
+`timescale 1ns/1ps
+
+// {{ algo_name }} ({{ length_n }}n) -- GENERATED from src/autombist/algos/{{ algo_name }}.alg
+// by src/autombist/algo_rtl_gen.py. Do not edit by hand: the .alg file is the
+// source of truth, and this table is a pure function of it.
+//
+// Combinational algorithm table for the classic MBIST path: maps
+// (phase, op_step) -> the control/data the FSM needs for that march step.
+// `phase` is the march element index, `op_step` the op index within it.
+//
+// Direction note: a `.alg` element may be `either`, meaning its traversal
+// direction does not affect what it tests. Here that resolves to "inherit the
+// previous element's direction, defaulting to up" -- which avoids an address-
+// counter rewind between elements, matches the hand-written tables, and is
+// the SAME rule the research-mode engine (march_engine.sv) uses via
+// AlgSpec.to_numeric(): both subsystems call alg_spec.resolve_directions(),
+// so a trailing `either` element runs the same direction everywhere. See
+// that function's docstring for the rule and why it is not arbitrary.
+module {{ module_name }} #(
+    parameter integer DATA_WIDTH = 32
+) (
+    input  logic [2:0]            phase,
+    input  logic [1:0]            op_step,
+    output logic                  phase_dir_up,
+    output logic                  do_read,
+    output logic                  do_write,
+    output logic [DATA_WIDTH-1:0] expected_data,
+    output logic [DATA_WIDTH-1:0] write_data,
+    output logic                  last_step
+);
+
+    localparam logic [DATA_WIDTH-1:0] ALL_ZERO = '0;
+    localparam logic [DATA_WIDTH-1:0] ALL_ONE  = {DATA_WIDTH{1'b1}};
+
+    always_comb begin
+        phase_dir_up  = 1'b1;
+        do_read       = 1'b0;
+        do_write      = 1'b0;
+        expected_data = ALL_ZERO;
+        write_data    = ALL_ZERO;
+        last_step     = 1'b1;
+
+        case (phase)
+{% for arm in arms %}
+{{ arm }}
+
+{% endfor %}
+            // Unreachable given LAST_PHASE = {{ element_count - 1 }} in the FSM; mirrors the
+            // hand-written tables' own default (a benign init write).
+            default: begin
+                phase_dir_up = 1'b1;
+                do_write     = 1'b1;
+                write_data   = ALL_ZERO;
+                last_step    = 1'b1;
+            end
+        endcase
+    end
+
+endmodule

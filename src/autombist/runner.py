@@ -403,6 +403,13 @@ def run_simulation(
             failure_hint = (
                 " The generated saboteur wrapper looks stale or incompatible; run `autombist generate --test` again to refresh the output directory."
             )
+        elif "MBIST reported fail in clean mode" in backend_log_contents:
+            failure_hint = (
+                " A clean (fault-free) run should never fail MBIST; a mismatched "
+                "read_latency is the first thing to check -- it makes the "
+                "controller sample dout at the wrong moment and report failures "
+                "on a perfectly good memory (see docs/source/configuration.md#read-latency)."
+            )
         elif _looks_like_missing_tool(backend_log_contents) or _looks_like_missing_tool(completed.stderr):
             failure_hint = (
                 " This looks like a missing simulation tool: simulate/run need "

@@ -169,6 +169,59 @@ def test_read_latency_omitted_is_unset(
     assert "read_latency" not in load_config(config_path)
 
 
+def test_unknown_top_level_key_rejected(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    """A typo'd top-level key used to sit there unread while the real key it
+    was meant to override silently kept its default -- no error at all."""
+    invalid = dict(base_config)
+    invalid["adr_width"] = 10
+
+    config_path = tmp_path / "typo.yml"
+    _write_yaml(config_path, invalid)
+
+    with pytest.raises(ConfigError, match="Unknown config key 'adr_width'") as exc_info:
+        load_config(config_path)
+    assert "did you mean 'addr_width'" in str(exc_info.value)
+
+
+def test_unknown_top_level_key_error_lists_only_user_facing_keys(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    """The error's suggested key list must stay to what a human can actually
+    write in config.yml -- not autombist_fault_seed and friends, which only
+    ever appear in generate_from_config's own machine-written snapshot."""
+    invalid = dict(base_config)
+    invalid["totally_bogus_key"] = 1
+
+    config_path = tmp_path / "bogus.yml"
+    _write_yaml(config_path, invalid)
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(config_path)
+    message = str(exc_info.value)
+    assert "autombist_" not in message
+    assert "redundancy" in message and "read_latency" in message
+
+
+def test_generate_from_config_round_trips_through_its_own_snapshot(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    """Regression guard for the unknown-top-key check above: generate_from_
+    config writes its OWN config.yml snapshot back into the output directory
+    (with machine-added keys like normalized_ports/algo/autombist_algo), and
+    run_simulation later re-parses that exact file through this same
+    load_config -- so the check must not reject its own round trip."""
+    config_path = tmp_path / "config.yml"
+    _write_yaml(config_path, base_config)
+
+    wrapper_path = generate_from_config(config_path, tmp_path / "out", use_saboteur=True, faults=5)
+
+    snapshot_path = wrapper_path.parent / "config.yml"
+    reloaded = load_config(snapshot_path)
+    assert reloaded["memory_name"] == base_config["memory_name"]
+
+
 def test_generate_with_saboteur_creates_fault_assets(
     tmp_path: Path, base_config: dict[str, object]
 ) -> None:
@@ -239,6 +292,36 @@ def test_cli_help_mentions_version_and_options() -> None:
     assert "ram-synth" in output
     assert "init" in output
     assert "smoke" in output
+
+
+def test_generate_help_does_not_let_rich_markup_eat_the_with_test_annotations() -> None:
+    """generate's docstring uses "[with --test]" to mark which output files
+    are conditional on the --test flag -- but typer renders docstrings through
+    Rich, which treats a bare "[...]" as a (here, invalid) style tag and
+    silently drops it rather than erroring. Without the escape, --help ends up
+    unconditionally listing <memory_name>_saboteur.v/faults/*.hex/Makefile as
+    always-produced output, which is false for a plain (non --test) run."""
+    result = runner.invoke(
+        app, ["generate", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1", "TERM": "dumb"}
+    )
+    assert result.exit_code == 0
+    output = _plain(result.output)
+    assert "[with --test]" in output
+
+
+def test_shell_help_does_not_let_rich_markup_eat_the_tcl_command_examples() -> None:
+    """Same bug, worse consequence: shell's docstring uses Tcl's own
+    "[command ...]" substitution syntax in a worked example (`set cov
+    [simulate -out out]`) -- the SAME character Rich treats as markup, so the
+    entire embedded command used to vanish, leaving a syntactically-broken
+    Tcl fragment ("set cov" with nothing to assign) in --help output."""
+    result = runner.invoke(
+        app, ["shell", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1", "TERM": "dumb"}
+    )
+    assert result.exit_code == 0
+    output = _plain(result.output)
+    assert "set cov [simulate -out out]" in output
+    assert "puts [generate -config config.yml -out out]" in output
 
 
 def test_cli_version() -> None:
@@ -1260,3 +1343,67 @@ def test_cli_smoke_march_raw_wrapper_missing_marker_fails(
 
     assert result.exit_code == 1
     assert "[smoke] FAIL: wrapper missing march_raw_top" in result.output
+
+
+# --------------------------------------------------------------------------- #
+# memory_has_fixed_geometry -- a real compiled macro keeps its own widths.
+#
+# Found by running the tool on sky130_sram_8b1024w: the wrapper passed
+# .ADDR_WIDTH(10)/.DATA_WIDTH(8) into a macro whose compiled values are 11 and
+# 9, so the behavioural model RESIZED to 1024x8 and the macro's real spare
+# column and spare rows vanished from the simulation. Harmless for plain MBIST
+# (which only exercises the logical array either way -- measured), but it meant
+# there was no way to say "this geometry is baked in, do not override it".
+# --------------------------------------------------------------------------- #
+def _wrapper_for(tmp_path: Path, config: dict[str, object], name: str) -> str:
+    config_path = tmp_path / f"{name}.yml"
+    _write_yaml(config_path, config)
+    wrapper = generate_from_config(config_path, tmp_path / name, algo="march-c")
+    return wrapper.read_text(encoding="utf-8")
+
+
+def test_memory_is_parameterized_by_default(tmp_path: Path, base_config: dict[str, object]) -> None:
+    text = _wrapper_for(tmp_path, base_config, "default")
+    assert "sram_1rw #(" in text, text
+
+
+def test_absent_flag_is_byte_identical_to_explicit_false(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    """The zero-blast-radius claim: adding the key changed nothing for configs
+    that do not set it."""
+    absent = _wrapper_for(tmp_path, base_config, "absent")
+    explicit = _wrapper_for(
+        tmp_path, {**base_config, "memory_has_fixed_geometry": False}, "explicit"
+    )
+    assert absent == explicit
+
+
+def test_fixed_geometry_omits_the_memory_parameter_block(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    text = _wrapper_for(
+        tmp_path, {**base_config, "memory_has_fixed_geometry": True}, "fixed"
+    )
+    assert "sram_1rw #(" not in text, text
+    assert "sram_1rw u_sram (" in text, text
+
+
+def test_fixed_geometry_still_parameterizes_our_own_controller(
+    tmp_path: Path, base_config: dict[str, object]
+) -> None:
+    """The flag is about the MEMORY only. march_c_top is this project's own RTL
+    and must keep tracking the config's widths -- an over-broad implementation
+    that stripped every parameter block would break the controller."""
+    text = _wrapper_for(
+        tmp_path, {**base_config, "memory_has_fixed_geometry": True}, "ctrl"
+    )
+    assert "march_c_top #(" in text, text
+    assert ".ADDR_WIDTH(ADDR_WIDTH)" in text, text
+
+
+def test_fixed_geometry_must_be_a_boolean(tmp_path: Path, base_config: dict[str, object]) -> None:
+    config_path = tmp_path / "bad.yml"
+    _write_yaml(config_path, {**base_config, "memory_has_fixed_geometry": "yes"})
+    with pytest.raises(ConfigError, match="memory_has_fixed_geometry must be a boolean"):
+        load_config(config_path)

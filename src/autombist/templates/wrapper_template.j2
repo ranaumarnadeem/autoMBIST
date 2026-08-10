@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 
 {% set has_redundancy = redundancy is defined and redundancy.num_spare_rows > 0 %}
+{% set has_col_repair = has_redundancy and redundancy.num_spare_cols > 0 %}
 {% set has_onchip_selfrepair = has_redundancy and redundancy.onchip_selfrepair %}
 {% set has_onchip_repair_persistence = has_onchip_selfrepair and redundancy.onchip_repair_persistence %}
 {% set mode_signal = "effective_test_mode" if has_onchip_selfrepair else "test_mode" %}
@@ -222,35 +223,106 @@ module {{ wrapper_module_name }} #(
     ) u_repair_remap (
         .addr_in(sram_addr),
         .addr_out(sram_addr_phys)
-{% for rp in repair_ports %}
+{% for rp in repair_ports if rp.bind != 'col' %}
+      , .{{ rp.name }}({{ rp.name }})
+{% endfor %}
+    );
+{% if has_col_repair %}
+
+    // Column redundancy: a second EXTERNAL remap on the DATA path, steering the
+    // bits marked faulty onto spare columns. Independent of the row remap above
+    // (that one is address-only, this one is data-only), so the two compose:
+    // a row-steered access still gets its column steer, on the spare row's own
+    // spare columns. sram_dout is driven from HERE, not from the memory -- the
+    // memory drives sram_dout_phys instead.
+    //
+    // These widths are generator-time CONSTANTS, baked from the config's
+    // data_width -- they do not track an ADDR_WIDTH/DATA_WIDTH override at
+    // instantiation, and neither does the faulty_bit boundary port (whose width
+    // comes from the repair_ports entry). That matches sram_addr_phys above and
+    // the memory instantiation itself: a generated wrapper is built FOR one
+    // memory geometry, and its parameters document that geometry rather than
+    // resize it. Overriding them at instantiation was never supported.
+    logic [{{ redundancy.mem_data_width }}-1:0] sram_din_phys;
+    logic [{{ redundancy.mem_data_width }}-1:0] sram_dout_phys;
+    logic [{{ redundancy.num_spare_cols }}-1:0] sram_spare_wen;
+
+    repair_remap_col #(
+        .DATA_WIDTH(DATA_WIDTH),
+        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+    ) u_repair_remap_col (
+        .din_in(sram_din),
+        .din_out(sram_din_phys),
+        .dout_in(sram_dout_phys),
+        .dout_out(sram_dout),
+        .spare_wen(sram_spare_wen)
+{% for rp in repair_ports if rp.bind == 'col' %}
       , .{{ rp.name }}({{ rp.name }})
 {% endfor %}
     );
 {% endif %}
+{% endif %}
 
+{% if memory_has_fixed_geometry %}
+    // memory_has_fixed_geometry: the memory's widths are compiled in (a real
+    // OpenRAM macro), so no parameter overrides -- passing them would resize a
+    // behavioural model away from the geometry that would actually be built.
+    {{ memory_name }} u_sram (
+{% else %}
     {{ memory_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
+{% if has_col_repair %}
+        .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }}),
+        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+{% else %}
         .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
+{% endif %}
     ) u_sram (
+{% endif %}
         .{{ pdata.clk }}(mbist_sram_clk),
         .{{ pdata.csb }}(sram_csb),
         .{{ pdata.addr }}(sram_addr_phys),
+{% if has_col_repair %}
+        .{{ pdata.din }}(sram_din_phys),
+        .{{ pdata.we }}(sram_we),
+        .{{ pdata.dout }}(sram_dout_phys),
+        .{{ pdata.spare_wen }}(sram_spare_wen)
+{% else %}
         .{{ pdata.din }}(sram_din),
         .{{ pdata.we }}(sram_we),
         .{{ pdata.dout }}(sram_dout)
+{% if pdata.spare_wen %}
+      // Macro has a spare-column write enable but this design does not use
+      // column repair. Tie it off rather than leave a real macro's input
+      // floating -- '0 disables spare-column writes.
+      , .{{ pdata.spare_wen }}('0)
+{% endif %}
+{% endif %}
     );
+{% else %}
+{% if memory_has_fixed_geometry %}
+    // memory_has_fixed_geometry: see the note on the redundancy instantiation
+    // above -- a real compiled macro keeps its own widths.
+    {{ memory_name }} u_sram (
 {% else %}
     {{ memory_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH)
     ) u_sram (
+{% endif %}
         .{{ pdata.clk }}(mbist_sram_clk),
         .{{ pdata.csb }}(sram_csb),
         .{{ pdata.addr }}(sram_addr),
         .{{ pdata.din }}(sram_din),
         .{{ pdata.we }}(sram_we),
         .{{ pdata.dout }}(sram_dout)
+{% if pdata.spare_wen %}
+      // Macro has a spare-column write enable but this design has no
+      // redundancy at all. Tie it off rather than leave a real macro's
+      // input floating -- '0 disables spare-column writes.
+      , .{{ pdata.spare_wen }}('0)
+{% endif %}
     );
 {% endif %}
     {% endfor %}
@@ -497,6 +569,10 @@ module {{ wrapper_module_name }} #(
         .dbg_blocked_bits(sram_dbg_blocked_bits)
     );
 {% else %}
+{% if memory_has_fixed_geometry %}
+    // memory_has_fixed_geometry: a real compiled macro keeps its own widths.
+    {{ memory_name }} u_sram (
+{% else %}
     {{ memory_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH)
@@ -504,6 +580,7 @@ module {{ wrapper_module_name }} #(
       , .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
 {% endif %}
     ) u_sram (
+{% endif %}
     {% for pname, pdata in normalized_ports.items() %}
         {% set suffix = algo_port_suffixes[pname] %}
         {% set port_addr = "sram_addr_phys" if has_onchip_selfrepair else "sram_addr" ~ suffix %}
@@ -517,6 +594,9 @@ module {{ wrapper_module_name }} #(
         .{{ pdata.csb }}(sram_csb{{ suffix }}),
         .{{ pdata.we }}(sram_we{{ suffix }}),
         .{{ pdata.addr }}({{ port_addr }}),
+        {% if pdata.spare_wen %}
+        .{{ pdata.spare_wen }}('0),   // tied off: no column repair on this design
+        {% endif %}
         .{{ pdata.din }}(sram_din{{ suffix }}){{ "," if not loop.last }}
         {% elif pdata.type == "rw" %}
         .{{ pdata.clk }}(mbist_sram_clk{{ suffix }}),
@@ -524,6 +604,9 @@ module {{ wrapper_module_name }} #(
         .{{ pdata.we }}(sram_we{{ suffix }}),
         .{{ pdata.addr }}({{ port_addr }}),
         .{{ pdata.din }}(sram_din{{ suffix }}),
+        {% if pdata.spare_wen %}
+        .{{ pdata.spare_wen }}('0),   // tied off: no column repair on this design
+        {% endif %}
         .{{ pdata.dout }}(sram_dout{{ suffix }}){{ "," if not loop.last }}
         {% endif %}
     {% endfor %}

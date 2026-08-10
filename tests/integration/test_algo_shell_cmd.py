@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -111,6 +112,182 @@ def test_export_tb_produces_runnable_bundle(tmp_path: Path) -> None:
     ])
     for name in ("fault_ram.sv", "march_engine.sv", "openram_shim.sv", "run_campaign.sh", "faults.txt"):
         assert (bundle_dir / name).exists(), name
+
+
+def test_run_campaign_sh_runs_a_non_builtin_algo_from_its_own_bundle(tmp_path: Path) -> None:
+    """The bug: run_campaign.sh only ever passed +ALG=<name> to the engine,
+    which understands exactly 3 hardcoded table names (MATSP/MARCHCM/MARCHSS).
+    Every OTHER algorithm -- march_x, march_b, or a custom .alg -- has no
+    built-in table at all, even though export_tb writes it a same-named
+    <name>.algc file specifically so it CAN be run. Running the bundle's own
+    march_x.algc via ./run_campaign.sh faults.txt march_x used to abort with
+    "FATAL: unknown +ALG=march_x" -- the algorithm the bundle exists to
+    demonstrate could never actually be run from it.
+
+    Verified negative control: delete the .algc file the fix depends on and
+    confirm the ORIGINAL failure mode reproduces, proving the fix (not
+    something else -- a different Verilator version, a stale build) is what
+    makes the positive case pass. Also pins a second, related fix: the
+    golden-run check used to pipe RUN's output straight through
+    `grep '^RESULT'` before capturing it, so a crash with no RESULT line at
+    all -- like this one -- left the caller with "golden run FAILED: " and no
+    reason. It now captures the raw output first, so the simulator's own
+    "FATAL: unknown +ALG=march_x" is what a caller actually sees."""
+    faults = find_engine_dir() / "faults.example.txt"
+    bundle_dir = tmp_path / "bundle"
+    _run_script([
+        "set_memory 8 8",
+        f"load_faults {faults}",
+        f"export_tb {bundle_dir}",
+    ])
+    algc = bundle_dir / "march_x.algc"
+    assert algc.exists(), "export_tb should have written march_x.algc"
+
+    def run_campaign() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "run_campaign.sh", "faults.txt", "march_x"],
+            cwd=bundle_dir, capture_output=True, text=True, check=False, timeout=300,
+        )
+
+    result = run_campaign()
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "golden: clean" in result.stdout, combined
+    # March X's measured coverage against faults.example.txt at 8x8 -- see
+    # docs/source/algo-shell-guide.md's "How `either` gets resolved".
+    assert "coverage: 13 / 19 detected" in result.stdout, combined
+
+    algc.unlink()
+    broken = run_campaign()
+    assert broken.returncode == 1, broken.stdout + broken.stderr
+    assert "golden run FAILED: FATAL: unknown +ALG=march_x" in broken.stdout, broken.stdout + broken.stderr
+
+
+def test_run_campaign_sh_still_uses_the_builtin_table_with_no_algc_present(tmp_path: Path) -> None:
+    """The fix's fallback branch: run_campaign.sh's ORIGINAL, still-documented
+    use is running the engine's 3 fixed built-in tables directly (no exported
+    bundle, no .algc files around at all) -- e.g. straight from
+    src/autombist/engine. That path must be untouched by the .algc-preferring
+    fix above. Uses MARCHCM, whose built-in table is march_c's -- and, since
+    the either-direction fix landed earlier this session, is now provably
+    identical to march_c.algc's content, so 14/19 is the correct expectation
+    either way this ever ran."""
+    faults = find_engine_dir() / "faults.example.txt"
+    bundle_dir = tmp_path / "bundle"
+    _run_script([
+        "set_memory 8 8",
+        f"load_faults {faults}",
+        f"export_tb {bundle_dir}",
+    ])
+    for algc in bundle_dir.glob("*.algc"):
+        algc.unlink()
+    assert not list(bundle_dir.glob("*.algc")), "must simulate a directory with no .algc files at all"
+
+    result = subprocess.run(
+        ["bash", "run_campaign.sh", "faults.txt", "MARCHCM"],
+        cwd=bundle_dir, capture_output=True, text=True, check=False, timeout=300,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "golden: clean" in result.stdout, combined
+    assert "coverage: 14 / 19 detected" in result.stdout, combined
+
+
+# A fault-list line whose type isn't in the registry makes fault_ram.sv's
+# whole-file parse FATAL (see "unknown fault type" in fault_ram.sv) -- and it
+# does so for EVERY +FAULT_INDEX invocation, since the entire file is
+# re-parsed from scratch before the index is even applied. That gives a
+# deterministic, no-RESULT-line crash for a per-fault run, which is exactly
+# the scenario the golden-run fix's sibling bug needed: the loop that used to
+# write these to the CSV as ESCAPED, indistinguishable from a genuine
+# non-detection.
+_ONE_BAD_FAULT_TYPE = "SA0 0 0 0 0 0 0\nNOT_A_REAL_TYPE 0 0 0 0 0 0\n"
+
+
+def _bundle_with_builtin_algo(tmp_path: Path, name: str) -> Path:
+    faults = find_engine_dir() / "faults.example.txt"
+    bundle_dir = tmp_path / name
+    _run_script([
+        "set_memory 8 8",
+        f"load_faults {faults}",
+        f"export_tb {bundle_dir}",
+    ])
+    (bundle_dir / "faults.txt").write_text(_ONE_BAD_FAULT_TYPE, encoding="utf-8")
+    return bundle_dir
+
+
+def test_run_campaign_sh_marks_a_crashed_fault_run_as_error_not_escaped(tmp_path: Path) -> None:
+    """The per-fault loop's own version of the golden-run bug: it already had
+    the FULL raw output in $OUT (unlike the golden-run pipe-straight-into-grep
+    case), but never used it -- a crashed run (no RESULT line) fell through
+    to the same `else` branch as a genuine non-detection and was written to
+    the CSV as ESCAPED, silently. That understates coverage with an
+    infrastructure failure with no visible sign anywhere in the output.
+
+    The control against over-classification -- that ERROR is specific to
+    crashes and not applied blanket -- is the sibling test below, which runs
+    the same script over a VALID fault list and requires DETECTED/ESCAPED with
+    no warnings at all.
+
+    (An earlier version of this test fetched the pre-fix script via
+    `git show HEAD:...` to demonstrate the old ESCAPED behaviour. That was
+    self-invalidating: once the fix was committed, HEAD became the fixed
+    script and the control compared it against itself. A negative control must
+    not be anchored to a moving reference.)"""
+    bundle_dir = _bundle_with_builtin_algo(tmp_path, "bundle")
+
+    result = subprocess.run(
+        ["bash", "run_campaign.sh", "faults.txt", "march_c"],
+        cwd=bundle_dir, capture_output=True, text=True, check=False, timeout=300,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined  # golden run doesn't touch faults.txt at all
+    assert "golden: clean" in result.stdout, combined
+
+    csv_rows = (bundle_dir / "campaign_march_c.csv").read_text(encoding="utf-8").splitlines()
+    # Every +FAULT_INDEX=N run re-parses the SAME 2-line fault list from
+    # scratch, so the type-check FATAL on the bad line 2 fires on every run
+    # regardless of which index it's seeking. fault_ram.sv's had_fatal guard
+    # (the fatal-cascade fix) now skips the whole FAULT_INDEX/FAULT_LOADED
+    # section once that FATAL fires, so neither run ever prints a
+    # FAULT_LOADED line -- both rows have an empty type, not just index 1's.
+    # Confirmed empirically, not assumed.
+    assert csv_rows[1:] == ["0,,ERROR,,,", "1,,ERROR,,,"], csv_rows
+    assert result.stderr.count("produced no RESULT line") == 2, combined
+    assert "NOT_A_REAL_TYPE" in result.stderr, combined
+    assert "coverage: 0 / 2 detected (2 run(s) errored" in result.stdout, combined
+
+
+def test_run_campaign_sh_still_reports_escaped_for_a_genuine_non_detection(tmp_path: Path) -> None:
+    """The control against the opposite failure: ERROR must be specific to a
+    crashed run, not applied to anything that isn't DETECTED. Runs the same
+    script over a VALID two-fault list -- SA0, which March C- catches, and SOF,
+    which it genuinely misses (see the coverage table in engine/README.md) --
+    and requires the classic DETECTED/ESCAPED split with no error path taken.
+
+    Without this, the crash test above would still pass if the script simply
+    labelled every non-detection ERROR."""
+    bundle_dir = _bundle_with_builtin_algo(tmp_path, "bundle_valid")
+    (bundle_dir / "faults.txt").write_text(
+        "SA0 10 3 0 0 0 0\nSOF 70 5 0 0 0 0\n", encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        ["bash", "run_campaign.sh", "faults.txt", "march_c"],
+        cwd=bundle_dir, capture_output=True, text=True, check=False, timeout=300,
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "golden: clean" in result.stdout, combined
+
+    csv_rows = (bundle_dir / "campaign_march_c.csv").read_text(encoding="utf-8").splitlines()
+    assert csv_rows[1].startswith("0,SA0,DETECTED,"), csv_rows
+    assert csv_rows[2] == "1,SOF,ESCAPED,,,", csv_rows
+    # No ERROR row, no warning, and the summary keeps its original wording --
+    # the errored-run suffix must appear only when a run actually errored.
+    assert "ERROR" not in "\n".join(csv_rows), csv_rows
+    assert "produced no RESULT line" not in combined, combined
+    assert "coverage: 1 / 2 detected  ->" in result.stdout, combined
 
 
 # --------------------------------------------------------------------------- #

@@ -61,6 +61,91 @@ def test_set_memory_rejects_invalid_ports() -> None:
     assert "error:" in _output(shell)
 
 
+def test_set_memory_defaults_words_per_row_to_1() -> None:
+    shell = _shell()
+    shell.onecmd("set_memory 8 8")
+    assert shell.session.mem.words_per_row == 1
+    assert "words_per_row=1" in _output(shell)
+
+
+def test_set_memory_words_per_row_flag() -> None:
+    shell = _shell()
+    shell.onecmd("set_memory 8 8 --words-per-row 4")
+    assert shell.session.mem == MemoryParams(addr_width=8, data_width=8, words_per_row=4)
+    assert "words_per_row=4" in _output(shell)
+
+
+def test_set_memory_rejects_words_per_row_below_1() -> None:
+    shell = _shell()
+    shell.onecmd("set_memory 8 8 --words-per-row 0")
+    assert shell.session.mem is None
+    assert "error:" in _output(shell)
+
+
+def test_set_memory_rejects_words_per_row_exceeding_depth() -> None:
+    # Regression test: an adversarial review found this was silently accepted
+    # (only "< 1" was checked), deferring the real error until `run` finally
+    # reached compile_engine -- potentially after faults were already built
+    # up around a nonsensical memory shape. addr_width=3 -> depth=8.
+    shell = _shell()
+    shell.onecmd("set_memory 3 8 --words-per-row 100")
+    assert shell.session.mem is None
+    assert "error:" in _output(shell)
+    assert "exceeds depth" in _output(shell)
+
+
+def test_set_memory_rejects_words_per_row_not_a_divisor_of_depth() -> None:
+    # addr_width=3 -> depth=8; 3 does not evenly divide 8.
+    shell = _shell()
+    shell.onecmd("set_memory 3 8 --words-per-row 3")
+    assert shell.session.mem is None
+    assert "error:" in _output(shell)
+    assert "does not evenly divide" in _output(shell)
+
+
+def test_add_fault_hsd_warns_at_default_words_per_row() -> None:
+    shell = _shell()
+    shell.onecmd("set_memory 8 8")
+    shell.onecmd("add_fault HSD 10 3 0 0 1 0")
+    assert len(shell.session.faults) == 1
+    assert "WARNING" in _output(shell)
+    assert "words_per_row" in _output(shell)
+
+
+def test_add_fault_hsd_no_warning_when_words_per_row_over_1() -> None:
+    shell = _shell()
+    shell.onecmd("set_memory 8 8 --words-per-row 4")
+    shell.onecmd("add_fault HSD 10 3 0 0 1 0")
+    assert len(shell.session.faults) == 1
+    assert "WARNING" not in _output(shell)
+
+
+def test_add_fault_hsd_warns_before_set_memory() -> None:
+    # session.mem is None before any set_memory call -- the warning helper
+    # must treat that as words_per_row=1 (the default), not crash.
+    shell = _shell()
+    shell.onecmd("add_fault HSD 10 3 0 0 1 0")
+    assert len(shell.session.faults) == 1
+    assert "WARNING" in _output(shell)
+
+
+def test_add_fault_non_hsd_never_warns() -> None:
+    shell = _shell()
+    shell.onecmd("set_memory 8 8")
+    shell.onecmd("add_fault SA0 10 3")
+    assert "WARNING" not in _output(shell)
+
+
+def test_load_faults_hsd_warns_at_default_words_per_row(tmp_path: Path) -> None:
+    faults_path = tmp_path / "f.txt"
+    faults_path.write_text("HSD 10 3 0 0 1 0\n", encoding="utf-8")
+    shell = _shell()
+    shell.onecmd("set_memory 8 8")
+    shell.onecmd(f"load_faults {faults_path}")
+    assert len(shell.session.faults) == 1
+    assert "WARNING" in _output(shell)
+
+
 def test_add_algo_from_file(tmp_path: Path) -> None:
     algfile = tmp_path / "custom.alg"
     algfile.write_text("either w0\nup r0 w1\n", encoding="utf-8")
@@ -119,7 +204,7 @@ def test_gen_faults_all_types() -> None:
     shell = _shell()
     shell.onecmd("set_memory 8 8")
     shell.onecmd("gen_faults --all-types")
-    assert len(shell.session.faults) == 19  # one of each built-in primitive
+    assert len(shell.session.faults) == 20  # 19 built-in primitives + DRF (single-port)
 
 
 def test_gen_faults_random_is_seed_reproducible() -> None:

@@ -68,6 +68,12 @@ def _resolve_config_path(config: Path | None) -> Path:
 
 
 def _resolve_module_outdir(out: Path) -> Path:
+    # Every path this returns eventually becomes OUTDIR in a `make -C
+    # hardware_dir ...` invocation (runner.py's _build_clean_command/
+    # _build_fault_command) that runs with cwd=project_root, not the caller's
+    # cwd -- a relative --out (the default) would then resolve against the
+    # wrong directory and die with a raw "No rule to make target".
+    out = out.resolve()
     has_wrapper = any(out.glob("*_mbist.v"))
     has_config_snapshot = (out / "config.yml").exists()
     has_fault_makefile = (out / "Makefile").exists()
@@ -165,6 +171,11 @@ def _generate(
     pulse_width_ns: int,
     algo: str,
 ) -> Path:
+    # See _resolve_module_outdir's comment -- the generated wrapper's directory
+    # feeds the same make invocation, so a relative --out has to become
+    # absolute here too, before generate_from_config ever joins it with the
+    # memory name.
+    out = out.resolve()
     try:
         return generate_from_config(
             config,
@@ -216,11 +227,19 @@ def _simulate(
 
     ok, coverage = coverage_meets_threshold(result.report, min_coverage)
     if not ok:
-        typer.secho(
-            f"autombist: coverage {coverage:.2f}% is below --min-coverage {min_coverage:.2f}%",
-            err=True,
-            fg=typer.colors.RED,
-        )
+        if coverage is None:
+            typer.secho(
+                f"autombist: --min-coverage {min_coverage:.2f}% was requested but the "
+                "simulator reported no coverage number to check it against",
+                err=True,
+                fg=typer.colors.RED,
+            )
+        else:
+            typer.secho(
+                f"autombist: coverage {coverage:.2f}% is below --min-coverage {min_coverage:.2f}%",
+                err=True,
+                fg=typer.colors.RED,
+            )
         raise typer.Exit(code=1)
 
 
@@ -352,7 +371,7 @@ def generate(
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
     algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, march-2rw, march-x, or mats-plus"),
 ) -> None:
-    """Generate MBIST wrapper, RTL, and optionally fault masks.
+    r"""Generate MBIST wrapper, RTL, and optionally fault masks.
 
     This command creates SystemVerilog wrapper modules and copies the MBIST
     algorithm RTL into the output directory. Optionally generates fault masks
@@ -360,11 +379,14 @@ def generate(
 
     Output: out/<memory_name>/
       - <memory_name>_mbist.v (main wrapper)
-      - mbist_algo.sv, mbist_fsm.sv, mbist_top.sv (core MBIST RTL)
-      - march_c/ or march_raw/ (algorithm-specific files)
-      - [with --test] <memory_name>_saboteur.v (fault injection wrapper)
-      - [with --test] faults/*.hex (fault masks)
-      - [with --test] Makefile (for running simulation)
+      - <algo>/ e.g. march_c/ -- the selected algorithm's RTL only
+        (<algo>_algo.sv, <algo>_fsm.sv, <algo>_top.sv)
+      - sram_model.sv and the shared repair/self-repair RTL
+        (repair_remap_row.sv, repair_remap_col.sv, sram_model_spares.sv,
+        onchip_row_repair_analyzer.sv, onchip_selfrepair_ctrl.sv, ...)
+      - \[with --test] <memory_name>_saboteur.v (fault injection wrapper)
+      - \[with --test] faults/*.hex (fault masks)
+      - \[with --test] Makefile (for running simulation)
 
     Examples:
       autombist generate --config config.yml
@@ -514,7 +536,7 @@ def grade_controller(
 def test(
     addr_width: int = typer.Option(..., "--addr-width", "-aw", help="Memory address width in bits"),
     data_width: int = typer.Option(..., "--data-width", "-dw", help="Memory data width in bits"),
-    algo: str = typer.Option("march_c", "--algo", help="Built-in algorithm name (march_c, mats_plus, march_ss, march_x) or a path to a .alg file"),
+    algo: str = typer.Option("march_c", "--algo", help="Built-in algorithm name (march_b, march_c, march_c_plus, march_ss, march_x, march_y, mats_plus) or a path to a .alg file"),
     fsm: Path | None = typer.Option(None, "--fsm", help="Validate a controller FSM .sv instead of an algorithm (takes precedence over --algo); sibling .sv/.v files in its directory are gathered automatically"),
     faults: Path = typer.Option(..., "--faults", help="Fault-list file: 'TYPE VADDR VBIT AADDR ABIT P0 P1' per line"),
     fault_types: Path | None = typer.Option(None, "--fault-types", help="JSON file with a list of custom fault-primitive specs, added to the built-in 19 (see fault_primitives.py for the schema)"),
@@ -669,9 +691,9 @@ def algo(
     Register algorithms (add_algo) and fault instances (add_fault/load_faults/
     gen_faults), run a campaign (run), compare against built-in marches
     (compare_algo), and export a report (write_report) or a standalone
-    testbench bundle (export_tb). Built-in algorithms (march_c, mats_plus,
-    march_ss, march_x) are preloaded. Type 'help' inside the shell for the
-    full command list.
+    testbench bundle (export_tb). Built-in algorithms (march_b, march_c,
+    march_c_plus, march_ss, march_x, march_y, mats_plus) are preloaded. Type
+    'help' inside the shell for the full command list.
 
     Examples:
       autombist algo
@@ -1221,7 +1243,7 @@ def shell(
     doctor. Commands return Tcl-usable values (e.g. `simulate` returns the
     coverage percent) so sessions script naturally:
 
-        set cov [simulate -out out]
+        set cov \\[simulate -out out]
         if {$cov < 90} { error "coverage too low" }
 
     Failures raise real Tcl errors, catchable via Tcl's own `catch`. Without
@@ -1239,7 +1261,7 @@ def shell(
     Examples:
       autombist shell
       autombist shell --file session.tcl
-      printf 'puts [generate -config config.yml -out out]\\n' | autombist shell
+      printf 'puts \\[generate -config config.yml -out out]\\n' | autombist shell
     """
     from .tcl_shell import TclShellUnavailable
 

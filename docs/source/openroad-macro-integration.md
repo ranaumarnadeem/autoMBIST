@@ -213,7 +213,15 @@ its concurrent same-cycle dual compare breaks the analyzer's
 single-fail-per-cycle assumption — a documented scope boundary, not a gap to
 be closed later without new arbitration RTL.
 
-### Tier 2 — LibreLane-integrable / tapeout-ready repairable macro
+### Tier 2 — LibreLane-integrable repairable macro
+
+This tier proves physical *integration* — the top-level LibreLane
+place-and-route closure, treating each macro as opaque hard IP — not full
+tapeout signoff: a real macro Liberty `.lib` (timing) and a merged
+full-hierarchy DRC pass are still open (see {doc}`librelane`), and
+per-macro DRC/LVS signoff for these specific demo macros' own GDS is
+currently unresolved (a stale vendored OpenRAM checkout, not a defect in
+this project's RTL — see {doc}`challenges`).
 
 Because repair pins never touch the macro's own views, hardening a self-repair
 design in LibreLane needed **no new LEF/Liberty/`vh`/GDS work at all** — the
@@ -221,7 +229,14 @@ real macros' pre-existing widened `addr0` + `spare_wen0` pins (already present
 whenever OpenRAM is asked for spare rows) were sufficient. This has now been
 proven clean through the full LibreLane RTL-to-GDS flow for three single-port
 algorithms, each wrapping an unmodified real OpenRAM macro (`.spare_wen0(1'b0)`,
-no macro modification):
+no macro modification — these all use the *autonomous on-chip* path, which is
+row-only, so their spare column is present but unused. The `sram_wrap_*`
+adapters take a `NUM_SPARE_COLS` parameter, default 0, that surfaces the
+macro's `spare_wen0` as a real port for a tester-driven column-repair wrapper
+to drive from `repair_remap_col`; column repair itself is proven functionally
+against a real spare-column macro in
+`tests/integration/test_repair_col_real_macro_e2e.py`, though no
+column-repairing design has been hardened yet):
 
 - march-C, wrapping 3 real macros in a multi-memory subsystem
   (`flow/multimem/mbist/`).
@@ -237,7 +252,7 @@ stages with LVS and Antenna both passing; DRC is not clean, and the dominant
 finding traces to a documented, currently-unresolved OpenROAD/sky130 tapcell
 limitation ([OpenROAD#7118](https://github.com/The-OpenROAD-Project/OpenROAD/issues/7118),
 [OpenLane#1140](https://github.com/The-OpenROAD-Project/OpenLane/issues/1140)),
-not to this project's RTL or LibreLane config — four independent, targeted
+not to this project's RTL or LibreLane config — three independent, targeted
 attempts (floorplan, tap-cell distance, macro halo) confirmed it doesn't
 respond to anything under this project's control. See `flow/newalgo/README.md`
 for the full breakdown. march-2rw is out of scope entirely (see above), so

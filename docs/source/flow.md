@@ -9,7 +9,7 @@ understand the codebase.
 | Entry points | `generate` / `simulate` / `run` | `test` / `algo` |
 | Simulator | Icarus Verilog (cocotb) | Verilator 5.x |
 | Subject under test | A real memory macro, wrapped | A behavioral fault-injectable RAM model — no real macro |
-| Fault model | Structural array faults (stuck-at, transition, port-coupling) | 19 functional fault primitives |
+| Fault model | Structural array faults (stuck-at, transition, port-coupling) | 21 functional fault primitives |
 | Answers | "Does the generated wrapper catch faults on *this* memory, synthesizably?" | "How good is this march algorithm, against a known fault model?" |
 
 ## Classic path — RTL wrapping
@@ -49,7 +49,7 @@ flowchart LR
     J --> K["report / matrix / diagnosis"]
 ```
 
-`fault_primitives.py` is a declarative DSL: 15 of the 19 built-in fault types
+`fault_primitives.py` is a declarative DSL: 15 of the 21 built-in fault types
 are expressed as `(category, sensitize, effect)` triples, so a researcher can
 register a *new* fault type from the shell without writing SystemVerilog.
 `algo_engine.py` compiles the fault model plus either the march-algorithm

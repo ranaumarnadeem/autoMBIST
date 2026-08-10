@@ -86,6 +86,86 @@ def test_repair_pins_bind_to_remap_and_memory_uses_phys_addr(tmp_path: Path) -> 
 
 
 # --------------------------------------------------------------------------- #
+# Column repair (Workstream M.1): a SECOND external remap on the data path.
+# --------------------------------------------------------------------------- #
+COL_PORTS = {**BASE_CONFIG["ports"], "spare_wen": "spare_wen0"}
+COL_REPAIR_PORTS = [
+    *REPAIR_PORTS,
+    {"name": "col_repair_en", "width": 1, "dir": "input"},
+    {"name": "faulty_bit", "width": 2, "dir": "input"},   # 1 spare * bit_index_width(2)
+]
+
+
+def _col_redundant() -> dict:
+    return {
+        **BASE_CONFIG,
+        "ports": COL_PORTS,
+        "redundancy": {"num_spare_rows": 2, "num_spare_cols": 1},
+        "repair_ports": COL_REPAIR_PORTS,
+    }
+
+
+def test_row_only_wrapper_has_no_trace_of_column_repair(tmp_path: Path) -> None:
+    """The byte-identity guarantee, asserted rather than assumed: a row-only
+    config must render exactly as it did before column repair existed."""
+    text = _render(tmp_path, _redundant(), "row_only")
+    for token in (
+        "repair_remap_col", "u_repair_remap_col", "sram_din_phys",
+        "sram_dout_phys", "sram_spare_wen", "NUM_SPARE_COLS",
+    ):
+        assert token not in text, f"row-only wrapper leaked {token!r}"
+
+
+def test_column_repair_instantiates_the_data_path_remap(tmp_path: Path) -> None:
+    text = _render(tmp_path, _col_redundant(), "with_col")
+    assert "repair_remap_col #(" in text
+    assert ") u_repair_remap_col (" in text
+    assert ".NUM_SPARE_COLS(1)" in text
+    # mem_data_width = data_width(4) + num_spare_cols(1) = 5
+    assert "logic [5-1:0] sram_din_phys;" in text
+    assert "logic [5-1:0] sram_dout_phys;" in text
+    assert "logic [1-1:0] sram_spare_wen;" in text
+
+
+def test_column_and_row_pins_bind_to_their_own_remaps(tmp_path: Path) -> None:
+    """The R2 hazard: the repair_ports loop is generic, so without the bind
+    partition a column pin would be bound into repair_remap_row -- a module
+    that has no such port (an elaboration error), or worse, a typo'd column
+    pin silently routing to the row remap."""
+    text = _render(tmp_path, _col_redundant(), "bind_split")
+    row_inst = text.split(") u_repair_remap (")[1].split(");")[0]
+    col_inst = text.split(") u_repair_remap_col (")[1].split(");")[0]
+
+    assert ".row_repair_en(row_repair_en)" in row_inst
+    assert ".faulty_row_addr(faulty_row_addr)" in row_inst
+    assert "col_repair_en" not in row_inst
+    assert "faulty_bit" not in row_inst
+
+    assert ".col_repair_en(col_repair_en)" in col_inst
+    assert ".faulty_bit(faulty_bit)" in col_inst
+    assert "row_repair_en" not in col_inst
+    assert "faulty_row_addr" not in col_inst
+
+
+def test_column_repair_hands_the_dout_driver_to_the_col_remap(tmp_path: Path) -> None:
+    """The R5 hazard: sram_dout must be driven by the col remap, and the memory
+    must drive sram_dout_phys instead -- a leftover double-drive would yield X
+    that looks like a functional fault rather than a wiring bug."""
+    text = _render(tmp_path, _col_redundant(), "dout_handoff")
+    mem_inst = text.split(") u_sram (")[1].split(");")[0]
+    assert ".dout0(sram_dout_phys)" in mem_inst
+    assert ".din0(sram_din_phys)" in mem_inst
+    assert ".spare_wen0(sram_spare_wen)" in mem_inst
+    # The memory must NOT also drive the logical dout/din.
+    assert ".dout0(sram_dout)" not in mem_inst
+    assert ".din0(sram_din)" not in mem_inst
+
+    col_inst = text.split(") u_repair_remap_col (")[1].split(");")[0]
+    assert ".dout_out(sram_dout)" in col_inst
+    assert ".din_in(sram_din)" in col_inst
+
+
+# --------------------------------------------------------------------------- #
 # Validation teeth: malformed repair_ports still rejected in _validate_repair_ports
 # (which runs BEFORE the redundancy biconditional, so these fire regardless).
 # --------------------------------------------------------------------------- #

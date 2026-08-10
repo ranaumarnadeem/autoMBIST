@@ -59,7 +59,7 @@ def test_parse_flags_bare_trailing_switch_is_boolean_one() -> None:
 
 
 def test_parse_flags_rejects_non_flag_leading_token() -> None:
-    with pytest.raises(ValueError, match="expected a -flag"):
+    with pytest.raises(RuntimeError, match="expected a -flag"):
         _parse_flags(("not-a-flag", "value"))
 
 
@@ -96,12 +96,22 @@ def test_parse_flags_still_treats_dash_word_as_new_flag() -> None:
 
 
 def test_pop_required_raises_when_missing() -> None:
-    with pytest.raises(ValueError, match="missing required flag -config"):
+    with pytest.raises(RuntimeError, match="missing required flag -config"):
         _pop_required({}, "-config")
 
 
+def test_pop_required_names_a_typo_d_flag_present_in_the_remaining_flags() -> None:
+    """A typo'd flag (-confi for -config) still parses fine as its own flag,
+    so it sits in the dict under the wrong key while -config is genuinely
+    absent -- the naive message blames the wrong thing (implies nothing was
+    passed at all). Check for a close spelling match among what's actually
+    there and name it directly."""
+    with pytest.raises(RuntimeError, match=r"missing required flag -config -- got '-confi', did you mean '-config'\?"):
+        _pop_required({"-confi": "c.yml"}, "-config")
+
+
 def test_reject_unknown_raises_on_leftover_flags() -> None:
-    with pytest.raises(ValueError, match="unknown flag"):
+    with pytest.raises(RuntimeError, match="unknown flag"):
         _reject_unknown({"-bogus": "1"})
 
 
@@ -217,6 +227,31 @@ def test_simulate_command_min_coverage_gate_raises_catchable_error(
         "{ set result $err } else { set result {NO ERROR} }"
     )
     assert "below -min-coverage" in caught
+
+
+def test_simulate_command_min_coverage_gate_fails_when_coverage_was_never_reported(
+    shell: TclShell, tmp_path: Path, monkeypatch
+) -> None:
+    """The Tcl twin of test_run_min_coverage_gate_fails_when_coverage_was_never_
+    reported in test_cli.py: a gate that was actually requested must not
+    silently pass just because coverage_percent is missing, and the error
+    path must not crash trying to format None with :.2f."""
+    module_outdir = tmp_path / "out" / "sram_1rw"
+    module_outdir.mkdir(parents=True)
+    (module_outdir / "sram_1rw_mbist.v").write_text("// stub\n", encoding="utf-8")
+    (module_outdir / "config.yml").write_text("memory_name: sram_1rw\n", encoding="utf-8")
+
+    class _FakeResult:
+        report = {"fault_metrics": {}, "status": "pass"}
+
+    monkeypatch.setattr(tcl_shell_mod, "run_simulation", lambda outdir, **kw: _FakeResult())
+    monkeypatch.setattr(tcl_shell_mod, "format_simulation_summary", lambda report: "SUMMARY")
+
+    caught = shell.eval(
+        f"if {{[catch {{simulate -out {_q(tmp_path / 'out')} -min-coverage 90}} err]}} "
+        "{ set result $err } else { set result {NO ERROR} }"
+    )
+    assert "reported no coverage number" in caught
 
 
 def test_run_command_generates_then_simulates(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
@@ -664,6 +699,44 @@ def test_wrap_prints_traceback_for_unexpected_exception_but_not_runtimeerror(
     stderr = capsys.readouterr().err
     assert "Traceback" in stderr
     assert "TypeError" in stderr
+
+
+def test_wrap_does_not_print_traceback_for_a_typo_d_flag(
+    shell: TclShell, capsys
+) -> None:
+    """The regression this guards: _parse_flags/_pop_required/_reject_unknown
+    used to raise bare ValueError, which _wrap's isinstance(exc, RuntimeError)
+    check does NOT treat as expected -- so a simple typo'd flag dumped a full
+    Python traceback to stderr, exactly like a genuine internal bug would.
+    These are ordinary user-input mistakes and must produce a clean message
+    with no traceback, matching every other _cmd_* domain error."""
+    caught = shell.eval(
+        "if {[catch {generate -config c.yml -tets} err]} { set result $err } else { set result {NO ERROR} }"
+    )
+    assert caught == "generate: unknown flag(s): -tets"
+    stderr = capsys.readouterr().err
+    assert "Traceback" not in stderr
+
+
+def test_wrap_does_not_print_traceback_for_a_typo_d_required_flag(
+    shell: TclShell, capsys
+) -> None:
+    caught = shell.eval(
+        "if {[catch {generate -confi c.yml} err]} { set result $err } else { set result {NO ERROR} }"
+    )
+    assert caught == "generate: missing required flag -config -- got '-confi', did you mean '-config'?"
+    stderr = capsys.readouterr().err
+    assert "Traceback" not in stderr
+
+
+def test_pop_int_bad_value_raises_runtimeerror_not_bare_valueerror() -> None:
+    with pytest.raises(RuntimeError, match=r"flag -seed expects an integer, got 'abc'"):
+        _pop_int({"-seed": "abc"}, "-seed")
+
+
+def test_pop_float_bad_value_raises_runtimeerror_not_bare_valueerror() -> None:
+    with pytest.raises(RuntimeError, match=r"flag -min-coverage expects a number, got 'abc'"):
+        _pop_float({"-min-coverage": "abc"}, "-min-coverage")
 
 
 def test_doctor_command_returns_missing_tools_list(shell: TclShell, monkeypatch) -> None:

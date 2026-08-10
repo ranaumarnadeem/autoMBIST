@@ -65,6 +65,42 @@ def test_build_simulation_report_falls_back_to_requested_faults(tmp_path: Path) 
     assert "coverage: not reported by the simulator" in report["summary"]
 
 
+def test_build_simulation_report_clean_run_never_fabricates_injected_faults(tmp_path: Path) -> None:
+    """A clean (non-saboteur) run's stdout never prints "Injected faults:"/
+    "Fault count:" -- no faults were injected, so `faults` (the CLI's
+    --faults COUNT REQUESTED, defaulted to 50 and threaded through generate/
+    run regardless of --test) must NOT be used as a fallback. It used to be,
+    reporting "injected faults: 50" on a run that injected nothing."""
+    report = build_simulation_report(
+        tool_version="0.3.1",
+        config={
+            "memory_name": "input_demo_8x16_scn4m",
+            "wrapper_module_name": "input_demo_8x16_scn4m_mbist",
+            "addr_width": 4,
+            "data_width": 8,
+            "we_active_low": True,
+        },
+        command=["make", "-C", "out/input_demo_8x16_scn4m", "sim"],
+        cwd=tmp_path,
+        log_path=tmp_path / "simulate.log",
+        report_path=tmp_path / "reports" / "latest.json",
+        returncode=0,
+        runtime_seconds=1.234,
+        stdout="[autombist] Result: PASS\n",
+        stderr="",
+        use_saboteur=False,
+        faults=50,   # the CLI default, unused/irrelevant on the clean path
+        fault_seed=None,
+        fault_type="stuck-at",
+        pulse_width_ns=2,
+        algo="march-c",
+        results_xml_path=tmp_path / "results.xml",
+    )
+
+    assert report["fault_metrics"]["injected_faults"] is None
+    assert "injected faults" not in format_simulation_summary(report)
+
+
 def test_parse_fault_metrics_from_junit_xml(tmp_path: Path) -> None:
         # Simulate a results.xml with system-out containing coverage lines
         xml = """
