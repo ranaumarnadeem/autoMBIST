@@ -114,6 +114,14 @@ spare-augmented OpenRAM macro with **redundancy analysis (BIRA)** and
   booting and running firmware through self-repaired memory
   ([`flow/soc/`](flow/soc/)).
 
+  This "LVS-clean" result is the top-level LibreLane place-and-route
+  closure, which treats each OpenRAM macro as opaque hard IP — a separate
+  question from whether the macros' own GDS is DRC/LVS-clean against their
+  own generated schematics. That per-macro signoff is currently unresolved
+  (a stale vendored OpenRAM checkout, not a defect in this project's RTL);
+  see [`flow/multimem/mbist/README.md`](flow/multimem/mbist/README.md#honest-signoff-caveats)
+  for the full root cause.
+
 ```mermaid
 flowchart LR
   cfg["config.yml"] --> gen["generator.py"]
@@ -236,7 +244,7 @@ Yosys or any other synthesis tool.
 The example below selects `march-c` (the default); single-port memories can
 equally pass `march-raw`, `march-x`, or `mats-plus` to `--algo` (multi-port
 memories use `march-1r1w` or `march-2rw` — see their dedicated sections
-below). Note that this `mats-plus` is the classic-path RTL wrapper
+below). This `mats-plus` is the classic-path RTL wrapper
 (`rtl/mats_plus/`) — a separate implementation from the research engine's
 `mats_plus` algorithm spec used by `test`/`algo` in the
 [fault-coverage table](#fault-coverage) further down.
@@ -445,23 +453,27 @@ fault model. Measured detection (**D**) vs escape (**E**) against
 escape rationale in
 [`src/autombist/engine/README.md`](src/autombist/engine/README.md)):
 
-| Fault | MATS+ (5n) | March C- (10n) | March SS (22n) |
-|---|---|---|---|
-| SA0, SA1 | D | D | D |
-| TF0, TF1 | D | D | D |
-| WDF0, WDF1 | E | E | D |
-| RDF0, RDF1 | D | D | D |
-| DRDF0, DRDF1 | E | E | D |
-| IRF0, IRF1 | D | D | D |
-| SOF | E | E | E |
-| AF_NOACC, AF_ALIAS | D | D | D |
-| CFIN | D | D | D |
-| CFID | E | D | D |
-| CFST | D | D | D |
-| CFDS (any-read) | E | D | D |
-| **total** | **12/19** | **14/19** | **18/19** |
+| Fault | MATS+ (5n) | March Y (8n) | March C- (10n) | March C+ (14n) | March B (17n) | March SS (22n) |
+|---|---|---|---|---|---|---|
+| SA0, SA1 | D | D | D | D | D | D |
+| TF0, TF1 | D | D | D | D | D | D |
+| WDF0, WDF1 | E | E | E | E | E | D |
+| RDF0, RDF1 | D | D | D | D | D | D |
+| DRDF0, DRDF1 | E | D | E | D | E | D |
+| IRF0, IRF1 | D | D | D | D | D | D |
+| SOF | E | D | E | D | D | E |
+| AF_NOACC, AF_ALIAS | D | D | D | D | D | D |
+| CFIN | D | D | D | D | D | D |
+| CFID | E | E | D | D | D | D |
+| CFST | D | D | D | D | D | D |
+| CFDS (any-read) | E | D | D | D | D | D |
+| **total** | **12/19** | **16/19** | **14/19** | **17/19** | **15/19** | **18/19** |
 
-These match the published coverage claims — March C- misses WDF (no
+Seven built-in march algorithms ship with the research engine (`march_b`,
+`march_c`, `march_c_plus`, `march_ss`, `march_x`, `march_y`, `mats_plus`);
+this table covers the six with measured full-coverage results in
+`src/autombist/engine/README.md`. These match the published coverage
+claims — March C- misses WDF (no
 non-transition write) and DRDF (no read-after-read); March SS adds both. The SOF
 escape under a solid-background march is correct behavior (its detection needs
 consecutive opposite-data reads), not a model bug — see the engine README.
@@ -535,7 +547,7 @@ set cov [simulate -out out]
 if {$cov < 90} { error "coverage too low" }
 ```
 
-Failures raise real, catchable Tcl errors (`catch {...} err`). One gotcha worth
+Failures raise real, catchable Tcl errors (`catch {...} err`). One caveat worth
 knowing: Tcl's `"..."` double-quotes apply backslash substitution, so a Windows
 path typed as `"C:\Users\me\config.yml"` silently loses its backslashes — use
 `{...}` brace-quoting instead, which is fully literal:

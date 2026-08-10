@@ -2,7 +2,7 @@
 
 ## What autoMBIST is
 
-autoMBIST is actually **two independent subsystems** that share one CLI and one
+autoMBIST comprises **two independent subsystems** that share one CLI and one
 RTL library:
 
 1. **The wrapper generator** — takes a `config.yml` describing a real memory

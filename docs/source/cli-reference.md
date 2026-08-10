@@ -523,6 +523,11 @@ autombist macro-signoff sky130_sram_32b256w      # a specific macro dir
 autombist macro-signoff --show-command           # print, don't run
 ```
 
+For this repo's own demo macros, this currently does not produce a clean
+signoff answer — a stale vendored OpenRAM checkout, not a defect in this
+project's RTL; see `run_macro_signoff.sh`'s own header for the full root
+cause.
+
 ## doctor
 
 Report which external tools autombist can find on this system — a quick,
@@ -592,6 +597,10 @@ its backslashes. Use `{...}` brace-quoting instead, which is fully literal:
 ```text
 generate -config {C:\Users\me\config.yml} -out out
 ```
+
+A typo'd or missing required flag produces a clean error naming the flag you
+actually typed, with a did-you-mean suggestion when one is close to a real
+flag, rather than a raw Python traceback or a wrong-flag blame.
 
 ### Examples
 
