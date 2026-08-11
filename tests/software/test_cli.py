@@ -417,6 +417,33 @@ def test_doctor_cocotb_missing_reported(monkeypatch) -> None:
     assert "not importable" in result.output
 
 
+def test_doctor_tcl_available_reported(monkeypatch) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr("shutil.which", lambda tool: None)
+    monkeypatch.setattr(cli_mod, "_cocotb_available", lambda: False)
+    monkeypatch.setattr(cli_mod, "_tcl_available", lambda: True)
+
+    result = runner.invoke(cli_mod.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "tkinter/Tcl (python)" in result.output
+    assert "importable" in result.output
+    assert "shell" in result.output
+
+
+def test_doctor_tcl_missing_reported(monkeypatch) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr("shutil.which", lambda tool: None)
+    monkeypatch.setattr(cli_mod, "_cocotb_available", lambda: False)
+    monkeypatch.setattr(cli_mod, "_tcl_available", lambda: False)
+
+    result = runner.invoke(cli_mod.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "tkinter/Tcl (python)" in result.output
+    assert "not importable" in result.output
+
+
 def test_doctor_faultflow_home_set_reported(monkeypatch) -> None:
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setenv("FAULTFLOW_HOME", "/home/user/faultflow")
