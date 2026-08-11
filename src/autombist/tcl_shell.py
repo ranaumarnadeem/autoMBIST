@@ -52,6 +52,7 @@ except ImportError as _exc:  # pragma: no cover - platform-dependent
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from autombist.cli import _resolve_config_path, _resolve_module_outdir
+    from autombist.cli_render import spinner
     from autombist.generator import ConfigError, generate_from_config
     from autombist.openram_flow import (
         OpenRAMConfigError,
@@ -72,6 +73,7 @@ if __package__ in {None, ""}:
     )
 else:
     from .cli import _resolve_config_path, _resolve_module_outdir
+    from .cli_render import spinner
     from .generator import ConfigError, generate_from_config
     from .openram_flow import (
         OpenRAMConfigError,
@@ -313,7 +315,8 @@ class TclShell:
 
     def _run_simulation_and_report(self, module_outdir: Path, verbose: bool, min_coverage: float | None) -> Any:
         try:
-            result = run_simulation(module_outdir, verbose=verbose)
+            with spinner("Running MBIST simulation..."):
+                result = run_simulation(module_outdir, verbose=verbose)
         except (ConfigError, FileNotFoundError, OSError, ValueError, SimulationError) as exc:
             raise RuntimeError(str(exc)) from exc
 
@@ -379,6 +382,7 @@ class TclShell:
         from .alg_spec import AlgSpecError, resolve_algo
         from .algo_engine import CampaignError, MemoryParams, load_fault_list, run_algo_campaign, run_fsm_campaign
         from .algo_reporting import coverage_meets_threshold as campaign_coverage_meets_threshold
+        from .cli_render import fault_progress
         from .algo_reporting import write_campaign_report, write_diagnosis_report
         from .fault_primitives import FaultPrimitiveError
         from .fault_primitives import default_registry as fp_default_registry
@@ -430,17 +434,21 @@ class TclShell:
                 kwargs: dict[str, object] = {}
                 if check_sequence:
                     kwargs["expected_spec"] = resolve_algo(algo)
-                result = run_fsm_campaign(
-                    mem, sources, ports.module_name, records, sim=sim, fault_ram_sv=fault_ram_sv, **kwargs
-                )
+                with fault_progress(len(records)) as progress_cb:
+                    result = run_fsm_campaign(
+                        mem, sources, ports.module_name, records, sim=sim, fault_ram_sv=fault_ram_sv,
+                        progress_callback=progress_cb, **kwargs
+                    )
                 label = f"FSM:{ports.module_name} ({len(sources)} source file(s))"
             else:
                 if check_sequence:
                     raise ValueError("-check-sequence requires -fsm")
                 spec = resolve_algo(algo)
-                result = run_algo_campaign(
-                    mem, spec, records, sim=sim, verbose=verbose, fault_ram_sv=fault_ram_sv
-                )
+                with fault_progress(len(records)) as progress_cb:
+                    result = run_algo_campaign(
+                        mem, spec, records, sim=sim, verbose=verbose, fault_ram_sv=fault_ram_sv,
+                        progress_callback=progress_cb,
+                    )
                 label = f"{spec.name} ({spec.length_n}n)"
 
             if report is not None:

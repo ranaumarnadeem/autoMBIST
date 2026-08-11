@@ -41,6 +41,7 @@ from .algo_reporting import (
     write_matrix_report,
     write_syndrome_report,
 )
+from .cli_render import fault_progress
 from .fault_primitives import FaultPrimitive, FaultPrimitiveError, default_registry, from_dict, validate
 from .fault_ram_gen import conflicting_port_faults, render_and_write
 from .fsm_harness import check_ports, gather_sibling_sources
@@ -433,11 +434,12 @@ class AlgoShell(cmd.Cmd):
             fsm_kwargs: dict[str, object] = {}
             if flags.get("check"):
                 fsm_kwargs["expected_spec"] = self._resolve_algo(str(flags["check"]))
-            result = run_fsm_campaign(
-                mem, entry.sources, entry.module_name, self.session.faults,
-                sim=self.session.sim, workdir=workdir, fault_ram_sv=fault_ram_sv,
-                **fsm_kwargs,
-            )
+            with fault_progress(len(self.session.faults)) as progress_cb:
+                result = run_fsm_campaign(
+                    mem, entry.sources, entry.module_name, self.session.faults,
+                    sim=self.session.sim, workdir=workdir, fault_ram_sv=fault_ram_sv,
+                    progress_callback=progress_cb, **fsm_kwargs,
+                )
             result.algo_name = name
         else:
             if flags.get("check"):
@@ -445,17 +447,20 @@ class AlgoShell(cmd.Cmd):
             spec = self._resolve_algo(name)
             workdir = self.session.next_run_dir(f"run_{spec.name}")
             fault_ram_sv = self._render_fault_ram_for(workdir)
-            if flags.get("backgrounds"):
-                per_bg = run_background_campaign(
-                    mem, spec, self.session.faults, sim=self.session.sim,
-                    workdir=workdir, verbose=bool(flags.get("verbose")), fault_ram_sv=fault_ram_sv,
-                )
-                result = merge_background_results(per_bg)
-            else:
-                result = run_algo_campaign(
-                    mem, spec, self.session.faults, sim=self.session.sim,
-                    workdir=workdir, verbose=bool(flags.get("verbose")), fault_ram_sv=fault_ram_sv,
-                )
+            with fault_progress(len(self.session.faults)) as progress_cb:
+                if flags.get("backgrounds"):
+                    per_bg = run_background_campaign(
+                        mem, spec, self.session.faults, sim=self.session.sim,
+                        workdir=workdir, verbose=bool(flags.get("verbose")), fault_ram_sv=fault_ram_sv,
+                        progress_callback=progress_cb,
+                    )
+                    result = merge_background_results(per_bg)
+                else:
+                    result = run_algo_campaign(
+                        mem, spec, self.session.faults, sim=self.session.sim,
+                        workdir=workdir, verbose=bool(flags.get("verbose")), fault_ram_sv=fault_ram_sv,
+                        progress_callback=progress_cb,
+                    )
             name = spec.name
 
         self.session.last_results[name] = result
@@ -479,17 +484,20 @@ class AlgoShell(cmd.Cmd):
             spec = self._resolve_algo(name)
             workdir = self.session.next_run_dir(f"cmp_{spec.name}")
             fault_ram_sv = self._render_fault_ram_for(workdir)
-            if flags.get("backgrounds"):
-                per_bg = run_background_campaign(
-                    mem, spec, self.session.faults, sim=self.session.sim,
-                    workdir=workdir, fault_ram_sv=fault_ram_sv,
-                )
-                result = merge_background_results(per_bg)
-            else:
-                result = run_algo_campaign(
-                    mem, spec, self.session.faults, sim=self.session.sim,
-                    workdir=workdir, fault_ram_sv=fault_ram_sv,
-                )
+            with fault_progress(len(self.session.faults), description=spec.name) as progress_cb:
+                if flags.get("backgrounds"):
+                    per_bg = run_background_campaign(
+                        mem, spec, self.session.faults, sim=self.session.sim,
+                        workdir=workdir, fault_ram_sv=fault_ram_sv,
+                        progress_callback=progress_cb,
+                    )
+                    result = merge_background_results(per_bg)
+                else:
+                    result = run_algo_campaign(
+                        mem, spec, self.session.faults, sim=self.session.sim,
+                        workdir=workdir, fault_ram_sv=fault_ram_sv,
+                        progress_callback=progress_cb,
+                    )
             self.session.last_results[spec.name] = result
             results.append(result)
 
@@ -553,10 +561,12 @@ class AlgoShell(cmd.Cmd):
             faults = synth_verification_faults(mem, targets)
             workdir = self.session.next_run_dir(f"synth_verify_{name}")
             fault_ram_sv = self._render_fault_ram_for(workdir)
-            campaign = run_algo_campaign(
-                mem, result.spec, faults, sim=self.session.sim,
-                workdir=workdir, fault_ram_sv=fault_ram_sv,
-            )
+            with fault_progress(len(faults)) as progress_cb:
+                campaign = run_algo_campaign(
+                    mem, result.spec, faults, sim=self.session.sim,
+                    workdir=workdir, fault_ram_sv=fault_ram_sv,
+                    progress_callback=progress_cb,
+                )
             self.session.last_results[name] = campaign
             self.session.last_op = ("run", name)
             self._print_result_summary(campaign)
