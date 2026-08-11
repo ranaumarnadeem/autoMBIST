@@ -577,6 +577,8 @@ def test(
     from autombist.alg_spec import AlgSpecError, resolve_algo
     from autombist.algo_engine import CampaignError, MemoryParams, load_fault_list, run_algo_campaign, run_fsm_campaign
     from autombist.algo_reporting import (
+        _check_diagnosis_fmt,
+        _check_fmt,
         coverage_meets_threshold,
         render_campaign_json,
         write_campaign_report,
@@ -590,6 +592,13 @@ def test(
     from autombist.fsm_harness import FsmPortError, check_ports, gather_sibling_sources
 
     try:
+        # Validate up front, before the (potentially multi-minute) campaign
+        # runs -- a typo'd --fmt/--diagnosis-fmt used to only surface after
+        # the simulation finished, wasting the whole run.
+        if report is not None:
+            _check_fmt(fmt)
+        if diagnosis is not None:
+            _check_diagnosis_fmt(diagnosis_fmt)
         records = load_fault_list(faults)
         mem = MemoryParams(addr_width=addr_width, data_width=data_width, init_val=init)
 
@@ -1168,6 +1177,14 @@ def _cocotb_available() -> bool:
     return importlib.util.find_spec("cocotb") is not None
 
 
+def _tcl_available() -> bool:
+    """Same seam as `_cocotb_available`, for tkinter/Tcl (the `shell` command's
+    only dependency)."""
+    from .tcl_shell import is_available
+
+    return is_available()
+
+
 def _doctor_checks() -> list[tuple[str, str, str, str]]:
     """Return (tool, status, needed_for, detail) for the external toolchain
     autombist's various commands shell out to. Pure/testable -- the `doctor`
@@ -1197,6 +1214,12 @@ def _doctor_checks() -> list[tuple[str, str, str, str]]:
     which_row("magic", "macro-signoff")
     which_row("netgen", "macro-signoff")
 
+    tcl_ok = _tcl_available()
+    rows.append((
+        "tkinter/Tcl (python)", "OK" if tcl_ok else "MISSING", "shell",
+        "importable" if tcl_ok else "not importable -- see Installation docs",
+    ))
+
     faultflow_home = os.environ.get("FAULTFLOW_HOME")
     rows.append((
         "FAULTFLOW_HOME (env)", "OK" if faultflow_home else "MISSING", "grade-controller",
@@ -1212,10 +1235,10 @@ def doctor() -> None:
     Checks the full toolchain autombist's various commands shell out to
     (make/iverilog/cocotb for simulate & run, verilator for the fault-model
     research engine, nix for harden --run, bash/magic/netgen for
-    macro-signoff, yosys + FAULTFLOW_HOME for grade-controller) via
-    shutil.which / an import probe / an env check, and prints a capability
-    table. Purely diagnostic -- never affects any other command's behavior or
-    exit code.
+    macro-signoff, yosys + FAULTFLOW_HOME for grade-controller, tkinter/Tcl
+    for shell) via shutil.which / an import probe / an env check, and prints
+    a capability table. Purely diagnostic -- never affects any other
+    command's behavior or exit code.
 
     Examples:
       autombist doctor

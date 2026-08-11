@@ -381,9 +381,9 @@ class TclShell:
 
         from .alg_spec import AlgSpecError, resolve_algo
         from .algo_engine import CampaignError, MemoryParams, load_fault_list, run_algo_campaign, run_fsm_campaign
+        from .algo_reporting import _check_diagnosis_fmt, _check_fmt, write_campaign_report, write_diagnosis_report
         from .algo_reporting import coverage_meets_threshold as campaign_coverage_meets_threshold
         from .cli_render import fault_progress
-        from .algo_reporting import write_campaign_report, write_diagnosis_report
         from .fault_primitives import FaultPrimitiveError
         from .fault_primitives import default_registry as fp_default_registry
         from .fault_primitives import from_dict as fp_from_dict
@@ -410,6 +410,13 @@ class TclShell:
         _reject_unknown(flags)
 
         try:
+            # Validate up front, before the (potentially multi-minute) campaign
+            # runs -- a typo'd -fmt/-diagnosis-fmt used to only surface after
+            # the simulation finished, wasting the whole run.
+            if report is not None:
+                _check_fmt(fmt)
+            if diagnosis is not None:
+                _check_diagnosis_fmt(diagnosis_fmt)
             records = load_fault_list(faults_path)
             mem = MemoryParams(addr_width=addr_width, data_width=data_width, init_val=init)
 
