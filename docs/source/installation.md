@@ -57,10 +57,11 @@ autombist doctor
 ```
 
 Checks which external tools are on `PATH` (make, iverilog, verilator, yosys,
-nix, bash, magic, netgen), whether cocotb is importable, and whether
-`FAULTFLOW_HOME` is set, then prints a table of what each one unblocks
-(simulate/run, test, grade-controller, harden --run, macro-signoff). Purely
-diagnostic — a quick way to see what's missing before running anything else.
+nix, bash, magic, netgen), whether cocotb and tkinter/Tcl are importable, and
+whether `FAULTFLOW_HOME` is set, then prints a table of what each one
+unblocks (simulate/run, test, grade-controller, harden --run, macro-signoff,
+shell). Purely diagnostic — a quick way to see what's missing before running
+anything else.
 
 ```bash
 autombist smoke

@@ -102,7 +102,7 @@ some trial and error to get consistent within a WSL environment — mostly
 around PATH resolution and matching library versions.
 
 `autombist doctor` now surfaces exactly this up front — it checks for
-make/iverilog/cocotb/verilator/yosys/nix/bash/magic/netgen and the
+make/iverilog/cocotb/verilator/yosys/nix/bash/magic/netgen/tkinter and the
 `FAULTFLOW_HOME` env var in one shot and prints which commands each one
 unblocks, instead of finding out via a failed command halfway through a run.
 `harden --run` checks for `nix` and `macro-signoff` checks for `bash` before

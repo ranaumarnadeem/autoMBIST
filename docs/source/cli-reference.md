@@ -536,9 +536,10 @@ purely diagnostic health check to run before `simulate`/`run`/`harden`/
 
 `doctor` takes no options besides `--help`. It checks `make`, `iverilog`,
 cocotb (an import probe, not `PATH`), `verilator`, `yosys`, `nix`, `bash`,
-`magic`, `netgen` (via `shutil.which`) and the `FAULTFLOW_HOME` env var, then
-prints a capability table with each tool's OK/MISSING status, which
-command(s) it unblocks, and where it was found (or "not found on PATH").
+`magic`, `netgen` (via `shutil.which`), tkinter/Tcl (an import probe) and the
+`FAULTFLOW_HOME` env var, then prints a capability table with each tool's
+OK/MISSING status, which command(s) it unblocks, and where it was found (or
+"not found on PATH").
 Renders as a `rich` table on an interactive terminal (unless `NO_COLOR` is
 set), falling back to plain fixed-width text otherwise. Purely diagnostic —
 it never affects any other command's behavior and always exits 0.

@@ -641,8 +641,15 @@ def test_invalid_algo_raises(tmp_path: Path, base_config: dict[str, object]) -> 
     outdir = tmp_path / "out"
     _write_yaml(config_path, base_config)
 
-    with pytest.raises(ValueError, match="algo must be one of"):
+    with pytest.raises(ValueError, match="is not recognized"):
         generate_from_config(config_path, outdir, algo="invalid-algo")
+
+
+def test_invalid_algo_close_typo_suggests_the_real_name() -> None:
+    from autombist.generator import _normalize_algo
+
+    with pytest.raises(ValueError, match=r"did you mean 'march-1r1w'\?"):
+        _normalize_algo("march-1r1")
 
 
 def test_cli_init_creates_scaffold_files(tmp_path: Path) -> None:
