@@ -123,9 +123,11 @@ def _normalize_algo(algo: str) -> tuple[str, str]:
         "mats-plus": ("mats_plus", "mats_plus_top"),
     }
     if algo_value not in algo_map:
+        suggestion = difflib.get_close_matches(algo_value, algo_map, n=1)
+        hint = f" -- did you mean {suggestion[0]!r}?" if suggestion else ""
         raise ValueError(
-            "algo must be one of: march-c, march-raw, march-1r1w, march-2rw, "
-            "march-x, mats-plus"
+            f"algo {algo!r} is not recognized{hint}. Must be one of: march-c, march-raw, "
+            "march-1r1w, march-2rw, march-x, mats-plus"
         )
     return algo_map[algo_value]
 
