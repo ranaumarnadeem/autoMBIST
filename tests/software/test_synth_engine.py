@@ -36,6 +36,14 @@ R0, R1, W0, W1 = OP_MAP["r0"], OP_MAP["r1"], OP_MAP["w0"], OP_MAP["w1"]
 
 REGISTRY = {p.name: p for p in default_registry()}
 
+# The subset this synthesizer can actually model. The two-cell coupling family
+# sets sensitize.agg_pre, whose aggressor-state gate the 2-cell walk does not
+# establish, so those are reported uncovered by design -- see synthesize_alg's
+# docstring. Coverage properties below are asserted over this subset; asserting
+# them over the whole registry would demand coverage the synthesizer honestly
+# does not claim.
+SYNTHESIZABLE = [p for p in default_registry() if p.sensitize.agg_pre == "x"]
+
 
 def _spec(*elements: Element) -> list[Element]:
     return list(elements)
@@ -274,11 +282,11 @@ def test_detects_sa0_sa1_basic():
 # --------------------------------------------------------------------------- #
 # synthesize_alg / synthesize_elements
 # --------------------------------------------------------------------------- #
-def test_synthesize_alg_covers_all_15_default_registry_primitives():
+def test_synthesize_alg_covers_every_synthesizable_default_registry_primitive():
     result = synthesize_alg(default_registry(), "t")
     assert result.uncovered == []
-    assert sorted(result.covered) == sorted(REGISTRY)
-    assert result.targeted == [p.name for p in default_registry()]
+    assert sorted(result.covered) == sorted(p.name for p in SYNTHESIZABLE)
+    assert result.targeted == [p.name for p in SYNTHESIZABLE]
 
 
 def test_synthesize_result_actually_detects_every_covered_primitive():
@@ -372,7 +380,7 @@ def test_synthesize_every_default_primitive_covered_in_isolation(init_val: int) 
     # detectable on its own, regardless of init_val, not just as part of the
     # full set where other primitives' candidates might incidentally carry
     # it along.
-    for p in default_registry():
+    for p in SYNTHESIZABLE:
         result = synthesize_alg([p], f"{p.name.lower()}_only", init_val=init_val)
         assert result.uncovered == [], f"{p.name} not covered in isolation (init_val={init_val})"
         assert is_golden_sound(result.spec.elements, init_val=init_val), (
@@ -395,7 +403,7 @@ def test_synthesize_alg_every_candidate_element_is_golden_sound(init_val: int) -
 
 @pytest.mark.parametrize(
     "p1,p2,init_val",
-    [(p1, p2, iv) for p1, p2 in itertools.combinations(default_registry(), 2) for iv in (0, 1)],
+    [(p1, p2, iv) for p1, p2 in itertools.combinations(SYNTHESIZABLE, 2) for iv in (0, 1)],
 )
 def test_synthesize_every_pair_of_default_primitives(p1: FaultPrimitive, p2: FaultPrimitive, init_val: int) -> None:
     # Exhaustive: all 105 two-primitive combinations x both init_val
@@ -480,20 +488,36 @@ def test_synthesize_elements_still_accepts_wildcard_port_targets():
     assert elements, "a wildcard-port target must still synthesize"
 
 
-def test_synthesize_elements_rejects_an_agg_pre_target():
+def test_synthesize_elements_reports_an_agg_pre_target_as_uncovered():
     """The two-cell state gate is not yet modelled: the oracle's write-victim and
     read-victim firing conditions never read the aggressor's state, and no
-    candidate builder emits a setup element to place it. Left unrejected, such a
-    target would be simulated as its strictly-more-permissive single-cell twin,
-    marked covered, and inflate the reported coverage -- the same silently-inert
-    failure mode the sensitize.port rejection above exists to prevent."""
+    candidate builder emits a setup element to place it. Left unhandled, such a
+    target would be simulated as its strictly-more-permissive single-cell twin
+    and marked covered, inflating the reported coverage.
+
+    Reported as uncovered rather than raised (which is what sensitize.port
+    does), because ten agg_pre types are built-ins now and raising would make
+    synth unusable against the default registry. The guarantee preserved is the
+    one that matters: never counted as covered."""
     prim = FaultPrimitive(
         "COUPF", "write_effect",
         Sensitize(pre="0", written="1", on="victim", agg_pre="p0"),
         Effect(kind="block_write", value="0"),
     )
-    with pytest.raises(ValueError, match="does not yet model"):
-        synthesize_elements([prim])
+    _elements, uncovered = synthesize_elements([prim])
+    assert "COUPF" in uncovered
+
+
+def test_synthesize_alg_never_counts_an_agg_pre_primitive_as_covered():
+    """The registry-wide entry point must exclude them from `targeted` outright
+    and name them, so the summary says what was skipped rather than implying
+    coverage."""
+    result = synthesize_alg(default_registry(), "probe")
+    agg_names = {p.name for p in default_registry() if p.sensitize.agg_pre != "x"}
+    assert agg_names, "this test is vacuous if no built-in sets agg_pre"
+    assert agg_names.isdisjoint(result.covered)
+    assert agg_names.isdisjoint(result.targeted)
+    assert agg_names == set(result.excluded_unmodelled)
 
 
 def test_synthesize_elements_still_accepts_wildcard_agg_pre_targets():

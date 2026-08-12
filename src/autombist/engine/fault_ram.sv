@@ -55,6 +55,17 @@ module fault_ram #(
                               // templates/fault_ram_template.sv.j2's DRF
                               // block -- no automated equivalence check
                               // between the two exists.
+  // Two-cell coupling family (Al-Ars/Hamdioui/van de Goor, DATE 2006, Tbl 2):
+  // each is the single-cell fault of the same shape, additionally gated on the
+  // aggressor bit holding p0. KEPT IN SYNC MANUALLY with the registry entries
+  // in fault_primitives.py, which the template renders from -- same caveat as
+  // T_DRF/T_HSD. NOTE the numeric codes here diverge from the generated file's
+  // (build_type_table numbers registry types first, so the fixed types shift);
+  // that is harmless, since codes are resolved by type_code() within each file
+  // and fault lists carry names, not codes.
+  localparam int T_CFTR0=21, T_CFTR1=22, T_CFWD0=23, T_CFWD1=24;
+  localparam int T_CFRD0=25, T_CFRD1=26, T_CFIR0=27, T_CFIR1=28;
+  localparam int T_CFDRD0=29, T_CFDRD1=30;
   localparam int T_HSD=20;   // Half-Select Disturb (Workstream L) -- see the
                               // row-membership check inside write_op() below.
                               // KEPT IN SYNC MANUALLY with
@@ -97,11 +108,21 @@ module fault_ram #(
     if (s == "CFDS")     return T_CFDS;
     if (s == "DRF")      return T_DRF;
     if (s == "HSD")      return T_HSD;
+    if (s == "CFTR0")    return T_CFTR0;
+    if (s == "CFTR1")    return T_CFTR1;
+    if (s == "CFWD0")    return T_CFWD0;
+    if (s == "CFWD1")    return T_CFWD1;
+    if (s == "CFRD0")    return T_CFRD0;
+    if (s == "CFRD1")    return T_CFRD1;
+    if (s == "CFIR0")    return T_CFIR0;
+    if (s == "CFIR1")    return T_CFIR1;
+    if (s == "CFDRD0")   return T_CFDRD0;
+    if (s == "CFDRD1")   return T_CFDRD1;
     return -1;
   endfunction
 
   // KEPT IN SYNC MANUALLY with type_code() above (same caveat as T_DRF/T_HSD).
-  localparam string VALID_FAULT_TYPES = "SA0, SA1, TF0, TF1, WDF0, WDF1, RDF0, RDF1, DRDF0, DRDF1, IRF0, IRF1, SOF, AF_NOACC, AF_ALIAS, CFIN, CFID, CFST, CFDS, DRF, HSD";
+  localparam string VALID_FAULT_TYPES = "SA0, SA1, TF0, TF1, WDF0, WDF1, RDF0, RDF1, DRDF0, DRDF1, IRF0, IRF1, SOF, AF_NOACC, AF_ALIAS, CFIN, CFID, CFST, CFDS, DRF, HSD, CFTR0, CFTR1, CFWD0, CFWD1, CFRD0, CFRD1, CFIR0, CFIR1, CFDRD0, CFDRD1";
 
   int init_val;
 
@@ -231,6 +252,13 @@ module fault_ram #(
           T_TF1:  if (old[b] == 1'b1 && d[b] == 1'b0) begin nxt[b] = 1'b1;   FQ[i].hits++; end
           T_WDF0: if (old[b] == 1'b0 && d[b] == 1'b0) begin nxt[b] = 1'b1;   FQ[i].hits++; end
           T_WDF1: if (old[b] == 1'b1 && d[b] == 1'b1) begin nxt[b] = 1'b0;   FQ[i].hits++; end
+          // Two-cell coupling: same as TF0/TF1/WDF0/WDF1 above, but only while
+          // the aggressor bit holds p0. mem[] is read pre-commit here (mem[ea]
+          // = nxt happens below), which is what "currently holds" means.
+          T_CFTR0: if (old[b] == 1'b0 && d[b] == 1'b1 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]) begin nxt[b] = 1'b0; FQ[i].hits++; end
+          T_CFTR1: if (old[b] == 1'b1 && d[b] == 1'b0 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]) begin nxt[b] = 1'b1; FQ[i].hits++; end
+          T_CFWD0: if (old[b] == 1'b0 && d[b] == 1'b0 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]) begin nxt[b] = 1'b1; FQ[i].hits++; end
+          T_CFWD1: if (old[b] == 1'b1 && d[b] == 1'b1 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]) begin nxt[b] = 1'b0; FQ[i].hits++; end
           T_SOF:  begin nxt[b] = old[b]; FQ[i].hits++; end                    // cell inaccessible
           default: ;
         endcase
@@ -342,6 +370,15 @@ module fault_ram #(
           T_RDF1:  if (old[b] == 1'b1) begin mem[ea][b] = 1'b0; rv[b] = 1'b0;    FQ[i].hits++; end
           T_DRDF0: if (old[b] == 1'b0) begin mem[ea][b] = 1'b1; rv[b] = 1'b0;    FQ[i].hits++; end
           T_DRDF1: if (old[b] == 1'b1) begin mem[ea][b] = 1'b0; rv[b] = 1'b1;    FQ[i].hits++; end
+          // Two-cell coupling: same as RDF/IRF/DRDF above, gated on the
+          // aggressor bit holding p0. clamp_static() has already run, so mem[]
+          // is clamp-settled here.
+          T_CFRD0:  if (old[b] == 1'b0 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]) begin mem[ea][b] = 1'b1; rv[b] = 1'b1; FQ[i].hits++; end
+          T_CFRD1:  if (old[b] == 1'b1 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]) begin mem[ea][b] = 1'b0; rv[b] = 1'b0; FQ[i].hits++; end
+          T_CFIR0:  if (old[b] == 1'b0 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]) begin rv[b] = 1'b1; FQ[i].hits++; end
+          T_CFIR1:  if (old[b] == 1'b1 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]) begin rv[b] = 1'b0; FQ[i].hits++; end
+          T_CFDRD0: if (old[b] == 1'b0 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]) begin mem[ea][b] = 1'b1; rv[b] = 1'b0; FQ[i].hits++; end
+          T_CFDRD1: if (old[b] == 1'b1 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]) begin mem[ea][b] = 1'b0; rv[b] = 1'b1; FQ[i].hits++; end
           T_SOF:   begin rv[b] = dout[b]; FQ[i].hits++; end   // output keeper returns stale data
           default: ;
         endcase

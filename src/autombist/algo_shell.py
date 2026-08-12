@@ -541,11 +541,18 @@ class AlgoShell(cmd.Cmd):
             init_val=init_val,
         )
         self.session.algos[name] = result.spec
-        total = len(result.targeted) + len(result.excluded_fixed)
+        total = len(result.targeted) + len(result.excluded_fixed) + len(result.excluded_unmodelled)
+        excludes = f"excludes {', '.join(result.excluded_fixed)}: structurally fixed types"
+        if result.excluded_unmodelled:
+            # Named explicitly rather than folded into the count, so a reader
+            # can see the synthesizer skipped them instead of covering them.
+            excludes += (
+                f"; {', '.join(result.excluded_unmodelled)}: two-cell agg_pre gate "
+                "not yet modelled by the synthesizer"
+            )
         self._out(
             f"synthesized '{name}': {result.spec.length_n}n, {len(result.spec.elements)} elements -- "
-            f"targets {len(result.targeted)}/{total} registry primitives "
-            f"(excludes {', '.join(result.excluded_fixed)}: structurally fixed types)"
+            f"targets {len(result.targeted)}/{total} registry primitives ({excludes})"
         )
         if result.uncovered:
             self._out(f"  WARNING: {len(result.uncovered)} NOT covered within caps: {', '.join(result.uncovered)}")
