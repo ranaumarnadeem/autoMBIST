@@ -541,30 +541,30 @@ class AlgoShell(cmd.Cmd):
             init_val=init_val,
         )
         self.session.algos[name] = result.spec
-        total = len(result.targeted) + len(result.excluded_fixed) + len(result.excluded_unmodelled)
-        excludes = f"excludes {', '.join(result.excluded_fixed)}: structurally fixed types"
-        if result.excluded_unmodelled:
-            # Named explicitly rather than folded into the count, so a reader
-            # can see the synthesizer skipped them instead of covering them.
-            excludes += (
-                f"; {', '.join(result.excluded_unmodelled)}: two-cell agg_pre gate "
-                "not yet modelled by the synthesizer"
-            )
+        total = len(result.targeted) + len(result.excluded_fixed)
         self._out(
             f"synthesized '{name}': {result.spec.length_n}n, {len(result.spec.elements)} elements -- "
-            f"targets {len(result.targeted)}/{total} registry primitives ({excludes})"
+            f"targets {len(result.targeted)}/{total} registry primitives "
+            f"(excludes {', '.join(result.excluded_fixed)}: structurally fixed types)"
         )
+        # Always state the covered count, then warn separately. Previously the
+        # count only appeared when nothing was uncovered, so a partial result
+        # showed the shortfall without ever showing what WAS achieved.
+        self._out(f"  covered: {len(result.covered)}/{len(result.targeted)}")
         if result.uncovered:
-            self._out(f"  WARNING: {len(result.uncovered)} NOT covered within caps: {', '.join(result.uncovered)}")
-        else:
-            self._out(f"  covered: {len(result.covered)}/{len(result.targeted)}")
+            self._out(f"  WARNING: {len(result.uncovered)} NOT covered: {', '.join(result.uncovered)}")
         if "write" in flags:
             path = Path(str(flags["write"]))
             result.spec.write_text(path)
             self._out(f"  .alg text written: {path}")
         if flags.get("verify"):
             mem = self._require_memory()
-            targets = [p for p in self.session.registry if p.name in result.targeted]
+            # Verify what the synthesizer CLAIMED, not what it attempted. Using
+            # `targeted` would build faults for types it explicitly reported as
+            # uncovered, so an honest "I did not cover this" would show up as a
+            # verification failure -- conflating "never claimed" with "claimed
+            # and wrong", which is the only thing --verify exists to catch.
+            targets = [p for p in self.session.registry if p.name in set(result.covered)]
             faults = synth_verification_faults(mem, targets)
             workdir = self.session.next_run_dir(f"synth_verify_{name}")
             fault_ram_sv = self._render_fault_ram_for(workdir)

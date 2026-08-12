@@ -133,6 +133,14 @@ def resolve_params(p: FaultPrimitive) -> tuple[int, int]:
         p0 = 2
     elif p.sensitize.pre == "p0":
         p0 = 1
+    elif p.sensitize.agg_pre == "p0":
+        # Two-cell coupling family: p0 is the aggressor's required hold state.
+        # 0 rather than 1 because the synthesized bracket opens with `either w0`,
+        # which leaves the aggressor at 0 -- so the condition is satisfiable from
+        # the walk's own starting state without spending an extra setup element.
+        # This was already the value the final `else` produced; making it explicit
+        # so the choice is deliberate and survives a reordering of these branches.
+        p0 = 0
     else:
         p0 = 0
     p1 = 1 if p.effect.value == "p1" else 0
@@ -227,15 +235,21 @@ def _apply_op(v: int, a: int, op: int, role: str, fault: FaultPrimitive | None) 
             v = written  # type: ignore[assignment]
             if fault is not None and fault.category == "write_effect" and fault.sensitize.on == "victim":
                 p0, p1 = resolve_params(fault)
+                # agg_pre gates on the AGGRESSOR's held state at this moment.
+                # `_matches_bit` returns True for the "x" wildcard, so this is a
+                # no-op for every primitive that does not set it -- which is the
+                # regression proof that adding it changed nothing else.
                 if (_matches_bit(fault.sensitize.pre, old_v, p0, p1)
-                        and _matches_bit(fault.sensitize.written, written, p0, p1)):  # type: ignore[arg-type]
+                        and _matches_bit(fault.sensitize.written, written, p0, p1)  # type: ignore[arg-type]
+                        and _matches_bit(fault.sensitize.agg_pre, a, p0, p1)):
                     v = _resolve_bit(fault.effect.value, p0, p1)
         else:
             old_v = v
             observed = v
             if fault is not None and fault.category == "read_effect":
                 p0, p1 = resolve_params(fault)
-                if _matches_bit(fault.sensitize.pre, old_v, p0, p1):
+                if (_matches_bit(fault.sensitize.pre, old_v, p0, p1)
+                        and _matches_bit(fault.sensitize.agg_pre, a, p0, p1)):
                     if fault.effect.kind == "corrupt_read":
                         observed = _resolve_bit(fault.effect.value, p0, p1)
                     else:  # force_read (RDF/DRDF)
@@ -672,21 +686,6 @@ def synthesize_elements(
             "would be unsound. Drop them from the target set, or set "
             "sensitize.port='x'"
         )
-    # The two-cell state gate is not modelled yet: the oracle's write-victim and
-    # read-victim firing conditions (_apply_op) do not read `a` at all, so an
-    # agg_pre primitive would be simulated as its strictly-more-permissive
-    # single-cell twin and marked covered, and no candidate builder emits a
-    # setup element to establish the aggressor's state anyway.
-    #
-    # Reported as uncovered rather than raised (which is what sensitize.port
-    # does): port-qualified types are exotic and never appear in the built-in
-    # registry, so refusing outright costs nothing there, whereas ten agg_pre
-    # types ARE built-ins now -- raising would make `synth` unusable against
-    # the default registry. Landing them in `uncovered` keeps the guarantee
-    # that matters: they can never be counted as covered.
-    # See docs/coupling-family-plan.md, Step 6.
-    unmodelled = [p.name for p in target if p.sensitize.agg_pre != "x"]
-    target = [p for p in target if p.sensitize.agg_pre == "x"]
     elements: list[Element] = [Element(direction=DIR_EITHER, ops=[OP_W0])]
     golden_v, golden_a = _golden_state_after(elements, aggressor_gt_victim=aggressor_gt_victim, init_val=init_val)
     remaining = {p.name: p for p in target}
@@ -745,9 +744,7 @@ def synthesize_elements(
         "internal bug in synth_engine.py's candidate generation, not a "
         "user-facing condition"
     )
-    # `unmodelled` joins `remaining` so an agg_pre target is reported as
-    # uncovered, never as covered -- the guarantee that actually matters.
-    return elements, sorted(set(remaining.keys()) | set(unmodelled))
+    return elements, sorted(remaining.keys())
 
 
 # --------------------------------------------------------------------------- #
@@ -760,11 +757,6 @@ class SynthResult:
     covered: list[str]
     uncovered: list[str]
     excluded_fixed: list[str] = field(default_factory=lambda: list(FIXED_TYPE_NAMES))
-    # Primitives this synthesizer's model cannot express, filtered out of the
-    # target set rather than silently counted as covered. Distinct from
-    # excluded_fixed, which is a permanent structural property of those six
-    # types; these are excluded pending synthesizer support.
-    excluded_unmodelled: list[str] = field(default_factory=list)
 
 
 def synthesize_alg(
@@ -777,23 +769,23 @@ def synthesize_alg(
     description for this module's oracle to interpret, so it is excluded the
     same way).
 
-    ``sensitize.agg_pre`` primitives are excluded on the same footing: the
-    2-cell walk does not yet establish the aggressor's held state, so a target
-    set containing one would report coverage the synthesized algorithm has not
-    actually achieved. They are filtered here -- rather than raising, which
-    would make `synth` unusable now that the built-in registry contains ten of
-    them -- and reported in ``excluded_unmodelled`` so the omission is visible
-    rather than implied. ``synthesize_elements`` still raises when handed one
-    explicitly, so an explicit target can never be silently dropped."""
-    target = [p for p in registry if p.raw_sv is None and p.sensitize.agg_pre == "x"]
-    unmodelled = [p.name for p in registry if p.raw_sv is None and p.sensitize.agg_pre != "x"]
+    ``sensitize.agg_pre`` (two-cell coupling) primitives ARE targeted: the
+    oracle reads the aggressor's held state, and the walk credits one only
+    when :func:`detects` confirms it under both aggressor placements. Six of
+    the ten built-ins are reachable that way with no dedicated builder,
+    because the opening ``either w0`` bracket already leaves the aggressor at
+    the resolved ``p0 = 0`` and an ``up`` element runs the victim's ops before
+    the aggressor's. The four victim-pre-1 variants are detectable under one
+    placement only, so they land in ``uncovered`` rather than being claimed --
+    covering them needs a chained bidirectional builder (see
+    docs/coupling-family-plan.md, Step 6)."""
+    target = [p for p in registry if p.raw_sv is None]
     elements, uncovered = synthesize_elements(target, max_elements=max_elements, max_ops=max_ops, init_val=init_val)
     targeted_names = [p.name for p in target]
     covered = [n for n in targeted_names if n not in uncovered]
     spec = AlgSpec(name=name, elements=elements)
     return SynthResult(
         spec=spec, targeted=targeted_names, covered=covered, uncovered=uncovered,
-        excluded_unmodelled=unmodelled,
     )
 
 
@@ -831,8 +823,16 @@ def synth_verification_faults(mem, targets: list[FaultPrimitive]) -> list:
                                             # on this pure-logic-vs-execution-engine module
     depth = mem.depth
     dw = mem.data_width
-    coupling = [p for p in targets if p.sensitize.on == "aggressor"]
-    single_cell = [p for p in targets if p.sensitize.on != "aggressor"]
+    # Two-cell = anything whose sensitizing condition names the aggressor at
+    # all: on="aggressor" (its ACCESS) or agg_pre (its HELD state). Keying on
+    # `on` alone would class the agg_pre family single-cell and hand it the
+    # single-cell branch's aa=ab=0, so its gate would compare against an
+    # unrelated cell rather than a real aggressor.
+    def _is_two_cell(p: FaultPrimitive) -> bool:
+        return p.sensitize.on == "aggressor" or p.sensitize.agg_pre != "x"
+
+    coupling = [p for p in targets if _is_two_cell(p)]
+    single_cell = [p for p in targets if not _is_two_cell(p)]
     records = []
     # Coupling-class: va drawn from [0, depth-1) so va + 1 always stays
     # in-bounds -- never wraps, for either placement below.
