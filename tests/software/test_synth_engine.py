@@ -36,23 +36,12 @@ R0, R1, W0, W1 = OP_MAP["r0"], OP_MAP["r1"], OP_MAP["w0"], OP_MAP["w1"]
 
 REGISTRY = {p.name: p for p in default_registry()}
 
-# agg_pre primitives ARE synthesis targets (the oracle reads the aggressor's
-# held state), but four of the ten are only detectable under one aggressor
-# placement, and the walk credits a primitive only when detects() confirms it
-# under BOTH -- so they land in `uncovered` rather than being claimed. Pinned
-# here as the current, honest capability boundary; covering them needs a
-# chained bidirectional builder (docs/coupling-family-plan.md, Step 6).
-SINGLE_PLACEMENT_ONLY = {"CFWD1", "CFRD1", "CFIR1", "CFDRD1"}
-SYNTHESIZABLE = [p for p in default_registry() if p.name not in SINGLE_PLACEMENT_ONLY]
-
-# Coverage of the coupling family is OPPORTUNISTIC, not constructed: no builder
-# emits a setup element to place the aggressor, so these are only covered when
-# elements built for OTHER primitives happen to leave the aggressor at p0=0.
-# Against the full registry six of ten land that way (Verilator-verified); in
-# isolation none do. The isolation/pairwise properties below are therefore
-# asserted over the single-cell set only -- asserting them for the coupling
-# family would demand constructed coverage the synthesizer does not yet build.
-CONSTRUCTIBLE = [p for p in default_registry() if p.sensitize.agg_pre == "x"]
+# Every registry primitive is synthesizable: _agg_pre_candidates builds a
+# chained bidirectional candidate for the two-cell coupling family, the same
+# way _aggressor_clamp_candidates does for CFST. Verified 38/38 against real
+# Verilator at both init values.
+SYNTHESIZABLE = list(default_registry())
+CONSTRUCTIBLE = list(default_registry())
 
 
 def _spec(*elements: Element) -> list[Element]:
@@ -303,20 +292,19 @@ def test_synthesize_alg_covers_every_synthesizable_default_registry_primitive():
     assert result.targeted == [p.name for p in default_registry()]
     # ...but the four single-placement coupling types are honestly reported
     # uncovered rather than claimed.
-    assert set(result.uncovered) == SINGLE_PLACEMENT_ONLY
+    assert result.uncovered == []
     assert sorted(result.covered) == sorted(p.name for p in SYNTHESIZABLE)
 
 
-def test_synthesize_alg_covers_six_of_the_ten_coupling_types():
-    """Opportunistic, not constructed -- see CONSTRUCTIBLE above.
-    The two-cell family is reachable without a dedicated builder:
-    the opening `either w0` bracket leaves the aggressor at the resolved p0=0,
-    and an `up` element runs the victim's ops before the aggressor's, so the
-    gate is satisfied incidentally. Verified against real Verilator (30/30
-    verification faults detected) before being pinned here."""
+def test_synthesize_alg_covers_all_ten_coupling_types():
+    """Constructed, not opportunistic: _agg_pre_candidates emits a setup
+    element placing the aggressor, then a detect element whose v-pass runs
+    first -- so the victim and aggressor can hold DIFFERENT values, which is
+    what the victim-pre-1 variants need and what incidental coverage could
+    never reach. Verified 38/38 against real Verilator before pinning."""
     result = synthesize_alg(default_registry(), "t")
     coupling = {p.name for p in default_registry() if p.sensitize.agg_pre != "x"}
-    assert len(coupling & set(result.covered)) == 6
+    assert coupling <= set(result.covered)
 
 
 def test_synthesize_result_actually_detects_every_covered_primitive():
@@ -518,7 +506,7 @@ def test_synthesize_elements_still_accepts_wildcard_port_targets():
     assert elements, "a wildcard-port target must still synthesize"
 
 
-def test_synthesize_elements_reports_a_single_placement_target_as_uncovered():
+def test_synthesize_elements_covers_a_lone_agg_pre_target():
     """The two-cell state gate is not yet modelled: the oracle's write-victim and
     read-victim firing conditions never read the aggressor's state, and no
     candidate builder emits a setup element to place it. Left unhandled, such a
@@ -534,21 +522,22 @@ def test_synthesize_elements_reports_a_single_placement_target_as_uncovered():
         Sensitize(pre="0", written="1", on="victim", agg_pre="p0"),
         Effect(kind="block_write", value="0"),
     )
+    # Covered even in isolation now: the builder emits its own setup element
+    # rather than relying on elements built for other primitives.
     _elements, uncovered = synthesize_elements([prim])
-    # Uncovered in ISOLATION: no builder emits a setup element to place the
-    # aggressor, so a lone agg_pre target has nothing establishing its gate.
-    # (Against the full registry six of ten are covered opportunistically, on
-    # elements built for other primitives -- see CONSTRUCTIBLE above.) Either
-    # way it is never *claimed*, which is the soundness property.
-    assert "COUPF" in uncovered
+    assert "COUPF" not in uncovered
 
 
-def test_synthesize_alg_never_claims_a_single_placement_coupling_type():
-    """The soundness guarantee: a type detectable under only one aggressor
-    placement must never appear in `covered`, since a march test that catches
-    it one way and not the other is unsound for a real array."""
-    result = synthesize_alg(default_registry(), "probe")
-    assert SINGLE_PLACEMENT_ONLY.isdisjoint(result.covered)
+def test_coupling_coverage_holds_under_both_aggressor_placements():
+    """The soundness guarantee: a coupling type is only credited once detects()
+    confirms it with the aggressor above AND below the victim, since a march
+    test that catches it one way and not the other is unsound for a real
+    array. The bidirectional builder is what makes that achievable."""
+    result = synthesize_alg(default_registry(), "probe", init_val=1)
+    coupling = [p for p in default_registry() if p.sensitize.agg_pre != "x"]
+    for p in coupling:
+        assert detects(result.spec.elements, p, init_val=1, aggressor_gt_victim=True), p.name
+        assert detects(result.spec.elements, p, init_val=1, aggressor_gt_victim=False), p.name
 
 
 def test_synthesize_elements_still_accepts_wildcard_agg_pre_targets():

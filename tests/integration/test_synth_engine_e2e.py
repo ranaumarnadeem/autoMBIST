@@ -36,9 +36,9 @@ def test_synth_command_verify_reports_full_coverage() -> None:
     # not fault records, and 15 is still the right primitive count.
     shell, out = _run_script(["set_memory 8 8", "synth mytest --verify"])
     assert "error:" not in out
-    assert "covered: 21/25" in out
+    assert "covered: 25/25" in out
     result = shell.session.last_results["mytest"]
-    assert (result.detected, result.total) == (30, 30)
+    assert (result.detected, result.total) == (38, 38)
 
 
 def test_synth_command_verify_reports_full_coverage_at_init_zero() -> None:
@@ -51,9 +51,9 @@ def test_synth_command_verify_reports_full_coverage_at_init_zero() -> None:
     # test_synth_command_verify_reports_full_coverage above.
     shell, out = _run_script(["set_memory 8 8 --init 0", "synth mytest --verify"])
     assert "error:" not in out
-    assert "covered: 21/25" in out
+    assert "covered: 25/25" in out
     result = shell.session.last_results["mytest"]
-    assert (result.detected, result.total) == (30, 30)
+    assert (result.detected, result.total) == (38, 38)
     assert shell.session.last_op == ("run", "mytest")
 
 
@@ -68,9 +68,9 @@ def test_synth_with_custom_fault_type_end_to_end() -> None:
     ])
     assert "error:" not in out
     assert "targets 26/32" in out
-    assert "covered: 22/26" in out
+    assert "covered: 26/26" in out
     result = shell.session.last_results["withcustom"]
-    assert (result.detected, result.total) == (32, 32)
+    assert (result.detected, result.total) == (40, 40)
 
 
 def test_synthesized_spec_detects_coupling_faults_at_both_placements() -> None:
@@ -85,10 +85,7 @@ def test_synthesized_spec_detects_coupling_faults_at_both_placements() -> None:
     three coupling primitives, the only ones that ever missed."""
     mem = MemoryParams(addr_width=6, data_width=8)
     result = synthesize_alg(default_registry(), "t", init_val=1)
-    # The four victim-pre-1 coupling types are detectable under one aggressor
-    # placement only, so the walk declines to claim them -- which is exactly
-    # the placement-soundness property this test exists to guard.
-    assert set(result.uncovered) == {"CFDRD1", "CFIR1", "CFRD1", "CFWD1"}
+    assert result.uncovered == []
     # Scope to what the synthesizer actually CLAIMED. The agg_pre coupling
     # family is excluded from targeting by design (see synthesize_alg), so
     # demanding detection for it here would assert a claim the tool never

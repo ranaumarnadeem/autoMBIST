@@ -630,6 +630,83 @@ def _combo_candidates(
     return out
 
 
+def _agg_pre_candidate_one(
+    p: FaultPrimitive, golden_a: int, direction: int, golden_v_hint: int = 0,
+) -> tuple[list[Element], int]:
+    """Two-cell coupling (``sensitize.agg_pre``) needs the aggressor HOLDING a
+    value while the victim is operated on -- the same shape CFST needs, but
+    with the victim side being an OPERATION rather than a value comparison.
+
+    Same construction as :func:`_aggressor_clamp_candidate_one`: if the
+    aggressor is not already at the hold value, prepend a setup element that
+    writes it there (which also writes the victim, harmlessly -- the detect
+    element re-establishes the victim's own pre-state). Then one detect
+    element whose v-pass runs before its a-pass (per ``direction``), so
+    throughout the victim's ops the aggressor still holds from setup:
+
+      1. write the victim to the fault's required ``sensitize.pre``
+      2. the sensitizing op itself -- the ``written`` value for write_effect,
+         or a read for read_effect
+      3. a verify read, whose literal must match GOLDEN (never an arbitrary
+         choice -- see the module docstring on read ops being assertions).
+         read_effect gets a second read so the deceptive DRDF-shaped types,
+         whose own read returns the correct value, are still observable.
+
+    Without this, agg_pre types are only covered opportunistically, on
+    elements built for other primitives that happen to leave the aggressor
+    right -- which never reaches the victim-pre-1 variants, since those need
+    the victim and aggressor at DIFFERENT values simultaneously."""
+    p0, p1 = resolve_params(p)
+    hold = _resolve_bit(p.sensitize.agg_pre, p0, p1)
+    pre = _resolve_bit(p.sensitize.pre, p0, p1)
+
+    setup: list[Element] = []
+    v_state = golden_a if golden_a == hold else hold
+    if golden_a != hold:
+        # The setup writes BOTH roles (they share the op-list), so the victim
+        # lands on `hold` too -- tracked so the pre-write below can be skipped
+        # when it would be redundant.
+        setup.append(Element(direction=direction, ops=[_bit_op(hold, write=True)]))
+    else:
+        v_state = golden_v_hint
+
+    ops: list[int] = []
+    if v_state != pre:
+        ops.append(_bit_op(pre, write=True))
+    if p.category == "write_effect":
+        written = _resolve_bit(p.sensitize.written, p0, p1)
+        ops.append(_bit_op(written, write=True))
+        ops.append(_bit_op(written, write=False))
+        final_v = written
+    else:
+        ops.append(_bit_op(pre, write=False))
+        ops.append(_bit_op(pre, write=False))
+        final_v = pre
+    return setup + [Element(direction=direction, ops=ops)], final_v
+
+
+def _agg_pre_candidates(
+    remaining: list[FaultPrimitive], golden_v: int, golden_a: int,
+) -> list[tuple[list[Element], int]]:
+    """One chained bidirectional candidate per agg_pre primitive, exactly as
+    :func:`_aggressor_clamp_candidates` does for CFST: the aggressor-above
+    (DIR_UP) half, then the aggressor-below (DIR_DOWN) half rebuilt from the
+    real golden state the first half leaves behind. Both halves are needed
+    because a march test that catches a coupling fault with the aggressor on
+    one side and not the other is unsound for a real array."""
+    out: list[tuple[list[Element], int]] = []
+    for p in remaining:
+        if p.sensitize.agg_pre == "x" or p.sensitize.on != "victim":
+            continue
+        if p.category not in ("write_effect", "read_effect"):
+            continue
+        above_group, _ = _agg_pre_candidate_one(p, golden_a, DIR_UP, golden_v)
+        mid_v, mid_a = _advance_golden(golden_v, golden_a, above_group, aggressor_gt_victim=True)
+        below_group, below_v = _agg_pre_candidate_one(p, mid_a, DIR_DOWN, mid_v)
+        out.append((above_group + below_group, below_v))
+    return out
+
+
 def _candidate_groups(
     remaining: list[FaultPrimitive], max_ops: int, golden_v: int, golden_a: int,
 ) -> list[tuple[list[Element], int]]:
@@ -637,6 +714,7 @@ def _candidate_groups(
         _single_element_candidates(remaining, max_ops, golden_v, golden_a)
         + _combo_candidates(remaining, golden_v, golden_a)
         + _aggressor_clamp_candidates(remaining, golden_v, golden_a)
+        + _agg_pre_candidates(remaining, golden_v, golden_a)
     )
 
 
