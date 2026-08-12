@@ -94,6 +94,13 @@ class Sensitize:
     port: str = "x"         # which port the sensitizing op must occur on: "0"|"1"|"x" (wildcard;
                              # "x" means "not part of the sensitizing condition, matches on address
                              # alone" -- what every existing built-in implicitly means today)
+    agg_pre: str = "x"      # the AGGRESSOR cell's required held value: "0"|"1"|"p0"|"p1"|"x".
+                             # Orthogonal to `on`, which selects whose OPERATION sensitizes;
+                             # this constrains the other cell's STATE at that moment, which is
+                             # what makes a two-cell condition expressible (the van de Goor
+                             # CFtr/CFwd/CFrd/CFir/CFdrd family). "x" = unconstrained, which is
+                             # what every pre-existing built-in means, so the emitted RTL for
+                             # them stays byte-identical.
 
 
 @dataclass(slots=True)
@@ -135,6 +142,8 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
     # port gate into a verbatim arm body.
     if prim.sensitize.port not in _VALID_PORTS:
         raise FaultPrimitiveError(f"sensitize.port must be one of {_VALID_PORTS}")
+    if prim.sensitize.agg_pre not in _VALID_BIT_TOKENS:
+        raise FaultPrimitiveError(f"sensitize.agg_pre must be one of {_VALID_BIT_TOKENS}")
     if prim.raw_sv is not None:
         if prim.sensitize.port != "x":
             raise FaultPrimitiveError(
@@ -143,12 +152,45 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
                 "a raw_sv arm body is copied verbatim. Gate on the arm's own `port` "
                 "argument inside the raw_sv text instead, and leave sensitize.port='x'"
             )
+        if prim.sensitize.agg_pre != "x":
+            # Same structural reason as port: every render_*_arm returns the raw_sv
+            # body verbatim before building a condition, so the clause would be
+            # accepted and then silently dropped.
+            raise FaultPrimitiveError(
+                f"sensitize.agg_pre={prim.sensitize.agg_pre!r} cannot be combined with "
+                "raw_sv: the aggressor-state gate is emitted as a clause on the "
+                "generated arm's condition, and a raw_sv arm body is copied verbatim. "
+                "Test mem[FQ[i].aa][FQ[i].ab] yourself inside the raw_sv text instead, "
+                "and leave sensitize.agg_pre='x'"
+            )
         return  # remaining DSL fields are not codegen-relevant for a raw_sv primitive
 
     if prim.sensitize.on not in _VALID_ON:
         raise FaultPrimitiveError(f"sensitize.on must be one of {_VALID_ON}")
+    if prim.sensitize.agg_pre != "x" and prim.sensitize.on == "aggressor":
+        # on="aggressor" already means the aggressor's own ACCESS sensitizes the
+        # arm; additionally constraining the state it HOLDS describes a condition
+        # no codegen site evaluates (the aggressor arms key on the transition being
+        # written, not on a held value). The two are alternative ways to involve
+        # the aggressor, not composable ones.
+        raise FaultPrimitiveError(
+            "sensitize.agg_pre cannot be combined with sensitize.on='aggressor': "
+            "'aggressor' already gates on the aggressor's own access, while agg_pre "
+            "gates on the value it holds while the VICTIM is accessed. Use "
+            "on='victim' with agg_pre for a two-cell state condition, or "
+            "on='aggressor' with a transition for an aggressor-triggered one"
+        )
     if prim.sensitize.pre not in _VALID_BIT_TOKENS:
         raise FaultPrimitiveError(f"sensitize.pre must be one of {_VALID_BIT_TOKENS}")
+    if prim.sensitize.pre == prim.sensitize.agg_pre and prim.sensitize.pre in ("p0", "p1"):
+        # Both would render to the same FQ[i].pN[0], so one parameter would be
+        # silently doing two jobs and the victim/aggressor states could never
+        # differ -- which is exactly the case a two-cell fault exists to express.
+        raise FaultPrimitiveError(
+            f"sensitize.pre and sensitize.agg_pre both resolve to {prim.sensitize.pre!r}: "
+            "they would share one parameter, so the victim and aggressor states could "
+            "never differ. Give one of them a literal '0'/'1', or use the other parameter"
+        )
     if prim.sensitize.written not in _VALID_BIT_TOKENS:
         raise FaultPrimitiveError(f"sensitize.written must be one of {_VALID_BIT_TOKENS}")
     if prim.sensitize.transition not in _VALID_TRANSITIONS:
@@ -215,7 +257,7 @@ def to_dict(prim: FaultPrimitive) -> dict[str, Any]:
         "sensitize": {
             "pre": prim.sensitize.pre, "written": prim.sensitize.written,
             "transition": prim.sensitize.transition, "on": prim.sensitize.on,
-            "port": prim.sensitize.port,
+            "port": prim.sensitize.port, "agg_pre": prim.sensitize.agg_pre,
         },
         "effect": {
             "kind": prim.effect.kind, "value": prim.effect.value,
@@ -235,7 +277,7 @@ def from_dict(data: dict[str, Any]) -> FaultPrimitive:
         sensitize=Sensitize(
             pre=str(sens.get("pre", "x")), written=str(sens.get("written", "x")),
             transition=str(sens.get("transition", "x")), on=str(sens.get("on", "victim")),
-            port=str(sens.get("port", "x")),
+            port=str(sens.get("port", "x")), agg_pre=str(sens.get("agg_pre", "x")),
         ),
         effect=Effect(
             kind=str(eff.get("kind", "force")), value=eff.get("value"),

@@ -672,6 +672,22 @@ def synthesize_elements(
             "would be unsound. Drop them from the target set, or set "
             "sensitize.port='x'"
         )
+    # Same reasoning for the two-cell state gate. The oracle's write-victim and
+    # read-victim firing conditions (_apply_op) do not read `a` at all, so an
+    # agg_pre primitive would be simulated as its strictly-more-permissive
+    # single-cell twin, be marked covered, and inflate the reported number. The
+    # candidate builders also emit no setup element to place the aggressor, so
+    # even a correct oracle would have nothing to cover it with. Refuse until
+    # both are modelled (see docs/coupling-family-plan.md, Step 6).
+    agg_qualified = [p.name for p in target if p.sensitize.agg_pre != "x"]
+    if agg_qualified:
+        raise ValueError(
+            f"fault type(s) {agg_qualified} set sensitize.agg_pre, which this "
+            "synthesizer does not yet model: its walk would ignore the aggressor's "
+            "held state and report them covered by an algorithm that never "
+            "establishes it, so any coverage it claimed for them would be unsound. "
+            "Drop them from the target set, or set sensitize.agg_pre='x'"
+        )
     elements: list[Element] = [Element(direction=DIR_EITHER, ops=[OP_W0])]
     golden_v, golden_a = _golden_state_after(elements, aggressor_gt_victim=aggressor_gt_victim, init_val=init_val)
     remaining = {p.name: p for p in target}
