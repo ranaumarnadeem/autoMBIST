@@ -30,7 +30,7 @@ from typing import Any, Callable
 from .alg_spec import WAIT_BASE, AlgSpec, expand_expected_blocks, find_engine_dir
 from .seq_check import SequenceResult, compare_trace, parse_observed_trace
 
-# The 19 functional fault primitives fault_ram.sv implements natively (see
+# The 29 functional fault primitives fault_ram.sv implements natively (see
 # engine/README.md). P6 (add_fault_type) will let researchers extend this set.
 #
 # DRF and HSD (Workstreams K/L) are deliberately absent from this STATIC

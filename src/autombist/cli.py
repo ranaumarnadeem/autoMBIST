@@ -539,7 +539,7 @@ def test(
     algo: str = typer.Option("march_c", "--algo", help="Built-in algorithm name (march_b, march_c, march_c_plus, march_ss, march_x, march_y, mats_plus) or a path to a .alg file"),
     fsm: Path | None = typer.Option(None, "--fsm", help="Validate a controller FSM .sv instead of an algorithm (takes precedence over --algo); sibling .sv/.v files in its directory are gathered automatically"),
     faults: Path = typer.Option(..., "--faults", help="Fault-list file: 'TYPE VADDR VBIT AADDR ABIT P0 P1' per line"),
-    fault_types: Path | None = typer.Option(None, "--fault-types", help="JSON file with a list of custom fault-primitive specs, added to the built-in 19 (see fault_primitives.py for the schema)"),
+    fault_types: Path | None = typer.Option(None, "--fault-types", help="JSON file with a list of custom fault-primitive specs, added to the built-in 29 (see fault_primitives.py for the schema)"),
     init: int = typer.Option(1, "--init", help="Memory init value (0 or 1)"),
     sim: str = typer.Option("verilator", "--sim", help="Simulator backend (Verilator only; Icarus cannot run the SV fault engine)"),
     verbose: bool = typer.Option(False, "--verbose", help="Print per-fault activation counts (+FAULT_VERBOSE)"),
@@ -555,7 +555,7 @@ def test(
 
     Compiles the fault-injectable RAM model once (Verilator), runs a golden pass,
     then one simulation per fault in the list, and reports detection coverage.
-    This models 19 functional fault primitives (stuck-at, transition, write/read
+    This models 29 functional fault primitives (stuck-at, transition, write/read
     disturb, address-decoder, and all four coupling classes) -- richer than the
     stuck-at/transition mask faults used by `autombist generate --test`. Pass
     --fsm to validate an actual controller (bist_fail) instead of an algorithm

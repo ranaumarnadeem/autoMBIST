@@ -36,7 +36,7 @@ autombist simulate --out out/<memory_name>
 # -> out/<memory_name>/results.json  (coverage_percent, detected/total, fail-bitmap)
 ```
 
-## 2. Research path — grade a march algorithm against the 19-primitive fault model
+## 2. Research path — grade a march algorithm against the 29-primitive fault model
 
 Needs `verilator` on PATH. No real memory macro or config required.
 

@@ -28,10 +28,10 @@ from autombist.algo_engine import MemoryParams, load_fault_list, run_algo_campai
 # fault-by-fault, not just by total), and mats_plus/march_b have no trailing
 # `either` at all.
 REFERENCE_COVERAGE = {
-    "march_c": (14, 19),
-    "mats_plus": (12, 19),
-    "march_ss": (18, 19),
-    "march_x": (13, 19),
+    "march_c": (20, 29),
+    "mats_plus": (13, 29),
+    "march_ss": (28, 29),
+    "march_x": (14, 29),
 }
 
 
