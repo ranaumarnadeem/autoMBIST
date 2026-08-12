@@ -11,9 +11,9 @@
 # w0). This file puts that read back, so it is March C- plus exactly one
 # extra op per middle element -- +4n over march_c's 10n, hence "C+" here.
 #
-# Measured on faults.example.txt (19 entries, addr_width=8 data_width=8
-# init=1, real Verilator run via run_algo_campaign): 17/19, vs march_c's
-# 14/19 -- +3, zero regressions (the 3 newly caught are DRDF0, DRDF1, SOF;
+# Measured on faults.example.txt (29 entries, addr_width=8 data_width=8
+# init=1, real Verilator run via run_algo_campaign): 25/29, vs march_c's
+# 20/29 -- +3, zero regressions (the 3 newly caught are DRDF0, DRDF1, SOF;
 # WDF0/WDF1 still escape both, as expected -- this family never performs a
 # non-transition write). Mechanism, confirmed by inspecting elem/op
 # attribution rather than assumed: the appended read makes the LAST read of
@@ -32,7 +32,7 @@
 # fault-by-fault comparison, not just the totals). This is the likely source
 # of a "catches 46 more" figure measured elsewhere at N=300 scale -- not
 # reproducible on the 19-entry faults.example.txt, where march_c already
-# scores 14/19 and 5 is therefore the hard ceiling on any possible gain.
+# scores 20/29 and 5 is therefore the hard ceiling on any possible gain.
 either w0
 up   r0 w1 r1
 up   r1 w0 r0

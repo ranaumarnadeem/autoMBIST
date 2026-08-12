@@ -18,7 +18,7 @@ from autombist.fault_ram_gen import render_and_write  # noqa: E402
 # The P6 acceptance gate: fault_ram.sv, regenerated from the DSL registry,
 # must reproduce the hand-written engine's reference table bit-for-bit --
 # not just the totals, but which specific faults each algorithm catches.
-REFERENCE_COVERAGE = {"march_c": (14, 19), "mats_plus": (12, 19), "march_ss": (18, 19)}
+REFERENCE_COVERAGE = {"march_c": (20, 29), "mats_plus": (13, 29), "march_ss": (28, 29)}
 
 # From engine/README.md "Measured results" table (faults.example.txt, INIT=1):
 # fault type -> {algo: DETECTED/ESCAPED}, keyed by the exact instance in the file.
@@ -42,6 +42,16 @@ REFERENCE_PER_FAULT = {
     "CFID": {"march_c": True, "mats_plus": False, "march_ss": True},
     "CFST": {"march_c": True, "mats_plus": True, "march_ss": True},
     "CFDS": {"march_c": True, "mats_plus": False, "march_ss": True},
+    "CFTR0": {"march_c": True, "mats_plus": False, "march_ss": True},
+    "CFTR1": {"march_c": True, "mats_plus": True, "march_ss": True},
+    "CFWD0": {"march_c": False, "mats_plus": False, "march_ss": True},
+    "CFWD1": {"march_c": False, "mats_plus": False, "march_ss": True},
+    "CFRD0": {"march_c": True, "mats_plus": False, "march_ss": True},
+    "CFRD1": {"march_c": True, "mats_plus": False, "march_ss": True},
+    "CFIR0": {"march_c": True, "mats_plus": False, "march_ss": True},
+    "CFIR1": {"march_c": True, "mats_plus": False, "march_ss": True},
+    "CFDRD0": {"march_c": False, "mats_plus": False, "march_ss": True},
+    "CFDRD1": {"march_c": False, "mats_plus": False, "march_ss": True},
 }
 
 

@@ -1,14 +1,14 @@
 """The fault-primitive DSL: a declarative description of a memory functional
 fault, and the registry of built-ins that reproduces fault_ram.sv's behavior.
 
-Why a DSL at all: fault_ram.sv hardcodes 21 fault-type case arms/insertion
+Why a DSL at all: fault_ram.sv hardcodes 31 fault-type case arms/insertion
 sites across five functions/blocks (clamp_static, write_op's victim/
 aggressor/row-membership checks, read_op's victim loop). `add_fault_type`
 lets a researcher define a NEW fault type without editing SystemVerilog --
 fault_ram_gen.py turns a list of FaultPrimitive into the equivalent case
 arms.
 
-Coverage: 15 of the 21 built-ins fit this DSL cleanly. Six do not, and stay
+Coverage: 25 of the 31 built-ins fit this DSL cleanly. Six do not, and stay
 as fixed, hand-written scaffolding in the template (see fault_ram_gen.py):
   - SOF: its read-path arm reads the module-level `dout` register directly
     (cross-op state), which is outside the read_op() locals this DSL models.
