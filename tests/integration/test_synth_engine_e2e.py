@@ -36,9 +36,9 @@ def test_synth_command_verify_reports_full_coverage() -> None:
     # not fault records, and 15 is still the right primitive count.
     shell, out = _run_script(["set_memory 8 8", "synth mytest --verify"])
     assert "error:" not in out
-    assert "covered: 15/15" in out
+    assert "covered: 21/25" in out
     result = shell.session.last_results["mytest"]
-    assert (result.detected, result.total) == (18, 18)
+    assert (result.detected, result.total) == (30, 30)
 
 
 def test_synth_command_verify_reports_full_coverage_at_init_zero() -> None:
@@ -51,9 +51,9 @@ def test_synth_command_verify_reports_full_coverage_at_init_zero() -> None:
     # test_synth_command_verify_reports_full_coverage above.
     shell, out = _run_script(["set_memory 8 8 --init 0", "synth mytest --verify"])
     assert "error:" not in out
-    assert "covered: 15/15" in out
+    assert "covered: 21/25" in out
     result = shell.session.last_results["mytest"]
-    assert (result.detected, result.total) == (18, 18)
+    assert (result.detected, result.total) == (30, 30)
     assert shell.session.last_op == ("run", "mytest")
 
 
@@ -67,10 +67,10 @@ def test_synth_with_custom_fault_type_end_to_end() -> None:
         "synth withcustom --verify",
     ])
     assert "error:" not in out
-    assert "targets 16/32" in out
-    assert "covered: 16/16" in out
+    assert "targets 26/32" in out
+    assert "covered: 22/26" in out
     result = shell.session.last_results["withcustom"]
-    assert (result.detected, result.total) == (20, 20)
+    assert (result.detected, result.total) == (32, 32)
 
 
 def test_synthesized_spec_detects_coupling_faults_at_both_placements() -> None:
@@ -85,7 +85,10 @@ def test_synthesized_spec_detects_coupling_faults_at_both_placements() -> None:
     three coupling primitives, the only ones that ever missed."""
     mem = MemoryParams(addr_width=6, data_width=8)
     result = synthesize_alg(default_registry(), "t", init_val=1)
-    assert result.uncovered == []
+    # The four victim-pre-1 coupling types are detectable under one aggressor
+    # placement only, so the walk declines to claim them -- which is exactly
+    # the placement-soundness property this test exists to guard.
+    assert set(result.uncovered) == {"CFDRD1", "CFIR1", "CFRD1", "CFWD1"}
     # Scope to what the synthesizer actually CLAIMED. The agg_pre coupling
     # family is excluded from targeting by design (see synthesize_alg), so
     # demanding detection for it here would assert a claim the tool never
@@ -119,8 +122,8 @@ def test_synthesized_spec_detects_coupling_faults_at_both_placements() -> None:
     below_missed = sorted(f.record.type for f in below.faults if not f.detected)
     assert above_missed == [], f"aggressor-above escapes: {above_missed}"
     assert below_missed == [], f"aggressor-below escapes: {below_missed}"
-    assert (above.detected, above.total) == (15, 15)
-    assert (below.detected, below.total) == (15, 15)
+    assert (above.detected, above.total) == (25, 25)
+    assert (below.detected, below.total) == (25, 25)
 
 
 def test_synth_compare_against_march_ss() -> None:
@@ -158,7 +161,7 @@ def test_synth_write_flag_produces_parseable_alg_file(tmp_path: Path) -> None:
 def test_synth_excludes_fixed_types_in_printed_summary() -> None:
     shell, out = _run_script(["set_memory 8 8", "synth mytest"])
     assert "excludes SOF, AF_NOACC, AF_ALIAS, CFDS, DRF, HSD" in out
-    assert "targets 15/31" in out
+    assert "targets 25/31" in out
 
 
 def test_synth_registered_algo_immediately_usable_by_run() -> None:
