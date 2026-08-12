@@ -23,7 +23,7 @@ that do it — all behind one CLI. It's really two independent subsystems:
    RTL around it, with stuck-at/transition/inter-port-coupling fault injection
    through cocotb + Icarus Verilog.
 2. **Functional fault-primitive research platform** (`test`, `algo`) — an
-   independent, Verilator-driven toolchain built around a 21-primitive
+   independent, Verilator-driven toolchain built around a 31-primitive
    functional fault-model DSL and a programmable march-algorithm engine, for
    grading a march algorithm (or a real controller FSM) with no memory macro
    required.
@@ -125,8 +125,8 @@ autombist can find on this system with `autombist doctor`. Full walkthrough:
 ## Fault coverage
 
 The research path (`test`/`algo`) grades a march algorithm against a
-21-primitive functional fault model. Measured detection (**D**) vs escape
-(**E**) against `src/autombist/engine/faults.example.txt`, for the 19
+31-primitive functional fault model. Measured detection (**D**) vs escape
+(**E**) against `src/autombist/engine/faults.example.txt`, for the 29
 primitives in that fault list:
 
 | Fault | MATS+ (5n) | March Y (8n) | March C- (10n) | March C+ (14n) | March B (17n) | March SS (22n) |
@@ -143,7 +143,12 @@ primitives in that fault list:
 | CFID | E | E | D | D | D | D |
 | CFST | D | D | D | D | D | D |
 | CFDS (any-read) | E | D | D | D | D | D |
-| **total** | **12/19** | **16/19** | **14/19** | **17/19** | **15/19** | **18/19** |
+| CFTR0, CFTR1 | D/E | D/E | D | D | D | D |
+| CFWD0, CFWD1 | E | E | E | E | E | D |
+| CFRD0, CFRD1 | E | E | D | D | D/E | D |
+| CFIR0, CFIR1 | E | E | D | D | D/E | D |
+| CFDRD0, CFDRD1 | E | E | E | D | E | D |
+| **total** | **13/29** | **17/29** | **20/29** | **25/29** | **19/29** | **28/29** |
 
 Seven built-in march algorithms ship with the research engine. Full
 per-primitive semantics, escape rationale, and the seventh algorithm

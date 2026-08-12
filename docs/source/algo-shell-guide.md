@@ -10,7 +10,7 @@ the `.alg` grammar may still change. The classic path (`autombist generate` /
 
 This is the user guide for autoMBIST's **algo-shell** subsystem: the
 research-oriented half of the tool that grades march algorithms (and
-controller FSMs) against a 19-primitive functional fault model, using a
+controller FSMs) against a 29-primitive functional fault model, using a
 Verilator-driven behavioral RAM instead of a synthesizable memory macro. If
 you haven't already, read {doc}`architecture` first — its "Two
 subsystems, one repository" table and "The algo-shell" section explain how
@@ -24,7 +24,7 @@ Reach for the algo-shell (`test` / `algo`) when the question is about the
 March C- catch WDF faults?", "how does my hand-written march compare to
 March SS?", "does this FSM actually detect what it claims to?" It needs no
 real memory macro — `fault_ram.sv` is a behavioral stand-in — and it models
-19 functional fault primitives (coupling, disturbs, decoder faults) that the
+29 functional fault primitives (coupling, disturbs, decoder faults) that the
 classic path's structural stuck-at/transition masks don't cover. Reach for
 the classic path (`autombist generate` / `simulate` / `run`) when the
 question is about a specific memory instance you intend to actually tape
@@ -56,7 +56,7 @@ autombist test --addr-width INTEGER --data-width INTEGER --faults PATH [OPTIONS]
 | `--algo TEXT` | `march_c` | Built-in algorithm name (`march_c`, `march_c_plus`, `march_y`, `march_b`, `mats_plus`, `march_ss`, `march_x`) or a path to a `.alg` file |
 | `--fsm PATH` | none | Validate a controller FSM `.sv` instead of an algorithm (takes precedence over `--algo`); sibling `.sv`/`.v` files in its directory are gathered automatically. No elem/op attribution in this mode — a black-box controller has no step counter to report |
 | `--faults PATH` (required) | — | Fault-list file: `TYPE VADDR VBIT AADDR ABIT P0 P1` per line (see the `add_fault`/`load_faults` entries in §3 for the full grammar, and the primitive table in §4) |
-| `--fault-types PATH` | none | JSON file with a list of custom fault-primitive specs, added to the built-in 19 (see §4 and `fault_primitives.py`'s module docstring for the schema) |
+| `--fault-types PATH` | none | JSON file with a list of custom fault-primitive specs, added to the built-in 29 (see §4 and `fault_primitives.py`'s module docstring for the schema) |
 | `--init INTEGER` | `1` | Memory init value (0 or 1) |
 | `--sim TEXT` | `verilator` | Simulator backend — Verilator only; Icarus cannot run the SV fault engine (it uses `foreach`, queues, and `final` blocks) |
 | `--verbose` | off | Print per-fault activation counts (`+FAULT_VERBOSE`); ORed with the top-level `autombist -v` flag, so `autombist -v test ...` has the same effect without touching this flag |
@@ -175,10 +175,10 @@ algo> add_fault CFIN 5 1 6 1 2 0
 fault added: CFIN v=5.1 (total 2)
 
 algo> gen_faults
-generated 19 faults
+generated 29 faults
 
 algo> run march_c
-march_c: 14/19 detected (73.68%)  build=5.40s run=0.11s
+march_c: 20/29 detected (68.97%)  build=5.40s run=0.11s
 
 algo> write_report /tmp/algo_report.md
 report written: /tmp/algo_report.md
@@ -187,15 +187,15 @@ algo> write_diagnosis /tmp/algo_diag.md
 diagnosis written: /tmp/algo_diag.md
 
 algo> compare_algo march_c -march SS,MATS
-march_c: 14/19 detected (73.68%)  build=5.22s run=0.11s
-march_ss: 18/19 detected (94.74%)  build=5.04s run=0.15s
-mats_plus: 13/19 detected (68.42%)  build=6.71s run=0.10s
+march_c: 20/29 detected (68.97%)  build=5.22s run=0.11s
+march_ss: 28/29 detected (96.55%)  build=5.04s run=0.15s
+mats_plus: 13/29 detected (44.83%)  build=6.71s run=0.10s
 
 | fault          | march_c | march_ss | mats_plus |
 | -------------- | ------- | -------- | --------- |
 | SA0@3.0        | D       | D        | D         |
 | ...
-| total          | 14/19   | 18/19    | 13/19     |
+| total          | 20/29   | 28/29    | 13/29     |
 
 algo> quit
 ```
@@ -527,8 +527,8 @@ means the address counter never has to rewind between elements.
 **Getting this right is not cosmetic.** Before the rule was unified,
 `march_engine.sv` ran every `either` element ascending regardless of context.
 On `faults.example.txt` at `addr_width=8`/`data_width=8`, that made
-`run_algo_campaign` under-report March X's coverage as 12/19 instead of the
-13/19 the algorithm actually detects: `CFDS 130 1 131 1 4 0` (aggressor above
+`run_algo_campaign` under-report March X's coverage as 13/29 instead of the
+14/29 the algorithm actually detects: `CFDS 130 1 131 1 4 0` (aggressor above
 the victim) is caught only by a descending final read, and March X's trailing
 `either r0` is exactly that read. March C-'s own trailing `either` happens to
 be direction-insensitive for every fault in that list — which is why the two

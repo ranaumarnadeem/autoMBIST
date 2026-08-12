@@ -11,7 +11,7 @@ autoMBIST is:
 
 - **Two tools in one** — a wrapper/RTL **generator** that MBIST-tests a real
   memory macro, and an independent **research platform** for designing and
-  grading march algorithms against a 19-primitive functional fault model, with
+  grading march algorithms against a 29-primitive functional fault model, with
   no memory macro required.
 
 - **Repair-aware** — an optional redundancy layer wraps a spare-augmented

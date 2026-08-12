@@ -25,7 +25,7 @@ shell).
 
 ## 1. Why this exists
 
-A fault campaign's headline number is a coverage percentage: `14/19 (73.68%)`,
+A fault campaign's headline number is a coverage percentage: `20/29 (68.97%)`,
 `detected/total`. That number answers "how good is this algorithm overall," but it
 cannot answer the question a hardware bring-up engineer or test engineer actually
 asks when triaging a failing part or tuning an algorithm:
@@ -133,8 +133,8 @@ real JSON arrays.
 
 ### 2.3 Worked example
 
-Run against this repo's own `src/autombist/engine/faults.example.txt` (19 faults,
-one of each of the 19 built-in fault types) on an 8×8 memory with `march_c`:
+Run against this repo's own `src/autombist/engine/faults.example.txt` (29 faults,
+one of each of the 29 built-in fault types) on an 8×8 memory with `march_c`:
 
 ```bash
 autombist test -aw 8 -dw 8 --algo march_c --faults faults.example.txt \
@@ -143,7 +143,7 @@ autombist test -aw 8 -dw 8 --algo march_c --faults faults.example.txt \
 
 ```
 autombist test: march_c (10n) on 8x8 memory, init=1
-  faults: 19   detected: 14   coverage: 73.68%
+  faults: 29   detected: 20   coverage: 68.97%
   build: 1.89s   run: 0.13s   sim: verilator
   diagnosis: diag.md
 ```
@@ -154,7 +154,7 @@ The resulting `diag.md` (34 sparse cell rows out of a possible 256×8 grid):
 # autombist diagnosis — march_c
 
 Memory: 8x8, init=1
-Coverage: **14/19 (73.68%)**
+Coverage: **20/29 (68.97%)**
 Cells: 34 (sparse: injection and/or observation sites only)
 
 | addr | bit | role        | fault_types_injected_here | detected_as_injection | escaped_types_here | times_observed_mismatch | observed_from_fault_types |
@@ -198,8 +198,8 @@ arrays, and wraps the cells in a top-level object with campaign metadata:
   "algo_name": "march_c",
   "mem": { "addr_width": 8, "data_width": 8, "init_val": 1, "num_ports": 1 },
   "detected": 14,
-  "total": 19,
-  "coverage_percent": 73.68421052631578,
+  "total": 29,
+  "coverage_percent": 68.96551724137932,
   "cells": [
     {
       "addr": 10, "bit": 3, "role": "both",

@@ -132,8 +132,9 @@ def test_render_fault_ram_num_ports_1_implicit_and_explicit_are_identical() -> N
 
 def test_render_fault_ram_num_ports_1_is_byte_identical_to_pre_phase_golden() -> None:
     """Pins render_fault_ram(default_registry()) to its exact sha256. Deliberately
-    re-pinned across both Workstream K (DRF) and Workstream L (HSD), and again
-    for the fatal-cascade fix (had_fatal guard + valid-type-name list in the
+    re-pinned across both Workstream K (DRF) and Workstream L (HSD), again
+    for the fatal-cascade fix, and again for the two-cell coupling family
+    (agg_pre, ten new registry entries) (had_fatal guard + valid-type-name list in the
     unknown-fault-type message): each added a new fixed type or a real text
     change, so num_ports=1 text growth each time is the expected, intended
     outcome, not a regression. Any *future* edit that changes a byte of this
@@ -143,8 +144,8 @@ def test_render_fault_ram_num_ports_1_is_byte_identical_to_pre_phase_golden() ->
 
     text = render_fault_ram(default_registry())
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    assert len(text) == 14791
-    assert digest == "2a9e8cfc124a5b82f86d3abde87016fb0d7cb7e7704b14ff7377f326816f5079"
+    assert len(text) == 16895
+    assert digest == "bef86c6af2cc4711aa41ce47c4a6b4e585853ab53aa89f0f5b0c78cdd7a47536"
 
 
 # --------------------------------------------------------------------------- #
@@ -392,3 +393,62 @@ def test_conflicting_port_faults_silent_single_port() -> None:
     from autombist.fault_ram_gen import conflicting_port_faults
 
     assert conflicting_port_faults([_aggressor_prim("1")], [_rec("PA", aport=0)], num_ports=1) == []
+
+
+# ---------------------------------------------------------------------------
+# sensitize.agg_pre: the two-cell state gate.
+# ---------------------------------------------------------------------------
+
+
+def _agg(**sens: str) -> FaultPrimitive:
+    return FaultPrimitive(
+        "TCOUP", "write_effect",
+        Sensitize(pre="0", written="1", **sens),
+        Effect(kind="block_write", value="0"),
+    )
+
+
+def test_agg_pre_emits_the_aggressor_state_clause_on_a_write_victim_arm() -> None:
+    arm = render_write_victim_arm(_agg(agg_pre="p0"))
+    assert "mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]" in arm
+    # ANDed onto the victim's own clauses, not replacing them.
+    assert "old[b] == 1'b0 && d[b] == 1'b1 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]" in arm
+
+
+def test_agg_pre_emits_the_clause_on_a_read_victim_arm() -> None:
+    prim = FaultPrimitive(
+        "TCOUPR", "read_effect", Sensitize(pre="0", agg_pre="1"),
+        Effect(kind="corrupt_read", value="1"),
+    )
+    arm = render_read_victim_arm(prim)
+    assert "old[b] == 1'b0 && mem[FQ[i].aa][FQ[i].ab] == 1'b1" in arm
+
+
+def test_agg_pre_wildcard_emits_no_clause() -> None:
+    # The property every byte-identical built-in render depends on.
+    assert "FQ[i].aa" not in render_write_victim_arm(_agg())
+
+
+def test_agg_pre_alone_replaces_the_empty_condition_sentinel() -> None:
+    """A primitive constraining ONLY the aggressor state must render
+    `if (mem[...] == ...)`, not `if (1'b1 && mem[...] == ...)` -- the same
+    sentinel rule sensitize.port follows."""
+    prim = FaultPrimitive(
+        "TCOUPO", "read_effect", Sensitize(agg_pre="1"),
+        Effect(kind="corrupt_read", value="1"),
+    )
+    arm = render_read_victim_arm(prim)
+    assert "if (mem[FQ[i].aa][FQ[i].ab] == 1'b1)" in arm
+    assert "1'b1 &&" not in arm
+
+
+def test_agg_pre_changes_the_registry_hash() -> None:
+    """The build cache is keyed on registry_hash. If agg_pre were missing from
+    to_dict(), two registries differing only in it would hash identically and
+    the second would silently reuse the first's compiled engine -- i.e. run
+    against the wrong RTL while reporting success."""
+    base = default_registry()
+    gated = default_registry() + [_agg(agg_pre="p0")]
+    ungated = default_registry() + [_agg()]
+    assert registry_hash(gated) != registry_hash(ungated)
+    assert registry_hash(gated) != registry_hash(base)

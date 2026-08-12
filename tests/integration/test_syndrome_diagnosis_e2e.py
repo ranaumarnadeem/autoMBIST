@@ -65,14 +65,32 @@ def test_syndrome_reproduces_march_c_ambiguity_and_march_ss_resolves_wdf_drdf(tm
     assert c_escaped["ambiguous"] is True
 
     # March SS adds detection elements specifically for WDF/DRDF -- each now
-    # gets its own unambiguous, distinct (elem, op) group.
-    ss_singletons = {
-        frozenset(g["fault_types"]): g
-        for g in ss_groups
-        if g["detected"] is True and len(g["fault_types"]) == 1
-    }
-    for wdf_type in ("WDF0", "WDF1", "DRDF0", "DRDF1"):
-        assert frozenset({wdf_type}) in ss_singletons, wdf_type
+    # gets its own distinct (elem, op) group, separated from the others.
+    #
+    # "Distinct" is the claim, not "singleton". Since the two-cell coupling
+    # family landed, each single-cell type shares a syndrome with its coupling
+    # twin (CFWD1 is WDF1 plus an aggressor-state gate, so when both are
+    # detected they necessarily fire at the same elem/op). That is the syndrome
+    # analysis being CORRECT: from a failure signature alone you genuinely
+    # cannot distinguish a fault from its aggressor-gated variant -- that needs
+    # the aggressor's state, which the signature does not carry. So the
+    # assertion is that each type occupies its own group, admitting only its
+    # own coupling twin.
+    ss_by_type: dict[str, frozenset[str]] = {}
+    for g in ss_groups:
+        if g["detected"] is True:
+            for name in g["fault_types"]:
+                ss_by_type[name] = frozenset(g["fault_types"])
+    twin = {"WDF0": "CFWD0", "WDF1": "CFWD1", "DRDF0": "CFDRD0", "DRDF1": "CFDRD1"}
+    for wdf_type, coupling_twin in twin.items():
+        assert wdf_type in ss_by_type, wdf_type
+        assert ss_by_type[wdf_type] <= {wdf_type, coupling_twin}, (
+            f"{wdf_type} shares a syndrome with something other than its own "
+            f"coupling twin: {sorted(ss_by_type[wdf_type])}"
+        )
+    # ...and the four remain mutually distinguishable, which is the actual
+    # March-SS-resolves-the-ambiguity claim.
+    assert len({ss_by_type[t] for t in twin}) == 4
 
     # SOF is structurally undetectable against solid backgrounds (README's own
     # documented model limitation, unrelated to WDF/DRDF) -- still escapes,

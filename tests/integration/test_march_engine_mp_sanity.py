@@ -122,7 +122,7 @@ def _write_fault_list_explicit_ports(records: list[FaultRecord], path: Path) -> 
 
 # Copied verbatim from test_fault_ram_gen_e2e.py's REFERENCE_COVERAGE /
 # REFERENCE_PER_FAULT -- the OLD engine's (march_engine.sv) reference table.
-REFERENCE_COVERAGE = {"march_c": (14, 19), "mats_plus": (12, 19), "march_ss": (18, 19)}
+REFERENCE_COVERAGE = {"march_c": (20, 29), "mats_plus": (13, 29), "march_ss": (28, 29)}
 
 REFERENCE_PER_FAULT = {
     "SA0": {"march_c": True, "mats_plus": True, "march_ss": True},
@@ -144,6 +144,16 @@ REFERENCE_PER_FAULT = {
     "CFID": {"march_c": True, "mats_plus": False, "march_ss": True},
     "CFST": {"march_c": True, "mats_plus": True, "march_ss": True},
     "CFDS": {"march_c": True, "mats_plus": False, "march_ss": True},
+    "CFTR0": {"march_c": True, "mats_plus": False, "march_ss": True},
+    "CFTR1": {"march_c": True, "mats_plus": True, "march_ss": True},
+    "CFWD0": {"march_c": False, "mats_plus": False, "march_ss": True},
+    "CFWD1": {"march_c": False, "mats_plus": False, "march_ss": True},
+    "CFRD0": {"march_c": True, "mats_plus": False, "march_ss": True},
+    "CFRD1": {"march_c": True, "mats_plus": False, "march_ss": True},
+    "CFIR0": {"march_c": True, "mats_plus": False, "march_ss": True},
+    "CFIR1": {"march_c": True, "mats_plus": False, "march_ss": True},
+    "CFDRD0": {"march_c": False, "mats_plus": False, "march_ss": True},
+    "CFDRD1": {"march_c": False, "mats_plus": False, "march_ss": True},
 }
 
 
