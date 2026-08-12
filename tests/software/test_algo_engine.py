@@ -558,7 +558,7 @@ def test_generate_all_types_faults_excludes_hsd_at_default_words_per_row() -> No
     mem = MemoryParams(addr_width=4, data_width=8)
     records = generate_all_types_faults(mem)
     assert not any(r.type == "HSD" for r in records)
-    assert len(records) == 20  # 19 BUILTIN_FAULT_TYPES + DRF (single-port)
+    assert len(records) == 30  # 29 BUILTIN_FAULT_TYPES + DRF (single-port)
 
 
 def test_generate_all_types_faults_includes_hsd_when_words_per_row_over_1() -> None:
@@ -568,7 +568,7 @@ def test_generate_all_types_faults_includes_hsd_when_words_per_row_over_1() -> N
     records = generate_all_types_faults(mem)
     hsd = [r for r in records if r.type == "HSD"]
     assert len(hsd) == 1
-    assert len(records) == 21  # 19 BUILTIN_FAULT_TYPES + DRF + HSD
+    assert len(records) == 31  # 29 BUILTIN_FAULT_TYPES + DRF + HSD
     assert hsd[0].aaddr == 0 and hsd[0].abit == 0  # no fixed aggressor address
 
 

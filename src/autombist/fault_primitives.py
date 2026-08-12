@@ -330,4 +330,67 @@ def default_registry() -> list[FaultPrimitive]:
         FaultPrimitive(
             "DRDF1", "read_effect", Sensitize(pre="1"), Effect(kind="force_read", value="0", also_read="1"),
         ),
+        # --- Two-cell coupling family -------------------------------------- #
+        # Al-Ars, Hamdioui & van de Goor, "Space of DRAM Fault Models and
+        # Corresponding Testing", DATE 2006, Table 2 (two-cell static FFMs).
+        # Notation <Sa; Sv/F/R>: Sa on the aggressor, Sv on the victim, F the
+        # victim's resulting stored value, R what a read returns.
+        #
+        # Each is the single-cell FFM of the same shape (TF/WDF/RDF/IRF/DRDF),
+        # gated on the aggressor's HELD state -- so each collapses that table
+        # row's two aggressor cases into one type parameterized by P0. The
+        # suffix is the VICTIM's pre-state, following TF0/WDF0/RDF0 above;
+        # note the paper names transition faults by write direction instead,
+        # so this repo's TF0 is the paper's TF1 (a pre-existing divergence,
+        # documented in engine/README.md rather than renamed).
+        FaultPrimitive(
+            "CFTR0", "write_effect", Sensitize(pre="0", written="1", agg_pre="p0"),
+            Effect(kind="block_write", value="0"),
+            params_help={"p0": "aggressor hold state (0/1)"},          # <a; 0w1/0/->
+        ),
+        FaultPrimitive(
+            "CFTR1", "write_effect", Sensitize(pre="1", written="0", agg_pre="p0"),
+            Effect(kind="block_write", value="1"),
+            params_help={"p0": "aggressor hold state (0/1)"},          # <a; 1w0/1/->
+        ),
+        FaultPrimitive(
+            "CFWD0", "write_effect", Sensitize(pre="0", written="0", agg_pre="p0"),
+            Effect(kind="force", value="1"),
+            params_help={"p0": "aggressor hold state (0/1)"},          # <a; 0w0/1/->
+        ),
+        FaultPrimitive(
+            "CFWD1", "write_effect", Sensitize(pre="1", written="1", agg_pre="p0"),
+            Effect(kind="force", value="0"),
+            params_help={"p0": "aggressor hold state (0/1)"},          # <a; 1w1/0/->
+        ),
+        FaultPrimitive(
+            "CFRD0", "read_effect", Sensitize(pre="0", agg_pre="p0"),
+            Effect(kind="force_read", value="1"),
+            params_help={"p0": "aggressor hold state (0/1)"},          # <a; 0r0/1/1>
+        ),
+        FaultPrimitive(
+            "CFRD1", "read_effect", Sensitize(pre="1", agg_pre="p0"),
+            Effect(kind="force_read", value="0"),
+            params_help={"p0": "aggressor hold state (0/1)"},          # <a; 1r1/0/0>
+        ),
+        FaultPrimitive(
+            "CFIR0", "read_effect", Sensitize(pre="0", agg_pre="p0"),
+            Effect(kind="corrupt_read", value="1"),
+            params_help={"p0": "aggressor hold state (0/1)"},          # <a; 0r0/0/1>
+        ),
+        FaultPrimitive(
+            "CFIR1", "read_effect", Sensitize(pre="1", agg_pre="p0"),
+            Effect(kind="corrupt_read", value="0"),
+            params_help={"p0": "aggressor hold state (0/1)"},          # <a; 1r1/1/0>
+        ),
+        FaultPrimitive(
+            "CFDRD0", "read_effect", Sensitize(pre="0", agg_pre="p0"),
+            Effect(kind="force_read", value="1", also_read="0"),
+            params_help={"p0": "aggressor hold state (0/1)"},          # <a; 0r0/1/0>
+        ),
+        FaultPrimitive(
+            "CFDRD1", "read_effect", Sensitize(pre="1", agg_pre="p0"),
+            Effect(kind="force_read", value="0", also_read="1"),
+            params_help={"p0": "aggressor hold state (0/1)"},          # <a; 1r1/0/1>
+        ),
     ]

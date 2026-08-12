@@ -15,12 +15,12 @@ from autombist.fault_primitives import (
 )
 
 
-def test_default_registry_has_15_entries_no_fixed_overlap() -> None:
+def test_default_registry_has_25_entries_no_fixed_overlap() -> None:
     reg = default_registry()
     names = {p.name for p in reg}
-    assert len(names) == 15
+    assert len(names) == 25
     assert names.isdisjoint(FIXED_TYPE_NAMES)
-    assert len(names | set(FIXED_TYPE_NAMES)) == 21  # union = all 21 built-ins
+    assert len(names | set(FIXED_TYPE_NAMES)) == 31  # union = all 31 built-ins
 
 
 def test_default_registry_all_individually_valid() -> None:
@@ -258,10 +258,15 @@ def test_default_registry_to_dict_roundtrip_unaffected_by_port_field() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_agg_pre_defaults_to_wildcard_on_every_builtin() -> None:
-    # The backward-compat guarantee the byte-identical render rests on.
-    for prim in default_registry():
-        assert prim.sensitize.agg_pre == "x"
+def test_agg_pre_is_set_only_by_the_coupling_family() -> None:
+    """Exactly the ten DATE-2006 coupling types gate on the aggressor's held
+    state; every pre-existing primitive stays wildcard, which is what kept
+    their rendered arms byte-identical when the field was introduced."""
+    gated = {p.name for p in default_registry() if p.sensitize.agg_pre != "x"}
+    assert gated == {
+        "CFTR0", "CFTR1", "CFWD0", "CFWD1", "CFRD0",
+        "CFRD1", "CFIR0", "CFIR1", "CFDRD0", "CFDRD1",
+    }
 
 
 def test_agg_pre_rejects_an_unknown_token() -> None:
