@@ -10,7 +10,7 @@
 #
 # Measured on faults.example.txt, addr_width=8 data_width=8 init=1 (this
 # project's standard measurement config, matching engine/README.md's table):
-# 16/19, vs March C-'s 14/19 -- net +2. Per-fault delta vs March C-: GAINS
+# 17/29, vs March C-'s 20/29 -- net +2. Per-fault delta vs March C-: GAINS
 # DRDF0, DRDF1, SOF; LOSES CFID.
 #
 # Mechanism (re-derived directly from fault_ram.sv's DRDF/SOF/CFID logic):

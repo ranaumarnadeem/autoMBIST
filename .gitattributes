@@ -1,0 +1,15 @@
+# Line endings: LF in the object database AND in the working tree.
+#
+# Not cosmetic here. This project's toolchain runs under WSL/Linux: bash drives
+# flow/multimem/signoff/run_macro_signoff.sh and src/autombist/engine/
+# run_campaign.sh, and a stray CR makes bash fail with an opaque syntax error
+# rather than anything legible. On a Windows checkout with core.autocrlf=true,
+# git rewrote those LF blobs into CRLF in the working tree on every checkout and
+# branch switch, which silently broke tests/software/test_macro_signoff_parse.py
+# until the files were hand-stripped again. `eol=lf` pins the working-tree form,
+# so that cannot recur.
+#
+# Every tracked file in this repo is text -- no binary extension is tracked, so
+# one blanket rule is sufficient. Generated physical collateral (.gds/.lef/.lib/
+# .spef/.sdf/.sdc) is gitignored and never reaches git in the first place.
+* text=auto eol=lf

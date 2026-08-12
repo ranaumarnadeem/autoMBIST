@@ -234,7 +234,7 @@ for the full breakdown.
 ## 3. Algo-shell: 2-port sessions and cross-port faults
 
 The algo-shell (`autombist algo`) is the interactive research shell for the
-richer 19-primitive functional fault library (stuck-at, transition,
+richer 29-primitive functional fault library (stuck-at, transition,
 write/read disturb, address-decoder, and all four coupling classes: CFIN,
 CFID, CFST, CFDS), run through Verilator. It has its own, independent
 multi-port surface, separate from the classic path's `ports:`/`--algo`

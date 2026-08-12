@@ -291,7 +291,7 @@ def resolve_directions(elements: Sequence[Element]) -> list[int]:
     ``either`` element ascending while the hand-written classic RTL ran a
     *trailing* ``either`` in the previous element's direction -- and that was
     not cosmetic: on ``faults.example.txt`` at addr_width=8/data_width=8,
-    ``march_x`` scored 12/19 under the engine's rule and 13/19 under this one
+    ``march_x`` scored 13/29 under the engine's rule and 14/29 under this one
     (its ``CFDS 130 1 131 1 4 0``, aggressor above the victim, is caught only
     by a descending final read). This rule was chosen because it is the one
     real silicon already implements: it reproduces the direction sequence of

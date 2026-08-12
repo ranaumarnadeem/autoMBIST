@@ -36,6 +36,13 @@ R0, R1, W0, W1 = OP_MAP["r0"], OP_MAP["r1"], OP_MAP["w0"], OP_MAP["w1"]
 
 REGISTRY = {p.name: p for p in default_registry()}
 
+# Every registry primitive is synthesizable: _agg_pre_candidates builds a
+# chained bidirectional candidate for the two-cell coupling family, the same
+# way _aggressor_clamp_candidates does for CFST. Verified 38/38 against real
+# Verilator at both init values.
+SYNTHESIZABLE = list(default_registry())
+CONSTRUCTIBLE = list(default_registry())
+
 
 def _spec(*elements: Element) -> list[Element]:
     return list(elements)
@@ -247,7 +254,12 @@ def test_synth_verification_faults_emits_two_records_per_coupling_primitive() ->
     records = synth_verification_faults(mem, targets)
     for p in targets:
         count = sum(1 for r in records if r.type == p.name)
-        expected = 2 if p.sensitize.on == "aggressor" else 1
+        # Two placements for anything two-cell: on="aggressor" (the aggressor's
+        # access sensitizes) OR agg_pre (its held state does). Both need the
+        # aggressor-above and aggressor-below cases exercised, since a march
+        # test can be sound for one placement and not the other.
+        two_cell = p.sensitize.on == "aggressor" or p.sensitize.agg_pre != "x"
+        expected = 2 if two_cell else 1
         assert count == expected, f"{p.name}: expected {expected} record(s), got {count}"
 
 
@@ -274,11 +286,25 @@ def test_detects_sa0_sa1_basic():
 # --------------------------------------------------------------------------- #
 # synthesize_alg / synthesize_elements
 # --------------------------------------------------------------------------- #
-def test_synthesize_alg_covers_all_15_default_registry_primitives():
+def test_synthesize_alg_covers_every_synthesizable_default_registry_primitive():
     result = synthesize_alg(default_registry(), "t")
-    assert result.uncovered == []
-    assert sorted(result.covered) == sorted(REGISTRY)
+    # Every registry entry is TARGETED (nothing is filtered out any more)...
     assert result.targeted == [p.name for p in default_registry()]
+    # ...but the four single-placement coupling types are honestly reported
+    # uncovered rather than claimed.
+    assert result.uncovered == []
+    assert sorted(result.covered) == sorted(p.name for p in SYNTHESIZABLE)
+
+
+def test_synthesize_alg_covers_all_ten_coupling_types():
+    """Constructed, not opportunistic: _agg_pre_candidates emits a setup
+    element placing the aggressor, then a detect element whose v-pass runs
+    first -- so the victim and aggressor can hold DIFFERENT values, which is
+    what the victim-pre-1 variants need and what incidental coverage could
+    never reach. Verified 38/38 against real Verilator before pinning."""
+    result = synthesize_alg(default_registry(), "t")
+    coupling = {p.name for p in default_registry() if p.sensitize.agg_pre != "x"}
+    assert coupling <= set(result.covered)
 
 
 def test_synthesize_result_actually_detects_every_covered_primitive():
@@ -372,7 +398,7 @@ def test_synthesize_every_default_primitive_covered_in_isolation(init_val: int) 
     # detectable on its own, regardless of init_val, not just as part of the
     # full set where other primitives' candidates might incidentally carry
     # it along.
-    for p in default_registry():
+    for p in CONSTRUCTIBLE:
         result = synthesize_alg([p], f"{p.name.lower()}_only", init_val=init_val)
         assert result.uncovered == [], f"{p.name} not covered in isolation (init_val={init_val})"
         assert is_golden_sound(result.spec.elements, init_val=init_val), (
@@ -395,7 +421,7 @@ def test_synthesize_alg_every_candidate_element_is_golden_sound(init_val: int) -
 
 @pytest.mark.parametrize(
     "p1,p2,init_val",
-    [(p1, p2, iv) for p1, p2 in itertools.combinations(default_registry(), 2) for iv in (0, 1)],
+    [(p1, p2, iv) for p1, p2 in itertools.combinations(CONSTRUCTIBLE, 2) for iv in (0, 1)],
 )
 def test_synthesize_every_pair_of_default_primitives(p1: FaultPrimitive, p2: FaultPrimitive, init_val: int) -> None:
     # Exhaustive: all 105 two-primitive combinations x both init_val
@@ -478,3 +504,44 @@ def test_synthesize_elements_still_accepts_wildcard_port_targets():
     is port='x' and must keep synthesizing."""
     elements, _ = synthesize_elements([p for p in default_registry() if p.name == "TF0"])
     assert elements, "a wildcard-port target must still synthesize"
+
+
+def test_synthesize_elements_covers_a_lone_agg_pre_target():
+    """The two-cell state gate is not yet modelled: the oracle's write-victim and
+    read-victim firing conditions never read the aggressor's state, and no
+    candidate builder emits a setup element to place it. Left unhandled, such a
+    target would be simulated as its strictly-more-permissive single-cell twin
+    and marked covered, inflating the reported coverage.
+
+    Reported as uncovered rather than raised (which is what sensitize.port
+    does), because ten agg_pre types are built-ins now and raising would make
+    synth unusable against the default registry. The guarantee preserved is the
+    one that matters: never counted as covered."""
+    prim = FaultPrimitive(
+        "COUPF", "write_effect",
+        Sensitize(pre="0", written="1", on="victim", agg_pre="p0"),
+        Effect(kind="block_write", value="0"),
+    )
+    # Covered even in isolation now: the builder emits its own setup element
+    # rather than relying on elements built for other primitives.
+    _elements, uncovered = synthesize_elements([prim])
+    assert "COUPF" not in uncovered
+
+
+def test_coupling_coverage_holds_under_both_aggressor_placements():
+    """The soundness guarantee: a coupling type is only credited once detects()
+    confirms it with the aggressor above AND below the victim, since a march
+    test that catches it one way and not the other is unsound for a real
+    array. The bidirectional builder is what makes that achievable."""
+    result = synthesize_alg(default_registry(), "probe", init_val=1)
+    coupling = [p for p in default_registry() if p.sensitize.agg_pre != "x"]
+    for p in coupling:
+        assert detects(result.spec.elements, p, init_val=1, aggressor_gt_victim=True), p.name
+        assert detects(result.spec.elements, p, init_val=1, aggressor_gt_victim=False), p.name
+
+
+def test_synthesize_elements_still_accepts_wildcard_agg_pre_targets():
+    """The rejection must be specific: every built-in is agg_pre='x' and must
+    keep synthesizing."""
+    elements, _ = synthesize_elements([p for p in default_registry() if p.name == "WDF0"])
+    assert elements, "a wildcard-agg_pre target must still synthesize"

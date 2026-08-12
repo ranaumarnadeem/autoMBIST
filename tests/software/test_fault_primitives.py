@@ -15,12 +15,12 @@ from autombist.fault_primitives import (
 )
 
 
-def test_default_registry_has_15_entries_no_fixed_overlap() -> None:
+def test_default_registry_has_25_entries_no_fixed_overlap() -> None:
     reg = default_registry()
     names = {p.name for p in reg}
-    assert len(names) == 15
+    assert len(names) == 25
     assert names.isdisjoint(FIXED_TYPE_NAMES)
-    assert len(names | set(FIXED_TYPE_NAMES)) == 21  # union = all 21 built-ins
+    assert len(names | set(FIXED_TYPE_NAMES)) == 31  # union = all 31 built-ins
 
 
 def test_default_registry_all_individually_valid() -> None:
@@ -251,3 +251,89 @@ def test_default_registry_to_dict_roundtrip_unaffected_by_port_field() -> None:
     # to an identical object after adding the port field.
     for prim in default_registry():
         assert from_dict(to_dict(prim)) == prim
+
+
+# ---------------------------------------------------------------------------
+# sensitize.agg_pre: the two-cell state gate (DATE 2006 coupling family).
+# ---------------------------------------------------------------------------
+
+
+def test_agg_pre_is_set_only_by_the_coupling_family() -> None:
+    """Exactly the ten DATE-2006 coupling types gate on the aggressor's held
+    state; every pre-existing primitive stays wildcard, which is what kept
+    their rendered arms byte-identical when the field was introduced."""
+    gated = {p.name for p in default_registry() if p.sensitize.agg_pre != "x"}
+    assert gated == {
+        "CFTR0", "CFTR1", "CFWD0", "CFWD1", "CFRD0",
+        "CFRD1", "CFIR0", "CFIR1", "CFDRD0", "CFDRD1",
+    }
+
+
+def test_agg_pre_rejects_an_unknown_token() -> None:
+    with pytest.raises(FaultPrimitiveError, match="sensitize.agg_pre must be one of"):
+        validate(
+            _prim(category="write_effect", sensitize=Sensitize(pre="0", written="1", agg_pre="2"),
+                  effect=Effect(kind="force", value="1")),
+            existing_names=set(),
+        )
+
+
+def test_agg_pre_rejected_with_raw_sv() -> None:
+    """raw_sv arms are copied verbatim, so the clause would be silently dropped --
+    the same structural reason sensitize.port rejects the combination."""
+    with pytest.raises(FaultPrimitiveError, match="cannot be combined with raw_sv"):
+        validate(
+            _prim(category="write_effect", sensitize=Sensitize(agg_pre="p0"),
+                  raw_sv="if (1) begin nxt[b] = 1'b0; end"),
+            existing_names=set(),
+        )
+
+
+def test_agg_pre_rejected_with_on_aggressor() -> None:
+    """on='aggressor' gates on the aggressor's own ACCESS; agg_pre gates on the
+    value it HOLDS while the victim is accessed. They are alternatives, not
+    composable -- no codegen site evaluates both."""
+    with pytest.raises(FaultPrimitiveError, match="cannot be combined with sensitize.on='aggressor'"):
+        validate(
+            _prim(category="write_effect",
+                  sensitize=Sensitize(transition="p0", on="aggressor", agg_pre="1"),
+                  effect=Effect(kind="invert")),
+            existing_names=set(),
+        )
+
+
+def test_agg_pre_rejected_when_it_aliases_pre_onto_one_parameter() -> None:
+    """pre='p0' and agg_pre='p0' both render to FQ[i].p0[0], so victim and
+    aggressor states could never differ -- which is the whole point of a
+    two-cell fault."""
+    with pytest.raises(FaultPrimitiveError, match="both resolve to 'p0'"):
+        validate(
+            _prim(category="read_effect", sensitize=Sensitize(pre="p0", agg_pre="p0"),
+                  effect=Effect(kind="corrupt_read", value="1")),
+            existing_names=set(),
+        )
+
+
+def test_agg_pre_literal_alongside_a_p0_victim_state_is_allowed() -> None:
+    # Only the *aliasing* case is rejected; distinct sources are fine.
+    validate(
+        _prim(category="read_effect", sensitize=Sensitize(pre="p0", agg_pre="1"),
+              effect=Effect(kind="corrupt_read", value="1")),
+        existing_names=set(),
+    )
+
+
+def test_agg_pre_survives_to_dict_from_dict_roundtrip() -> None:
+    original = FaultPrimitive(
+        "MYCOUPLED", "write_effect",
+        Sensitize(pre="0", written="1", agg_pre="p0"),
+        Effect(kind="block_write", value="0"),
+    )
+    assert to_dict(original)["sensitize"]["agg_pre"] == "p0"
+    assert from_dict(to_dict(original)) == original
+
+
+def test_from_dict_defaults_agg_pre_to_x_when_absent() -> None:
+    # Older JSON fault-type files predate the field and must still load.
+    prim = from_dict({"name": "MYNEW", "category": "static_clamp", "effect": {"kind": "force", "value": "1"}})
+    assert prim.sensitize.agg_pre == "x"

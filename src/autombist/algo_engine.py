@@ -30,7 +30,7 @@ from typing import Any, Callable
 from .alg_spec import WAIT_BASE, AlgSpec, expand_expected_blocks, find_engine_dir
 from .seq_check import SequenceResult, compare_trace, parse_observed_trace
 
-# The 19 functional fault primitives fault_ram.sv implements natively (see
+# The 29 functional fault primitives fault_ram.sv implements natively (see
 # engine/README.md). P6 (add_fault_type) will let researchers extend this set.
 #
 # DRF and HSD (Workstreams K/L) are deliberately absent from this STATIC
@@ -57,7 +57,20 @@ from .seq_check import SequenceResult, compare_trace, parse_observed_trace
 BUILTIN_FAULT_TYPES: tuple[str, ...] = (
     "SA0", "SA1", "TF0", "TF1", "WDF0", "WDF1", "RDF0", "RDF1", "DRDF0", "DRDF1",
     "IRF0", "IRF1", "SOF", "AF_NOACC", "AF_ALIAS", "CFIN", "CFID", "CFST", "CFDS",
+    # Two-cell coupling family (DATE 2006 Tbl 2). NOTE this tuple is NOT derived
+    # from fault_primitives.default_registry() -- the two lists are maintained
+    # by hand and must agree, or gen_faults emits a type the engine has no code
+    # for and the simulation dies with "unknown fault type".
+    "CFTR0", "CFTR1", "CFWD0", "CFWD1", "CFRD0", "CFRD1", "CFIR0", "CFIR1",
+    "CFDRD0", "CFDRD1",
 )
+
+# Coupling types whose P0 carries the aggressor's required hold state (the
+# CFST convention). Kept next to BUILTIN_FAULT_TYPES so the two stay together.
+_AGGRESSOR_HOLD_TYPES = frozenset({
+    "CFTR0", "CFTR1", "CFWD0", "CFWD1", "CFRD0", "CFRD1", "CFIR0", "CFIR1",
+    "CFDRD0", "CFDRD1",
+})
 
 
 class CampaignError(RuntimeError):
@@ -413,6 +426,11 @@ def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
             p0, p1 = 2, 1  # either direction, forced to 1
         elif t == "CFST":
             p0, p1 = 1, 0  # aggressor holds 1, victim forced to 0
+        elif t in _AGGRESSOR_HOLD_TYPES:
+            # P0 is the aggressor's required hold state (CFST's convention).
+            # 1 rather than 0 so the choice is not indistinguishable from the
+            # p0=0 default a missing branch would leave behind.
+            p0 = 1
         elif t == "CFDS":
             p0 = 4  # any read disturbs
         elif t == "AF_ALIAS":

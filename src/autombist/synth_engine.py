@@ -133,6 +133,14 @@ def resolve_params(p: FaultPrimitive) -> tuple[int, int]:
         p0 = 2
     elif p.sensitize.pre == "p0":
         p0 = 1
+    elif p.sensitize.agg_pre == "p0":
+        # Two-cell coupling family: p0 is the aggressor's required hold state.
+        # 0 rather than 1 because the synthesized bracket opens with `either w0`,
+        # which leaves the aggressor at 0 -- so the condition is satisfiable from
+        # the walk's own starting state without spending an extra setup element.
+        # This was already the value the final `else` produced; making it explicit
+        # so the choice is deliberate and survives a reordering of these branches.
+        p0 = 0
     else:
         p0 = 0
     p1 = 1 if p.effect.value == "p1" else 0
@@ -227,15 +235,21 @@ def _apply_op(v: int, a: int, op: int, role: str, fault: FaultPrimitive | None) 
             v = written  # type: ignore[assignment]
             if fault is not None and fault.category == "write_effect" and fault.sensitize.on == "victim":
                 p0, p1 = resolve_params(fault)
+                # agg_pre gates on the AGGRESSOR's held state at this moment.
+                # `_matches_bit` returns True for the "x" wildcard, so this is a
+                # no-op for every primitive that does not set it -- which is the
+                # regression proof that adding it changed nothing else.
                 if (_matches_bit(fault.sensitize.pre, old_v, p0, p1)
-                        and _matches_bit(fault.sensitize.written, written, p0, p1)):  # type: ignore[arg-type]
+                        and _matches_bit(fault.sensitize.written, written, p0, p1)  # type: ignore[arg-type]
+                        and _matches_bit(fault.sensitize.agg_pre, a, p0, p1)):
                     v = _resolve_bit(fault.effect.value, p0, p1)
         else:
             old_v = v
             observed = v
             if fault is not None and fault.category == "read_effect":
                 p0, p1 = resolve_params(fault)
-                if _matches_bit(fault.sensitize.pre, old_v, p0, p1):
+                if (_matches_bit(fault.sensitize.pre, old_v, p0, p1)
+                        and _matches_bit(fault.sensitize.agg_pre, a, p0, p1)):
                     if fault.effect.kind == "corrupt_read":
                         observed = _resolve_bit(fault.effect.value, p0, p1)
                     else:  # force_read (RDF/DRDF)
@@ -616,6 +630,83 @@ def _combo_candidates(
     return out
 
 
+def _agg_pre_candidate_one(
+    p: FaultPrimitive, golden_a: int, direction: int, golden_v_hint: int = 0,
+) -> tuple[list[Element], int]:
+    """Two-cell coupling (``sensitize.agg_pre``) needs the aggressor HOLDING a
+    value while the victim is operated on -- the same shape CFST needs, but
+    with the victim side being an OPERATION rather than a value comparison.
+
+    Same construction as :func:`_aggressor_clamp_candidate_one`: if the
+    aggressor is not already at the hold value, prepend a setup element that
+    writes it there (which also writes the victim, harmlessly -- the detect
+    element re-establishes the victim's own pre-state). Then one detect
+    element whose v-pass runs before its a-pass (per ``direction``), so
+    throughout the victim's ops the aggressor still holds from setup:
+
+      1. write the victim to the fault's required ``sensitize.pre``
+      2. the sensitizing op itself -- the ``written`` value for write_effect,
+         or a read for read_effect
+      3. a verify read, whose literal must match GOLDEN (never an arbitrary
+         choice -- see the module docstring on read ops being assertions).
+         read_effect gets a second read so the deceptive DRDF-shaped types,
+         whose own read returns the correct value, are still observable.
+
+    Without this, agg_pre types are only covered opportunistically, on
+    elements built for other primitives that happen to leave the aggressor
+    right -- which never reaches the victim-pre-1 variants, since those need
+    the victim and aggressor at DIFFERENT values simultaneously."""
+    p0, p1 = resolve_params(p)
+    hold = _resolve_bit(p.sensitize.agg_pre, p0, p1)
+    pre = _resolve_bit(p.sensitize.pre, p0, p1)
+
+    setup: list[Element] = []
+    v_state = golden_a if golden_a == hold else hold
+    if golden_a != hold:
+        # The setup writes BOTH roles (they share the op-list), so the victim
+        # lands on `hold` too -- tracked so the pre-write below can be skipped
+        # when it would be redundant.
+        setup.append(Element(direction=direction, ops=[_bit_op(hold, write=True)]))
+    else:
+        v_state = golden_v_hint
+
+    ops: list[int] = []
+    if v_state != pre:
+        ops.append(_bit_op(pre, write=True))
+    if p.category == "write_effect":
+        written = _resolve_bit(p.sensitize.written, p0, p1)
+        ops.append(_bit_op(written, write=True))
+        ops.append(_bit_op(written, write=False))
+        final_v = written
+    else:
+        ops.append(_bit_op(pre, write=False))
+        ops.append(_bit_op(pre, write=False))
+        final_v = pre
+    return setup + [Element(direction=direction, ops=ops)], final_v
+
+
+def _agg_pre_candidates(
+    remaining: list[FaultPrimitive], golden_v: int, golden_a: int,
+) -> list[tuple[list[Element], int]]:
+    """One chained bidirectional candidate per agg_pre primitive, exactly as
+    :func:`_aggressor_clamp_candidates` does for CFST: the aggressor-above
+    (DIR_UP) half, then the aggressor-below (DIR_DOWN) half rebuilt from the
+    real golden state the first half leaves behind. Both halves are needed
+    because a march test that catches a coupling fault with the aggressor on
+    one side and not the other is unsound for a real array."""
+    out: list[tuple[list[Element], int]] = []
+    for p in remaining:
+        if p.sensitize.agg_pre == "x" or p.sensitize.on != "victim":
+            continue
+        if p.category not in ("write_effect", "read_effect"):
+            continue
+        above_group, _ = _agg_pre_candidate_one(p, golden_a, DIR_UP, golden_v)
+        mid_v, mid_a = _advance_golden(golden_v, golden_a, above_group, aggressor_gt_victim=True)
+        below_group, below_v = _agg_pre_candidate_one(p, mid_a, DIR_DOWN, mid_v)
+        out.append((above_group + below_group, below_v))
+    return out
+
+
 def _candidate_groups(
     remaining: list[FaultPrimitive], max_ops: int, golden_v: int, golden_a: int,
 ) -> list[tuple[list[Element], int]]:
@@ -623,6 +714,7 @@ def _candidate_groups(
         _single_element_candidates(remaining, max_ops, golden_v, golden_a)
         + _combo_candidates(remaining, golden_v, golden_a)
         + _aggressor_clamp_candidates(remaining, golden_v, golden_a)
+        + _agg_pre_candidates(remaining, golden_v, golden_a)
     )
 
 
@@ -753,7 +845,18 @@ def synthesize_alg(
     non-``raw_sv`` primitive in ``registry`` (the six fixed types are never
     targetable -- see module docstring; a ``raw_sv`` entry has no DSL
     description for this module's oracle to interpret, so it is excluded the
-    same way)."""
+    same way).
+
+    ``sensitize.agg_pre`` (two-cell coupling) primitives ARE targeted: the
+    oracle reads the aggressor's held state, and the walk credits one only
+    when :func:`detects` confirms it under both aggressor placements. Six of
+    the ten built-ins are reachable that way with no dedicated builder,
+    because the opening ``either w0`` bracket already leaves the aggressor at
+    the resolved ``p0 = 0`` and an ``up`` element runs the victim's ops before
+    the aggressor's. The four victim-pre-1 variants are detectable under one
+    placement only, so they land in ``uncovered`` rather than being claimed --
+    covering them needs a chained bidirectional builder (see
+    docs/coupling-family-plan.md, Step 6)."""
     target = [p for p in registry if p.raw_sv is None]
     elements, uncovered = synthesize_elements(target, max_elements=max_elements, max_ops=max_ops, init_val=init_val)
     targeted_names = [p.name for p in target]
@@ -798,8 +901,16 @@ def synth_verification_faults(mem, targets: list[FaultPrimitive]) -> list:
                                             # on this pure-logic-vs-execution-engine module
     depth = mem.depth
     dw = mem.data_width
-    coupling = [p for p in targets if p.sensitize.on == "aggressor"]
-    single_cell = [p for p in targets if p.sensitize.on != "aggressor"]
+    # Two-cell = anything whose sensitizing condition names the aggressor at
+    # all: on="aggressor" (its ACCESS) or agg_pre (its HELD state). Keying on
+    # `on` alone would class the agg_pre family single-cell and hand it the
+    # single-cell branch's aa=ab=0, so its gate would compare against an
+    # unrelated cell rather than a real aggressor.
+    def _is_two_cell(p: FaultPrimitive) -> bool:
+        return p.sensitize.on == "aggressor" or p.sensitize.agg_pre != "x"
+
+    coupling = [p for p in targets if _is_two_cell(p)]
+    single_cell = [p for p in targets if not _is_two_cell(p)]
     records = []
     # Coupling-class: va drawn from [0, depth-1) so va + 1 always stays
     # in-bounds -- never wraps, for either placement below.

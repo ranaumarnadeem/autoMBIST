@@ -17,7 +17,7 @@ Runs unmodified under Xcelium (xrun) and Verilator 5.x.
     march_engine_mp.sv     num_ports=2 counterpart of march_engine.sv -- same file-driven
                            .alg + fault-list grammar, extended with a port-suffix/column
                            for genuine cross-port coupling (see "Multi-port" below)
-    faults.example.txt    one instance of every implemented fault primitive
+    faults.example.txt    one instance of every implemented fault primitive (29)
     run_campaign.sh       serial campaign: one sim per fault, CSV out
 
 ## Quick start
@@ -400,6 +400,9 @@ activates 10 times and still escapes.
 
 ## Measured results, faults.example.txt, INIT=1 (defaults)
 
+29 faults: one instance of each of the 19 single-cell/decoder/coupling
+primitives, plus one of each of the ten two-cell coupling types.
+
 | Fault | MATS+ (5n) | March Y (8n) | March C- (10n) | March C+ (14n) | March B (17n) | March SS (22n) |
 |---|---|---|---|---|---|---|
 | SA0, SA1 | D | D | D | D | D | D |
@@ -414,14 +417,19 @@ activates 10 times and still escapes.
 | CFID | E | E | D | D | D | D |
 | CFST | D | D | D | D | D | D |
 | CFDS (any-read) | E | D | D | D | D | D |
-| total | 12/19 | 16/19 | 14/19 | 17/19 | 15/19 | 18/19 |
+| CFTR0, CFTR1 | D/E | D/E | D | D | D | D |
+| CFWD0, CFWD1 | E | E | E | E | E | D |
+| CFRD0, CFRD1 | E | E | D | D | D/E | D |
+| CFIR0, CFIR1 | E | E | D | D | D/E | D |
+| CFDRD0, CFDRD1 | E | E | E | D | E | D |
+| total | 13/29 | 17/29 | 20/29 | 25/29 | 19/29 | 28/29 |
 
 These match the published coverage claims: March C- misses WDF (it never
 performs a non-transition write) and DRDF (no read-after-read); March SS
 adds both and covers all static simple faults *in this fault list* — the
-19-primitive model above, which does not yet include the two-cell coupling
-family (CFtr/CFwd/CFrd/CFdrd/CFir) or dynamic (two-operation) faults; both
-are designed but not yet implemented. The MATS+ CFDS escape is a
+29-primitive model above, which now DOES include the two-cell coupling
+family (CFtr/CFwd/CFrd/CFir/CFdrd). Dynamic (two-operation) faults remain
+outside it -- designed, not yet implemented. The MATS+ CFDS escape is a
 double-inversion masking between its up and down passes.
 
 **March Y (8n)** is March C- reshaped, not shortened for free: it trades a
@@ -438,8 +446,11 @@ this table tracks (+3, zero regressions): the restored reads create the same
 same-address, no-intervening-write double-read March Y's shorter form relies
 on for DRDF/SOF, without giving up March C-'s CFID-catching write.
 
-**March B is the one entry here whose headline number understates it.** Its
-15/19 beats March C- by exactly one fault, SOF — element 2 (`up r0 w1 r1 w0 r0
+**March B's standing reversed when the coupling family landed.** Against the
+19-fault list it beat March C- (15/19 vs 14/19) on the strength of SOF; against
+29 it now trails (19/29 vs 20/29), because March C- catches six of the ten
+two-cell coupling types to March B's four. The SOF advantage itself is
+unchanged and still real — element 2 (`up r0 w1 r1 w0 r0
 w1`) reads the same cell at opposite polarity within a single address visit, so
 the output keeper an SOF models is forced across reads of opposite expected
 data, which is precisely the condition described below as necessary to expose

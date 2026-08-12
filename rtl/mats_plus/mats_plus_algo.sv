@@ -3,7 +3,7 @@
 // MATS+ (5n): {either(w0); up(r0,w1); down(r1,w0)} -- src/autombist/algos/mats_plus.alg.
 // Detects SAF and AF; misses TF/CFin/CFid/WDF/DRDF (no non-transition write, no
 // address-order-sensitive pairs, no read-after-read). Reference coverage:
-// 12/19 on faults.example.txt. The minimal march this codebase generates.
+// 13/29 on faults.example.txt. The minimal march this codebase generates.
 module mats_plus_algo #(
     parameter integer DATA_WIDTH = 32
 ) (
