@@ -478,3 +478,26 @@ def test_synthesize_elements_still_accepts_wildcard_port_targets():
     is port='x' and must keep synthesizing."""
     elements, _ = synthesize_elements([p for p in default_registry() if p.name == "TF0"])
     assert elements, "a wildcard-port target must still synthesize"
+
+
+def test_synthesize_elements_rejects_an_agg_pre_target():
+    """The two-cell state gate is not yet modelled: the oracle's write-victim and
+    read-victim firing conditions never read the aggressor's state, and no
+    candidate builder emits a setup element to place it. Left unrejected, such a
+    target would be simulated as its strictly-more-permissive single-cell twin,
+    marked covered, and inflate the reported coverage -- the same silently-inert
+    failure mode the sensitize.port rejection above exists to prevent."""
+    prim = FaultPrimitive(
+        "COUPF", "write_effect",
+        Sensitize(pre="0", written="1", on="victim", agg_pre="p0"),
+        Effect(kind="block_write", value="0"),
+    )
+    with pytest.raises(ValueError, match="does not yet model"):
+        synthesize_elements([prim])
+
+
+def test_synthesize_elements_still_accepts_wildcard_agg_pre_targets():
+    """The rejection must be specific: every built-in is agg_pre='x' and must
+    keep synthesizing."""
+    elements, _ = synthesize_elements([p for p in default_registry() if p.name == "WDF0"])
+    assert elements, "a wildcard-agg_pre target must still synthesize"

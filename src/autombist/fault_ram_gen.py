@@ -86,12 +86,25 @@ def _bit_literal(token: str | None) -> str:
     raise ValueError(f"not a resolvable bit token: {token!r}")
 
 
-def _cond_clauses(pre: str, written: str | None) -> str:
+def _cond_clauses(pre: str, written: str | None, agg_pre: str = "x") -> str:
+    """Join the victim-side sensitizing clauses, plus the optional aggressor-state
+    gate, into one condition (or the ``1'b1`` no-constraint sentinel).
+
+    ``agg_pre`` reads the aggressor's stored bit -- the same expression
+    ``render_static_clamp_arm`` already emits for CFST. Every identifier in it is
+    module-level (``mem``, ``FQ``) or the enclosing ``foreach`` index, so it is in
+    scope at both victim sites; the guard above each arm has already matched
+    ``FQ[i].va``/``FQ[i].vb``, and ``.aa``/``.ab`` come off the same struct.
+    Defaults to the ``"x"`` wildcard every pre-existing built-in uses, which keeps
+    their rendered arms byte-identical.
+    """
     clauses: list[str] = []
     if pre != "x":
         clauses.append(f"old[b] == {_bit_literal(pre)}")
     if written is not None and written != "x":
         clauses.append(f"d[b] == {_bit_literal(written)}")
+    if agg_pre != "x":
+        clauses.append(f"mem[FQ[i].aa][FQ[i].ab] == {_bit_literal(agg_pre)}")
     return " && ".join(clauses) if clauses else "1'b1"
 
 
@@ -137,7 +150,9 @@ def render_static_clamp_arm(p: FaultPrimitive) -> str:
 def render_write_victim_arm(p: FaultPrimitive, num_ports: int = 1) -> str:
     if p.raw_sv is not None:
         return f"T_{p.name}: {p.raw_sv}"
-    cond = _with_port(_cond_clauses(p.sensitize.pre, p.sensitize.written), p, num_ports)
+    cond = _with_port(
+        _cond_clauses(p.sensitize.pre, p.sensitize.written, p.sensitize.agg_pre), p, num_ports
+    )
     value = _bit_literal(p.effect.value)
     return f"T_{p.name}: if ({cond}) begin nxt[b] = {value}; FQ[i].hits++; end"
 
@@ -159,7 +174,7 @@ def render_write_aggressor_arm(p: FaultPrimitive, num_ports: int = 1) -> str:
 def render_read_victim_arm(p: FaultPrimitive, num_ports: int = 1) -> str:
     if p.raw_sv is not None:
         return f"T_{p.name}: {p.raw_sv}"
-    cond = _with_port(_cond_clauses(p.sensitize.pre, None), p, num_ports)
+    cond = _with_port(_cond_clauses(p.sensitize.pre, None, p.sensitize.agg_pre), p, num_ports)
     value = _bit_literal(p.effect.value)
     if p.effect.kind == "corrupt_read":
         return f"T_{p.name}: if ({cond}) begin rv[b] = {value}; FQ[i].hits++; end"
