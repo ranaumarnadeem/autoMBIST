@@ -45,10 +45,10 @@
 #
 # Until OpenRAM/ is updated past those two commits and every macro this
 # project depends on is re-verified, NEITHER this script's raw-GDS check NOR
-# OpenRAM's own regeneration gives a clean signoff answer -- the three
-# committed .gds/.lvs.sp pairs (generated with -n, check_lvsdrc=False, back
-# in July) remain genuinely unverified rather than confirmed either good or
-# bad.
+# OpenRAM's own regeneration gives a clean signoff answer -- so the three
+# macros are unverified rather than confirmed either good or bad. Note their
+# .gds/.lvs.sp are NOT committed: they are gitignored build products that
+# `autombist ram-synth` regenerates on demand.
 #
 # Requires magic + netgen on PATH (available in the LibreLane nix closure) and
 # the sky130 PDK at $PDK_ROOT (default ~/.ciel).

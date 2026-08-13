@@ -8,7 +8,7 @@ progress, and what's further out.
 
 - MBIST wrapper generation for single- and multi-port memories (`march-c`,
   `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, `mats-plus`)
-- A 29-primitive functional fault model and research shell, independent of
+- A 31-primitive functional fault model and research shell, independent of
   any real memory macro, with seven built-in march algorithms (`march_b`,
   `march_c`, `march_c_plus`, `march_ss`, `march_x`, `march_y`, `mats_plus`) —
   a separate list from the classic-path wrapper-generation algorithms above
@@ -33,14 +33,6 @@ progress, and what's further out.
 
 ## In progress
 
-- A real Liberty timing view for hardened macros (today's runs black-box
-  memory timing rather than using measured numbers)
-- A merged full-hierarchy DRC pass that checks macro polygons directly
-  instead of treating the macro as an opaque boundary
-- Macro-level DRC/LVS signoff for the demo macros' own GDS — currently
-  blocked on updating the vendored `OpenRAM/` checkout past two upstream
-  fixes for a wordline-pin-numbering defect in the sky130 replica bitcell
-  array; see {doc}`challenges` for the root cause
 - Extending on-chip self-repair to `march-2rw` (needs new arbiter RTL: its two
   concurrent same-cycle compares break the analyzer's single-fail-per-cycle
   assumption, unlike `march-1r1w`'s single shared compare)

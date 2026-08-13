@@ -37,8 +37,22 @@ if [ "$SIM" = "auto" ]; then
 fi
 
 if [ "$SIM" = "verilator" ]; then
-  verilator --binary --timing -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
-    --top-module march_engine fault_ram.sv march_engine.sv -o march_engine_sim >/dev/null
+  # The build's exit status MUST be checked. There is no `set -e` here (the
+  # per-fault loop below deliberately tolerates non-zero runs so it can record
+  # ERROR rows), and obj_dir/ is never cleaned -- so an unchecked build failure
+  # would fall through to RUN() executing the STALE march_engine_sim left by a
+  # previous invocation, silently attributing old results to new RTL or a new
+  # algorithm. algo_engine.py's in-process driver already raises CampaignError
+  # on a non-zero verilator exit; this standalone path, which an exported
+  # bundle runs WITHOUT autoMBIST installed, needs the same guard.
+  if ! verilator --binary --timing -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
+       --top-module march_engine fault_ram.sv march_engine.sv \
+       -o march_engine_sim >/dev/null; then
+    echo "verilator build FAILED -- aborting (errors above)." >&2
+    echo "Not falling back to any existing ./obj_dir/march_engine_sim: it would" >&2
+    echo "be from an earlier build and would report results for the wrong RTL." >&2
+    exit 1
+  fi
   RUN() { ./obj_dir/march_engine_sim "$@" 2>/dev/null; }
 else
   RUN() { xrun -64bit -q -sv fault_ram.sv march_engine.sv "$@" 2>/dev/null; }

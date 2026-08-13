@@ -8,6 +8,8 @@ import pytest
 import yaml
 
 from autombist.openram_flow import (
+    _script_candidates,
+    _synthesize_sram_script,
     OpenRAMConfigError,
     build_openram_command_args,
     load_openram_config,
@@ -309,3 +311,37 @@ def test_build_openram_command_keeps_absolute_pdk_root_unchanged(tmp_path: Path)
 
     pdk_root_index = cmd.index("--pdk-root") + 1
     assert cmd[pdk_root_index] == str(absolute_pdk)
+
+
+def test_synthesize_sram_script_candidates_cover_an_installed_layout(tmp_path: Path) -> None:
+    """`ram-synth` shells out to scripts/synthesize_sram.py, which used to be
+    located as `Path(__file__).resolve().parents[2] / "scripts"`. That is right
+    only for a source checkout (src/autombist/x.py -> src/autombist -> src ->
+    repo root). Installed non-editable the module sits at
+    site-packages/autombist/openram_flow.py, so parents[2] is the *python lib
+    directory*; and pyproject force-included only rtl and tests, so the wheel
+    never shipped scripts/ at all. `ram-synth` could therefore not work for any
+    pip-installed user -- only from a checkout.
+
+    Asserts the packaged location is tried FIRST and that the old
+    repo-relative guess points outside the package in that layout, which is
+    precisely what made it fail."""
+    module = tmp_path / "site-packages" / "autombist" / "openram_flow.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("# stand-in\n", encoding="utf-8")
+
+    packaged, repo_relative = _script_candidates(module)
+    assert packaged == module.parent / "scripts" / "synthesize_sram.py"
+    assert "autombist" in packaged.parts, "wheel lookup must stay inside the package"
+    assert "autombist" not in repo_relative.parts, (
+        "the old repo-relative form escapes the package in an installed layout "
+        "-- that was the bug"
+    )
+
+
+def test_synthesize_sram_script_resolves_in_this_source_checkout() -> None:
+    """The other half: the repo layout must keep working, so an editable
+    install and a plain PYTHONPATH=src run are unaffected by the fix."""
+    path = _synthesize_sram_script()
+    assert path.is_file()
+    assert path.name == "synthesize_sram.py"

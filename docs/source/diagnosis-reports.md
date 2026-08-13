@@ -134,7 +134,9 @@ real JSON arrays.
 ### 2.3 Worked example
 
 Run against this repo's own `src/autombist/engine/faults.example.txt` (29 faults,
-one of each of the 29 built-in fault types) on an 8×8 memory with `march_c`:
+one of each of the 29 fault types a default list carries — the model has 31,
+but `DRF` and `HSD` depend on the memory's configuration) on an 8×8 memory
+with `march_c`:
 
 ```bash
 autombist test -aw 8 -dw 8 --algo march_c --faults faults.example.txt \
@@ -412,9 +414,28 @@ Why: a coupling fault, by definition in this engine, corrupts the **victim
 cell's own storage location** — some access to the aggressor cell (`aaddr,
 abit`) flips or forces the bit at the victim's own `(vaddr, vbit)`. The RTL
 (`fault_ram.sv`) implements this literally as `mem[FQ[i].va][FQ[i].vb] = ...` for
-all four coupling types (`T_CFIN`, `T_CFID`, `T_CFST`, `T_CFDS`) — the aggressor
-access only *triggers* the corruption; it is always written into the *victim's*
-cell. So whenever the algorithm later reads back address `vaddr` (the same
+the four aggressor-driven coupling types (`T_CFIN`, `T_CFID`, `T_CFST`,
+`T_CFDS`) — the aggressor access only *triggers* the corruption; it is always
+written into the *victim's* cell.
+
+The two-cell family (`T_CFTR*`, `T_CFWD*`, `T_CFRD*`, `T_CFIR*`, `T_CFDRD*`)
+reaches the same place by a different route: those are *victim*-operation
+faults gated on the aggressor's stored state, so the corruption is applied on
+the victim's own access. Within that family the storage behaviour differs by
+type, inherited from the single-cell primitive each one gates:
+
+- `T_CFTR*`, `T_CFWD*` corrupt the data being written — it lands in the
+  victim's cell.
+- `T_CFRD*` writes the victim's cell *and* returns the wrong value
+  (destructive, like `RDF`).
+- `T_CFDRD*` writes the victim's cell but returns the **correct** value
+  (deceptive, like `DRDF`) — only a second read exposes it.
+- `T_CFIR*` corrupts the **returned value only** (`rv[b]`); the cell is left
+  intact, like `IRF`.
+
+That changes the mechanism but not the decode: every one of them is sensitized
+by an access to `vaddr` and observed at `vaddr`, so the `role: both` reading
+below holds for every coupling row regardless of family. So whenever the algorithm later reads back address `vaddr` (the same
 address the fault was injected at), that's where the mismatch is decoded. In the
 diagnosis table, this is why every coupling-fault row above shows `role: both`
 at the **same** `addr`/`bit` pair — the injection site and the observation site

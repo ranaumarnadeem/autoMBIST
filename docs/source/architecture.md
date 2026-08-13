@@ -16,7 +16,7 @@ entry point (`autombist`), but not much else at runtime:
 | Entry points | `autombist generate` / `simulate` / `run` | `autombist test` / `autombist algo` |
 | Simulator | Icarus Verilog, via cocotb | Verilator 5.x (direct `--binary` build) |
 | Subject under test | An actual memory macro (e.g. OpenRAM-generated) wrapped in a generated MBIST harness | A behavioral fault-injectable RAM model (`fault_ram.sv`), independent of any real macro |
-| Fault model | Structural array faults: stuck-at (`SA0`/`SA1`), transition (up/down), inter-port coupling | 31 functional fault primitives (stuck-at, transition, write/read-disturb, address-decoder, four coupling classes, data retention, half-select disturb) |
+| Fault model | Structural array faults: stuck-at (`SA0`/`SA1`), transition (up/down), inter-port coupling | 31 functional fault primitives (stuck-at, transition, write/read-disturb, address-decoder, nine coupling classes, data retention, half-select disturb) |
 | Purpose | Production-style test insertion: generate synthesizable MBIST RTL around a specific memory instance | Research/validation: develop and grade march algorithms (or controller FSMs) against a fault model, independent of any specific memory |
 | Report builder | `reporting.py` (`build_simulation_report`, JSON schema `1.2.0`) | `algo_reporting.py` (per-campaign / matrix / diagnosis, schema `1.0.0`) |
 

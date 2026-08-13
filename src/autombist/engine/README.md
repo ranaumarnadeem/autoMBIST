@@ -427,9 +427,17 @@ primitives, plus one of each of the ten two-cell coupling types.
 These match the published coverage claims: March C- misses WDF (it never
 performs a non-transition write) and DRDF (no read-after-read); March SS
 adds both and covers all static simple faults *in this fault list* — the
-29-primitive model above, which now DOES include the two-cell coupling
-family (CFtr/CFwd/CFrd/CFir/CFdrd). Dynamic (two-operation) faults remain
-outside it -- designed, not yet implemented. The MATS+ CFDS escape is a
+29 entries above, which now DO include the two-cell coupling family
+(CFtr/CFwd/CFrd/CFir/CFdrd). Dynamic (two-operation) faults remain outside
+it -- designed, not yet implemented.
+
+**Why 29 and not 31.** The model has 31 primitives; a default fault list has
+29. DRF and HSD are the difference, and they are excluded by *configuration*,
+not by omission: DRF needs a `wait` op and a single-port memory to sensitize,
+HSD needs `words_per_row > 1`. `gen_faults --all-types` adds each only when
+the memory supports it, so the totals below are out of 29 for this memory.
+Quote coverage as "N/29 against faults.example.txt", never as "N of the
+model". The MATS+ CFDS escape is a
 double-inversion masking between its up and down passes.
 
 **March Y (8n)** is March C- reshaped, not shortened for free: it trades a
