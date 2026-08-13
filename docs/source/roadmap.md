@@ -8,7 +8,7 @@ progress, and what's further out.
 
 - MBIST wrapper generation for single- and multi-port memories (`march-c`,
   `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, `mats-plus`)
-- A 29-primitive functional fault model and research shell, independent of
+- A 31-primitive functional fault model and research shell, independent of
   any real memory macro, with seven built-in march algorithms (`march_b`,
   `march_c`, `march_c_plus`, `march_ss`, `march_x`, `march_y`, `mats_plus`) —
   a separate list from the classic-path wrapper-generation algorithms above

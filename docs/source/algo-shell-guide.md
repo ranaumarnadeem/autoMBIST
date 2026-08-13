@@ -10,7 +10,7 @@ the `.alg` grammar may still change. The classic path (`autombist generate` /
 
 This is the user guide for autoMBIST's **algo-shell** subsystem: the
 research-oriented half of the tool that grades march algorithms (and
-controller FSMs) against a 29-primitive functional fault model, using a
+controller FSMs) against a 31-primitive functional fault model, using a
 Verilator-driven behavioral RAM instead of a synthesizable memory macro. If
 you haven't already, read {doc}`architecture` first — its "Two
 subsystems, one repository" table and "The algo-shell" section explain how
@@ -24,7 +24,7 @@ Reach for the algo-shell (`test` / `algo`) when the question is about the
 March C- catch WDF faults?", "how does my hand-written march compare to
 March SS?", "does this FSM actually detect what it claims to?" It needs no
 real memory macro — `fault_ram.sv` is a behavioral stand-in — and it models
-29 functional fault primitives (coupling, disturbs, decoder faults) that the
+31 functional fault primitives (coupling, disturbs, decoder faults) that the
 classic path's structural stuck-at/transition masks don't cover. Reach for
 the classic path (`autombist generate` / `simulate` / `run`) when the
 question is about a specific memory instance you intend to actually tape
@@ -340,12 +340,13 @@ Exit the shell.
 
 ## 4. The fault-primitive DSL (`add_fault_type`)
 
-autoMBIST's fault engine (`fault_ram.sv`) natively implements 19 functional
-fault primitives. Fifteen of them are generated from a small declarative
-DSL (`fault_primitives.py`); the remaining four are fixed, hand-written
-scaffolding that doesn't fit the DSL's shape. `add_fault_type` lets you
-define **new** fault types in the DSL's terms — no SystemVerilog editing —
-and they compose with the 19 built-ins in the same fault list and reports.
+autoMBIST's fault engine (`fault_ram.sv`) natively implements 31 functional
+fault primitives. Twenty-five of them are generated from a small declarative
+DSL (`fault_primitives.py`); the remaining six (`AF_ALIAS`, `AF_NOACC`,
+`CFDS`, `DRF`, `HSD`, `SOF`) are fixed, hand-written scaffolding that doesn't
+fit the DSL's shape. `add_fault_type` lets you define **new** fault types in
+the DSL's terms — no SystemVerilog editing — and they compose with the 31
+built-ins in the same fault list and reports.
 
 ### What the DSL can express
 
@@ -460,7 +461,7 @@ DSL's structural assumptions:
 | `AF_ALIAS` (Address-decoder, alias) | Accesses to `VADDR` land on a different word, `AADDR`, instead | Same pre-pass structural issue as `AF_NOACC` |
 | `CFDS` (Coupling Fault, Disturb by State/read) | An operation on the aggressor cell disturbs (inverts) the victim; `P0` selects *which* aggressor operation triggers it: `0`=read-0, `1`=read-1, `2`=non-transition write-0, `3`=non-transition write-1, `4`=any read | Its single `P0` parameter actually selects among five distinct sensitizing conditions spanning *both* the write-aggressor and read-aggressor code paths — it's really a union of several fault types under one name, not a single-site effect |
 
-For deep RTL-level detail on all 19 primitives — the full semantics table
+For deep RTL-level detail on all 31 primitives — the full semantics table
 with `<sensitizing-op/faulty-value/faulty-read>` notation, measured
 detect/escape results for the built-in march algorithms, and notes on how
 static clamps interact with coupling effects on the same bit — see
