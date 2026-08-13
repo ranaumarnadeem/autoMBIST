@@ -105,9 +105,10 @@ blackboxes, and `mem_subsystem_mbist.sv`.
   confirms the same failure inside OpenRAM's own module, before any
   openMBIST-authored logic runs. Net effect: until `OpenRAM/` is updated
   past those two commits, neither this script's raw-GDS check nor OpenRAM's
-  own regeneration gives a clean signoff answer, and the three committed
-  `.gds`/`.lvs.sp` pairs (generated with `-n`, back in July) remain
-  genuinely unverified rather than confirmed either good or bad. This does
+  own regeneration gives a clean signoff answer, so the three macros are
+  unverified rather than confirmed either good or bad when regenerated from
+  that checkout. (Their `.gds`/`.lvs.sp` are not committed — they are
+  gitignored build products of `autombist ram-synth`.) This does
   not implicate autoMBIST's own generated RTL — physical macro signoff is
   the memory generator's responsibility, not the integrator's — and it does
   not affect the top-level P&R LVS-clean result above, which treats the
