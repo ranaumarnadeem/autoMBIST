@@ -109,14 +109,14 @@ root cause.
 
 ## What isn't proven yet
 
-Full timing signoff (a real Liberty `.lib` for each macro — today's runs
-black-box memory timing) and a merged full-hierarchy DRC pass that includes
-macro polygons directly are both open. See {doc}`challenges` for what we ran
-into trying to close those, and {doc}`roadmap` for where they sit.
+Timing signoff and merged full-hierarchy DRC are the downstream PD/STA flow's
+responsibility, not autoMBIST's — autoMBIST generates and functionally
+verifies RTL, and hardening treats each memory as opaque hard IP.
 
-A third item, distinct from both: macro-internal DRC/LVS signoff itself
-(`macro-signoff`, above) is currently unresolved for the demo macros, blocked
-on the vendored OpenRAM update described above.
+What *is* worth flagging about this repo's own collateral: macro-internal
+DRC/LVS signoff (`macro-signoff`, above) is unresolved for the demo macros,
+blocked on the vendored OpenRAM update described above. Those `.gds`/`.lvs.sp`
+pairs are genuinely unverified rather than confirmed good.
 
 march-1r1w's self-repair wrapper is also not part of the "proven" list above,
 but not for lack of a real macro to test it against — a genuinely dual-port

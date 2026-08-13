@@ -39,25 +39,12 @@ sky130A PDK expects, even though the underlying coordinates (and the GDS) are
 already on the right grid. It's a small, mechanical fix —
 `autombist fix-lef-units` applies it automatically now.
 
-## Real SPICE-based timing characterization
+## Macro-internal DRC noise
 
-Getting a real Liberty timing view (rather than OpenRAM's default analytical
-delay model) means running SPICE-level characterization, which is
-considerably heavier than anything else in the flow — both in time and in
-memory. We hit resource limits running several of these at once on a typical
-development machine. This is still open; see {doc}`roadmap`.
-
-## Merged full-hierarchy DRC
-
-Checking a macro's actual GDS polygons as part of one merged pass (rather
-than treating the macro as an opaque boundary) needs a specific layer in the
-macro's GDS that OpenRAM's output doesn't include. Also still open.
-
-Along the way we hit a related, more concrete problem: OpenRAM's own
-bitcell/periphery cells use a handful of GDS layer/datatype pairs (things
-like `CFOMDROP`, `CNTMADD`) that are legitimate sky130 mask-operation layers,
-but are internal to the macro's own geometry and aren't in the local
-Magic/KLayout DRC deck — so they get flagged as "unknown layer/datatype in
+OpenRAM's own bitcell/periphery cells use a handful of GDS layer/datatype
+pairs (things like `CFOMDROP`, `CNTMADD`) that are legitimate sky130
+mask-operation layers, but are internal to the macro's own geometry and
+aren't in the local Magic/KLayout DRC deck — so they get flagged as "unknown layer/datatype in
 boundary". That's a known OpenRAM/open_pdks integration quirk, not a defect
 in autoMBIST's own logic (see
 [librelane/librelane#519](https://github.com/librelane/librelane/issues/519)),
@@ -69,8 +56,8 @@ sets `ERROR_ON_MAGIC_DRC` and `ERROR_ON_KLAYOUT_DRC` to `false` itself
 whenever a config declares `macros:`, alongside the `MAGIC_DRC_USE_GDS`/
 `RUN_KLAYOUT_XOR` stance above, so those counts are deterministically
 advisory now rather than accidental. They're still nonzero counts coming
-from inside the macro, though — closing that for real is exactly what a
-proper merged-hierarchy pass would do.
+from inside the macro, though: macro-internal geometry belongs to whoever
+produced the macro, not to this project.
 
 ## OpenRAM macro-level DRC/LVS signoff
 

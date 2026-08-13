@@ -13,8 +13,9 @@ subsystem, self-repair included, has been hardened clean through LibreLane
 3.0.5 (zero detailed-routing violations, LVS-clean including power). A real
 RV32I CPU (PicoRV32) has also been shown booting and running real code
 through self-repaired memory. It is a research and open-source-tooling
-project, not a commercial-grade signoff tool: it does not yet do
-multi-corner SPICE-based timing signoff or merged full-hierarchy DRC/LVS.
+project. Timing signoff and DRC/LVS closure are the downstream PD/STA
+flow's responsibility, not autoMBIST's: it generates and functionally
+verifies RTL.
 
 ## Documentation
 
