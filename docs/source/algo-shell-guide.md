@@ -321,9 +321,12 @@ runnable via the bundle's `run_campaign.sh` without autoMBIST installed.
 
 **`list [algos|fsms|faults|types]`**
 Inspect session state; defaults to printing everything. `list types` shows
-the 19 built-in fault-type names usable in `add_fault`/`load_faults`/
-`gen_faults`, plus any custom types registered via `add_fault_type` in a
-separate "custom types" line.
+the 29 unconditional built-in fault-type names usable in `add_fault`/
+`load_faults`/`gen_faults`, plus any custom types registered via
+`add_fault_type` in a separate "custom types" line. The model has 31: `DRF`
+and `HSD` are absent from this list because they depend on the memory's
+configuration, and `gen_faults` adds each only when it applies (see
+`src/autombist/engine/README.md` for the full model).
 
 **`status`**
 One-screen summary: memory config (including port count if >1), simulator,

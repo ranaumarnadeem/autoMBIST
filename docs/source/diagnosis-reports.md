@@ -134,7 +134,9 @@ real JSON arrays.
 ### 2.3 Worked example
 
 Run against this repo's own `src/autombist/engine/faults.example.txt` (29 faults,
-one of each of the 29 built-in fault types) on an 8×8 memory with `march_c`:
+one of each of the 29 fault types a default list carries — the model has 31,
+but `DRF` and `HSD` depend on the memory's configuration) on an 8×8 memory
+with `march_c`:
 
 ```bash
 autombist test -aw 8 -dw 8 --algo march_c --faults faults.example.txt \
