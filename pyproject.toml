@@ -43,6 +43,10 @@ packages = ["src/autombist"]
 [tool.hatch.build.targets.wheel.force-include]
 "rtl" = "autombist/rtl"
 "tests" = "autombist/tests"
+# `autombist ram-synth` shells out to scripts/synthesize_sram.py at runtime
+# (openram_flow._synthesize_sram_script). Without this the command was broken
+# for every non-editable install: the helper was never in the wheel.
+"scripts" = "autombist/scripts"
 
 [project.urls]
 Homepage = "https://github.com/ranaumarnadeem/autoMBIST"
