@@ -93,10 +93,52 @@ def load_openram_config(config_path: Path) -> dict[str, Any]:
     return config
 
 
+def _script_candidates(module_file: Path) -> tuple[Path, Path]:
+    """Where synthesize_sram.py may live, most-specific first.
+
+    Split out from :func:`_synthesize_sram_script` so the rule is a pure
+    function of a path and can be tested against a simulated installed layout
+    without importing a second copy of the package.
+    """
+    here = module_file.resolve()
+    return (
+        here.parent / "scripts" / "synthesize_sram.py",      # installed wheel
+        here.parents[2] / "scripts" / "synthesize_sram.py",  # source checkout
+    )
+
+
+def _synthesize_sram_script() -> Path:
+    """Locate synthesize_sram.py in BOTH the source and installed layouts.
+
+    This used to be a bare ``Path(__file__).resolve().parents[2] / "scripts"``.
+    That is correct only for a source checkout, where parents[2] is the repo
+    root (src/autombist/x.py -> src/autombist -> src -> repo). For a normal
+    (non-editable) pip install the module lives at
+    ``site-packages/autombist/openram_flow.py``, so parents[2] is the *python
+    lib directory* and the computed path pointed somewhere that has never
+    existed. Worse, the wheel did not ship ``scripts/`` at all -- pyproject's
+    force-include listed only ``rtl`` and ``tests`` -- so ``ram-synth`` could
+    not work for any installed user, only from a checkout.
+
+    The wheel now force-includes the directory as ``autombist/scripts``, which
+    is the first candidate below; the repo layout stays supported so an
+    editable install and a plain ``PYTHONPATH=src`` both keep working.
+    """
+    candidates = _script_candidates(Path(__file__))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise OpenRAMConfigError(
+        "cannot find the OpenRAM helper 'synthesize_sram.py'. Looked in:\n  "
+        + "\n  ".join(str(c) for c in candidates)
+        + "\nIf you installed autombist as a wheel, this indicates a packaging "
+        "problem -- please report it. From a source checkout, run from the repo "
+        "root so scripts/synthesize_sram.py is present."
+    )
+
+
 def build_openram_command_args(config: dict[str, Any], config_path: Path) -> list[str]:
-    repo_root = Path(__file__).resolve().parents[2]
-    script_path = repo_root / "scripts" / "synthesize_sram.py"
-    cmd = [sys.executable, str(script_path)]
+    cmd = [sys.executable, str(_synthesize_sram_script())]
 
     def _add(name: str, value: Any) -> None:
         cmd.extend([name, str(value)])
