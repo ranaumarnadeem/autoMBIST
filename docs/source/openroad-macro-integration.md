@@ -217,8 +217,7 @@ be closed later without new arbitration RTL.
 
 This tier proves physical *integration* — the top-level LibreLane
 place-and-route closure, treating each macro as opaque hard IP — not full
-tapeout signoff: a real macro Liberty `.lib` (timing) and a merged
-full-hierarchy DRC pass are still open (see {doc}`librelane`), and
+tapeout signoff, which is the downstream PD/STA flow's job. Note that
 per-macro DRC/LVS signoff for these specific demo macros' own GDS is
 currently unresolved (a stale vendored OpenRAM checkout, not a defect in
 this project's RTL — see {doc}`challenges`).

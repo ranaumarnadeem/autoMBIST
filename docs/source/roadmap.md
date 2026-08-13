@@ -33,14 +33,6 @@ progress, and what's further out.
 
 ## In progress
 
-- A real Liberty timing view for hardened macros (today's runs black-box
-  memory timing rather than using measured numbers)
-- A merged full-hierarchy DRC pass that checks macro polygons directly
-  instead of treating the macro as an opaque boundary
-- Macro-level DRC/LVS signoff for the demo macros' own GDS — currently
-  blocked on updating the vendored `OpenRAM/` checkout past two upstream
-  fixes for a wordline-pin-numbering defect in the sky130 replica bitcell
-  array; see {doc}`challenges` for the root cause
 - Extending on-chip self-repair to `march-2rw` (needs new arbiter RTL: its two
   concurrent same-cycle compares break the analyzer's single-fail-per-cycle
   assumption, unlike `march-1r1w`'s single shared compare)
