@@ -30,8 +30,10 @@ from typing import Any, Callable
 from .alg_spec import WAIT_BASE, AlgSpec, expand_expected_blocks, find_engine_dir
 from .seq_check import SequenceResult, compare_trace, parse_observed_trace
 
-# The 29 functional fault primitives fault_ram.sv implements natively (see
-# engine/README.md). P6 (add_fault_type) will let researchers extend this set.
+# fault_ram.sv natively implements 31 functional fault primitives (see
+# engine/README.md). This tuple lists the 29 that are UNCONDITIONALLY
+# available; DRF and HSD are the other two, added at call time -- see below.
+# P6 (add_fault_type) will let researchers extend this set.
 #
 # DRF and HSD (Workstreams K/L) are deliberately absent from this STATIC
 # tuple: both depend on a mem.* property at call time, so generate_all_types_

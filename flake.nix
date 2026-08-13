@@ -36,8 +36,65 @@
                          # import-guarded everywhere else, so its absence never
                          # breaks the rest of the CLI (see src/autombist/tcl_shell.py)
         ]);
+
+        # `nix run github:ranaumarnadeem/autoMBIST` -- the CLI itself, as
+        # opposed to devShells.default which gives you a shell to hack in.
+        # The EDA tools are wrapped onto PATH rather than left to the caller:
+        # `autombist test`/`simulate`/`run` shell out to verilator, iverilog,
+        # yosys and make, so an unwrapped binary would install cleanly and then
+        # fail at the first real command.
+        autombist = python.pkgs.buildPythonApplication {
+          pname = "autombist";
+          version = "1.1.2";
+          src = ./.;
+          format = "pyproject";
+
+          nativeBuildInputs = [ python.pkgs.hatchling pkgs.makeWrapper ];
+          propagatedBuildInputs = with python.pkgs; [
+            jinja2
+            pyyaml
+            typer
+            cocotb        # 2.x bundles cocotb_tools in the same wheel
+            tkinter       # `autombist shell`; import-guarded in tcl_shell.py,
+                          # so omitting it only silently disables that one
+                          # command -- which `doctor` reported as MISSING under
+                          # `nix run` before this was added.
+          ];
+
+          # nixpkgs has no separate cocotb-tools attribute -- cocotb 2.x ships
+          # cocotb_tools itself (same reasoning as the devShell above), so the
+          # metadata pin has nothing to resolve against.
+          pythonRelaxDeps = [ "cocotb-tools" ];
+          pythonRemoveDeps = [ "cocotb-tools" ];
+
+          # The test suite needs verilator and a writable cache; it runs in CI
+          # via `nix develop`, not as part of building the package.
+          doCheck = false;
+          pythonImportsCheck = [ "autombist" ];
+
+          postFixup = ''
+            wrapProgram $out/bin/autombist               --prefix PATH : ${pkgs.lib.makeBinPath [
+                pkgs.verilator pkgs.iverilog pkgs.yosys pkgs.gnumake pkgs.gcc
+              ]}
+          '';
+
+          meta = {
+            description = "MBIST wrapper and fault-flow generator";
+            homepage = "https://github.com/ranaumarnadeem/autoMBIST";
+            license = pkgs.lib.licenses.asl20;
+            mainProgram = "autombist";
+          };
+        };
       in
       {
+        packages.default = autombist;
+        packages.autombist = autombist;
+
+        apps.default = {
+          type = "app";
+          program = "${autombist}/bin/autombist";
+        };
+
         devShells.default = pkgs.mkShell {
           packages = [
             pythonEnv

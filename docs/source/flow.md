@@ -49,7 +49,7 @@ flowchart LR
     J --> K["report / matrix / diagnosis"]
 ```
 
-`fault_primitives.py` is a declarative DSL: 15 of the 31 built-in fault types
+`fault_primitives.py` is a declarative DSL: 25 of the 31 built-in fault types
 are expressed as `(category, sensitize, effect)` triples, so a researcher can
 register a *new* fault type from the shell without writing SystemVerilog.
 `algo_engine.py` compiles the fault model plus either the march-algorithm

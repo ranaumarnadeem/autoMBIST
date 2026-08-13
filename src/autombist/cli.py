@@ -555,8 +555,10 @@ def test(
 
     Compiles the fault-injectable RAM model once (Verilator), runs a golden pass,
     then one simulation per fault in the list, and reports detection coverage.
-    This models 29 functional fault primitives (stuck-at, transition, write/read
-    disturb, address-decoder, and all four coupling classes) -- richer than the
+    This models 31 functional fault primitives (stuck-at, transition, write/read
+    disturb, address-decoder, and all nine coupling classes); --all-types emits 29
+    of them by default, adding DRF and HSD only when the memory config supports
+    them (single-port, and words_per_row > 1, respectively) -- richer than the
     stuck-at/transition mask faults used by `autombist generate --test`. Pass
     --fsm to validate an actual controller (bist_fail) instead of an algorithm
     spec -- no elem/op attribution in that mode, since a black-box controller

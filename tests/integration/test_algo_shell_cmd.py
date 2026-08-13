@@ -355,3 +355,56 @@ def test_shell_cross_port_fault_escapes_when_algorithm_never_uses_that_port(tmp_
     result = shell.session.last_results["control"]
     assert result.total == 1
     assert result.detected == 0, f"control should ESCAPE (algorithm never issues on port 1):\n{out}"
+
+
+def test_run_campaign_sh_aborts_rather_than_reusing_a_stale_binary(tmp_path: Path) -> None:
+    """run_campaign.sh built with verilator but never checked the exit status,
+    and there is no `set -e` (the per-fault loop deliberately tolerates
+    non-zero runs so it can record ERROR rows). obj_dir/ is never cleaned, so a
+    failed rebuild fell straight through to RUN() executing the march_engine_sim
+    left behind by the PREVIOUS build.
+
+    Measured on the pre-fix script, against RTL that cannot compile: exit code
+    0, "golden: clean", and "coverage: 20 / 29 detected" -- a plausible,
+    confident, entirely wrong answer produced from stale binary, with nothing
+    in the output suggesting the RTL never built. For a tool whose whole output
+    is a coverage number, that is the worst available failure mode.
+
+    algo_engine.py's in-process driver already raised CampaignError on a
+    non-zero verilator exit; this standalone path -- the one an exported bundle
+    runs WITHOUT autoMBIST installed -- did not.
+
+    The test is self-contained: it builds once to establish the stale binary,
+    then breaks the RTL. It deliberately does NOT fetch the old script via
+    `git show HEAD:...` -- see the note on the crash test above about negative
+    controls anchored to a moving reference.
+    """
+    bundle_dir = _bundle_with_builtin_algo(tmp_path, "bundle_stale")
+    (bundle_dir / "faults.txt").write_text("SA0 10 3 0 0 0 0\n", encoding="utf-8")
+
+    first = subprocess.run(
+        ["bash", "run_campaign.sh", "faults.txt", "march_c"],
+        cwd=bundle_dir, capture_output=True, text=True, check=False, timeout=300,
+    )
+    assert first.returncode == 0, first.stdout + first.stderr
+    sim = bundle_dir / "obj_dir" / "march_engine_sim"
+    # The premise: a runnable binary is now present. Without this the test
+    # would still pass on a script that merely failed for some other reason.
+    assert sim.exists(), "expected a built simulator to exist before the break"
+
+    fr = bundle_dir / "fault_ram.sv"
+    fr.write_text(fr.read_text(encoding="utf-8") + "\nnot valid systemverilog\n",
+                  encoding="utf-8")
+
+    second = subprocess.run(
+        ["bash", "run_campaign.sh", "faults.txt", "march_c"],
+        cwd=bundle_dir, capture_output=True, text=True, check=False, timeout=300,
+    )
+    combined = second.stdout + second.stderr
+    assert second.returncode == 1, combined
+    assert "verilator build FAILED" in second.stderr, combined
+    # The whole point: no coverage number may be produced from the stale binary.
+    assert "coverage:" not in second.stdout, combined
+    assert "golden: clean" not in second.stdout, combined
+    # And the stale binary really was still sitting there to be used.
+    assert sim.exists(), "stale binary vanished -- the test no longer proves anything"
