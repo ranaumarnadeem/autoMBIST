@@ -73,9 +73,12 @@ authoritative regeneration flow independently confirms the same failure
 inside OpenRAM's own module, before any openMBIST-authored logic runs.
 
 Until `OpenRAM/` is updated past those two commits, neither this repo's
-raw-GDS check nor OpenRAM's own regeneration gives a clean signoff answer,
-and the demo macros' committed `.gds`/`.lvs.sp` pairs remain genuinely
-unverified rather than confirmed either good or bad. This doesn't implicate
+raw-GDS check nor OpenRAM's own regeneration gives a clean signoff answer, so
+a macro you generate locally from the vendored checkout is unverified rather
+than confirmed either good or bad. (No `.gds` or `.lvs.sp` is committed here
+— `.gitignore` excludes `OpenRAM/` and `*.gds`, and the macros are produced
+on demand by `autombist ram-synth`. What the repo tracks for these memories
+is RTL, configs and small behavioural models.) This doesn't implicate
 autoMBIST's own generated RTL — physical macro signoff is the memory
 generator's responsibility, not the integrator's — and it doesn't affect the
 top-level LibreLane P&R closure, which treats each macro as opaque hard IP.

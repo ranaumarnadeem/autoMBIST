@@ -100,8 +100,10 @@ For this repo's own demo macros, this currently does **not** produce a clean
 signoff answer. The vendored `OpenRAM/` checkout predates two upstream fixes
 for a wordline-pin-numbering defect in the sky130 replica bitcell array, so
 neither this raw-GDS check nor OpenRAM's own authoritative regeneration flow
-gives a trustworthy result — the committed `.gds`/`.lvs.sp` pairs remain
-genuinely unverified rather than confirmed either good or bad. This doesn't
+gives a trustworthy result — a macro generated locally from that checkout is
+unverified rather than confirmed either good or bad. Nothing binary is
+committed: the repo tracks RTL, configs and behavioural models, and
+`autombist ram-synth` produces the physical views on demand. This doesn't
 implicate autoMBIST's own generated RTL; see
 `flow/multimem/signoff/run_macro_signoff.sh`'s header, or
 `flow/multimem/mbist/README.md`'s "Honest signoff caveats", for the full
@@ -113,10 +115,10 @@ Timing signoff and merged full-hierarchy DRC are the downstream PD/STA flow's
 responsibility, not autoMBIST's — autoMBIST generates and functionally
 verifies RTL, and hardening treats each memory as opaque hard IP.
 
-What *is* worth flagging about this repo's own collateral: macro-internal
-DRC/LVS signoff (`macro-signoff`, above) is unresolved for the demo macros,
-blocked on the vendored OpenRAM update described above. Those `.gds`/`.lvs.sp`
-pairs are genuinely unverified rather than confirmed good.
+What *is* worth flagging: macro-internal DRC/LVS signoff (`macro-signoff`,
+above) is unresolved for the demo macros, blocked on the vendored OpenRAM
+update described above — so if you regenerate them, treat the result as
+unverified rather than clean.
 
 march-1r1w's self-repair wrapper is also not part of the "proven" list above,
 but not for lack of a real macro to test it against — a genuinely dual-port
