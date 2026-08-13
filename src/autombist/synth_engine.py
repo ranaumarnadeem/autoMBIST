@@ -889,6 +889,8 @@ def synth_verification_faults(mem, targets: list[FaultPrimitive]) -> list:
     could never falsify a placement-asymmetric result -- exactly the gap
     that let this module claim "15/15, verified on real Verilator" for a
     spec that missed 3 of 15 primitives on half of all coupling placements.
+    (Those figures are historical: the registry had 15 primitives then, 25
+    now. The failure mode they illustrate is not.)
 
     Both records reuse the SAME two addresses (``va``, ``va + 1``) with the
     victim/aggressor roles swapped, rather than deriving a second pair

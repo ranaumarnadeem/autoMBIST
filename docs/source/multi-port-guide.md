@@ -234,9 +234,12 @@ for the full breakdown.
 ## 3. Algo-shell: 2-port sessions and cross-port faults
 
 The algo-shell (`autombist algo`) is the interactive research shell for the
-richer 29-primitive functional fault library (stuck-at, transition,
-write/read disturb, address-decoder, and all four coupling classes: CFIN,
-CFID, CFST, CFDS), run through Verilator. It has its own, independent
+richer 31-primitive functional fault library (stuck-at, transition,
+write/read disturb, address-decoder, and all nine coupling classes: CFIN,
+CFID, CFST, CFDS, plus the two-cell family CFTR/CFWD/CFRD/CFIR/CFDRD), run
+through Verilator. A 2-port session sees at most 30 of the 31: DRF's
+idle-cycle tracking is a single scalar register that has not been extended
+to `num_ports = 2`, so `gen_faults --all-types` omits it there. It has its own, independent
 multi-port surface, separate from the classic path's `ports:`/`--algo`
 config above.
 
@@ -274,11 +277,19 @@ fault definition keeps its original (same-port) meaning under a 2-port
 session too.
 
 **`APORT` is the load-bearing one.** It gates the aggressor match, and is
-honoured by three of the four coupling primitives — CFIN and CFID (in the
-write-aggressor loop) and CFDS (in both loops). **CFST does not honour it**:
-CFST is a static clamp, so its arm is emitted into `clamp_static()`, which
-re-asserts stored state on every access and has no `port` in scope. Every
-non-coupling primitive is port-agnostic by construction.
+honoured by three of the four *aggressor-driven* coupling primitives — CFIN
+and CFID (in the write-aggressor loop) and CFDS (in both loops). **CFST does
+not honour it**: CFST is a static clamp, so its arm is emitted into
+`clamp_static()`, which re-asserts stored state on every access and has no
+`port` in scope.
+
+**The two-cell family (CFTR/CFWD/CFRD/CFIR/CFDRD) does not honour it
+either**, for the same underlying reason as CFST rather than by oversight:
+`APORT` selects which port performs the *aggressor access*, and these types
+have no aggressor access. They are victim-operation faults gated on the
+aggressor's stored **state** (`sensitize.agg_pre`), read as
+`mem[aa][ab]` with no port in scope. Setting `APORT` on one is silently
+inert. Every non-coupling primitive is port-agnostic by construction.
 
 **`VPORT` is parsed but not yet honoured.** No expression in the generated
 engine reads it — the victim-side guards match on address and bit alone — so

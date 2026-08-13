@@ -13,7 +13,7 @@ RTL library:
    — optionally — a redundancy-repair layer (BIRA/BISR).
 
 2. **The research platform** — a Verilator-driven march-algorithm engine and
-   29-primitive functional fault model, used to design and grade march
+   31-primitive functional fault model, used to design and grade march
    algorithms or an arbitrary controller FSM, with **no memory macro required**.
    This is where you'd prototype a new march element or measure a march
    algorithm's coverage against the fault model before ever generating RTL.
