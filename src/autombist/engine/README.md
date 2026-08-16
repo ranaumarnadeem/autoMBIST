@@ -431,6 +431,15 @@ adds both and covers all static simple faults *in this fault list* — the
 (CFtr/CFwd/CFrd/CFir/CFdrd). Dynamic (two-operation) faults remain outside
 it -- designed, not yet implemented.
 
+Note for whoever implements them: they are **not** in DATE 2006. That paper's
+Table 1 is single-cell *static* FFMs and Table 2 is two-cell *static* FFMs; the
+word "dynamic" appears in it only inside a reference title. The dynamic space
+comes from Hamdioui, Al-Ars & van de Goor, "Testing Static and Dynamic Faults
+in Random Access Memories", VTS 2002 (extended as JETTA 19(2), 2003). Restricted
+to its SPICE-validated sequence S = xwyry, that space is 12 single-cell FPs
+(dRDF, dDRDF, dIRF) and 32 two-cell FPs (dCFds, dCFrd, dCFdrd, dCFir) -- and it
+contains no dTF and no dWDF, which come from the later ETS 2005 space.
+
 **Why 29 and not 31.** The model has 31 primitives; a default fault list has
 29. DRF and HSD are the difference, and they are excluded by *configuration*,
 not by omission: DRF needs a `wait` op and a single-port memory to sensitize,

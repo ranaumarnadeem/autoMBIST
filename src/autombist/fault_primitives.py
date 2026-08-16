@@ -289,7 +289,7 @@ def from_dict(data: dict[str, Any]) -> FaultPrimitive:
 
 
 # --------------------------------------------------------------------------- #
-# The 15 DSL-expressible built-ins, semantically identical to fault_ram.sv.
+# The 25 DSL-expressible built-ins, semantically identical to fault_ram.sv.
 # --------------------------------------------------------------------------- #
 def default_registry() -> list[FaultPrimitive]:
     return [
@@ -333,6 +333,9 @@ def default_registry() -> list[FaultPrimitive]:
         # --- Two-cell coupling family -------------------------------------- #
         # Al-Ars, Hamdioui & van de Goor, "Space of DRAM Fault Models and
         # Corresponding Testing", DATE 2006, Table 2 (two-cell static FFMs).
+        # That paper covers the STATIC space only -- its dynamic counterpart is
+        # Hamdioui/Al-Ars/van de Goor, VTS 2002, and must be cited separately
+        # if the dynamic family is ever added here.
         # Notation <Sa; Sv/F/R>: Sa on the aggressor, Sv on the victim, F the
         # victim's resulting stored value, R what a read returns.
         #
