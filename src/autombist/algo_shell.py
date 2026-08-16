@@ -182,7 +182,7 @@ class AlgoShell(cmd.Cmd):
 
     def _render_fault_ram_for(self, workdir: Path) -> Path:
         """Render fault_ram.sv from the session's registry into workdir. The
-        registry starts as the 21 built-ins (default_registry() + the 6 fixed
+        registry starts as the 31 built-ins (default_registry() + the 6 fixed
         types the template always includes); add_fault_type appends to it, so
         this always reflects any custom types the researcher has defined.
         num_ports follows the configured memory (set_memory --ports) so a

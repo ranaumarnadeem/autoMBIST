@@ -3,7 +3,7 @@
 Cites Benso, Bosio, Di Carlo, Di Natale, Prinetto, "Automatic March Tests
 Generation for Static and Dynamic Faults in SRAMs," ETS 2005, and its
 extension "...for Static Linked Faults in SRAMs," DATE 2006. Given the
-current fault-type registry (the 15 DSL-expressible ``FaultPrimitive``
+current fault-type registry (the 25 DSL-expressible ``FaultPrimitive``
 entries -- see ``fault_primitives.py``), synthesizes a new march test (an
 ordinary :class:`~autombist.alg_spec.AlgSpec`) guaranteed to detect every
 targeted primitive, then hands it straight to ``run_algo_campaign`` for real
