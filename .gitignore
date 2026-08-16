@@ -85,6 +85,10 @@ prompt.md
 OpenRAM/*
 input/*
 pdk/*
+# Generated OpenRAM macro collateral. Its .gds/.lef are already covered by the
+# extension rules above, but only incidentally -- any other file dropped here
+# (a .v, a log, a report) would otherwise show up as committable.
+macros_1000/
 .aider*
 
 # Ignored markdown files
@@ -99,3 +103,4 @@ docs/redundancy-repair-roadmap.md
 
 # Cross-project handoff notes kept locally, not published or tracked
 handoffs/
+*handoff*.md
