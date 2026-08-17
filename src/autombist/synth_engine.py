@@ -120,11 +120,27 @@ def resolve_params(p: FaultPrimitive) -> tuple[int, int]:
       primitives' own registry convention exactly).
     - ``sensitize.pre == "p0"`` (CFST-style aggressor hold) -> ``p0 = 1``.
     - ``effect.value == "p1"`` -> ``p1 = 1``; ``effect.value == "p0"`` ->
-      ``p1 = 0``. The exact binary choice does not affect correctness: the
-      greedy walk (:func:`synthesize_elements`) only accepts a candidate
-      when the fault, AS INSTANTIATED WITH THESE RESOLVED PARAMS, is
-      actually observed to diverge from a golden-sound trace -- any
-      consistent choice works. (This means CFST resolves to ``p1=1`` here,
+      ``p1 = 0``.
+
+    THE CHOICE IS LOAD-BEARING FOR COVERAGE, and this is the single most
+    important caveat on everything this module reports. The greedy walk
+    (:func:`synthesize_elements`) only accepts a candidate when the fault, AS
+    INSTANTIATED WITH THESE RESOLVED PARAMS, is observed to diverge from a
+    golden-sound trace -- so any consistent choice keeps the walk SOUND. It
+    does NOT make the resulting test parameter-independent. A synthesized
+    spec covers each parameterized type AT THE VALUE CHOSEN HERE, and can
+    miss the same type instantiated at another value.
+
+    Measured, not argued -- the synthesized 27n spec run as a real Verilator
+    campaign against engine/faults.example.txt, whose coupling entries use
+    ``p0=1`` while this function picks ``p0=0``:
+
+        as published      22/29   escapes CFDRD0 CFID CFIR0 CFRD0 CFWD0
+        params aligned    27/29   all five flip to DETECTED
+
+    So "covered 25/25" means 25 types at these parameters, not 25 types. For
+    reference the hand-designed March SS reaches 28/29 in 22n, i.e. shorter
+    AND broader than the synthesized 27n spec on the same fault list. (This means CFST resolves to ``p1=1`` here,
       not the hand-tuned ``p1=0`` ``generate_all_types_faults`` uses for its
       fixed demonstration fault list -- both are valid instantiations of the
       same parameterized fault.)
@@ -830,6 +846,11 @@ def synthesize_elements(
 # --------------------------------------------------------------------------- #
 @dataclass(slots=True)
 class SynthResult:
+    """``covered`` means covered AT THE PARAMETERS :func:`resolve_params`
+    chose -- not for every instantiation of those types. See that function's
+    docstring for the measured gap (22/29 vs 27/29 on the same fault list,
+    depending only on the coupling entries' ``p0``)."""
+
     spec: AlgSpec
     targeted: list[str]
     covered: list[str]

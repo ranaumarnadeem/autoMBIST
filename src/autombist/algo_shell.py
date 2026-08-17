@@ -550,7 +550,15 @@ class AlgoShell(cmd.Cmd):
         # Always state the covered count, then warn separately. Previously the
         # count only appeared when nothing was uncovered, so a partial result
         # showed the shortfall without ever showing what WAS achieved.
-        self._out(f"  covered: {len(result.covered)}/{len(result.targeted)}")
+        self._out(f"  covered: {len(result.covered)}/{len(result.targeted)}"
+                  " (at the synthesizer's resolved parameters)")
+        if any(p.name in set(result.covered) and (
+                p.sensitize.transition == "p0" or p.sensitize.pre == "p0"
+                or p.sensitize.agg_pre != "x" or p.effect.value in ("p0", "p1"))
+               for p in self.session.registry):
+            self._out("  NOTE: parameterized types are covered at ONE resolved"
+                      " parameter value; a fault list using another value may"
+                      " escape (see resolve_params in synth_engine.py)")
         if result.uncovered:
             self._out(f"  WARNING: {len(result.uncovered)} NOT covered: {', '.join(result.uncovered)}")
         if "write" in flags:

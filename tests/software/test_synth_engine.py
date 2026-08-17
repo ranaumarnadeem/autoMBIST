@@ -545,3 +545,39 @@ def test_synthesize_elements_still_accepts_wildcard_agg_pre_targets():
     keep synthesizing."""
     elements, _ = synthesize_elements([p for p in default_registry() if p.name == "WDF0"])
     assert elements, "a wildcard-agg_pre target must still synthesize"
+
+
+def test_resolved_params_differ_from_the_shipped_fault_lists_and_that_is_load_bearing():
+    """The synthesizer's `covered` is coverage AT resolve_params()' chosen values,
+    not coverage of the type. This pins the mismatch that makes that distinction
+    observable, so neither side can drift without the test noticing.
+
+    resolve_params picks p0=0 for an agg_pre coupling type; engine/faults.example.txt
+    instantiates the same types at p0=1. Measured as a real Verilator campaign, the
+    synthesized 27n spec scores 22/29 against the shipped list and 27/29 once only
+    those p0 values are aligned -- CFDRD0, CFID, CFIR0, CFRD0 and CFWD0 all flip
+    from ESCAPED to DETECTED. (For scale: hand-designed March SS reaches 28/29 in
+    22n, so the synthesized spec is both longer and narrower.)
+
+    If a future change makes resolve_params agree with the shipped list, this test
+    fails and the docstring claiming the gap must be re-measured rather than left
+    asserting something that is no longer true."""
+    from autombist.algo_engine import load_fault_list
+    from autombist.alg_spec import find_engine_dir
+
+    shipped = {f.type: f for f in load_fault_list(find_engine_dir() / "faults.example.txt")}
+    mismatched = []
+    for name in ("CFDRD0", "CFIR0", "CFRD0", "CFWD0"):
+        prim, rec = REGISTRY[name], shipped[name]
+        p0, _p1 = resolve_params(prim)
+        assert prim.sensitize.agg_pre == "p0", name
+        if p0 != rec.p0:
+            mismatched.append((name, p0, rec.p0))
+
+    assert mismatched == [
+        ("CFDRD0", 0, 1), ("CFIR0", 0, 1), ("CFRD0", 0, 1), ("CFWD0", 0, 1),
+    ], (
+        "resolve_params/faults.example.txt agreement changed. Re-measure the "
+        "22/29 vs 27/29 gap documented in resolve_params' docstring before "
+        "updating this pin -- the docstring must not outlive the measurement."
+    )
