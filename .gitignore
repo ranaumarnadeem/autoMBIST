@@ -104,3 +104,6 @@ docs/redundancy-repair-roadmap.md
 # Cross-project handoff notes kept locally, not published or tracked
 handoffs/
 *handoff*.md
+
+# Slide decks, one-off PDFs and their build sources kept locally, not tracked
+presentation/
