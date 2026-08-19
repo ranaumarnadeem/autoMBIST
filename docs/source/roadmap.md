@@ -21,6 +21,9 @@ progress, and what's further out.
 - Repair persistence across a reset, at the register level: a saved signature
   can be reloaded into the on-chip analyzer before any access
   (`onchip_repair_persistence: true`)
+- A march-test synthesizer that constructs a test directly from the fault
+  model rather than only grading a hand-written one — 27n at 16 elements,
+  verified 38/38 against real Verilator at both memory init values
 - A proven LibreLane hardening recipe for real OpenRAM sky130 macros,
   including self-repair-wrapped variants across multiple algorithms
   (march-c, march-x, mats-plus) — this is the top-level place-and-route
