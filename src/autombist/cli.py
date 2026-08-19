@@ -1307,3 +1307,14 @@ def shell(
     if not sys.stdin.isatty():
         raise typer.Exit(code=tcl.run_batch(None))
     tcl.run_repl()
+
+
+if __name__ == "__main__":
+    # `python -m autombist.cli ...` used to silently do nothing: -m gives this
+    # module a non-empty __package__, so the direct-script fallback above
+    # never ran, and with no guard here the module just defined `app` and
+    # exited 0 -- no output, no error, no side effect, and cli.py is the most
+    # plausible file to guess for this since every command lives in it.
+    # main.py (the real console-script target) already had this guard;
+    # mirroring it here makes both invocations do the same thing.
+    app()
