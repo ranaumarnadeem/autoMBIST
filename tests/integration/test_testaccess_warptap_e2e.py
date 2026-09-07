@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -426,3 +427,99 @@ def test_self_repair_start_write_and_busy_read_through_real_jtag(tmp_path: Path)
         f"observed through the JTAG scan path inserted by autombist.testaccess -- "
         f"got {results[0]}"
     )
+
+
+def test_icl_round_trips_through_the_vendored_parser(tmp_path: Path) -> None:
+    """Closes a real gap: nothing in this project's own test suite had ever exercised ICL at
+    all before this -- `--emit-icl` works and had been eyeballed once (its TCKPort/TMSPort/
+    ScanInPort/ScanOutPort/TRSTPort declarations checked against the Verilog port list, see
+    cli-reference.md), but the "real ICL round-trip through the vendored icl_parser" claim in
+    this module's own docstring was citing warptap's OWN test suite against warptap's OWN
+    fixture -- never re-verified against anything this project actually generates.
+
+    Emits ICL for the same 10-port design test_control_ports_are_jtag_exclusive_status_ports_are_not
+    uses (a real mix of WRITE and READ instruments, at the width=1 this module always
+    produces), parses it back through the vendored Honza255/icl_parser exactly as warptap's
+    own tests do, and confirms chain order, instrument names, widths, and READ/WRITE
+    direction all survive -- the exact guarantee icl_import.py's own module docstring
+    documents. signal_bits/capture_value are deliberately NOT checked: icl_import.py
+    documents, as a permanent limitation of the ICL format itself rather than a bug, that
+    ANTLR discards the comments those values are recorded in, so every reimported instrument
+    always comes back with signal_bits=()/capture_value=0 regardless of the original network
+    -- asserting equality there would be asserting a guarantee that does not exist.
+    """
+    icl_parser_dir = Path.home() / "warptap" / "third_party" / "icl_parser"
+    if not icl_parser_dir.is_dir() or not any(icl_parser_dir.iterdir()):
+        pytest.skip(
+            f"warptap's vendored icl_parser submodule not checked out at {icl_parser_dir} -- "
+            "run `git submodule update --init third_party/icl_parser` inside ~/warptap"
+        )
+    src_dir = str(icl_parser_dir)
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+    try:
+        from src.ijtag import Ijtag
+    except ImportError as exc:
+        pytest.skip(
+            f"icl_parser not importable from {src_dir}: {exc} -- needs "
+            "antlr4-python3-runtime==4.7.2, z3-solver, and networkx installed"
+        )
+
+    from warptap.icl_emit import to_icl
+    from warptap.icl_import import import_icl
+
+    config = {
+        "memory_name": "sram_1rw", "wrapper_module_name": "sram_1rw_mbist",
+        "addr_width": 6, "data_width": 8, "we_active_low": True,
+        "ports": {"clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "we": "we0", "csb": "csb0"},
+        "redundancy": {
+            "num_spare_rows": 1, "num_spare_cols": 0,
+            "onchip_selfrepair": True, "onchip_repair_persistence": True,
+        },
+    }
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    wrapper_path = generate_from_config(config_path, tmp_path / "gen", algo="march-c")
+    shared = wrapper_path.parent
+    sources = [
+        wrapper_path,
+        shared / "march_c" / "march_c_algo.sv",
+        shared / "march_c" / "march_c_fsm.sv",
+        shared / "march_c" / "march_c_top.sv",
+        shared / "onchip_row_repair_analyzer.sv",
+        shared / "onchip_selfrepair_ctrl.sv",
+        shared / "repair_remap_row.sv",
+        shared / "sram_model.sv",
+    ]
+    for src in sources:
+        assert src.is_file(), f"expected generated openMBIST source missing: {src}"
+
+    _inserted_verilog, graph, root = wrap_test_access(
+        sources, "sram_1rw_mbist", onchip_selfrepair=True, onchip_repair_persistence=True,
+    )
+    assert len(graph.chain) == 10
+    assert {n.instrument.direction.name for n in graph.chain} == {"WRITE", "READ"}, (
+        "expected a real mix of both directions in this fixture -- a round-trip test with "
+        "only one direction wouldn't actually exercise import_icl's direction detection"
+    )
+
+    icl_path = tmp_path / "sram_1rw_mbist_test_access.icl"
+    icl_path.write_text(to_icl(graph, root, include_access_link=False), encoding="utf-8")
+
+    reimported_graph, _reimported_root = import_icl(
+        [icl_path], "sram_1rw_mbist", icl_parser_module=Ijtag,
+    )
+
+    assert [n.sib_name for n in reimported_graph.chain] == [n.sib_name for n in graph.chain], (
+        "SIB chain order did not survive the ICL round-trip"
+    )
+    assert [n.instrument.name for n in reimported_graph.chain] == [n.instrument.name for n in graph.chain], (
+        "instrument names did not survive the ICL round-trip"
+    )
+    assert [n.instrument.width for n in reimported_graph.chain] == [n.instrument.width for n in graph.chain], (
+        "instrument widths did not survive the ICL round-trip"
+    )
+    assert (
+        [n.instrument.direction for n in reimported_graph.chain]
+        == [n.instrument.direction for n in graph.chain]
+    ), "READ/WRITE direction did not survive the ICL round-trip"

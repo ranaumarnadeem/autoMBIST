@@ -14,7 +14,13 @@ bist_done, bist_fail, and (when configured) self_repair_start/done/fail/busy and
 repair_load/repair_load_done. This is not an arbitrary subset: it is exactly the port
 set warptap's own test suite already proves end-to-end against a real generated
 mem_subsystem_mbist (real Yosys ingest, real SIB insertion, real Icarus simulation of
-the inserted RTL, real ICL round-trip through the vendored icl_parser). Deliberately
+the inserted RTL, real ICL round-trip through the vendored icl_parser). The ICL
+round-trip claim is independently re-proven against THIS project's own generated output
+too, not only warptap's fixture -- see
+tests/integration/test_testaccess_warptap_e2e.py's
+test_icl_round_trips_through_the_vendored_parser (chain order, instrument names,
+widths, and READ/WRITE direction all survive; signal_bits/capture_value do not, and
+icl_import.py documents that as a permanent ICL-format limitation, not a bug). Deliberately
 EXCLUDED: fuse_row_repair_en/fuse_faulty_row_addr (persistence load-in) and
 row_repair_en/faulty_row_addr/col_repair_en/faulty_bit (tester-driven repair). The
 *_row_addr ports are `[num_spare_rows*ADDR_WIDTH-1:0]` in wrapper_template.j2 -- multi-bit
