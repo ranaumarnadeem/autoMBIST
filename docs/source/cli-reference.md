@@ -322,6 +322,22 @@ Wraps exactly the always-1-bit control/status ports a generated wrapper exposes:
 flags — `self_repair_start`/`done`/`fail`/`busy` and
 `repair_load`/`repair_load_done`.
 
+The inserted module adds exactly 5 new top-level ports — the standard IEEE
+1149.1 TAP interface — and keeps every original port (functional and wrapped
+control/status alike) unchanged alongside them:
+
+| New port | Direction | Purpose |
+|---|---|---|
+| `tck` | input | Test clock |
+| `tms` | input | Test mode select |
+| `tdi` | input | Test data in |
+| `tdo` | output | Test data out |
+| `trst_n` | input | Test reset, active low |
+
+Confirmed directly against a real generated design: the wrapped module's own
+port list, and independently the `--emit-icl` output's `TCKPort`/`TMSPort`/
+`ScanInPort`/`ScanOutPort`/`TRSTPort` declarations, agree on these 5 names.
+
 Two things this command deliberately does **not** wrap:
 
 - **Diagnosis ports** (`fail_valid`/`fail_addr`) — these are not ports at all on
