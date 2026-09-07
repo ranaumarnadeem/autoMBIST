@@ -68,6 +68,10 @@ _STATUS_PORTS = (
 # testaccess.py's module docstring for why) -- checked as the negative case alongside
 # _CONTROL_PORTS/_STATUS_PORTS in test_control_ports_are_jtag_exclusive_status_ports_are_not.
 _EXCLUDED_WIDE_PORTS = ("fuse_row_repair_en", "fuse_faulty_row_addr")
+# Always present, on every config, never candidates for classify_test_access_ports at all
+# (clk/rst_n are infrastructure; func_* is the functional read/write path, not a
+# control/status instrument) -- see test_control_ports_are_jtag_exclusive_status_ports_are_not.
+_INFRASTRUCTURE_PORTS = ("clk", "rst_n", "func_csb", "func_addr", "func_din", "func_we", "func_dout")
 
 
 def _generate_wrappers(gen_dir: Path) -> dict[str, Path]:
@@ -178,6 +182,13 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
     all under any config, checked against the top module's own port list directly (not
     file-wide substring presence -- march_c_fsm/march_c_top are separate submodules in this
     same flattened file and genuinely do have their own same-named ports).
+
+    A fifth, closing out every port wrapper_template.j2 can ever declare: clk/rst_n and the
+    functional data-path ports (func_csb/func_addr/func_din/func_we/func_dout) get no SIB
+    treatment either. These are the highest-stakes exclusion of all -- wrapping the
+    functional read/write path by mistake would break the chip, not just leave a DFT gap --
+    and this also confirms the inserted TAP genuinely runs in its own clock domain (tap_core
+    is clocked by tck/trst_n alone, never clk/rst_n, traced directly).
     """
     config = {
         "memory_name": "sram_1rw", "wrapper_module_name": "sram_1rw_mbist",
@@ -229,6 +240,17 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
         "now exposes diagnosis readback, testaccess.py needs a decision about wrapping "
         "them, not silence"
     )
+
+    # The highest-stakes exclusion: if func_csb/func_addr/func_din/func_we/func_dout ever
+    # got swept into the SIB chain, that would not just be a DFT coverage gap, it would
+    # break the chip's actual functional read/write path. clk/rst_n are the same category
+    # of never-a-candidate infrastructure signal.
+    for port in _INFRASTRUCTURE_PORTS:
+        assert port in top_ports, f"{port} unexpectedly missing from the wrapper's own ports"
+        assert f"warptap_sib_{port}" not in inserted_verilog, (
+            f"{port} should never be a wrapping candidate at all -- found a "
+            f"warptap_sib_{port}* instance anyway"
+        )
 
     write_header = re.search(r"module instrument_write\(([^)]*)\);", inserted_verilog)
     assert write_header, "instrument_write primitive not found in the inserted Verilog"
