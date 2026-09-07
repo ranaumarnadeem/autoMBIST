@@ -323,8 +323,8 @@ flags — `self_repair_start`/`done`/`fail`/`busy` and
 `repair_load`/`repair_load_done`.
 
 The inserted module adds exactly 5 new top-level ports — the standard IEEE
-1149.1 TAP interface — and keeps every original port (functional and wrapped
-control/status alike) unchanged alongside them:
+1149.1 TAP interface — and keeps every original port declared alongside them,
+same name and direction:
 
 | New port | Direction | Purpose |
 |---|---|---|
@@ -337,6 +337,25 @@ control/status alike) unchanged alongside them:
 Confirmed directly against a real generated design: the wrapped module's own
 port list, and independently the `--emit-icl` output's `TCKPort`/`TMSPort`/
 `ScanInPort`/`ScanOutPort`/`TRSTPort` declarations, agree on these 5 names.
+
+**Control ports (`test_mode`, `bist_start`, and — when wrapped —
+`self_repair_start`, `repair_load`) become JTAG-exclusive.** Confirmed
+directly in the generated netlist: the write instrument that replaces each of
+these is a pure JTAG shadow register (`pin_out` changes only on an explicit
+Update-DR with that segment selected) with no port at all for an external
+signal to feed it. The original top-level pin is still declared, for
+interface stability, but has zero fan-out anywhere in the design — after
+wrapping, driving it directly does nothing; the *only* way to start BIST or
+enter test mode is through the JTAG/IJTAG network. Tie these input pins off
+(or leave them per your integration's convention for an unused input) in the
+final chip.
+
+Status ports (`bist_done`, `bist_fail`, and their self-repair/persistence
+counterparts) are **not** affected this way: the SIB only taps them
+non-destructively (a boundary-scan observe cell watching the real signal),
+so the original output pin keeps being driven exactly as before, in parallel
+with the new JTAG read path. Nothing about reading these ports functionally
+changes.
 
 Two things this command deliberately does **not** wrap:
 
