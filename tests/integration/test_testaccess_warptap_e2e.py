@@ -245,6 +245,70 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
         )
 
 
+def test_tester_driven_repair_ports_are_not_wrapped(tmp_path: Path) -> None:
+    """The other half of the wide-repair-port exclusion: row_repair_en/faulty_row_addr/
+    col_repair_en/faulty_bit, declared through an explicit `repair_ports` config list
+    rather than the onchip_selfrepair/onchip_repair_persistence flags. This needs its own
+    fixture rather than extending test_control_ports_are_jtag_exclusive_status_ports_are_not
+    above: generator.py rejects onchip_selfrepair together with column repair, so a design
+    exercising col_repair_en/faulty_bit cannot also carry self_repair_*/fuse_* ports.
+
+    Same two checks as the fuse_* pair, for all four ports at once: each keeps its exact
+    pre-insertion passthrough connection untouched, and none gets any warptap_sib_*
+    instance. Also pins the chain at exactly the base 4 (test_mode/bist_start/bist_done/
+    bist_fail) -- with no onchip_selfrepair here, that is everything wrap_test_access
+    should ever produce for this design.
+    """
+    config = {
+        "memory_name": "sram_1rw", "wrapper_module_name": "sram_1rw_mbist",
+        "addr_width": 4, "data_width": 8, "we_active_low": True,
+        "ports": {
+            "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0",
+            "we": "we0", "csb": "csb0", "spare_wen": "spare_wen0",
+        },
+        "redundancy": {"num_spare_rows": 2, "num_spare_cols": 1},
+        # bit_index_width = ceil(log2(data_width=8)) = 3, so faulty_bit is 1 spare col * 3.
+        "repair_ports": [
+            {"name": "row_repair_en", "width": 2, "dir": "input"},
+            {"name": "faulty_row_addr", "width": 8, "dir": "input"},
+            {"name": "col_repair_en", "width": 1, "dir": "input"},
+            {"name": "faulty_bit", "width": 3, "dir": "input"},
+        ],
+    }
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    wrapper_path = generate_from_config(config_path, tmp_path / "gen", algo="march-c")
+    shared = wrapper_path.parent
+    sources = [
+        wrapper_path,
+        shared / "march_c" / "march_c_algo.sv",
+        shared / "march_c" / "march_c_fsm.sv",
+        shared / "march_c" / "march_c_top.sv",
+        shared / "repair_remap_col.sv",
+        shared / "repair_remap_row.sv",
+        shared / "sram_model.sv",
+        shared / "sram_model_spares.sv",
+    ]
+    for src in sources:
+        assert src.is_file(), f"expected generated openMBIST source missing: {src}"
+
+    inserted_verilog, graph, _root = wrap_test_access(sources, "sram_1rw_mbist")
+    assert len(graph.chain) == 4, (
+        "expected only the base 4 ports -- a longer chain would mean a tester-driven "
+        "repair port got swept in"
+    )
+
+    for port in ("row_repair_en", "faulty_row_addr", "col_repair_en", "faulty_bit"):
+        assert f".{port}({port})" in inserted_verilog, (
+            f"{port}'s direct passthrough connection should survive insertion untouched -- "
+            "this port is not supposed to be wrapped at all"
+        )
+        assert f"warptap_sib_{port}" not in inserted_verilog, (
+            f"{port} should have no SIB treatment at all -- found a warptap_sib_{port}* "
+            "instance anyway"
+        )
+
+
 def test_self_repair_start_write_and_busy_read_through_real_jtag(tmp_path: Path) -> None:
     """The decisive test: real generated RTL, real warptap insertion via THIS project's
     own wrap_test_access(), real Icarus simulation of the inserted netlist, real PDL
