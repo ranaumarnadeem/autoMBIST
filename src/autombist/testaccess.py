@@ -16,13 +16,21 @@ set warptap's own test suite already proves end-to-end against a real generated
 mem_subsystem_mbist (real Yosys ingest, real SIB insertion, real Icarus simulation of
 the inserted RTL, real ICL round-trip through the vendored icl_parser). Deliberately
 EXCLUDED: fuse_row_repair_en/fuse_faulty_row_addr (persistence load-in) and
-row_repair_en/faulty_row_addr/col_repair_en/faulty_bit (tester-driven repair). All are
-multi-bit. warptap's own icl_import round-trip test found and documented a real bug in
-the vendored icl_parser triggered specifically by width>1 instruments (a single width=3
-READ-only instrument alone reproduces it) -- every port wrapped here is confirmed
-width=1, so that failure mode cannot be hit by this module's output. Wrapping the wider
-repair ports is a real, separate, larger piece of work (each needs one SignalBinding per
-bit, and the width>1 ICL path needs its own verification), not a v1 decision made here.
+row_repair_en/faulty_row_addr/col_repair_en/faulty_bit (tester-driven repair). The
+*_row_addr ports are `[num_spare_rows*ADDR_WIDTH-1:0]` in wrapper_template.j2 -- multi-bit
+for any realistic address width, confirmed directly against the template, not assumed.
+The *_repair_en ports are `[num_spare_rows-1:0]` -- actually 1 bit wide in a
+single-spare-row config, which is every config this module has been tested against so
+far -- but excluded unconditionally regardless: making an enable port's wrappability
+depend on how many spares a given design happens to have would be a stranger, more
+surprising rule than excluding the whole repair-port group together. What actually needs
+the width>1 ICL path is any config with more than one spare row/column, and that path is
+exactly what warptap's own icl_import round-trip test found broken (a single width=3
+READ-only instrument alone reproduces it) -- every port wrapped here is confirmed width=1
+regardless of redundancy config, so that failure mode cannot be hit by this module's
+output. Wrapping the wider repair ports is a real, separate, larger piece of work (each
+needs one SignalBinding per bit, and the width>1 ICL path needs its own verification),
+not a v1 decision made here.
 
 fail_valid/fail_addr are not listed above because they are not wrappable at all: they
 are internal, single-functional-cycle combinational wires, never ports on the generated

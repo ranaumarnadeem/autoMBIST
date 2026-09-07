@@ -64,6 +64,10 @@ _STATUS_PORTS = (
     "self_repair_done", "self_repair_fail", "self_repair_busy",
     "repair_load_done",
 )
+# Present once onchip_repair_persistence is on, deliberately never wrapped (see
+# testaccess.py's module docstring for why) -- checked as the negative case alongside
+# _CONTROL_PORTS/_STATUS_PORTS in test_control_ports_are_jtag_exclusive_status_ports_are_not.
+_EXCLUDED_WIDE_PORTS = ("fuse_row_repair_en", "fuse_faulty_row_addr")
 
 
 def _generate_wrappers(gen_dir: Path) -> dict[str, Path]:
@@ -161,6 +165,14 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
        autombist.testaccess's own responsibility (classify_test_access_ports /
        build_instrument_specs choosing WRITE vs READ), checked here against warptap's real
        output rather than mocked.
+
+    A third fact, pinned down the same way: the wide repair ports this module deliberately
+    does not wrap (fuse_row_repair_en, fuse_faulty_row_addr -- present because this config
+    turns on onchip_repair_persistence) get no SIB treatment of any kind, not even an
+    observe tap -- confirmed by (a) their direct passthrough connection into
+    onchip_row_repair_analyzer still being exactly what wrapper_template.j2 generated,
+    untouched, (b) no warptap_sib_* instance existing for either, and (c) the chain having
+    exactly the 10 wrapped ports, not 12.
     """
     config = {
         "memory_name": "sram_1rw", "wrapper_module_name": "sram_1rw_mbist",
@@ -188,8 +200,12 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
     for src in sources:
         assert src.is_file(), f"expected generated openMBIST source missing: {src}"
 
-    inserted_verilog, _graph, _root = wrap_test_access(
+    inserted_verilog, graph, _root = wrap_test_access(
         sources, "sram_1rw_mbist", onchip_selfrepair=True, onchip_repair_persistence=True,
+    )
+    assert len(graph.chain) == 10, (
+        "expected exactly the 10 wrapped ports in the chain -- a length of 12 would mean "
+        "the excluded wide repair ports got swept in too"
     )
 
     write_header = re.search(r"module instrument_write\(([^)]*)\);", inserted_verilog)
@@ -215,6 +231,17 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
         )
         assert f".pi({port})" in inserted_verilog, (
             f"{port}'s observe cell should tap the real signal directly by name"
+        )
+
+    for port in _EXCLUDED_WIDE_PORTS:
+        assert f".{port}({port})" in inserted_verilog, (
+            f"{port}'s direct passthrough connection into onchip_row_repair_analyzer "
+            "should survive insertion completely untouched, exactly as wrapper_template.j2 "
+            "generated it -- this port is not supposed to be wrapped at all"
+        )
+        assert f"warptap_sib_{port}" not in inserted_verilog, (
+            f"{port} should have no SIB treatment at all (it is a wide, multi-bit-capable "
+            f"port excluded from v1 scope) -- found a warptap_sib_{port}* instance anyway"
         )
 
 
