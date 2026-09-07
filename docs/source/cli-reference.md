@@ -296,6 +296,80 @@ autombist grade-controller --out out --no-run     # just emit the bundle
 
 ---
 
+## wrap-test-access
+
+Wrap a generated design's control/status ports with an IEEE 1149.1 (JTAG/TAP) +
+IEEE 1687 (IJTAG/ICL) test-access network, via the external
+[warptap](https://github.com/ranaumarnadeem/warptap) package.
+
+### Syntax
+
+```bash
+autombist wrap-test-access [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--source PATH` | none (repeatable, required) | A source file the design needs — generated wrapper(s), shared algorithm/repair RTL, macro models |
+| `--top TEXT` | none (required) | Top module name to insert the test-access network into |
+| `--out PATH` | `out/test-access` | Output directory for the inserted Verilog (and `--emit-icl`'s ICL file) |
+| `--onchip-selfrepair` | off | Also wrap `self_repair_start`/`done`/`fail`/`busy` — must match the redundancy config the sources were generated with |
+| `--onchip-repair-persistence` | off | Also wrap `repair_load`/`repair_load_done` — must match the redundancy config the sources were generated with |
+| `--emit-icl` | off | Also emit an ICL description of the inserted network |
+
+Wraps exactly the always-1-bit control/status ports a generated wrapper exposes:
+`test_mode`, `bist_start`, `bist_done`, `bist_fail`, and — with the matching
+flags — `self_repair_start`/`done`/`fail`/`busy` and
+`repair_load`/`repair_load_done`.
+
+Two things this command deliberately does **not** wrap:
+
+- **Diagnosis ports** (`fail_valid`/`fail_addr`) — these are not ports at all on
+  the generated wrapper; they are internal, single-functional-cycle combinational
+  wires. Exposing them needs an additive RTL change this command does not make.
+- **Wide repair ports** (`fuse_row_repair_en`, `fuse_faulty_row_addr`,
+  `row_repair_en`, `faulty_row_addr`, `col_repair_en`, `faulty_bit`) — out of
+  scope for now. Every port this command wraps is confirmed exactly 1 bit wide,
+  which matters: warptap's own test suite found and documented a real bug in its
+  vendored ICL parser triggered specifically by width-greater-than-1 instruments.
+  Wrapping the wider repair ports is real, separate future work, not a corner
+  cut here.
+
+Requires (Linux/WSL only): `pip install warptap` (or the `test-access` extra —
+`pip install "autombist[test-access]"`), plus Yosys and Icarus Verilog on PATH.
+warptap shells out to both; neither is bundled.
+
+### Examples
+
+```bash
+autombist wrap-test-access \
+    --source out/sram_1rw/sram_1rw_mbist.v \
+    --source out/sram_1rw/march_c/march_c_algo.sv \
+    --source out/sram_1rw/march_c/march_c_fsm.sv \
+    --source out/sram_1rw/march_c/march_c_top.sv \
+    --source out/sram_1rw/sram_model.sv \
+    --top sram_1rw_mbist --emit-icl
+```
+
+### Output
+
+- `<out>/<top>_test_access.v` — the inserted, synthesizable Verilog
+- `<out>/<top>_test_access.icl` — with `--emit-icl`, the network's IEEE 1687 ICL
+  description
+- A terminal listing of every wrapped port, in scan-chain order, with its role
+  (`control` or `status`)
+
+### What this does not do
+
+This command inserts the test-access network and (optionally) describes it in
+ICL. It does not drive it: writing a PDL scenario (which port to write, what
+value, what to read back and when) or emitting SVF/STAPL/STIL patterns from one
+is a separate step, using warptap's own `PDLInterpreter`/`to_svf`/`to_stapl`/
+`to_stil` directly against the `(graph, root)` this command's underlying library
+function (`autombist.testaccess.wrap_test_access`) returns.
+
+---
+
 ## ram-synth
 
 Synthesize an SRAM macro through OpenRAM using a YAML config, instead of hand-writing

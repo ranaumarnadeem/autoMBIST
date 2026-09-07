@@ -33,6 +33,15 @@ dev = [
   "pytest>=7.0",
   "pytest-cov>=4.0",
 ]
+test-access = [
+  # `autombist wrap-test-access` (src/autombist/testaccess.py): wraps a generated
+  # wrapper's control/status ports with a JTAG/IJTAG (IEEE 1149.1/1687) test-access
+  # network. Optional, not core -- testaccess.py is import-guarded exactly like
+  # tcl_shell.py's tkinter dependency, so its absence never breaks the rest of the CLI.
+  # Also needs a real Yosys and Icarus Verilog on PATH at runtime (warptap shells out
+  # to both; this extra covers only the Python side).
+  "warptap>=0.0.1",
+]
 
 [project.scripts]
 autombist = "autombist.main:app"

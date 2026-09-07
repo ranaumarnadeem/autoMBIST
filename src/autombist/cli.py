@@ -532,6 +532,85 @@ def grade_controller(
     _grade_controller(module_outdir, opts, run)
 
 
+def _wrap_test_access(
+    sources: list[Path], top: str, out: Path, *,
+    onchip_selfrepair: bool, onchip_repair_persistence: bool, emit_icl: bool,
+) -> None:
+    from autombist.testaccess import TestAccessUnavailable, classify_test_access_ports, wrap_test_access
+
+    try:
+        inserted_verilog, graph, root = wrap_test_access(
+            sources, top,
+            onchip_selfrepair=onchip_selfrepair,
+            onchip_repair_persistence=onchip_repair_persistence,
+        )
+    except TestAccessUnavailable as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    out.mkdir(parents=True, exist_ok=True)
+    verilog_path = out / f"{top}_test_access.v"
+    verilog_path.write_text(inserted_verilog, encoding="utf-8")
+
+    ports = classify_test_access_ports(
+        onchip_selfrepair=onchip_selfrepair, onchip_repair_persistence=onchip_repair_persistence,
+    )
+    typer.echo(f"Wrapped {len(ports)} control/status port(s) with a JTAG/IJTAG test-access network:")
+    for i, p in enumerate(ports):
+        typer.echo(f"  chain[{i}] {p.name} ({p.role})")
+    typer.echo(f"Inserted Verilog: {verilog_path}")
+
+    if emit_icl:
+        from warptap.icl_emit import to_icl
+
+        icl_path = out / f"{top}_test_access.icl"
+        icl_path.write_text(to_icl(graph, root, include_access_link=False), encoding="utf-8")
+        typer.echo(f"ICL:              {icl_path}")
+
+
+@app.command("wrap-test-access")
+def wrap_test_access_cmd(
+    source: list[Path] = typer.Option(..., "--source", help="A source file the design needs (repeatable) -- generated wrapper(s), shared algorithm/repair RTL, macro models"),
+    top: str = typer.Option(..., "--top", help="Top module name to insert the test-access network into"),
+    out: Path = typer.Option("out/test-access", "--out", help="Output directory for the inserted Verilog (and --emit-icl's ICL file)"),
+    onchip_selfrepair: bool = typer.Option(False, "--onchip-selfrepair", help="Also wrap self_repair_start/done/fail/busy -- must match the redundancy config the sources were generated with"),
+    onchip_repair_persistence: bool = typer.Option(False, "--onchip-repair-persistence", help="Also wrap repair_load/repair_load_done -- must match the redundancy config the sources were generated with"),
+    emit_icl: bool = typer.Option(False, "--emit-icl", help="Also emit an ICL description of the inserted network"),
+) -> None:
+    """Wrap a generated design's control/status ports with a JTAG/IJTAG test-access
+    network, via the external warptap package.
+
+    Wraps exactly the always-1-bit control/status ports a generated wrapper exposes --
+    test_mode, bist_start, bist_done, bist_fail, and (with the matching flags)
+    self_repair_start/done/fail/busy and repair_load/repair_load_done. Diagnosis ports
+    (fail_valid/fail_addr) are not wrapped because they are not ports at all on the
+    generated wrapper -- internal, single-cycle combinational wires; see
+    docs/ijtag-handoff.md's Stage-0 finding. Wide repair ports (fuse_*, row_repair_en,
+    col_repair_en, faulty_bit) are not wrapped either -- out of v1 scope, tracked
+    separately.
+
+    Requirements (Linux/WSL): `pip install warptap`, plus Yosys and Icarus Verilog on
+    PATH (warptap shells out to both; neither is bundled).
+
+    Examples:
+      autombist wrap-test-access --source out/sram_1rw/sram_1rw_mbist.v \\
+          --source out/sram_1rw/march_c/march_c_algo.sv \\
+          --source out/sram_1rw/march_c/march_c_fsm.sv \\
+          --source out/sram_1rw/march_c/march_c_top.sv \\
+          --source out/sram_1rw/sram_model.sv \\
+          --top sram_1rw_mbist --emit-icl
+    """
+    _wrap_test_access(
+        source, top, out,
+        onchip_selfrepair=onchip_selfrepair,
+        onchip_repair_persistence=onchip_repair_persistence,
+        emit_icl=emit_icl,
+    )
+
+
 @app.command()
 def test(
     addr_width: int = typer.Option(..., "--addr-width", "-aw", help="Memory address width in bits"),

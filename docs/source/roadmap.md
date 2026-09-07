@@ -24,6 +24,12 @@ progress, and what's further out.
 - A march-test synthesizer that constructs a test directly from the fault
   model rather than only grading a hand-written one — 27n at 16 elements,
   verified 38/38 against real Verilator at both memory init values
+- `wrap-test-access`: wraps a generated design's control/status ports with an
+  IEEE 1149.1/1687 (JTAG/IJTAG) test-access network and can emit its ICL
+  description, via the external [warptap](https://github.com/ranaumarnadeem/warptap)
+  package — verified with a real Icarus simulation of the inserted RTL,
+  reading `self_repair_busy` through the scan path after writing
+  `self_repair_start`, against the real three-macro `mem_subsystem_mbist`
 - A proven LibreLane hardening recipe for real OpenRAM sky130 macros,
   including self-repair-wrapped variants across multiple algorithms
   (march-c, march-x, mats-plus) — this is the top-level place-and-route
@@ -49,8 +55,11 @@ progress, and what's further out.
   is register-level: the load path exists, the storage element is out of scope)
 - A broader march-algorithm library (checkerboard, galloping, and similar
   patterns beyond the current built-ins)
-- A standard test-access wrapper (IEEE 1500/1687-style) for integrating
-  autoMBIST into a larger SoC test network
+- Test-access wrapping for the ports this doesn't cover yet: diagnosis readback
+  (`fail_valid`/`fail_addr`, which need an additive RTL change first — they
+  aren't ports today) and the wide repair ports (`fuse_*`, `row_repair_en`,
+  `col_repair_en`, `faulty_bit`) — see `wrap-test-access` in the Done section
+  above for what's already covered
 - A shared controller across multiple memories, rather than one controller
   instance per memory
 
