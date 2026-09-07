@@ -107,3 +107,8 @@ handoffs/
 
 # Slide decks, one-off PDFs and their build sources kept locally, not tracked
 presentation/
+
+# Full internal technical reference (architecture, RTL modeling, fault model,
+# verification methodology, test-access state) -- for internal reading and
+# meeting discussion only, not published documentation
+docs/internals-reference.*
