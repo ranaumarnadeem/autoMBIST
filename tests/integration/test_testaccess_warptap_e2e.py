@@ -173,6 +173,11 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
     onchip_row_repair_analyzer still being exactly what wrapper_template.j2 generated,
     untouched, (b) no warptap_sib_* instance existing for either, and (c) the chain having
     exactly the 10 wrapped ports, not 12.
+
+    A fourth: fail_valid/fail_addr are not merely unwrapped, they are not wrapper ports at
+    all under any config, checked against the top module's own port list directly (not
+    file-wide substring presence -- march_c_fsm/march_c_top are separate submodules in this
+    same flattened file and genuinely do have their own same-named ports).
     """
     config = {
         "memory_name": "sram_1rw", "wrapper_module_name": "sram_1rw_mbist",
@@ -206,6 +211,23 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
     assert len(graph.chain) == 10, (
         "expected exactly the 10 wrapped ports in the chain -- a length of 12 would mean "
         "the excluded wide repair ports got swept in too"
+    )
+
+    # fail_valid/fail_addr are never wrapper ports at all (confirmed directly against
+    # wrapper_template.j2 -- they exist, when onchip_selfrepair is on, only as a single
+    # unregistered wire from march_c_top's output straight into
+    # onchip_row_repair_analyzer's input, never reaching the wrapper boundary). Checked
+    # against the TOP module's own port list specifically, not file-wide substring
+    # presence: march_c_fsm/march_c_top are separate submodules in this same flattened
+    # file and genuinely do have their own ports by these names, so a naive whole-file
+    # check would fail for the wrong reason.
+    top_header = re.search(r"module sram_1rw_mbist\(([^)]*)\);", inserted_verilog)
+    assert top_header, "top module not found in the inserted Verilog"
+    top_ports = [p.strip() for p in top_header.group(1).split(",")]
+    assert "fail_valid" not in top_ports and "fail_addr" not in top_ports, (
+        "fail_valid/fail_addr appeared as real top-level ports -- if wrapper_template.j2 "
+        "now exposes diagnosis readback, testaccess.py needs a decision about wrapping "
+        "them, not silence"
     )
 
     write_header = re.search(r"module instrument_write\(([^)]*)\);", inserted_verilog)
