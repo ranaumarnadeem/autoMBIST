@@ -21,6 +21,7 @@ it; no bundled fallback exists in warptap either).
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -54,6 +55,15 @@ _RESET_LEAD_IN = [
     (0, 0, 0, 0, 1, 0, 0, 0, 0),
     (0, 0, 1, 1, 1, 0, 0, 0, 0),
 ]
+# Every control (WRITE) and status (READ) port classify_test_access_ports can produce,
+# matched against classify_test_access_ports()'s own role for each -- see
+# test_control_ports_are_jtag_exclusive_status_ports_are_not below.
+_CONTROL_PORTS = ("test_mode", "bist_start", "self_repair_start", "repair_load")
+_STATUS_PORTS = (
+    "bist_done", "bist_fail",
+    "self_repair_done", "self_repair_fail", "self_repair_busy",
+    "repair_load_done",
+)
 
 
 def _generate_wrappers(gen_dir: Path) -> dict[str, Path]:
@@ -125,6 +135,87 @@ def test_wrap_test_access_raises_clearly_without_warptap_stub(monkeypatch) -> No
     monkeypatch.setattr(ta, "_warptap_insert_test_access", None)
     with pytest.raises(TestAccessUnavailable):
         ta.wrap_test_access(["x.sv"], "top")
+
+
+def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -> None:
+    """Pins down a real, non-obvious finding from tracing the actual generated netlist by
+    hand: after wrapping, a CONTROL port's original top-level pin goes completely dead --
+    zero fan-out anywhere in the design, only the inserted JTAG network can still set it --
+    while a STATUS port's original pin keeps working exactly as before (the SIB only taps
+    it, non-destructively). See cli-reference.md's wrap-test-access section for the
+    user-facing statement of this; this test is what keeps it true.
+
+    Two structural facts, both about warptap's own primitive library rather than about any
+    Yosys-assigned internal wire name (which could shift with formatting/version and would
+    make this test fragile for no real gain):
+
+    1. `instrument_write` -- the primitive warptap uses for every control/WRITE port -- has,
+       in its own module definition, no port at all that could carry an external signal in.
+       `pin_out` is a pure shadow register: nothing but an Update-DR with that segment
+       selected ever changes it. This is *why* control ports go JTAG-only; if a future
+       warptap version adds a passthrough port to this primitive, that changes the finding
+       above, and this assertion is what should catch it.
+    2. Each port lands on the primitive its role predicts -- control ports get
+       `instrument_write`, status ports get `bc1_shift_only` (a real observe cell, reading
+       the live signal through its `pi` port) -- never the other way around. That pairing is
+       autombist.testaccess's own responsibility (classify_test_access_ports /
+       build_instrument_specs choosing WRITE vs READ), checked here against warptap's real
+       output rather than mocked.
+    """
+    config = {
+        "memory_name": "sram_1rw", "wrapper_module_name": "sram_1rw_mbist",
+        "addr_width": 6, "data_width": 8, "we_active_low": True,
+        "ports": {"clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "we": "we0", "csb": "csb0"},
+        "redundancy": {
+            "num_spare_rows": 1, "num_spare_cols": 0,
+            "onchip_selfrepair": True, "onchip_repair_persistence": True,
+        },
+    }
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    wrapper_path = generate_from_config(config_path, tmp_path / "gen", algo="march-c")
+    shared = wrapper_path.parent
+    sources = [
+        wrapper_path,
+        shared / "march_c" / "march_c_algo.sv",
+        shared / "march_c" / "march_c_fsm.sv",
+        shared / "march_c" / "march_c_top.sv",
+        shared / "onchip_row_repair_analyzer.sv",
+        shared / "onchip_selfrepair_ctrl.sv",
+        shared / "repair_remap_row.sv",
+        shared / "sram_model.sv",
+    ]
+    for src in sources:
+        assert src.is_file(), f"expected generated openMBIST source missing: {src}"
+
+    inserted_verilog, _graph, _root = wrap_test_access(
+        sources, "sram_1rw_mbist", onchip_selfrepair=True, onchip_repair_persistence=True,
+    )
+
+    write_header = re.search(r"module instrument_write\(([^)]*)\);", inserted_verilog)
+    assert write_header, "instrument_write primitive not found in the inserted Verilog"
+    assert [p.strip() for p in write_header.group(1).split(",")] == [
+        "si", "so", "pin_out", "select", "capture_dr", "shift_dr", "update_dr", "tck", "trst_n",
+    ], "instrument_write gained (or lost) a port -- re-check whether control ports are still JTAG-exclusive"
+
+    for port in _CONTROL_PORTS:
+        assert f"instrument_write warptap_sib_{port}_inst_0 (" in inserted_verilog, (
+            f"{port} (a control port) should be wrapped with instrument_write"
+        )
+        assert f"bc1_shift_only warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
+            f"{port} (a control port) was wrapped as a status/observe port instead"
+        )
+
+    for port in _STATUS_PORTS:
+        assert f"bc1_shift_only warptap_sib_{port}_inst_0 (" in inserted_verilog, (
+            f"{port} (a status port) should be wrapped with bc1_shift_only"
+        )
+        assert f"instrument_write warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
+            f"{port} (a status port) was wrapped as a control/write port instead"
+        )
+        assert f".pi({port})" in inserted_verilog, (
+            f"{port}'s observe cell should tap the real signal directly by name"
+        )
 
 
 def test_self_repair_start_write_and_busy_read_through_real_jtag(tmp_path: Path) -> None:
