@@ -21,6 +21,14 @@ progress, and what's further out.
 - Repair persistence across a reset, at the register level: a saved signature
   can be reloaded into the on-chip analyzer before any access
   (`onchip_repair_persistence: true`)
+- On-chip diagnosis logging (`onchip_diagnosis: true`): a full-range
+  fail-address accumulator (`onchip_diagnosis_log`) that captures every
+  distinct failing row from the most recent self-repair analyze pass,
+  independent of (and typically sized larger than) the physical spare budget
+  `onchip_row_repair_analyzer` is bounded to — verified end-to-end that it
+  sees defects the repair analyzer itself can't fit. Usable via direct
+  `diag_valid`/`diag_addr`/`diag_overflow` pins today; JTAG/IJTAG wrapping is
+  still pending (see Further out)
 - A march-test synthesizer that constructs a test directly from the fault
   model rather than only grading a hand-written one — 27n at 16 elements,
   verified 38/38 against real Verilator at both memory init values
@@ -55,11 +63,13 @@ progress, and what's further out.
   is register-level: the load path exists, the storage element is out of scope)
 - A broader march-algorithm library (checkerboard, galloping, and similar
   patterns beyond the current built-ins)
-- Test-access wrapping for the ports this doesn't cover yet: diagnosis readback
-  (`fail_valid`/`fail_addr`, which need an additive RTL change first — they
-  aren't ports today) and the wide repair ports (`fuse_*`, `row_repair_en`,
-  `col_repair_en`, `faulty_bit`) — see `wrap-test-access` in the Done section
-  above for what's already covered
+- Test-access wrapping for the ports this doesn't cover yet: diagnosis
+  readback (`diag_valid`/`diag_addr`/`diag_overflow`, now available via
+  direct pins — see on-chip diagnosis logging above; wrapping itself is
+  blocked on an upstream `icl_parser` bug in warptap's vendored ICL parsing,
+  tracked separately, not on any RTL gap) and the wide repair ports
+  (`fuse_*`, `row_repair_en`, `col_repair_en`, `faulty_bit`) — see
+  `wrap-test-access` in the Done section above for what's already covered
 - A shared controller across multiple memories, rather than one controller
   instance per memory
 
