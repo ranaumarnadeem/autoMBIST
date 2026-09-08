@@ -51,14 +51,16 @@ endif
 
 # External row-repair remap RTL (redundancy builds only). copy_mbist_rtl copies
 # rtl/*.sv into MODULE_OUTDIR alongside the algo RTL, including the Step-E
-# on-chip analyzer/sequencer -- harmless to compile-but-not-instantiate for a
-# tester-driven (non-onchip_selfrepair) redundancy build, same as every other
-# option in this file that coexists unused in VERILOG_SOURCES.
+# on-chip analyzer/sequencer and the diagnosis log -- harmless to
+# compile-but-not-instantiate for a tester-driven (non-onchip_selfrepair) or
+# non-onchip_diagnosis redundancy build, same as every other option in this
+# file that coexists unused in VERILOG_SOURCES.
 ifeq ($(USE_REPAIR_REMAP),1)
 REMAP_SOURCE := $(MODULE_OUTDIR)/repair_remap_row.sv \
                 $(MODULE_OUTDIR)/repair_remap_col.sv \
                 $(MODULE_OUTDIR)/onchip_row_repair_analyzer.sv \
-                $(MODULE_OUTDIR)/onchip_selfrepair_ctrl.sv
+                $(MODULE_OUTDIR)/onchip_selfrepair_ctrl.sv \
+                $(MODULE_OUTDIR)/onchip_diagnosis_log.sv
 else
 REMAP_SOURCE :=
 endif
@@ -100,6 +102,7 @@ export PULSE_WIDTH_NS
 export ADDR_WIDTH
 export DATA_WIDTH
 export READ_LATENCY
+export NUM_DIAGNOSIS_ENTRIES
 export MEMORY_NAME
 export MODULE_OUTDIR
 export ALGO
