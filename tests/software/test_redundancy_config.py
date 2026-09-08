@@ -73,6 +73,8 @@ def test_valid_redundancy_derives_geometry(tmp_path: Path) -> None:
         "words_per_row": 1,     # no column muxing (the only supported value)
         "onchip_selfrepair": False,
         "onchip_repair_persistence": False,
+        "onchip_diagnosis": False,
+        "num_diagnosis_entries": 0,
     }
 
 
