@@ -594,6 +594,28 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
             "which only exists when onchip_selfrepair is enabled"
         )
 
+    onchip_diagnosis = block.get("onchip_diagnosis", False)
+    if not isinstance(onchip_diagnosis, bool):
+        raise ConfigError("redundancy.onchip_diagnosis must be a boolean")
+    if onchip_diagnosis and not onchip_selfrepair:
+        raise ConfigError(
+            "redundancy.onchip_diagnosis requires onchip_selfrepair: true -- "
+            "the diagnosis log extends the on-chip analyzer's fail stream, "
+            "which only exists when onchip_selfrepair is enabled"
+        )
+
+    num_diagnosis_entries = block.get("num_diagnosis_entries", 0)
+    if onchip_diagnosis:
+        if (
+            isinstance(num_diagnosis_entries, bool)
+            or not isinstance(num_diagnosis_entries, int)
+            or num_diagnosis_entries < 1
+        ):
+            raise ConfigError(
+                "redundancy.num_diagnosis_entries must be a positive integer "
+                "when redundancy.onchip_diagnosis is true"
+            )
+
     num_spare_rows = block.get("num_spare_rows", 0)
     num_spare_cols = block.get("num_spare_cols", 0)
     for key, value in (
@@ -826,6 +848,8 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         "words_per_row": words_per_row,
         "onchip_selfrepair": onchip_selfrepair,
         "onchip_repair_persistence": onchip_repair_persistence,
+        "onchip_diagnosis": onchip_diagnosis,
+        "num_diagnosis_entries": num_diagnosis_entries,
     }
 
 
