@@ -370,7 +370,6 @@ module {{ wrapper_module_name }} #(
     logic                  unrepairable;
     logic [{{ redundancy.num_spare_rows }}-1:0]            row_repair_en;
     logic [{{ redundancy.num_spare_rows }}*ADDR_WIDTH-1:0] faulty_row_addr;
-    logic [{{ redundancy.mem_addr_width }}-1:0]            sram_addr_phys;
 
     assign effective_test_mode  = test_mode || ctrl_test_mode_override;
     assign effective_bist_start = (bist_start && test_mode && !self_repair_busy) || ctrl_bist_start;
@@ -391,6 +390,9 @@ module {{ wrapper_module_name }} #(
     logic [DATA_WIDTH-1:0] sram_dout{{ suffix }};
     {% endif %}
     logic [ADDR_WIDTH-1:0] sram_addr{{ suffix }};
+    {% if has_onchip_selfrepair %}
+    logic [{{ redundancy.mem_addr_width }}-1:0] sram_addr_phys{{ suffix }};
+    {% endif %}
     {% if pdata.type in ("w", "rw") %}
     logic [DATA_WIDTH-1:0] sram_din{{ suffix }};
     logic                  sram_we{{ suffix }};
@@ -496,12 +498,20 @@ module {{ wrapper_module_name }} #(
     {% endfor %}
 
 {% if has_onchip_selfrepair %}
-    // On-chip self-repair (march-1r1w): a SINGLE external repair remap steers
-    // BOTH ports, because both always carry the identical logical address --
-    // the FSM's shared addr_q in test mode, func_addr in functional mode (see
-    // march_1r1w_fsm.sv). Port 0 (suffix "0", the read port under
-    // _algo_port_suffixes) supplies the logical address to remap; the
-    // resulting physical address feeds BOTH ports' memory instance below.
+    // On-chip self-repair: one external repair remap PER PORT, each steering
+    // that port's own address independently. This is general on purpose, not
+    // special-cased per algo -- march-1r1w's two ports happen to always carry
+    // the identical logical address (one shared addr_q, no partner-address
+    // concept anywhere in march_1r1w_fsm.sv), so its second remap instance is
+    // a provably harmless duplicate, not a structural requirement. march-2rw's
+    // ports do NOT share an address in general (addr_q vs.
+    // addr_q ^ PARTNER_XOR under use_partner_addr1) -- collapsing both onto
+    // one remap fed by only one port's address would silently discard the
+    // other port's real address the moment self-repair is enabled, corrupting
+    // normal dual-port addressing, not just leaving repair redirection
+    // incomplete. repair_remap_row is purely combinational and deterministic,
+    // so every instance sees the SAME row_repair_en/faulty_row_addr from the
+    // one analyzer below and remaps consistently.
     onchip_row_repair_analyzer #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
@@ -562,15 +572,18 @@ module {{ wrapper_module_name }} #(
         .unrepairable(unrepairable)
     );
 
+    {% for pname, pdata in normalized_ports.items() %}
+    {% set suffix = algo_port_suffixes[pname] %}
     repair_remap_row #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
-    ) u_repair_remap (
-        .addr_in(sram_addr0)
-      , .addr_out(sram_addr_phys)
+    ) u_repair_remap{{ suffix }} (
+        .addr_in(sram_addr{{ suffix }})
+      , .addr_out(sram_addr_phys{{ suffix }})
       , .row_repair_en(row_repair_en)
       , .faulty_row_addr(faulty_row_addr)
     );
+    {% endfor %}
 
 {% endif %}
 {% if use_saboteur %}
@@ -623,7 +636,7 @@ module {{ wrapper_module_name }} #(
 {% endif %}
     {% for pname, pdata in normalized_ports.items() %}
         {% set suffix = algo_port_suffixes[pname] %}
-        {% set port_addr = "sram_addr_phys" if has_onchip_selfrepair else "sram_addr" ~ suffix %}
+        {% set port_addr = ("sram_addr_phys" ~ suffix) if has_onchip_selfrepair else ("sram_addr" ~ suffix) %}
         {% if pdata.type == "r" %}
         .{{ pdata.clk }}(mbist_sram_clk{{ suffix }}),
         .{{ pdata.csb }}(sram_csb{{ suffix }}),

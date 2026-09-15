@@ -167,9 +167,13 @@ def test_onchip_selfrepair_now_works_for_march_x_and_mats_plus(tmp_path: Path) -
 def test_onchip_selfrepair_now_works_for_march_1r1w(tmp_path: Path) -> None:
     """Self-repair now generalizes to the multi-port march-1r1w shape too
     (Workstream A2): the multi-port wrapper branch gained its own analyzer/
-    ctrl/remap scaffold, fed by port 0's (the read port's) fail stream, and a
-    SINGLE repair_remap_row steers both ports since they always carry the
-    identical logical address (see march_1r1w_fsm.sv)."""
+    ctrl/remap scaffold, fed by port 0's (the read port's) fail stream, and
+    ONE repair_remap_row PER PORT steers each port's own address
+    independently -- general on purpose (see wrapper_template.j2's comment),
+    not special-cased per algo. march-1r1w's two ports happen to always carry
+    the identical logical address (see march_1r1w_fsm.sv), so its second
+    remap instance is a provable harmless duplicate here, not a structural
+    requirement -- march-2rw needs the same general machinery for real."""
     config = {
         "memory_name": "sram_spares_tiny_1r1w",
         "wrapper_module_name": "sram_spares_tiny_1r1w_mbist",
@@ -191,12 +195,16 @@ def test_onchip_selfrepair_now_works_for_march_1r1w(tmp_path: Path) -> None:
     assert "onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl (" in text
     assert ".bist_fail_valid(algo_fail_valid)," in text
     assert ".bist_fail_addr(algo_fail_addr)," in text
-    # A single remap, fed by port 0's (the read port's) logical address.
+    # One remap per port, each fed by that port's own logical address.
     assert ".addr_in(sram_addr0)" in text
-    assert text.count("repair_remap_row #(") == 1
-    # BOTH ports' memory pins take the SAME remapped physical address.
-    assert ".addr0(sram_addr_phys)" in text
-    assert ".addr1(sram_addr_phys)" in text
+    assert ".addr_in(sram_addr1)" in text
+    assert text.count("repair_remap_row #(") == 2
+    # Each port's memory pin takes its OWN remapped physical address (both
+    # happen to be numerically identical for march-1r1w at runtime, since
+    # both ports share one addr_q -- but they are two independent wires/
+    # instances now, not one shared wire).
+    assert ".addr0(sram_addr_phys0)" in text
+    assert ".addr1(sram_addr_phys1)" in text
     assert ".NUM_SPARE_ROWS(2)" in text
     # No tester-driven repair_ports boundary pins.
     assert "input  logic [2-1:0] row_repair_en" not in text
