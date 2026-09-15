@@ -41,7 +41,23 @@ module march_2rw_fsm #(
 
     output logic                  busy,
     output logic                  done,
-    output logic                  fail
+    output logic                  fail,
+
+    // fail_valid/fail_addr: a live, single-cycle echo of the ST_CHECK compare
+    // below, for onchip_row_repair_analyzer's streaming registrar (matches
+    // march_1r1w_fsm's fail_valid/fail_addr shape exactly). Correct as a
+    // same-cycle OR of both ports rather than one per port because BOTH
+    // compares can only ever target the SAME address (addr_q) on a given
+    // cycle -- march_2rw_algo.sv's table has exactly one phase (E2) where
+    // do_read[0] and do_read[1] are both asserted, and E2 never sets
+    // use_partner_addr1, so both reads are against addr_q. Every phase that
+    // DOES use partner_addr (E1, E4) is write-only, never a compare. This
+    // invariant is hardened as a hard assertion in
+    // tests/hardware/test_march_2rw.py's _run_until_done, not just claimed
+    // here -- if a future algorithm-table change ever pairs a concurrent
+    // read with use_partner_addr1, that test fails immediately.
+    output logic                  fail_valid,
+    output logic [ADDR_WIDTH-1:0] fail_addr
 );
 
     localparam logic [2:0] LAST_PHASE = 3'd5;
@@ -116,6 +132,11 @@ module march_2rw_fsm #(
     assign busy = (state_q != ST_IDLE) && (state_q != ST_DONE);
     assign done = (state_q == ST_DONE);
     assign fail = fail_q;
+
+    assign fail_valid = (state_q == ST_CHECK) &&
+                         ((do_read[0] && (mem_rdata0 !== expected0_q)) ||
+                          (do_read[1] && (mem_rdata1 !== expected1_q)));
+    assign fail_addr  = addr_q;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
