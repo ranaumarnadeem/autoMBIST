@@ -25,14 +25,21 @@ progress, and what's further out.
 - Column repair on the tester-driven path — an external `repair_remap_col`
   bit-steer mux driving a memory's `spare_wen`, composing with the row remap
 - Column repair on the *autonomous on-chip* path (`onchip_col_repair: true`,
-  for `march-c`/`march-raw`/`march-x`/`mats-plus`): a per-bit `fail_bitmask`
-  stream from the FSM plus a new on-chip 2D heuristic analyzer
-  (`onchip_2d_repair_analyzer`). Not a hardware implementation of BIRA's exact
-  backtracking search — a disclosed, single-pass approximation that can report
-  a repairable chip unrepairable in some cases (never a false pass, since
-  verify-by-re-execution is independent of the analyzer's own bookkeeping),
-  proven against a hand-constructed counterexample checked directly against
-  `bira.py`, not just asserted. march-1r1w/march-2rw column repair is still
+  for `march-c`/`march-raw`/`march-x`/`mats-plus`, and the multi-port
+  `march-1r1w`): a per-bit `fail_bitmask` stream from the FSM plus a new
+  on-chip 2D heuristic analyzer (`onchip_2d_repair_analyzer`). Not a hardware
+  implementation of BIRA's exact backtracking search — a disclosed,
+  single-pass approximation that can report a repairable chip unrepairable in
+  some cases (never a false pass, since verify-by-re-execution is independent
+  of the analyzer's own bookkeeping), proven against a hand-constructed
+  counterexample checked directly against `bira.py`, not just asserted.
+  `march-1r1w`'s addition needed genuinely new template logic, not a
+  mechanical repeat of the single-port case: the multi-port wrapper branch
+  had never carried a `repair_remap_col` instance before (there is no
+  tester-driven multi-port path to have built it for), so it gained ONE
+  instance cross-wired across two distinct physical ports — the write port's
+  `din`/`spare_wen`, the read port's `dout` — rather than one instance per
+  port the way the row remap works. `march-2rw` column repair is still
   further out (see below)
 - Repair persistence across a reset, at the register level: a saved signature
   can be reloaded into the on-chip analyzer before any access
@@ -66,11 +73,11 @@ progress, and what's further out.
 
 ## Further out
 
-- On-chip column repair for the multi-port self-repair algos (`march-1r1w`,
-  `march-2rw`) — `march-1r1w`'s read port is structurally free to add the same
-  way as the four single-port algos already done; `march-2rw` needs a small
-  but separate `fail_bitmask` OR-combination across its two independent-compare
-  ports
+- On-chip column repair for `march-2rw` — needs a small but genuinely
+  separate `fail_bitmask` OR-combination across its two independent-compare
+  ports (unlike `march-1r1w`, already done — see above — its two ports are
+  NOT guaranteed to share an address, so the wrapper's single shared
+  `repair_remap_col` cross-wiring convention doesn't directly generalize)
 - Real fuse/NVM device physics behind repair persistence (today's persistence
   is register-level: the load path exists, the storage element is out of scope)
 - A broader march-algorithm library (checkerboard, galloping, and similar
