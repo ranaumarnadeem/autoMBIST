@@ -146,17 +146,20 @@ def _normalize_algo(algo: str) -> tuple[str, str]:
 # fail stream from day one, so they're free additions here too.
 _SELFREPAIR_ALGOS = frozenset({"march-c", "march-raw", "march-1r1w", "march-2rw", "march-x", "mats-plus"})
 
-# Algorithms wired for on-chip COLUMN repair specifically -- a strict subset of
-# _SELFREPAIR_ALGOS. march-2rw is row-only for now: its two ports are
-# independent compares that would need an OR-combined fail_bitmask (small but
-# genuinely separate design work, deferred). march-1r1w's read port compares
-# exactly like the four single-port algos (only port 0 ever asserts a
-# compare, see march_1r1w_fsm.sv), so its fail_bitmask wiring is the same
-# mechanical addition -- the real new work for march-1r1w was in
-# wrapper_template.j2's multi-port branch, which had never carried a
-# repair_remap_col instance before (no tester-driven multi-port path exists
-# to have built it for). See rtl/onchip_2d_repair_analyzer.sv.
-_COL_SELFREPAIR_ALGOS = frozenset({"march-c", "march-raw", "march-x", "mats-plus", "march-1r1w"})
+# Algorithms wired for on-chip COLUMN repair -- now every _SELFREPAIR_ALGOS
+# member. march-1r1w's read port compares exactly like the four single-port
+# algos (only port 0 ever asserts a compare, see march_1r1w_fsm.sv); its real
+# new work was in wrapper_template.j2's multi-port branch gaining its first
+# repair_remap_col instance at all (no tester-driven multi-port path exists
+# to have built one for). march-2rw's fail_bitmask is OR-combined across both
+# ports (march_2rw_fsm.sv), resting on the same same-address-when-concurrent
+# invariant that already justifies its word-level fail_valid; its wrapper
+# needs TWO independent repair_remap_col instances (one per port, each with
+# its own spare_wen), not one shared instance like march-1r1w -- march-2rw's
+# two ports are both fully read/write and can write DIFFERENT addresses the
+# same cycle (march_2rw_algo.sv's E1/E4), so there is no single reader/writer
+# to cross-wire one instance onto. See rtl/onchip_2d_repair_analyzer.sv.
+_COL_SELFREPAIR_ALGOS = frozenset(_SELFREPAIR_ALGOS)
 
 # Algorithms that require a specific multi-port shape. Every other algo
 # (march-c, march-raw) is still restricted to exactly 1 port.
@@ -697,6 +700,17 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
             "model does not express"
         )
 
+    # Hoisted above both consumers below (the num_spare_cols>0 shape gate
+    # further down, and the multi-port shape gate right after it) -- needs to
+    # be unconditionally defined (not nested inside the len(...) != 1 block,
+    # which single-port configs skip entirely) since the spare_wen check
+    # inside num_spare_cols>0 references is_2rw_shape regardless of port
+    # count. Side-effect-free, so hoisting is behavior-neutral for every
+    # existing check.
+    port_types = sorted(pdata["type"] for pdata in loaded["normalized_ports"].values())
+    is_1r1w_shape = len(loaded["normalized_ports"]) == 2 and port_types == ["r", "w"]
+    is_2rw_shape = len(loaded["normalized_ports"]) == 2 and port_types == ["rw", "rw"]
+
     if num_spare_cols > 0:
         if num_spare_cols > int(loaded["data_width"]):
             raise ConfigError(
@@ -722,9 +736,6 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         # precisely than "the port roles match one of these two shapes"
         # (generate_from_config's later _validate_port_topology call is what
         # actually confirms algo agrees).
-        port_types = sorted(pdata["type"] for pdata in loaded["normalized_ports"].values())
-        is_1r1w_shape = len(loaded["normalized_ports"]) == 2 and port_types == ["r", "w"]
-        is_2rw_shape = len(loaded["normalized_ports"]) == 2 and port_types == ["rw", "rw"]
         if not (onchip_selfrepair and (is_1r1w_shape or is_2rw_shape)):
             raise ConfigError(
                 "redundancy is only supported for single-port memories, or "
@@ -803,11 +814,33 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         # The memory must expose its spare-column write-enable pin, or the
         # wrapper has nothing to drive spare_wen onto and the spare lanes would
         # never be written -- a silently no-op repair.
+        if is_2rw_shape:
+            # Both rw ports independently commit their own writes
+            # (sram_model_2rw.sv: mem[addr0] <= din0 / mem[addr1] <= din1 are
+            # fully independent, same cycle, possibly different rows --
+            # march_2rw_algo.sv's E1/E4), so column repair needs one
+            # repair_remap_col instance PER PORT, each with its OWN
+            # spare_wen -- "at least one port has spare_wen" (below) is not
+            # enough here: a row written only through the port lacking
+            # spare_wen would never get its spare lane written, a silent
+            # under-repair with the exact same config shape as a correct one.
+            missing = sorted(
+                pname for pname, pdata in loaded["normalized_ports"].items() if "spare_wen" not in pdata
+            )
+            if missing:
+                raise ConfigError(
+                    "redundancy.num_spare_cols > 0 with the 2-read/write port "
+                    "shape (both ports type 'rw') requires ports.<name>.spare_wen "
+                    f"on EVERY rw port, not just one -- missing on {missing}. Each "
+                    "port independently commits its own writes, so a row written "
+                    "only through the port lacking spare_wen would never get its "
+                    "spare lane written"
+                )
         # Scan every port, not just the first: on the 1r1w shape the read port
         # sorts first and structurally cannot carry spare_wen (see
         # OPTIONAL_PORT_KEYS_BY_TYPE), so inspecting only one port would look
         # past the write port that does.
-        if not any("spare_wen" in pdata for pdata in loaded["normalized_ports"].values()):
+        elif not any("spare_wen" in pdata for pdata in loaded["normalized_ports"].values()):
             port_name = next(iter(loaded["normalized_ports"]))
             raise ConfigError(
                 f"redundancy.num_spare_cols > 0 requires ports.{port_name}.spare_wen "
