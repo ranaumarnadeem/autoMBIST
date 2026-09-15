@@ -169,6 +169,31 @@ list actually contains a DRF entry), not in `fault_ram_gen.py`'s Python
 code, since codegen time has no visibility into whether any given
 campaign's fault *list* will ever use DRF.
 
+## Checkerboard op (`wc`/`wcb`/`rc`/`rcb`)
+
+Four op tokens in a `.alg` file are checkerboard-flavored: `wc`/`wcb` write,
+`rc`/`rcb` read-and-expect, a value that is a function of the CURRENT
+ADDRESS (`addr & 1` -- logical/LSB parity, not physical row/column
+adjacency, which no consumer in this toolkit has geometry for) rather than
+a fixed literal like `r0`/`r1`/`w0`/`w1`. `wcb`/`rcb` use the complement,
+`~(addr & 1)`. See `checkerboard.alg` for the built-in that uses them.
+
+Encoded as NEGATIVE op codes (`OP_WC=-1, OP_WCB=-2, OP_RC=-3, OP_RCB=-4` in
+`alg_spec.py`) rather than extending past 3: codes >= `WAIT_BASE` (4) are
+entirely claimed by the wait-op encoding above (`WAIT_BASE + N`, N up to
+65535), leaving no free room above 3. Negative codes are backward compatible
+by construction -- nothing existing assumes `op >= 0` -- and need no special
+handling in the numeric serialization (`Element.numeric_line()`'s plain
+`str(x)` emits a negative decimal exactly like a positive one, and both
+engines' `$sscanf(..., "%d", ...)` parse a leading `-` natively).
+
+`wc`/`wcb` accept the same `.PORT` suffix as any other op (`wc.1`, etc.) --
+they are genuine memory ops, not a wait-like special case. `rc`/`rcb`
+compose with `+BACKGROUND` exactly like `r0`/`r1` do: the single computed
+parity bit still routes through `bg_value()`, the same per-campaign
+data-background XOR every other op uses, so no engine-side special-casing
+was needed beyond the dispatch arm itself.
+
 ## Half-Select Disturb (HSD)
 
 A new fixed fault type sensitized by physical **row co-membership** rather
