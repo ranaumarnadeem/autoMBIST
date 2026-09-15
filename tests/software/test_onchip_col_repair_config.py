@@ -4,12 +4,17 @@ it selects.
 `onchip_col_repair: true` (requiring `onchip_selfrepair: true` and
 `num_spare_cols > 0`) switches the on-chip analyzer from
 onchip_row_repair_analyzer (row-only) to onchip_2d_repair_analyzer (row +
-column), and adds a repair_remap_col instance sourced from the analyzer's own
-outputs instead of repair_ports. Covers both the single-port wrapper branch
-(march-c/march-raw/march-x/mats-plus) and the multi-port branch's march-1r1w
-case -- the latter needed genuinely new template logic (one repair_remap_col
-cross-wired across two distinct physical ports), not a mechanical repeat of
-the single-port pattern. These are additive/new; test_redundancy_config.py
+column), and adds one or more repair_remap_col instances sourced from the
+analyzer's own outputs instead of repair_ports. Covers the single-port
+wrapper branch (march-c/march-raw/march-x/mats-plus) and both multi-port
+branch shapes -- march-1r1w (ONE repair_remap_col instance, cross-wired
+across its clean read-only/write-only port split -- there is no
+tester-driven multi-port path to have built one for before) and march-2rw
+(TWO independent repair_remap_col instances, one per port, since both ports
+are fully read/write and can write different addresses the same cycle, so
+neither is exclusively "the" reader or writer). Neither multi-port case is a
+mechanical repeat of the single-port pattern. These are additive/new;
+test_redundancy_config.py
 and test_onchip_selfrepair_config.py are untouched except for one
 directly-necessary update there (the redundancy dict legitimately gained this
 field) -- see the diff there.
@@ -211,35 +216,120 @@ def test_onchip_col_repair_bad_type_rejected(tmp_path: Path, bad) -> None:
         generate_from_config(config_path, tmp_path / "out")
 
 
-def test_onchip_col_repair_rejects_march_2rw(tmp_path: Path) -> None:
-    """march-2rw is valid for ROW-only onchip_selfrepair but still rejected
-    for column repair: its two ports are independent compares needing an
-    OR-combined fail_bitmask that hasn't been built (see
-    rtl/onchip_2d_repair_analyzer.sv and generator.py's comment) --
-    march-1r1w, unlike march-2rw, IS now column-repair capable (see
-    test_onchip_col_repair_1r1w_render_has_new_symbols below)."""
-    ports = {
-        "porta": {
-            "type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "csb": "csb0", "we": "web0",
-            "spare_wen": "spare_wen0",
-        },
-        "portb": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "csb": "csb1", "we": "web1"},
-    }
+_PORTS_2RW_COL = {
+    "porta": {
+        "type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "csb": "csb0", "we": "web0",
+        "spare_wen": "spare_wen0",
+    },
+    "portb": {
+        "type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "csb": "csb1", "we": "web1",
+        "spare_wen": "spare_wen1",
+    },
+}
+
+
+def test_onchip_col_repair_2rw_render_has_new_symbols(tmp_path: Path) -> None:
+    """march-2rw's two ports are both fully read/write and can write
+    DIFFERENT addresses the same cycle (march_2rw_algo.sv's E1/E4), so
+    -- unlike march-1r1w's single shared cross-wired instance -- it needs
+    TWO independent repair_remap_col instances, one per port, each with its
+    own spare_wen. The per-port wiring pins asserted here are the load-
+    bearing check: march-2rw's own algorithm structure makes a swapped
+    din_in/dout_in source between the two instances behaviorally
+    undetectable by simulation (both ports write the same value whenever
+    both write concurrently, and read the same address whenever both read
+    concurrently) -- only these render-text assertions can catch that
+    class of bug."""
     config = {
-        "memory_name": "sram_multiport_dut",
-        "wrapper_module_name": "sram_multiport_dut_mbist",
-        "addr_width": 6,
-        "data_width": 8,
+        "memory_name": "sram_spares_col_tiny_2rw",
+        "wrapper_module_name": "sram_spares_col_tiny_2rw_mbist",
+        "addr_width": 2,
+        "data_width": 4,
+        "we_active_low": True,
+        "ports": _PORTS_2RW_COL,
+        "redundancy": {
+            "num_spare_rows": 1, "num_spare_cols": 1, "onchip_selfrepair": True, "onchip_col_repair": True,
+        },
+    }
+    config_path = tmp_path / "col_2rw.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    text = generate_from_config(config_path, tmp_path / "out", algo="march-2rw").read_text(encoding="utf-8")
+
+    assert "march_2rw_top #(" in text
+    assert "onchip_2d_repair_analyzer #(" in text
+    assert "onchip_row_repair_analyzer" not in text
+    assert ".bist_fail_bitmask(algo_fail_bitmask)," in text
+    # TWO independent instances (vs. 1r1w's ONE shared instance), row remap
+    # stays per-port and unchanged.
+    assert text.count("repair_remap_col #(") == 2
+    assert text.count("repair_remap_row #(") == 2
+    # The exact per-port wiring: each instance's din_in/dout_out come from
+    # THAT port's own logical wire, its din_out/dout_in from THAT port's own
+    # physical wire, and its spare_wen from THAT port's own spare_wen wire --
+    # a swapped source here is invisible to any behavioral test (see above).
+    assert ".din_in(sram_din0)," in text
+    assert ".din_in(sram_din1)," in text
+    assert ".din_out(sram_din_phys0)," in text
+    assert ".din_out(sram_din_phys1)," in text
+    assert ".dout_in(sram_dout_phys0)," in text
+    assert ".dout_in(sram_dout_phys1)," in text
+    assert ".dout_out(sram_dout0)," in text
+    assert ".dout_out(sram_dout1)," in text
+    assert ".spare_wen(sram_spare_wen0)," in text
+    assert ".spare_wen(sram_spare_wen1)," in text
+    # And the memory's own physical pins take the matching per-port wires.
+    assert ".spare_wen0(sram_spare_wen0)," in text
+    assert ".spare_wen1(sram_spare_wen1)," in text
+    assert ".NUM_SPARE_COLS(1)" in text
+
+
+def test_onchip_col_repair_2rw_requires_spare_wen_on_both_ports(tmp_path: Path) -> None:
+    """Each rw port independently commits its own writes (sram_model_2rw.sv),
+    so -- unlike the single-port/1r1w "at least one port" rule -- BOTH ports
+    must declare spare_wen here, or a row written only through the port
+    lacking it would never get its spare lane written."""
+    ports = {**_PORTS_2RW_COL, "portb": {k: v for k, v in _PORTS_2RW_COL["portb"].items() if k != "spare_wen"}}
+    config = {
+        "memory_name": "sram_spares_col_tiny_2rw",
+        "wrapper_module_name": "sram_spares_col_tiny_2rw_mbist",
+        "addr_width": 2,
+        "data_width": 4,
         "we_active_low": True,
         "ports": ports,
         "redundancy": {
             "num_spare_rows": 1, "num_spare_cols": 1, "onchip_selfrepair": True, "onchip_col_repair": True,
         },
     }
-    config_path = tmp_path / "bad_march-2rw.yml"
+    config_path = tmp_path / "bad_2rw_spare_wen.yml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    with pytest.raises(ConfigError, match="onchip_col_repair requires algo to be one of"):
+    with pytest.raises(ConfigError, match="spare_wen on EVERY rw port"):
         generate_from_config(config_path, tmp_path / "out", algo="march-2rw")
+
+
+def test_onchip_col_repair_2rw_without_flag_unaffected(tmp_path: Path) -> None:
+    """Row-only onchip_selfrepair for march-2rw (no onchip_col_repair key)
+    must render EXACTLY as before this workstream -- the regression-critical
+    case, matching test_row_only_onchip_unaffected_by_the_new_flag above."""
+    config = {
+        "memory_name": "sram_spares_tiny_2rw",
+        "wrapper_module_name": "sram_spares_tiny_2rw_mbist",
+        "addr_width": 6,
+        "data_width": 8,
+        "we_active_low": True,
+        "ports": {
+            "porta": {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "csb": "csb0", "we": "web0"},
+            "portb": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "csb": "csb1", "we": "web1"},
+        },
+        "redundancy": {"num_spare_rows": 1, "num_spare_cols": 0, "onchip_selfrepair": True},
+    }
+    config_path = tmp_path / "row_only_2rw.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    text = generate_from_config(config_path, tmp_path / "out", algo="march-2rw").read_text(encoding="utf-8")
+
+    assert "onchip_row_repair_analyzer #(" in text
+    assert "onchip_2d_repair_analyzer" not in text
+    assert "repair_remap_col" not in text
+    assert "bist_fail_bitmask" not in text
 
 
 _PORTS_1R1W_COL = {
