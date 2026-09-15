@@ -24,23 +24,33 @@ progress, and what's further out.
   for march-1r1w's own address-sharing structure)
 - Column repair on the tester-driven path — an external `repair_remap_col`
   bit-steer mux driving a memory's `spare_wen`, composing with the row remap
-- Column repair on the *autonomous on-chip* path (`onchip_col_repair: true`,
-  for `march-c`/`march-raw`/`march-x`/`mats-plus`, and the multi-port
-  `march-1r1w`): a per-bit `fail_bitmask` stream from the FSM plus a new
-  on-chip 2D heuristic analyzer (`onchip_2d_repair_analyzer`). Not a hardware
-  implementation of BIRA's exact backtracking search — a disclosed,
-  single-pass approximation that can report a repairable chip unrepairable in
-  some cases (never a false pass, since verify-by-re-execution is independent
-  of the analyzer's own bookkeeping), proven against a hand-constructed
-  counterexample checked directly against `bira.py`, not just asserted.
-  `march-1r1w`'s addition needed genuinely new template logic, not a
-  mechanical repeat of the single-port case: the multi-port wrapper branch
+- Column repair on the *autonomous on-chip* path (`onchip_col_repair: true`),
+  now for every self-repair-capable algo: `march-c`/`march-raw`/`march-x`/
+  `mats-plus`, and both multi-port algos, `march-1r1w` and `march-2rw`. A
+  per-bit `fail_bitmask` stream from the FSM plus a new on-chip 2D heuristic
+  analyzer (`onchip_2d_repair_analyzer`). Not a hardware implementation of
+  BIRA's exact backtracking search — a disclosed, single-pass approximation
+  that can report a repairable chip unrepairable in some cases (never a false
+  pass, since verify-by-re-execution is independent of the analyzer's own
+  bookkeeping), proven against a hand-constructed counterexample checked
+  directly against `bira.py`, not just asserted. Neither multi-port addition
+  was a mechanical repeat of the single-port case, and the two needed
+  genuinely different wrapper designs from each other: the multi-port branch
   had never carried a `repair_remap_col` instance before (there is no
-  tester-driven multi-port path to have built it for), so it gained ONE
-  instance cross-wired across two distinct physical ports — the write port's
-  `din`/`spare_wen`, the read port's `dout` — rather than one instance per
-  port the way the row remap works. `march-2rw` column repair is still
-  further out (see below)
+  tester-driven multi-port path to have built one for). `march-1r1w`'s clean
+  read-only/write-only port split lets ONE instance serve the whole design,
+  cross-wired across the write port's `din`/`spare_wen` and the read port's
+  `dout`. `march-2rw`'s two ports are both fully read/write and can write
+  DIFFERENT addresses the same cycle, so neither is exclusively "the" reader
+  or writer — it needs TWO independent instances, one per port, each with its
+  own `spare_wen` (`repair_remap_col` has no address input, so the two
+  compose safely with no shared state to race on). A related, non-obvious
+  property worth recording: `march-2rw`'s own algorithm structure (both ports
+  always write the identical value when writing concurrently; both always
+  read the identical address, from the identical physical storage cell, when
+  reading concurrently) means a wrapper bug that swapped which port's wiring
+  fed which instance would be invisible to *any* simulation — closed instead
+  by render-text assertions checking the exact generated wire names
 - Repair persistence across a reset, at the register level: a saved signature
   can be reloaded into the on-chip analyzer before any access
   (`onchip_repair_persistence: true`)
@@ -73,11 +83,6 @@ progress, and what's further out.
 
 ## Further out
 
-- On-chip column repair for `march-2rw` — needs a small but genuinely
-  separate `fail_bitmask` OR-combination across its two independent-compare
-  ports (unlike `march-1r1w`, already done — see above — its two ports are
-  NOT guaranteed to share an address, so the wrapper's single shared
-  `repair_remap_col` cross-wiring convention doesn't directly generalize)
 - Real fuse/NVM device physics behind repair persistence (today's persistence
   is register-level: the load path exists, the storage element is out of scope)
 - A broader march-algorithm library (checkerboard, galloping, and similar
