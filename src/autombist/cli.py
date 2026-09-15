@@ -534,7 +534,7 @@ def grade_controller(
 
 def _wrap_test_access(
     sources: list[Path], top: str, out: Path, *,
-    onchip_selfrepair: bool, onchip_repair_persistence: bool, emit_icl: bool,
+    onchip_selfrepair: bool, onchip_repair_persistence: bool, onchip_diagnosis: bool, emit_icl: bool,
 ) -> None:
     from autombist.testaccess import TestAccessUnavailable, classify_test_access_ports, wrap_test_access
 
@@ -543,6 +543,7 @@ def _wrap_test_access(
             sources, top,
             onchip_selfrepair=onchip_selfrepair,
             onchip_repair_persistence=onchip_repair_persistence,
+            onchip_diagnosis=onchip_diagnosis,
         )
     except TestAccessUnavailable as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
@@ -557,6 +558,7 @@ def _wrap_test_access(
 
     ports = classify_test_access_ports(
         onchip_selfrepair=onchip_selfrepair, onchip_repair_persistence=onchip_repair_persistence,
+        onchip_diagnosis=onchip_diagnosis,
     )
     typer.echo(f"Wrapped {len(ports)} control/status port(s) with a JTAG/IJTAG test-access network:")
     for i, p in enumerate(ports):
@@ -578,6 +580,7 @@ def wrap_test_access_cmd(
     out: Path = typer.Option("out/test-access", "--out", help="Output directory for the inserted Verilog (and --emit-icl's ICL file)"),
     onchip_selfrepair: bool = typer.Option(False, "--onchip-selfrepair", help="Also wrap self_repair_start/done/fail/busy -- must match the redundancy config the sources were generated with"),
     onchip_repair_persistence: bool = typer.Option(False, "--onchip-repair-persistence", help="Also wrap repair_load/repair_load_done -- must match the redundancy config the sources were generated with"),
+    onchip_diagnosis: bool = typer.Option(False, "--onchip-diagnosis", help="Also wrap diag_overflow -- must match the redundancy config the sources were generated with"),
     emit_icl: bool = typer.Option(False, "--emit-icl", help="Also emit an ICL description of the inserted network"),
 ) -> None:
     """Wrap a generated design's control/status ports with a JTAG/IJTAG test-access
@@ -585,12 +588,14 @@ def wrap_test_access_cmd(
 
     Wraps exactly the always-1-bit control/status ports a generated wrapper exposes --
     test_mode, bist_start, bist_done, bist_fail, and (with the matching flags)
-    self_repair_start/done/fail/busy and repair_load/repair_load_done. Diagnosis ports
-    (fail_valid/fail_addr) are not wrapped because they are not ports at all on the
-    generated wrapper -- internal, single-cycle combinational wires; see
-    docs/ijtag-handoff.md's Stage-0 finding. Wide repair ports (fuse_*, row_repair_en,
-    col_repair_en, faulty_bit) are not wrapped either -- out of v1 scope, tracked
-    separately.
+    self_repair_start/done/fail/busy, repair_load/repair_load_done, and diag_overflow.
+    fail_valid/fail_addr and unrepairable are not wrapped because they are not ports at
+    all on the generated wrapper -- internal wires, never promoted to the boundary; see
+    docs/ijtag-handoff.md's Stage-0 finding. diag_valid/diag_addr (the rest of diagnosis
+    readback) and the wide repair ports (fuse_*, row_repair_en, col_repair_en,
+    faulty_bit) ARE real boundary ports but not wrapped yet -- multi-bit, and the
+    vendored icl_parser this relies on for ICL validation has a real, tracked bug on any
+    width>1 instrument; see src/autombist/testaccess.py's own module docstring.
 
     Requirements (Linux/WSL): `pip install warptap`, plus Yosys and Icarus Verilog on
     PATH (warptap shells out to both; neither is bundled).
@@ -607,6 +612,7 @@ def wrap_test_access_cmd(
         source, top, out,
         onchip_selfrepair=onchip_selfrepair,
         onchip_repair_persistence=onchip_repair_persistence,
+        onchip_diagnosis=onchip_diagnosis,
         emit_icl=emit_icl,
     )
 

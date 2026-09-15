@@ -10,39 +10,50 @@ time of this module (which every other autombist module transitively imports via
 Scope, decided deliberately narrow rather than exhaustive:
 
 Only the ALWAYS-1-bit control/status ports are wrapped -- test_mode, bist_start,
-bist_done, bist_fail, and (when configured) self_repair_start/done/fail/busy and
-repair_load/repair_load_done. This is not an arbitrary subset: it is exactly the port
-set warptap's own test suite already proves end-to-end against a real generated
-mem_subsystem_mbist (real Yosys ingest, real SIB insertion, real Icarus simulation of
-the inserted RTL, real ICL round-trip through the vendored icl_parser). The ICL
-round-trip claim is independently re-proven against THIS project's own generated output
-too, not only warptap's fixture -- see
-tests/integration/test_testaccess_warptap_e2e.py's
+bist_done, bist_fail, (when configured) self_repair_start/done/fail/busy,
+repair_load/repair_load_done, and diag_overflow. This is not an arbitrary subset: it is
+exactly the port set warptap's own test suite already proves end-to-end against a real
+generated mem_subsystem_mbist (real Yosys ingest, real SIB insertion, real Icarus
+simulation of the inserted RTL, real ICL round-trip through the vendored icl_parser),
+plus diag_overflow -- confirmed the identical shape (a single status bit, no address
+payload) directly against wrapper_template.j2, not assumed. The ICL round-trip claim is
+independently re-proven against THIS project's own generated output too, not only
+warptap's fixture -- see tests/integration/test_testaccess_warptap_e2e.py's
 test_icl_round_trips_through_the_vendored_parser (chain order, instrument names,
 widths, and READ/WRITE direction all survive; signal_bits/capture_value do not, and
-icl_import.py documents that as a permanent ICL-format limitation, not a bug). Deliberately
-EXCLUDED: fuse_row_repair_en/fuse_faulty_row_addr (persistence load-in) and
-row_repair_en/faulty_row_addr/col_repair_en/faulty_bit (tester-driven repair). The
-*_row_addr ports are `[num_spare_rows*ADDR_WIDTH-1:0]` in wrapper_template.j2 -- multi-bit
-for any realistic address width, confirmed directly against the template, not assumed.
-The *_repair_en ports are `[num_spare_rows-1:0]` -- actually 1 bit wide in a
-single-spare-row config, which is every config this module has been tested against so
-far -- but excluded unconditionally regardless: making an enable port's wrappability
-depend on how many spares a given design happens to have would be a stranger, more
-surprising rule than excluding the whole repair-port group together. What actually needs
-the width>1 ICL path is any config with more than one spare row/column, and that path is
-exactly what warptap's own icl_import round-trip test found broken (a single width=3
-READ-only instrument alone reproduces it) -- every port wrapped here is confirmed width=1
-regardless of redundancy config, so that failure mode cannot be hit by this module's
-output. Wrapping the wider repair ports is a real, separate, larger piece of work (each
-needs one SignalBinding per bit, and the width>1 ICL path needs its own verification),
-not a v1 decision made here.
+icl_import.py documents that as a permanent ICL-format limitation, not a bug).
 
-fail_valid/fail_addr are not listed above because they are not wrappable at all: they
-are internal, single-functional-cycle combinational wires, never ports on the generated
-wrapper (confirmed directly against wrapper_template.j2, not assumed) -- see
-docs/manifest-plan.md and docs/ijtag-handoff.md's Stage-0 finding for the full account
-of why diagnosis readback needs an additive RTL change this module does not make.
+Deliberately EXCLUDED, all for the same reason -- confirmed multi-bit against
+wrapper_template.j2, not assumed: diag_valid (`[num_diagnosis_entries-1:0]`) and
+diag_addr (packs num_diagnosis_entries addresses) -- the rest of diagnosis readback,
+diag_overflow's own sibling ports; fuse_row_repair_en/fuse_faulty_row_addr (persistence
+load-in); and row_repair_en/faulty_row_addr/col_repair_en/faulty_bit (tester-driven
+repair) -- *_row_addr is `[num_spare_rows*ADDR_WIDTH-1:0]`, multi-bit for any realistic
+address width; *_repair_en is `[num_spare_rows-1:0]`, which happens to be 1 bit wide in
+every single-spare-row config this module has been tested against, but is excluded
+unconditionally regardless -- making an enable port's wrappability depend on how many
+spares a given design happens to have would be a stranger, more surprising rule than
+excluding the whole repair-port group together. What actually needs the width>1 ICL
+path is any config with more than one spare row/column/diagnosis entry, and that path is
+exactly what warptap's own icl_import round-trip test found broken in the vendored
+icl_parser (a single width=3 READ-only instrument alone reproduces it) -- every port
+wrapped here is confirmed width=1 regardless of redundancy config, so that failure mode
+cannot be hit by this module's output. Wrapping the wider ports is a real, separate,
+larger piece of work (each needs one SignalBinding per bit, and the width>1 ICL path
+needs its own verification once the vendored parser's gap is resolved), not a v1
+decision made here.
+
+unrepairable is not listed above because it is not wrappable at all, for a different
+reason than the width ports: confirmed directly against wrapper_template.j2 that it is
+purely an internal wire between the analyzer and onchip_selfrepair_ctrl, never a
+boundary port on the generated wrapper -- self_repair_fail (already wrapped above) is
+its externally-visible reflection. fail_valid/fail_addr are the same story: internal,
+single-functional-cycle combinational wires, never ports on the generated wrapper
+(confirmed directly against wrapper_template.j2, not assumed) -- unlike diag_valid/
+diag_addr/diag_overflow (which ARE registered, sticky boundary ports today, the additive
+RTL change docs/ijtag-handoff.md's Stage-0 finding called for having since landed in
+onchip_diagnosis_log.sv), fail_valid/fail_addr themselves were never promoted to ports
+and have no plan to be -- diagnosis logging is what superseded that need.
 """
 
 from __future__ import annotations
@@ -86,6 +97,9 @@ class TestAccessPort:
     role: str  # "control" (WRITE) or "status" (READ) -- see classify_test_access_ports
 
 
+TestAccessPort.__test__ = False  # not a pytest test class -- the name just starts with "Test"
+
+
 def _require_warptap() -> None:
     if _warptap_insert_test_access is None:
         raise TestAccessUnavailable(
@@ -96,13 +110,18 @@ def _require_warptap() -> None:
 
 
 def classify_test_access_ports(
-    *, onchip_selfrepair: bool = False, onchip_repair_persistence: bool = False
+    *,
+    onchip_selfrepair: bool = False,
+    onchip_repair_persistence: bool = False,
+    onchip_diagnosis: bool = False,
 ) -> list[TestAccessPort]:
     """The always-1-bit control/status ports a generated wrapper exposes, for this
     redundancy configuration -- mirrors wrapper_template.j2's own has_onchip_selfrepair /
-    has_onchip_repair_persistence gating exactly (generator.py enforces persistence
-    implies self-repair; this function does not re-validate that, it assumes a config
-    that already passed generate_from_config's own validation).
+    has_onchip_repair_persistence / has_onchip_diagnosis gating exactly (generator.py
+    enforces persistence and diagnosis both imply self-repair; this function does not
+    re-validate that, it assumes a config that already passed generate_from_config's own
+    validation). Only diag_overflow is included for onchip_diagnosis -- diag_valid/
+    diag_addr are excluded, see this module's own docstring for why.
 
     Order matches the wrapper's own port declaration order in wrapper_template.j2, so
     the resulting warptap chain order is stable and traceable back to the generated
@@ -125,6 +144,10 @@ def classify_test_access_ports(
         ports += [
             TestAccessPort("repair_load", "control"),
             TestAccessPort("repair_load_done", "status"),
+        ]
+    if onchip_diagnosis:
+        ports += [
+            TestAccessPort("diag_overflow", "status"),
         ]
     return ports
 
@@ -152,6 +175,7 @@ def wrap_test_access(
     *,
     onchip_selfrepair: bool = False,
     onchip_repair_persistence: bool = False,
+    onchip_diagnosis: bool = False,
     yosys_command: str | None = None,
 ) -> tuple[str, Any, Any]:
     """Ingest ``sources``, wrap ``top_module``'s real control/status ports
@@ -168,6 +192,7 @@ def wrap_test_access(
     ports = classify_test_access_ports(
         onchip_selfrepair=onchip_selfrepair,
         onchip_repair_persistence=onchip_repair_persistence,
+        onchip_diagnosis=onchip_diagnosis,
     )
     specs = build_instrument_specs(ports)
     return _warptap_insert_test_access(
