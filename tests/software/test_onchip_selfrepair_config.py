@@ -210,28 +210,72 @@ def test_onchip_selfrepair_now_works_for_march_1r1w(tmp_path: Path) -> None:
     assert "input  logic [2-1:0] row_repair_en" not in text
 
 
-def test_onchip_selfrepair_rejects_unsupported_algo(tmp_path: Path) -> None:
-    """march-2rw is still rejected: redundancy remains single-port only (its
-    own, separate restriction), so a 2-port march-2rw config combined with
-    onchip_selfrepair still fails -- proving the A1 allowlist relaxation for
-    march-raw didn't quietly open the door to multi-port algos the wrapper
-    template has no self-repair scaffold for yet."""
+_MARCH_2RW_PORTS = {
+    "porta": {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "csb": "csb0", "we": "web0"},
+    "portb": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "csb": "csb1", "we": "web1"},
+}
+
+
+def test_onchip_selfrepair_now_works_for_march_2rw(tmp_path: Path) -> None:
+    """march-2rw is no longer rejected: its concurrent same-cycle dual compare
+    doesn't need arbiter RTL (march_2rw_algo.sv's table only ever compares
+    both ports against the SAME address, see march_2rw_fsm.sv's fail_valid
+    comment), and the wrapper template's remap is now per-port in general
+    (not a march-1r1w special case) -- so march-2rw's two genuinely
+    independent addresses each get their own repair_remap_row instance."""
     config = {
         "memory_name": "sram_2rw_dut",
         "wrapper_module_name": "sram_2rw_dut_mbist",
         "addr_width": 6,
         "data_width": 8,
         "we_active_low": True,
-        "ports": {
-            "porta": {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "csb": "csb0", "we": "web0"},
-            "portb": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "csb": "csb1", "we": "web1"},
-        },
+        "ports": _MARCH_2RW_PORTS,
         "redundancy": {"num_spare_rows": 2, "num_spare_cols": 0, "onchip_selfrepair": True},
     }
-    config_path = tmp_path / "bad_multiport.yml"
+    config_path = tmp_path / "onchip_2rw.yml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    with pytest.raises(ConfigError, match="single-port"):
-        generate_from_config(config_path, tmp_path / "out", algo="march-2rw")
+    text = generate_from_config(config_path, tmp_path / "onchip_2rw", algo="march-2rw").read_text(encoding="utf-8")
+
+    assert "march_2rw_top #(" in text
+    assert "onchip_row_repair_analyzer #(" in text
+    assert "onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl (" in text
+    assert ".bist_fail_valid(algo_fail_valid)," in text
+    assert ".bist_fail_addr(algo_fail_addr)," in text
+    # One remap per port, each fed by that port's own (genuinely independent)
+    # logical address -- unlike march-1r1w, these are NOT numerically
+    # identical at runtime in general.
+    assert ".addr_in(sram_addr0)" in text
+    assert ".addr_in(sram_addr1)" in text
+    assert text.count("repair_remap_row #(") == 2
+    assert ".addr0(sram_addr_phys0)" in text
+    assert ".addr1(sram_addr_phys1)" in text
+    assert ".NUM_SPARE_ROWS(2)" in text
+    # No tester-driven repair_ports boundary pins.
+    assert "input  logic [2-1:0] row_repair_en" not in text
+
+
+def test_onchip_selfrepair_still_rejects_shape_algo_mismatch(tmp_path: Path) -> None:
+    """Relaxing the port-SHAPE gate to accept march-2rw's rw+rw topology
+    (alongside march-1r1w's r+w) must not quietly accept a shape/algo
+    mismatch -- a rw+rw config combined with algo=march-1r1w still needs
+    rejecting, just via a DIFFERENT validator now: _validate_redundancy's
+    shape gate no longer catches this case (rw+rw is now a recognized shape
+    in general), so _validate_port_topology's own per-algo role-count check
+    is what must still catch it. Confirmed call order: _validate_redundancy
+    runs inside load_config, strictly before _validate_port_topology."""
+    config = {
+        "memory_name": "sram_2rw_dut",
+        "wrapper_module_name": "sram_2rw_dut_mbist",
+        "addr_width": 6,
+        "data_width": 8,
+        "we_active_low": True,
+        "ports": _MARCH_2RW_PORTS,
+        "redundancy": {"num_spare_rows": 2, "num_spare_cols": 0, "onchip_selfrepair": True},
+    }
+    config_path = tmp_path / "mismatched.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ConfigError, match="requires exactly one port of each type"):
+        generate_from_config(config_path, tmp_path / "out", algo="march-1r1w")
 
 
 @pytest.mark.parametrize("bad", [1, "true", [], {}])
