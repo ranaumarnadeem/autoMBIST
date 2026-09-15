@@ -3,6 +3,7 @@
 {% set has_redundancy = redundancy is defined and redundancy.num_spare_rows > 0 %}
 {% set has_col_repair = has_redundancy and redundancy.num_spare_cols > 0 %}
 {% set has_onchip_selfrepair = has_redundancy and redundancy.onchip_selfrepair %}
+{% set has_onchip_col_repair = has_onchip_selfrepair and redundancy.onchip_col_repair %}
 {% set has_onchip_repair_persistence = has_onchip_selfrepair and redundancy.onchip_repair_persistence %}
 {% set has_onchip_diagnosis = has_onchip_selfrepair and redundancy.onchip_diagnosis %}
 {% set mode_signal = "effective_test_mode" if has_onchip_selfrepair else "test_mode" %}
@@ -88,6 +89,11 @@ module {{ wrapper_module_name }} #(
     logic                  unrepairable;
     logic [{{ redundancy.num_spare_rows }}-1:0]            row_repair_en;
     logic [{{ redundancy.num_spare_rows }}*ADDR_WIDTH-1:0] faulty_row_addr;
+{% if has_onchip_col_repair %}
+    logic [DATA_WIDTH-1:0]                                  algo_fail_bitmask;
+    logic [{{ redundancy.num_spare_cols }}-1:0]              col_repair_en;
+    logic [{{ redundancy.num_spare_cols }}*{{ redundancy.bit_index_width }}-1:0] faulty_bit;
+{% endif %}
 
     assign effective_test_mode  = test_mode || ctrl_test_mode_override;
     assign effective_bist_start = (bist_start && test_mode && !self_repair_busy) || ctrl_bist_start;
@@ -107,6 +113,9 @@ module {{ wrapper_module_name }} #(
 {% if has_onchip_selfrepair %}
         .bist_fail_valid(algo_fail_valid),
         .bist_fail_addr(algo_fail_addr),
+{% endif %}
+{% if has_onchip_col_repair %}
+        .bist_fail_bitmask(algo_fail_bitmask),
 {% endif %}
         .sram_clk0(mbist_sram_clk),
         .sram_csb0(mbist_sram_csb),
@@ -164,7 +173,47 @@ module {{ wrapper_module_name }} #(
     // mbist_busy -- Icarus needs the declaration to precede u_algo_top's
     // instantiation and the test_mode mux, both of which come before this.)
     logic [{{ redundancy.mem_addr_width }}-1:0] sram_addr_phys;
+{% if has_onchip_col_repair %}
+    // Column redundancy (on-chip 2D analyzer): same DATA-path remap shape as the
+    // tester-driven column path below, but sourced from col_repair_en/faulty_bit
+    // computed on-chip by u_onchip_analyzer instead of repair_ports boundary pins.
+    logic [{{ redundancy.mem_data_width }}-1:0] sram_din_phys;
+    logic [{{ redundancy.mem_data_width }}-1:0] sram_dout_phys;
+    logic [{{ redundancy.num_spare_cols }}-1:0] sram_spare_wen;
+{% endif %}
 
+{% if has_onchip_col_repair %}
+    onchip_2d_repair_analyzer #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .DATA_WIDTH(DATA_WIDTH),
+        .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }}),
+        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+    ) u_onchip_analyzer (
+        .clk(clk),
+        .rst_n(rst_n),
+        .enable(registrar_enable),
+        .fail_valid(algo_fail_valid),
+        .fail_addr(algo_fail_addr),
+        .fail_bitmask(algo_fail_bitmask),
+        .latch_result(latch_result),
+{% if has_onchip_repair_persistence %}
+        .repair_load(repair_load),
+        .fuse_row_repair_en(fuse_row_repair_en),
+        .fuse_faulty_row_addr(fuse_faulty_row_addr),
+        .repair_load_done(repair_load_done),
+{% else %}
+        .repair_load(1'b0),
+        .fuse_row_repair_en('0),
+        .fuse_faulty_row_addr('0),
+        .repair_load_done(),
+{% endif %}
+        .row_repair_en(row_repair_en),
+        .faulty_row_addr(faulty_row_addr),
+        .col_repair_en(col_repair_en),
+        .faulty_bit(faulty_bit),
+        .unrepairable(unrepairable)
+    );
+{% else %}
     onchip_row_repair_analyzer #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
@@ -190,6 +239,7 @@ module {{ wrapper_module_name }} #(
         .faulty_row_addr(faulty_row_addr),
         .unrepairable(unrepairable)
     );
+{% endif %}
 
 {% if has_onchip_diagnosis %}
     onchip_diagnosis_log #(
@@ -234,6 +284,21 @@ module {{ wrapper_module_name }} #(
       , .row_repair_en(row_repair_en)
       , .faulty_row_addr(faulty_row_addr)
     );
+{% if has_onchip_col_repair %}
+
+    repair_remap_col #(
+        .DATA_WIDTH(DATA_WIDTH),
+        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+    ) u_repair_remap_col (
+        .din_in(sram_din),
+        .din_out(sram_din_phys),
+        .dout_in(sram_dout_phys),
+        .dout_out(sram_dout),
+        .spare_wen(sram_spare_wen),
+        .col_repair_en(col_repair_en),
+        .faulty_bit(faulty_bit)
+    );
+{% endif %}
 {% else %}
     // Row redundancy: an EXTERNAL repair remap sits between the address mux and a
     // stock spare-augmented memory. The repair_ports pins drive the remap (not the
