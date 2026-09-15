@@ -93,6 +93,21 @@ def test_rejects_an_empty_spec() -> None:
         render_algo_table(spec)
 
 
+def test_rejects_checkerboard_ops_outright() -> None:
+    """A checkerboard op's value depends on the address, but the classic-path
+    table is a pure (phase, op_step) -> value lookup with no addr input at
+    all -- a different kind of rejection from both the width limits and the
+    wait-op rejection (distinctly worded so the two are never confused)."""
+    with pytest.raises(AlgoRtlError, match="address-dependent"):
+        render_algo_table(parse_alg("up w0\neither rc\n", "checkery"))
+
+
+def test_checkerboard_builtin_itself_is_rejected() -> None:
+    """The real built-in, not just a hand-built minimal repro."""
+    with pytest.raises(AlgoRtlError, match="address-dependent"):
+        render_algo_table(resolve_algo("checkerboard"))
+
+
 @pytest.mark.parametrize("algo", ["march_ss", "march_b"])
 def test_research_only_algorithms_are_rejected_with_the_op_step_reason(algo: str) -> None:
     """March SS (5 ops/element) and March B (6) are exactly why neither can

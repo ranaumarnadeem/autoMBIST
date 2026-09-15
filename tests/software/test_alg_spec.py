@@ -5,11 +5,16 @@ from pathlib import Path
 import pytest
 
 from autombist.alg_spec import (
+    OP_RC,
+    OP_RCB,
+    OP_WC,
+    OP_WCB,
     WAIT_BASE,
     AlgSpecError,
     _find_pkg_subdir,
     _expand_element,
     builtin_algos,
+    expand_expected_trace,
     load_alg_file,
     parse_alg,
     resolve_algo,
@@ -424,3 +429,103 @@ def test_march_b_element_shape() -> None:
 def test_march_b_numeric_serialization_matches_pre_resolution_golden() -> None:
     spec = resolve_algo("march_b")
     _assert_numeric_matches_pre_resolution_golden(_MARCH_B_NUMERIC, spec.to_numeric(), spec.elements)
+
+
+# --------------------------------------------------------------------------- #
+# Checkerboard ops (wc/wcb/rc/rcb) -- address-LSB-parity value, negative codes
+# --------------------------------------------------------------------------- #
+def test_checkerboard_tokens_parse_to_negative_op_codes() -> None:
+    spec = parse_alg("either wc wcb rc rcb\n", "t")
+    assert spec.elements[0].ops == [OP_WC, OP_WCB, OP_RC, OP_RCB]
+    assert spec.elements[0].ports == [0, 0, 0, 0]
+
+
+def test_checkerboard_token_human_roundtrip() -> None:
+    spec = parse_alg("up rc wcb\n", "t")
+    assert spec.elements[0].human() == "up rc wcb"
+
+
+def test_checkerboard_token_case_insensitive() -> None:
+    spec = parse_alg("either WC\n", "t")
+    assert spec.elements[0].ops == [OP_WC]
+
+
+def test_checkerboard_token_accepts_port_suffix() -> None:
+    """wc/wcb are genuine ops like w0/w1 -- the existing `.PORT` suffix
+    mechanism applies to them unchanged, unlike wait tokens which reject it."""
+    spec = parse_alg("either wc.1 rc.1\n", "t")
+    assert spec.elements[0].ops == [OP_WC, OP_RC]
+    assert spec.elements[0].ports == [1, 1]
+
+
+def test_numeric_line_for_checkerboard_ops() -> None:
+    spec = parse_alg("up rc wcb\n", "t")
+    assert spec.elements[0].numeric_line() == "0 2 -3 -2 0 0 0 0 0 0"
+
+
+def test_checkerboard_op_included_in_length_n() -> None:
+    """The inverse of test_wait_op_excluded_from_length_n: checkerboard ops
+    are genuine memory accesses (op < WAIT_BASE), so -- unlike waits -- they
+    must be counted, not skipped."""
+    spec = parse_alg("either wc\neither wcb\neither rc\n", "t")
+    assert spec.length_n == 3
+
+
+def test_expand_element_does_not_skip_checkerboard_ops() -> None:
+    """The inverse of test_expand_element_skips_wait_ops: wc/wcb/rc/rcb are
+    real bus operations and must appear in the expanded step list."""
+    spec = parse_alg("up wc rc\n", "t")
+    steps = expand_expected_trace(spec, depth=2)
+    assert [s.op for s in steps] == [OP_WC, OP_RC, OP_WC, OP_RC]
+
+
+def test_write_checkerboard_value_is_address_parity() -> None:
+    """wc's value is addr & 1 -- an EVEN address writes 0, an ODD address
+    writes 1. Direct proof that AccessStep.write_value is address-dependent
+    for this op, unlike w0/w1's fixed literal."""
+    spec = parse_alg("up wc\n", "t")
+    steps = expand_expected_trace(spec, depth=4)
+    assert [(s.addr, s.write_value) for s in steps] == [(0, 0), (1, 1), (2, 0), (3, 1)]
+
+
+def test_write_checkerboard_complement_value_is_inverted_address_parity() -> None:
+    spec = parse_alg("up wcb\n", "t")
+    steps = expand_expected_trace(spec, depth=4)
+    assert [(s.addr, s.write_value) for s in steps] == [(0, 1), (1, 0), (2, 1), (3, 0)]
+
+
+def test_checkerboard_writes_report_is_write_true() -> None:
+    spec = parse_alg("either wc wcb\n", "t")
+    steps = expand_expected_trace(spec, depth=1)
+    assert [s.is_write for s in steps] == [True, True]
+
+
+def test_checkerboard_reads_report_is_write_false_and_write_value_none() -> None:
+    spec = parse_alg("either rc rcb\n", "t")
+    steps = expand_expected_trace(spec, depth=1)
+    assert [s.is_write for s in steps] == [False, False]
+    assert [s.write_value for s in steps] == [None, None]
+
+
+def test_checkerboard_spec_rejects_unknown_op_still() -> None:
+    """Regression guard: adding wc/wcb/rc/rcb to OP_MAP must not have
+    accidentally widened the tokenizer to accept arbitrary garbage."""
+    with pytest.raises(AlgSpecError, match="bad op"):
+        parse_alg("up wx\n", "t")
+
+
+def test_checkerboard_builtin_resolves_and_has_correct_shape() -> None:
+    """Pins the actual built-in checkerboard.alg's op sequence and resolved
+    directions -- both hand-verified independently (a full arithmetic trace
+    at depth=4, confirming every read-check matches what the prior element
+    actually left at that address). A different sequence that happened to
+    parse would otherwise slip through silently."""
+    spec = resolve_algo("checkerboard")
+    assert spec.length_n == 6
+    assert [e.human() for e in spec.elements] == [
+        "either wc",
+        "up rc wcb",
+        "down rcb wc",
+        "either rc",
+    ]
+    assert resolve_directions(spec.elements) == [0, 0, 1, 1]
