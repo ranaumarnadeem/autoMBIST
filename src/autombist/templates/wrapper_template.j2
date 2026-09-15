@@ -4,6 +4,7 @@
 {% set has_col_repair = has_redundancy and redundancy.num_spare_cols > 0 %}
 {% set has_onchip_selfrepair = has_redundancy and redundancy.onchip_selfrepair %}
 {% set has_onchip_col_repair = has_onchip_selfrepair and redundancy.onchip_col_repair %}
+{% set has_dual_rw_col_repair = has_onchip_col_repair and (normalized_ports.values() | map(attribute='type') | list | sort) == ['rw', 'rw'] %}
 {% set has_onchip_repair_persistence = has_onchip_selfrepair and redundancy.onchip_repair_persistence %}
 {% set has_onchip_diagnosis = has_onchip_selfrepair and redundancy.onchip_diagnosis %}
 {% set mode_signal = "effective_test_mode" if has_onchip_selfrepair else "test_mode" %}
@@ -439,12 +440,23 @@ module {{ wrapper_module_name }} #(
     logic [DATA_WIDTH-1:0]                                  algo_fail_bitmask;
     logic [{{ redundancy.num_spare_cols }}-1:0]              col_repair_en;
     logic [{{ redundancy.num_spare_cols }}*{{ redundancy.bit_index_width }}-1:0] faulty_bit;
+{% if has_dual_rw_col_repair %}
+    // TWO independent spare_wen wires, one per port: march-2rw's ports are
+    // both fully read/write and independently commit their own writes (see
+    // the per-port repair_remap_col instances below), so there is no single
+    // shared spare_wen source the way the r+w (march-1r1w) shape has.
+    {% for pname, pdata in normalized_ports.items() %}
+    {% set suffix = algo_port_suffixes[pname] %}
+    logic [{{ redundancy.num_spare_cols }}-1:0]              sram_spare_wen{{ suffix }};
+    {% endfor %}
+{% else %}
     // Single, non-suffixed wire: ONE repair_remap_col instance serves the
     // whole design (col_repair_en/faulty_bit are shared claims, independent
     // of which physical port a given bit's read/write happens to land on),
     // so there is exactly one spare_wen source -- wired out to whichever
     // port declares the spare_wen role in the memory instantiation below.
     logic [{{ redundancy.num_spare_cols }}-1:0]              sram_spare_wen;
+{% endif %}
 {% endif %}
 
     assign effective_test_mode  = test_mode || ctrl_test_mode_override;
@@ -707,6 +719,34 @@ module {{ wrapper_module_name }} #(
     );
     {% endfor %}
 {% if has_onchip_col_repair %}
+{% if has_dual_rw_col_repair %}
+    // Column redundancy: march-2rw's two ports are BOTH fully read/write and
+    // can target DIFFERENT addresses the same cycle (E1/E4: port0 writes
+    // addr_q, port1 writes partner_addr) -- no single reader/writer to
+    // cross-wire one shared instance onto, unlike march-1r1w. Column
+    // steering is address-independent (repair_remap_col has no address
+    // input), so two fully independent instances compose safely: each
+    // port's own instance only needs that port's own din_in/dout_in. Both
+    // share col_repair_en/faulty_bit (one analyzer, one set of claims -- a
+    // column claim is a property of a bit lane, not a port), but each has
+    // ITS OWN spare_wen, since each port independently commits its own
+    // writes (sram_model_2rw.sv).
+    {% for pname, pdata in normalized_ports.items() %}
+    {% set suffix = algo_port_suffixes[pname] %}
+    repair_remap_col #(
+        .DATA_WIDTH(DATA_WIDTH),
+        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+    ) u_repair_remap_col{{ suffix }} (
+        .din_in(sram_din{{ suffix }}),
+        .din_out(sram_din_phys{{ suffix }}),
+        .dout_in(sram_dout_phys{{ suffix }}),
+        .dout_out(sram_dout{{ suffix }}),
+        .spare_wen(sram_spare_wen{{ suffix }}),
+        .col_repair_en(col_repair_en),
+        .faulty_bit(faulty_bit)
+    );
+    {% endfor %}
+{% else %}
 {% set ns = namespace(read_suffix=None, write_suffix=None) %}
 {% for pname, pdata in normalized_ports.items() %}
 {% set suffix = algo_port_suffixes[pname] %}
@@ -725,9 +765,8 @@ module {{ wrapper_module_name }} #(
     // repair_remap_row above -- a column claim is a property of a BIT LANE,
     // not of a port, so one instance covers every port that touches data.
     // (This read_suffix/write_suffix pairing is exact for march-1r1w's one
-    // read-only + one write-only port; a future march-2rw column repair,
-    // where both ports are "rw", would need to reconsider this -- see
-    // generator.py's _COL_SELFREPAIR_ALGOS comment.)
+    // read-only + one write-only port; march-2rw's two "rw" ports use a
+    // per-port instance instead, see the sibling branch above.)
     repair_remap_col #(
         .DATA_WIDTH(DATA_WIDTH),
         .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
@@ -740,6 +779,7 @@ module {{ wrapper_module_name }} #(
         .col_repair_en(col_repair_en),
         .faulty_bit(faulty_bit)
     );
+{% endif %}
 {% endif %}
 
 {% endif %}
@@ -799,7 +839,7 @@ module {{ wrapper_module_name }} #(
         {% set port_addr = ("sram_addr_phys" ~ suffix) if has_onchip_selfrepair else ("sram_addr" ~ suffix) %}
         {% set port_dout = ("sram_dout_phys" ~ suffix) if has_onchip_col_repair else ("sram_dout" ~ suffix) %}
         {% set port_din = ("sram_din_phys" ~ suffix) if has_onchip_col_repair else ("sram_din" ~ suffix) %}
-        {% set port_spare_wen = "sram_spare_wen" if has_onchip_col_repair else "'0" %}
+        {% set port_spare_wen = (("sram_spare_wen" ~ suffix) if has_dual_rw_col_repair else "sram_spare_wen") if has_onchip_col_repair else "'0" %}
         {% if pdata.type == "r" %}
         .{{ pdata.clk }}(mbist_sram_clk{{ suffix }}),
         .{{ pdata.csb }}(sram_csb{{ suffix }}),
