@@ -13,9 +13,15 @@ progress, and what's further out.
   `march_c`, `march_c_plus`, `march_ss`, `march_x`, `march_y`, `mats_plus`) —
   a separate list from the classic-path wrapper-generation algorithms above
 - BIRA (redundancy analysis) as a 2D solver, both row and column allocation
-- BISR — tester-driven, and (for every algo except `march-2rw`: `march-c`,
-  `march-raw`, `march-x`, `mats-plus`, and the multi-port `march-1r1w`) a
-  fully autonomous on-chip self-repair FSM
+- BISR — tester-driven, and (for every current algo: `march-c`, `march-raw`,
+  `march-x`, `mats-plus`, and the multi-port `march-1r1w`/`march-2rw`) a fully
+  autonomous on-chip self-repair FSM. march-2rw's concurrent same-cycle dual
+  compare turned out not to need arbiter RTL — its algorithm table only ever
+  compares both ports against the same address, verified directly against the
+  table and hardened as a regression assertion, not just assumed — and its
+  addition also generalized the wrapper's repair remap to one instance per
+  port (previously a single shared instance that only happened to be correct
+  for march-1r1w's own address-sharing structure)
 - Column repair on the tester-driven path — an external `repair_remap_col`
   bit-steer mux driving a memory's `spare_wen`, composing with the row remap
 - Repair persistence across a reset, at the register level: a saved signature
@@ -47,12 +53,6 @@ progress, and what's further out.
   running a real program through self-repaired memory, both against
   defect-injectable behavioral models and the hardened OpenRAM macros (same
   per-macro signoff caveat as above)
-
-## In progress
-
-- Extending on-chip self-repair to `march-2rw` (needs new arbiter RTL: its two
-  concurrent same-cycle compares break the analyzer's single-fail-per-cycle
-  assumption, unlike `march-1r1w`'s single shared compare)
 
 ## Further out
 
