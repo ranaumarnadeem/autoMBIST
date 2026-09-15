@@ -135,12 +135,16 @@ def _normalize_algo(algo: str) -> tuple[str, str]:
 # Algorithms whose FSM/top stream fail_valid/fail_addr AND whose wrapper
 # branch has the on-chip self-repair scaffold (analyzer + ctrl + remap) wired
 # up, so redundancy.onchip_selfrepair is actually implementable. march-1r1w's
-# multi-port wrapper branch now has that scaffold too (Workstream A2); march-2rw
-# does not (its concurrent same-cycle dual compare breaks the analyzer's
-# single-fail-per-cycle assumption -- needs new arbiter RTL, out of scope).
-# march-x/mats-plus (Workstream B1) are single-port and got the fail stream
-# from day one, so they're free additions here too.
-_SELFREPAIR_ALGOS = frozenset({"march-c", "march-raw", "march-1r1w", "march-x", "mats-plus"})
+# and march-2rw's multi-port wrapper branches both have that scaffold now.
+# march-2rw's concurrent same-cycle dual compare does NOT need arbiter RTL:
+# march_2rw_algo.sv's table has exactly one phase (E2) where both ports
+# compare concurrently, and E2 never sets use_partner_addr1, so both reads
+# always target the identical addr_q -- a same-cycle OR of both compares is
+# correct (march_2rw_fsm.sv's fail_valid), and the invariant it depends on is
+# hardened as a hard assertion in tests/hardware/test_march_2rw.py, not just
+# claimed here. march-x/mats-plus (Workstream B1) are single-port and got the
+# fail stream from day one, so they're free additions here too.
+_SELFREPAIR_ALGOS = frozenset({"march-c", "march-raw", "march-1r1w", "march-2rw", "march-x", "mats-plus"})
 
 # Algorithms that require a specific multi-port shape. Every other algo
 # (march-c, march-raw) is still restricted to exactly 1 port.
@@ -666,19 +670,22 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
                 "(repair_ports with col_repair_en/faulty_bit) for column repair"
             )
     if len(loaded["normalized_ports"]) != 1:
-        # The only multi-port shape redundancy tolerates is the march-1r1w
-        # r+w pair, and only when onchip_selfrepair drives it -- there is no
-        # tester-driven (repair_ports) multi-port path, and no algo is passed
-        # down to this function to check more precisely than "the port roles
-        # match march-1r1w's shape" (generate_from_config's later
-        # _validate_port_topology call is what actually confirms algo agrees).
+        # The only multi-port shapes redundancy tolerates are march-1r1w's
+        # r+w pair and march-2rw's rw+rw pair, and only when onchip_selfrepair
+        # drives it -- there is no tester-driven (repair_ports) multi-port
+        # path, and no algo is passed down to this function to check more
+        # precisely than "the port roles match one of these two shapes"
+        # (generate_from_config's later _validate_port_topology call is what
+        # actually confirms algo agrees).
         port_types = sorted(pdata["type"] for pdata in loaded["normalized_ports"].values())
         is_1r1w_shape = len(loaded["normalized_ports"]) == 2 and port_types == ["r", "w"]
-        if not (onchip_selfrepair and is_1r1w_shape):
+        is_2rw_shape = len(loaded["normalized_ports"]) == 2 and port_types == ["rw", "rw"]
+        if not (onchip_selfrepair and (is_1r1w_shape or is_2rw_shape)):
             raise ConfigError(
-                "redundancy is only supported for single-port memories, or the "
-                "1-read+1-write port shape when combined with "
-                "onchip_selfrepair (algo=march-1r1w)"
+                "redundancy is only supported for single-port memories, or "
+                "(when combined with onchip_selfrepair) the 1-read+1-write "
+                "port shape (algo=march-1r1w) or the 2-read/write port shape "
+                "(algo=march-2rw)"
             )
 
     if onchip_selfrepair:
