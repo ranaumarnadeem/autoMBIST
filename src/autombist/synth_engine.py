@@ -241,6 +241,23 @@ def _apply_op(v: int, a: int, op: int, role: str, fault: FaultPrimitive | None) 
         # spec, if ever passed to replay()/detects() directly, behaves
         # correctly rather than being silently misread as a read.
         return v, a, None
+    if op not in (OP_R0, OP_R1, OP_W0, OP_W1):
+        # A checkerboard op (wc/wcb/rc/rcb) or any other non-classic code.
+        # UNLIKE the wait-op case above, this canNOT be treated as a no-op:
+        # this oracle's 2-cell (v, a) model has no address concept at all, so
+        # there is no faithful reduced representation of "value depends on
+        # addr" here -- silently falling through would misclassify a
+        # checkerboard WRITE as a READ (`is_write` below is False for a
+        # negative code) and fabricate a spurious assertion rather than
+        # harmlessly skipping it. Dead code on the real synthesizer path today
+        # (synthesize_elements's own candidate builders only ever emit
+        # r0/r1/w0/w1/wait), kept as insurance against a future caller
+        # replaying a checkerboard-containing spec through this oracle.
+        raise ValueError(
+            f"synth_engine's 2-cell (v, a) oracle has no address concept and cannot "
+            f"interpret op code {op!r} (e.g. a checkerboard wc/wcb/rc/rcb op) -- only "
+            "r0/r1/w0/w1 and wait ops are supported here"
+        )
     is_write = op in (OP_W0, OP_W1)
     written = 0 if op == OP_W0 else (1 if op == OP_W1 else None)
     observed: int | None = None
