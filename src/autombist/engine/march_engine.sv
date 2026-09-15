@@ -24,6 +24,10 @@
 //   (see alg_spec.py's WAIT_BASE; for Data Retention Fault modeling). Like
 //   every op, a wait executes once per address in the element's range -- an
 //   element with a single wait op idles (OP-4)*DEPTH cycles total, not once.
+//   OP < 0: checkerboard op -- -1=wc (write addr[0]) -2=wcb (write ~addr[0])
+//   -3=rc (read, expect addr[0]) -4=rcb (read, expect ~addr[0]); see
+//   alg_spec.py's OP_WC/OP_WCB/OP_RC/OP_RCB. A negative decimal round-trips
+//   through $sscanf's %d exactly like a positive one, no format change needed.
 //
 // Word background: under +BACKGROUND=<mask> (default 0, i.e. solid 0/1 as
 // before), a nominal w0/r0 drives/expects `mask` and w1/r1 drives/expects
@@ -65,7 +69,7 @@ module march_engine #(
     bg_value = background_mask ^ {DW{v}};
   endfunction
 
-  // op codes: 0=r0 1=r1 2=w0 3=w1 ; dir: 0=up 1=down
+  // op codes: 0=r0 1=r1 2=w0 3=w1 ; -1=wc -2=wcb -3=rc -4=rcb ; dir: 0=up 1=down
   // (2="either" is still ACCEPTED below in the +ALG_FILE parser, for any
   // hand-written .algc from before this rule existed -- an either element
   // there runs ascending, same as always. But nothing in this repo EMITS it
@@ -219,6 +223,10 @@ module march_engine #(
             1: do_read (a, 1'b1, e, o);
             2: do_write(a, 1'b0);
             3: do_write(a, 1'b1);
+            -1: do_write(a, a[0]);        // wc:  addr-parity write
+            -2: do_write(a, ~a[0]);       // wcb: addr-parity-complement write
+            -3: do_read (a, a[0], e, o);  // rc:  addr-parity read
+            -4: do_read (a, ~a[0], e, o); // rcb: addr-parity-complement read
             default: if (prog[e].ops[o] >= 4) do_wait(prog[e].ops[o] - 4);
           endcase
         end
