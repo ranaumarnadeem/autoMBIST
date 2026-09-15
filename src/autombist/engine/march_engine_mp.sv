@@ -36,6 +36,10 @@
 //   (see alg_spec.py's WAIT_BASE; for Data Retention Fault modeling). Like
 //   every op, a wait executes once per address in the element's range -- an
 //   element with a single wait op idles (OP-4)*DEPTH cycles total, not once.
+//   OP < 0: checkerboard op -- -1=wc (write addr[0]) -2=wcb (write ~addr[0])
+//   -3=rc (read, expect addr[0]) -4=rcb (read, expect ~addr[0]); see
+//   alg_spec.py's OP_WC/OP_WCB/OP_RC/OP_RCB. Takes the SAME PORT column as
+//   any other op below -- wc/wcb/rc/rcb are not special-cased there.
 //   PORT: 0 or 1, parallel to OP0..OP7 (padded with 0 -> port 0). A plain
 //   line (no PORT columns) means every op in that element is on port 0,
 //   exactly as march_engine.sv already assumes -- this engine parses BOTH
@@ -89,7 +93,7 @@ module march_engine_mp #(
     bg_value = background_mask ^ {DW{v}};
   endfunction
 
-  // op codes: 0=r0 1=r1 2=w0 3=w1 ; dir: 0=up 1=down
+  // op codes: 0=r0 1=r1 2=w0 3=w1 ; -1=wc -2=wcb -3=rc -4=rcb ; dir: 0=up 1=down
   // port: 0 or 1, parallel to ops.
   // (2="either" is still ACCEPTED below in the +ALG_FILE parser, for any
   // hand-written .algc from before this rule existed -- an either element
@@ -323,6 +327,10 @@ module march_engine_mp #(
             1: do_read (a, 1'b1, prog[e].ports[o], e, o);
             2: do_write(a, 1'b0, prog[e].ports[o]);
             3: do_write(a, 1'b1, prog[e].ports[o]);
+            -1: do_write(a, a[0],  prog[e].ports[o]);        // wc
+            -2: do_write(a, ~a[0], prog[e].ports[o]);        // wcb
+            -3: do_read (a, a[0],  prog[e].ports[o], e, o);  // rc
+            -4: do_read (a, ~a[0], prog[e].ports[o], e, o);  // rcb
             default: if (prog[e].ops[o] >= 4) do_wait(prog[e].ops[o] - 4);
           endcase
         end
