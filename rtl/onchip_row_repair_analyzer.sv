@@ -24,12 +24,16 @@
 //   * Single-fail-per-cycle is assumed -- no arbitration for two simultaneous
 //     fail_valid sources. Sound because every algo that reaches this module is
 //     either inherently serial (march-c/march-raw/march-x/mats-plus: one
-//     address in flight at a time) or has exactly one compare per cycle
-//     despite being multi-port (march-1r1w: both ports share the same address
-//     register, only the read port ever compares); this module is gated to
-//     algo membership in generator.py's _SELFREPAIR_ALGOS for exactly that
-//     reason. march-2rw's genuinely concurrent dual compare is excluded from
-//     that set and would need real arbitration here.
+//     address in flight at a time), has exactly one compare per cycle despite
+//     being multi-port (march-1r1w: both ports share the same address
+//     register, only the read port ever compares), or -- despite two genuinely
+//     independent per-port compares -- only ever compares them against the
+//     SAME address on any cycle where both fire (march-2rw:
+//     march_2rw_algo.sv's table has exactly one phase with concurrent reads,
+//     and that phase never asserts the per-port partner address; hardened by
+//     a real assertion in tests/hardware/test_march_2rw.py, not just assumed).
+//     This module is gated to algo membership in generator.py's
+//     _SELFREPAIR_ALGOS for exactly that reason.
 //   * A PARTIAL repair is still applied when unrepairable is asserted: whatever
 //     slots filled before the spare budget ran out remain latched into
 //     row_repair_en/faulty_row_addr. This is a deliberate "fail-open-partially"
