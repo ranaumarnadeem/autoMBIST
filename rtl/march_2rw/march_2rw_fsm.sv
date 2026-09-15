@@ -55,9 +55,19 @@ module march_2rw_fsm #(
     // invariant is hardened as a hard assertion in
     // tests/hardware/test_march_2rw.py's _run_until_done, not just claimed
     // here -- if a future algorithm-table change ever pairs a concurrent
-    // read with use_partner_addr1, that test fails immediately.
+    // read with use_partner_addr1, that test fails immediately. The same
+    // invariant now also backs fail_bitmask/onchip_2d_repair_analyzer below.
     output logic                  fail_valid,
-    output logic [ADDR_WIDTH-1:0] fail_addr
+    output logic [ADDR_WIDTH-1:0] fail_addr,
+
+    // On-chip 2D (row+column) BIRA streaming interface: which specific bit(s)
+    // mismatched, valid whenever fail_valid is. Per-bit `!==`, not XOR -- see
+    // march_c_fsm.sv's identical comment. OR-combined across both ports the
+    // same way fail_valid is above, resting on the identical same-address
+    // invariant: whenever both ports compare in one cycle, they compare the
+    // SAME address, so a per-bit union of both ports' mismatches is a real
+    // per-(addr,bit) fact, not a false correlation.
+    output logic [DATA_WIDTH-1:0] fail_bitmask
 );
 
     localparam logic [2:0] LAST_PHASE = 3'd5;
@@ -137,6 +147,16 @@ module march_2rw_fsm #(
                          ((do_read[0] && (mem_rdata0 !== expected0_q)) ||
                           (do_read[1] && (mem_rdata1 !== expected1_q)));
     assign fail_addr  = addr_q;
+
+    genvar gb;
+    generate
+        for (gb = 0; gb < DATA_WIDTH; gb++) begin : g_fail_bitmask
+            assign fail_bitmask[gb] =
+                (state_q == ST_CHECK) &&
+                ((do_read[0] && (mem_rdata0[gb] !== expected0_q[gb])) ||
+                 (do_read[1] && (mem_rdata1[gb] !== expected1_q[gb])));
+        end
+    endgenerate
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
