@@ -24,6 +24,16 @@ progress, and what's further out.
   for march-1r1w's own address-sharing structure)
 - Column repair on the tester-driven path — an external `repair_remap_col`
   bit-steer mux driving a memory's `spare_wen`, composing with the row remap
+- Column repair on the *autonomous on-chip* path (`onchip_col_repair: true`,
+  for `march-c`/`march-raw`/`march-x`/`mats-plus`): a per-bit `fail_bitmask`
+  stream from the FSM plus a new on-chip 2D heuristic analyzer
+  (`onchip_2d_repair_analyzer`). Not a hardware implementation of BIRA's exact
+  backtracking search — a disclosed, single-pass approximation that can report
+  a repairable chip unrepairable in some cases (never a false pass, since
+  verify-by-re-execution is independent of the analyzer's own bookkeeping),
+  proven against a hand-constructed counterexample checked directly against
+  `bira.py`, not just asserted. march-1r1w/march-2rw column repair is still
+  further out (see below)
 - Repair persistence across a reset, at the register level: a saved signature
   can be reloaded into the on-chip analyzer before any access
   (`onchip_repair_persistence: true`)
@@ -56,9 +66,11 @@ progress, and what's further out.
 
 ## Further out
 
-- Column repair on the *autonomous on-chip* path (today it is tester-driven
-  only — the on-chip analyzer is row-only, and a 2D one needs both a per-bit
-  fail dimension in the controller RTL and an on-chip heuristic analyzer)
+- On-chip column repair for the multi-port self-repair algos (`march-1r1w`,
+  `march-2rw`) — `march-1r1w`'s read port is structurally free to add the same
+  way as the four single-port algos already done; `march-2rw` needs a small
+  but separate `fail_bitmask` OR-combination across its two independent-compare
+  ports
 - Real fuse/NVM device physics behind repair persistence (today's persistence
   is register-level: the load path exists, the storage element is out of scope)
 - A broader march-algorithm library (checkerboard, galloping, and similar
