@@ -147,12 +147,16 @@ def _normalize_algo(algo: str) -> tuple[str, str]:
 _SELFREPAIR_ALGOS = frozenset({"march-c", "march-raw", "march-1r1w", "march-2rw", "march-x", "mats-plus"})
 
 # Algorithms wired for on-chip COLUMN repair specifically -- a strict subset of
-# _SELFREPAIR_ALGOS. march-1r1w/march-2rw are row-only for now: march-2rw's two
-# ports are independent compares that would need an OR-combined fail_bitmask
-# (small but genuinely separate design work, deferred); march-1r1w's read port
-# is structurally free to add the same way as the four below but was left out
-# of v1 to bound the change's size. See rtl/onchip_2d_repair_analyzer.sv.
-_COL_SELFREPAIR_ALGOS = frozenset({"march-c", "march-raw", "march-x", "mats-plus"})
+# _SELFREPAIR_ALGOS. march-2rw is row-only for now: its two ports are
+# independent compares that would need an OR-combined fail_bitmask (small but
+# genuinely separate design work, deferred). march-1r1w's read port compares
+# exactly like the four single-port algos (only port 0 ever asserts a
+# compare, see march_1r1w_fsm.sv), so its fail_bitmask wiring is the same
+# mechanical addition -- the real new work for march-1r1w was in
+# wrapper_template.j2's multi-port branch, which had never carried a
+# repair_remap_col instance before (no tester-driven multi-port path exists
+# to have built it for). See rtl/onchip_2d_repair_analyzer.sv.
+_COL_SELFREPAIR_ALGOS = frozenset({"march-c", "march-raw", "march-x", "mats-plus", "march-1r1w"})
 
 # Algorithms that require a specific multi-port shape. Every other algo
 # (march-c, march-raw) is still restricted to exactly 1 port.
