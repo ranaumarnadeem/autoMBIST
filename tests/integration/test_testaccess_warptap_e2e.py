@@ -64,11 +64,13 @@ _STATUS_PORTS = (
     "bist_done", "bist_fail",
     "self_repair_done", "self_repair_fail", "self_repair_busy",
     "repair_load_done",
+    "diag_overflow",
 )
-# Present once onchip_repair_persistence is on, deliberately never wrapped (see
-# testaccess.py's module docstring for why) -- checked as the negative case alongside
-# _CONTROL_PORTS/_STATUS_PORTS in test_control_ports_are_jtag_exclusive_status_ports_are_not.
-_EXCLUDED_WIDE_PORTS = ("fuse_row_repair_en", "fuse_faulty_row_addr")
+# Present once onchip_repair_persistence/onchip_diagnosis are on, deliberately never
+# wrapped (see testaccess.py's module docstring for why) -- checked as the negative case
+# alongside _CONTROL_PORTS/_STATUS_PORTS in
+# test_control_ports_are_jtag_exclusive_status_ports_are_not.
+_EXCLUDED_WIDE_PORTS = ("fuse_row_repair_en", "fuse_faulty_row_addr", "diag_valid", "diag_addr")
 # Always present, on every config, never candidates for classify_test_access_ports at all
 # (clk/rst_n are infrastructure; func_* is the functional read/write path, not a
 # control/status instrument) -- see test_control_ports_are_jtag_exclusive_status_ports_are_not.
@@ -171,13 +173,16 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
        build_instrument_specs choosing WRITE vs READ), checked here against warptap's real
        output rather than mocked.
 
-    A third fact, pinned down the same way: the wide repair ports this module deliberately
-    does not wrap (fuse_row_repair_en, fuse_faulty_row_addr -- present because this config
-    turns on onchip_repair_persistence) get no SIB treatment of any kind, not even an
+    A third fact, pinned down the same way: the wide ports this module deliberately does
+    not wrap (fuse_row_repair_en, fuse_faulty_row_addr -- present because this config
+    turns on onchip_repair_persistence; diag_valid, diag_addr -- present because this
+    config also turns on onchip_diagnosis) get no SIB treatment of any kind, not even an
     observe tap -- confirmed by (a) their direct passthrough connection into
-    onchip_row_repair_analyzer still being exactly what wrapper_template.j2 generated,
-    untouched, (b) no warptap_sib_* instance existing for either, and (c) the chain having
-    exactly the 10 wrapped ports, not 12.
+    onchip_row_repair_analyzer/onchip_diagnosis_log still being exactly what
+    wrapper_template.j2 generated, untouched, (b) no warptap_sib_* instance existing for
+    any of them, and (c) the chain having exactly the 11 wrapped ports (10 base +
+    diag_overflow, the one diagnosis port that IS wrappable -- single-bit, unlike its two
+    siblings), not 14.
 
     A fourth: fail_valid/fail_addr are not merely unwrapped, they are not wrapper ports at
     all under any config, checked against the top module's own port list directly (not
@@ -198,6 +203,7 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
         "redundancy": {
             "num_spare_rows": 1, "num_spare_cols": 0,
             "onchip_selfrepair": True, "onchip_repair_persistence": True,
+            "onchip_diagnosis": True, "num_diagnosis_entries": 4,
         },
     }
     config_path = tmp_path / "config.yml"
@@ -211,6 +217,7 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
         shared / "march_c" / "march_c_top.sv",
         shared / "onchip_row_repair_analyzer.sv",
         shared / "onchip_selfrepair_ctrl.sv",
+        shared / "onchip_diagnosis_log.sv",
         shared / "repair_remap_row.sv",
         shared / "sram_model.sv",
     ]
@@ -218,11 +225,13 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
         assert src.is_file(), f"expected generated openMBIST source missing: {src}"
 
     inserted_verilog, graph, _root = wrap_test_access(
-        sources, "sram_1rw_mbist", onchip_selfrepair=True, onchip_repair_persistence=True,
+        sources, "sram_1rw_mbist",
+        onchip_selfrepair=True, onchip_repair_persistence=True, onchip_diagnosis=True,
     )
-    assert len(graph.chain) == 10, (
-        "expected exactly the 10 wrapped ports in the chain -- a length of 12 would mean "
-        "the excluded wide repair ports got swept in too"
+    assert len(graph.chain) == 11, (
+        "expected exactly the 11 wrapped ports in the chain (10 base + diag_overflow) -- "
+        "a longer chain would mean an excluded wide port (including diag_valid/diag_addr) "
+        "got swept in too"
     )
 
     # fail_valid/fail_addr are never wrapper ports at all (confirmed directly against
