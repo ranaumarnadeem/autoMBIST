@@ -315,12 +315,13 @@ autombist wrap-test-access [OPTIONS]
 | `--out PATH` | `out/test-access` | Output directory for the inserted Verilog (and `--emit-icl`'s ICL file) |
 | `--onchip-selfrepair` | off | Also wrap `self_repair_start`/`done`/`fail`/`busy` — must match the redundancy config the sources were generated with |
 | `--onchip-repair-persistence` | off | Also wrap `repair_load`/`repair_load_done` — must match the redundancy config the sources were generated with |
+| `--onchip-diagnosis` | off | Also wrap `diag_overflow` — must match the redundancy config the sources were generated with |
 | `--emit-icl` | off | Also emit an ICL description of the inserted network |
 
 Wraps exactly the always-1-bit control/status ports a generated wrapper exposes:
 `test_mode`, `bist_start`, `bist_done`, `bist_fail`, and — with the matching
-flags — `self_repair_start`/`done`/`fail`/`busy` and
-`repair_load`/`repair_load_done`.
+flags — `self_repair_start`/`done`/`fail`/`busy`,
+`repair_load`/`repair_load_done`, and `diag_overflow`.
 
 The inserted module adds exactly 5 new top-level ports — the standard IEEE
 1149.1 TAP interface — and keeps every original port declared alongside them,
@@ -359,16 +360,19 @@ changes.
 
 Two things this command deliberately does **not** wrap:
 
-- **Diagnosis ports** (`fail_valid`/`fail_addr`) — these are not ports at all on
-  the generated wrapper; they are internal, single-functional-cycle combinational
-  wires. Exposing them needs an additive RTL change this command does not make.
-- **Wide repair ports** (`fuse_row_repair_en`, `fuse_faulty_row_addr`,
-  `row_repair_en`, `faulty_row_addr`, `col_repair_en`, `faulty_bit`) — out of
-  scope for now. Every port this command wraps is confirmed exactly 1 bit wide,
-  which matters: warptap's own test suite found and documented a real bug in its
-  vendored ICL parser triggered specifically by width-greater-than-1 instruments.
-  Wrapping the wider repair ports is real, separate future work, not a corner
-  cut here.
+- **`fail_valid`/`fail_addr` and `unrepairable`** — these are not ports at all
+  on the generated wrapper; they are internal wires, never promoted to the
+  boundary. `self_repair_fail` (already wrapped, above) is `unrepairable`'s
+  externally-visible reflection.
+- **The rest of diagnosis readback (`diag_valid`, `diag_addr`) and the wide
+  repair ports** (`fuse_row_repair_en`, `fuse_faulty_row_addr`,
+  `row_repair_en`, `faulty_row_addr`, `col_repair_en`, `faulty_bit`) — these
+  ARE real boundary ports, but multi-bit, so out of scope for now. Every port
+  this command wraps today is confirmed exactly 1 bit wide, which matters:
+  warptap's own test suite found and documented a real bug in its vendored
+  ICL parser triggered specifically by width-greater-than-1 instruments.
+  Wrapping the wider ports is real, separate future work once that's
+  resolved, not a corner cut here.
 
 Requires (Linux/WSL only): `pip install warptap` (or the `test-access` extra —
 `pip install "autombist[test-access]"`), plus Yosys and Icarus Verilog on PATH.
