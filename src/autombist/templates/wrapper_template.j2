@@ -435,6 +435,17 @@ module {{ wrapper_module_name }} #(
     logic                  unrepairable;
     logic [{{ redundancy.num_spare_rows }}-1:0]            row_repair_en;
     logic [{{ redundancy.num_spare_rows }}*ADDR_WIDTH-1:0] faulty_row_addr;
+{% if has_onchip_col_repair %}
+    logic [DATA_WIDTH-1:0]                                  algo_fail_bitmask;
+    logic [{{ redundancy.num_spare_cols }}-1:0]              col_repair_en;
+    logic [{{ redundancy.num_spare_cols }}*{{ redundancy.bit_index_width }}-1:0] faulty_bit;
+    // Single, non-suffixed wire: ONE repair_remap_col instance serves the
+    // whole design (col_repair_en/faulty_bit are shared claims, independent
+    // of which physical port a given bit's read/write happens to land on),
+    // so there is exactly one spare_wen source -- wired out to whichever
+    // port declares the spare_wen role in the memory instantiation below.
+    logic [{{ redundancy.num_spare_cols }}-1:0]              sram_spare_wen;
+{% endif %}
 
     assign effective_test_mode  = test_mode || ctrl_test_mode_override;
     assign effective_bist_start = (bist_start && test_mode && !self_repair_busy) || ctrl_bist_start;
@@ -453,6 +464,9 @@ module {{ wrapper_module_name }} #(
     {% endif %}
     {% if pdata.type in ("r", "rw") %}
     logic [DATA_WIDTH-1:0] sram_dout{{ suffix }};
+    {% if has_onchip_col_repair %}
+    logic [{{ redundancy.mem_data_width }}-1:0] sram_dout_phys{{ suffix }};
+    {% endif %}
     {% endif %}
     logic [ADDR_WIDTH-1:0] sram_addr{{ suffix }};
     {% if has_onchip_selfrepair %}
@@ -460,6 +474,9 @@ module {{ wrapper_module_name }} #(
     {% endif %}
     {% if pdata.type in ("w", "rw") %}
     logic [DATA_WIDTH-1:0] sram_din{{ suffix }};
+    {% if has_onchip_col_repair %}
+    logic [{{ redundancy.mem_data_width }}-1:0] sram_din_phys{{ suffix }};
+    {% endif %}
     logic                  sram_we{{ suffix }};
     logic                  selected_write_req{{ suffix }};
     logic                  mbist_write_req{{ suffix }};
@@ -494,6 +511,9 @@ module {{ wrapper_module_name }} #(
 {% if has_onchip_selfrepair %}
         .bist_fail_valid(algo_fail_valid),
         .bist_fail_addr(algo_fail_addr),
+{% endif %}
+{% if has_onchip_col_repair %}
+        .bist_fail_bitmask(algo_fail_bitmask),
 {% endif %}
         {% for pname, pdata in normalized_ports.items() %}
         {% set suffix = algo_port_suffixes[pname] %}
@@ -577,6 +597,42 @@ module {{ wrapper_module_name }} #(
     // incomplete. repair_remap_row is purely combinational and deterministic,
     // so every instance sees the SAME row_repair_en/faulty_row_addr from the
     // one analyzer below and remaps consistently.
+{% if has_onchip_col_repair %}
+    // Column repair, unlike the row remap above, is NOT per-port:
+    // col_repair_en/faulty_bit are a single set of claims fed into one
+    // repair_remap_col instance below, wired across whichever port
+    // physically reads and whichever physically writes.
+    onchip_2d_repair_analyzer #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .DATA_WIDTH(DATA_WIDTH),
+        .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }}),
+        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+    ) u_onchip_analyzer (
+        .clk(clk),
+        .rst_n(rst_n),
+        .enable(registrar_enable),
+        .fail_valid(algo_fail_valid),
+        .fail_addr(algo_fail_addr),
+        .fail_bitmask(algo_fail_bitmask),
+        .latch_result(latch_result),
+{% if has_onchip_repair_persistence %}
+        .repair_load(repair_load),
+        .fuse_row_repair_en(fuse_row_repair_en),
+        .fuse_faulty_row_addr(fuse_faulty_row_addr),
+        .repair_load_done(repair_load_done),
+{% else %}
+        .repair_load(1'b0),
+        .fuse_row_repair_en('0),
+        .fuse_faulty_row_addr('0),
+        .repair_load_done(),
+{% endif %}
+        .row_repair_en(row_repair_en),
+        .faulty_row_addr(faulty_row_addr),
+        .col_repair_en(col_repair_en),
+        .faulty_bit(faulty_bit),
+        .unrepairable(unrepairable)
+    );
+{% else %}
     onchip_row_repair_analyzer #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
@@ -602,6 +658,7 @@ module {{ wrapper_module_name }} #(
         .faulty_row_addr(faulty_row_addr),
         .unrepairable(unrepairable)
     );
+{% endif %}
 
 {% if has_onchip_diagnosis %}
     onchip_diagnosis_log #(
@@ -649,6 +706,41 @@ module {{ wrapper_module_name }} #(
       , .faulty_row_addr(faulty_row_addr)
     );
     {% endfor %}
+{% if has_onchip_col_repair %}
+{% set ns = namespace(read_suffix=None, write_suffix=None) %}
+{% for pname, pdata in normalized_ports.items() %}
+{% set suffix = algo_port_suffixes[pname] %}
+{% if pdata.type in ("r", "rw") %}
+{% set ns.read_suffix = suffix %}
+{% endif %}
+{% if pdata.type in ("w", "rw") %}
+{% set ns.write_suffix = suffix %}
+{% endif %}
+{% endfor %}
+    // Column redundancy: ONE repair_remap_col instance, cross-wired across
+    // whichever port physically writes (its logical sram_din feeds din_in,
+    // its physical sram_din_phys receives din_out and spare_wen) and
+    // whichever physically reads (its physical sram_dout_phys feeds dout_in,
+    // its logical sram_dout receives dout_out). Not per-port like
+    // repair_remap_row above -- a column claim is a property of a BIT LANE,
+    // not of a port, so one instance covers every port that touches data.
+    // (This read_suffix/write_suffix pairing is exact for march-1r1w's one
+    // read-only + one write-only port; a future march-2rw column repair,
+    // where both ports are "rw", would need to reconsider this -- see
+    // generator.py's _COL_SELFREPAIR_ALGOS comment.)
+    repair_remap_col #(
+        .DATA_WIDTH(DATA_WIDTH),
+        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+    ) u_repair_remap_col (
+        .din_in(sram_din{{ ns.write_suffix }}),
+        .din_out(sram_din_phys{{ ns.write_suffix }}),
+        .dout_in(sram_dout_phys{{ ns.read_suffix }}),
+        .dout_out(sram_dout{{ ns.read_suffix }}),
+        .spare_wen(sram_spare_wen),
+        .col_repair_en(col_repair_en),
+        .faulty_bit(faulty_bit)
+    );
+{% endif %}
 
 {% endif %}
 {% if use_saboteur %}
@@ -697,35 +789,41 @@ module {{ wrapper_module_name }} #(
 {% if has_onchip_selfrepair %}
       , .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
 {% endif %}
+{% if has_onchip_col_repair %}
+      , .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+{% endif %}
     ) u_sram (
 {% endif %}
     {% for pname, pdata in normalized_ports.items() %}
         {% set suffix = algo_port_suffixes[pname] %}
         {% set port_addr = ("sram_addr_phys" ~ suffix) if has_onchip_selfrepair else ("sram_addr" ~ suffix) %}
+        {% set port_dout = ("sram_dout_phys" ~ suffix) if has_onchip_col_repair else ("sram_dout" ~ suffix) %}
+        {% set port_din = ("sram_din_phys" ~ suffix) if has_onchip_col_repair else ("sram_din" ~ suffix) %}
+        {% set port_spare_wen = "sram_spare_wen" if has_onchip_col_repair else "'0" %}
         {% if pdata.type == "r" %}
         .{{ pdata.clk }}(mbist_sram_clk{{ suffix }}),
         .{{ pdata.csb }}(sram_csb{{ suffix }}),
         .{{ pdata.addr }}({{ port_addr }}),
-        .{{ pdata.dout }}(sram_dout{{ suffix }}){{ "," if not loop.last }}
+        .{{ pdata.dout }}({{ port_dout }}){{ "," if not loop.last }}
         {% elif pdata.type == "w" %}
         .{{ pdata.clk }}(mbist_sram_clk{{ suffix }}),
         .{{ pdata.csb }}(sram_csb{{ suffix }}),
         .{{ pdata.we }}(sram_we{{ suffix }}),
         .{{ pdata.addr }}({{ port_addr }}),
         {% if pdata.spare_wen %}
-        .{{ pdata.spare_wen }}('0),   // tied off: no column repair on this design
+        .{{ pdata.spare_wen }}({{ port_spare_wen }}),{{ "   // tied off: no column repair on this design" if not has_onchip_col_repair }}
         {% endif %}
-        .{{ pdata.din }}(sram_din{{ suffix }}){{ "," if not loop.last }}
+        .{{ pdata.din }}({{ port_din }}){{ "," if not loop.last }}
         {% elif pdata.type == "rw" %}
         .{{ pdata.clk }}(mbist_sram_clk{{ suffix }}),
         .{{ pdata.csb }}(sram_csb{{ suffix }}),
         .{{ pdata.we }}(sram_we{{ suffix }}),
         .{{ pdata.addr }}({{ port_addr }}),
-        .{{ pdata.din }}(sram_din{{ suffix }}),
+        .{{ pdata.din }}({{ port_din }}),
         {% if pdata.spare_wen %}
-        .{{ pdata.spare_wen }}('0),   // tied off: no column repair on this design
+        .{{ pdata.spare_wen }}({{ port_spare_wen }}),{{ "   // tied off: no column repair on this design" if not has_onchip_col_repair }}
         {% endif %}
-        .{{ pdata.dout }}(sram_dout{{ suffix }}){{ "," if not loop.last }}
+        .{{ pdata.dout }}({{ port_dout }}){{ "," if not loop.last }}
         {% endif %}
     {% endfor %}
     );
