@@ -33,6 +33,7 @@ from autombist.synth_engine import (
 
 UP, DOWN, EITHER = DIR_MAP["up"], DIR_MAP["down"], DIR_MAP["either"]
 R0, R1, W0, W1 = OP_MAP["r0"], OP_MAP["r1"], OP_MAP["w0"], OP_MAP["w1"]
+WC, WCB, RC, RCB = OP_MAP["wc"], OP_MAP["wcb"], OP_MAP["rc"], OP_MAP["rcb"]
 
 REGISTRY = {p.name: p for p in default_registry()}
 
@@ -86,6 +87,19 @@ def test_replay_ignores_wait_ops():
     with_wait = _spec(Element(EITHER, [W0]), Element(UP, [WAIT_BASE + 20, R0]))
     without_wait = _spec(Element(EITHER, [W0]), Element(UP, [R0]))
     assert replay(with_wait, None) == replay(without_wait, None)
+
+
+@pytest.mark.parametrize("op", [WC, WCB, RC, RCB])
+def test_apply_op_rejects_checkerboard_ops_loudly(op):
+    """UNLIKE the wait-op no-op above: this oracle's 2-cell (v, a) model has
+    no address concept, so there is no faithful reduced representation of a
+    checkerboard op's address-dependent value -- silently falling through
+    would misclassify a wc/wcb write as a read (`is_write` is False for a
+    negative code) and fabricate a spurious assertion rather than harmlessly
+    skipping it. Dead code on the real synthesizer path today (its own
+    candidate builders never emit these), pure insurance."""
+    with pytest.raises(ValueError, match="no address concept"):
+        _apply_op(1, 0, op, "v", None)
 
 
 def test_detects_unaffected_by_an_inserted_wait_op():
