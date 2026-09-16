@@ -121,13 +121,14 @@ def _normalize_algo(algo: str) -> tuple[str, str]:
         "march-2rw": ("march_2rw", "march_2rw_top"),
         "march-x": ("march_x", "march_x_top"),
         "mats-plus": ("mats_plus", "mats_plus_top"),
+        "checkerboard": ("checkerboard", "checkerboard_top"),
     }
     if algo_value not in algo_map:
         suggestion = difflib.get_close_matches(algo_value, algo_map, n=1)
         hint = f" -- did you mean {suggestion[0]!r}?" if suggestion else ""
         raise ValueError(
             f"algo {algo!r} is not recognized{hint}. Must be one of: march-c, march-raw, "
-            "march-1r1w, march-2rw, march-x, mats-plus"
+            "march-1r1w, march-2rw, march-x, mats-plus, checkerboard"
         )
     return algo_map[algo_value]
 
@@ -143,8 +144,13 @@ def _normalize_algo(algo: str) -> tuple[str, str]:
 # correct (march_2rw_fsm.sv's fail_valid), and the invariant it depends on is
 # hardened as a hard assertion in tests/hardware/test_march_2rw.py, not just
 # claimed here. march-x/mats-plus (Workstream B1) are single-port and got the
-# fail stream from day one, so they're free additions here too.
-_SELFREPAIR_ALGOS = frozenset({"march-c", "march-raw", "march-1r1w", "march-2rw", "march-x", "mats-plus"})
+# fail stream from day one, so they're free additions here too. checkerboard is
+# the same: single-port, fail_valid/fail_addr/fail_bitmask from day one -- its
+# address-dependent write/expected data never reaches the repair analyzer,
+# which only ever consumes fail_valid/fail_addr/fail_bitmask, never a value.
+_SELFREPAIR_ALGOS = frozenset(
+    {"march-c", "march-raw", "march-1r1w", "march-2rw", "march-x", "mats-plus", "checkerboard"}
+)
 
 # Algorithms wired for on-chip COLUMN repair -- now every _SELFREPAIR_ALGOS
 # member. march-1r1w's read port compares exactly like the four single-port
@@ -1048,7 +1054,7 @@ def _find_rtl_dir() -> Path:
     )
 
 
-_ALGO_DIRS = {"march_c", "march_raw", "march_1r1w", "march_2rw", "march_x", "mats_plus"}
+_ALGO_DIRS = {"march_c", "march_raw", "march_1r1w", "march_2rw", "march_x", "mats_plus", "checkerboard"}
 
 
 def copy_mbist_rtl(outdir: Path, algo_dir: str | None = None) -> None:
