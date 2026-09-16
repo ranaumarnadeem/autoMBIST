@@ -65,6 +65,17 @@ progress, and what's further out.
 - A march-test synthesizer that constructs a test directly from the fault
   model rather than only grading a hand-written one — 27n at 16 elements,
   verified 38/38 against real Verilator at both memory init values
+- A `checkerboard` built-in for the research shell (logical address-LSB
+  parity, not physical row/column adjacency — no consumer in this toolkit
+  has physical geometry). Needed a genuinely new capability, not just a new
+  `.alg` file: every existing op's value was a fixed function of phase alone,
+  so the DSL gained four address-DEPENDENT ops (`wc`/`wcb`/`rc`/`rcb`,
+  negative op codes to avoid the wait-op space) threaded through both march
+  engines. Scores 20/29 on `faults.example.txt` — the same total as march_c,
+  but a different profile (catches SOF, which march_c misses; misses
+  CFin/CFid, which march_c catches). Research-shell only for now — the
+  separate RTL wrapper-generation path (real synthesizable BIST hardware)
+  doesn't have it yet, see below
 - `wrap-test-access`: wraps a generated design's control/status ports with an
   IEEE 1149.1/1687 (JTAG/IJTAG) test-access network and can emit its ICL
   description, via the external [warptap](https://github.com/ranaumarnadeem/warptap)
@@ -88,8 +99,12 @@ progress, and what's further out.
 
 - Real fuse/NVM device physics behind repair persistence (today's persistence
   is register-level: the load path exists, the storage element is out of scope)
-- A broader march-algorithm library (checkerboard, galloping, and similar
-  patterns beyond the current built-ins)
+- A broader march-algorithm library: `checkerboard` is done (see above) --
+  galloping/GALPAT and similar patterns beyond the current built-ins remain
+  open. Also open: `checkerboard` on the RTL wrapper-generation path (a new
+  `rtl/checkerboard/` algo+fsm+top triple with an address-dependent write-data
+  mux, not just a `.alg` file) for real synthesizable BIST hardware, not just
+  the research-shell fault-coverage proof
 - Test-access wrapping for the ports this doesn't cover yet: the rest of
   diagnosis readback (`diag_valid`/`diag_addr` — real boundary ports, now
   available via direct pins, see on-chip diagnosis logging above; `diag_overflow`
