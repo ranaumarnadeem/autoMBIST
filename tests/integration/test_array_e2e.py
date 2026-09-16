@@ -74,7 +74,7 @@ def _write_config(path: Path, config: dict) -> None:
 
 
 @pytest.mark.parametrize("config", MEMORIES, ids=[m["memory_name"] for m in MEMORIES])
-@pytest.mark.parametrize("algo", ["march-c", "march-raw", "march-x", "mats-plus"])
+@pytest.mark.parametrize("algo", ["march-c", "march-raw", "march-x", "mats-plus", "checkerboard"])
 def test_clean_simulation_passes(tmp_path: Path, config: dict, algo: str) -> None:
     """Golden (fault-free) simulation must report bist_fail == 0 for every
     memory shape and both algorithms -- the base correctness contract."""
@@ -166,10 +166,10 @@ def test_transition_fault_simulation_march_raw_detects(tmp_path: Path, config: d
 
 
 @pytest.mark.parametrize("config", MEMORIES, ids=[m["memory_name"] for m in MEMORIES])
-@pytest.mark.parametrize("algo", ["march-x", "mats-plus"])
+@pytest.mark.parametrize("algo", ["march-x", "mats-plus", "checkerboard"])
 def test_stuck_at_fault_simulation_new_algos_detect(tmp_path: Path, config: dict, algo: str) -> None:
-    """The two Workstream B1 algorithms must detect stuck-at faults across
-    every memory shape, same base contract as march-c/march-raw above."""
+    """These newer algorithms must detect stuck-at faults across every memory
+    shape, same base contract as march-c/march-raw above."""
     config_path = tmp_path / "config.yml"
     outdir = tmp_path / "out"
     _write_config(config_path, config)

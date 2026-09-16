@@ -344,6 +344,7 @@ async def _run_mbist_once(
         "march-2rw": "u_march_2rw_fsm",
         "march-x": "u_march_x_fsm",
         "mats-plus": "u_mats_plus_fsm",
+        "checkerboard": "u_checkerboard_fsm",
     }.get(algo_name, "u_march_raw_fsm")
     read_latency = int(os.getenv("READ_LATENCY", "1"))
     data_width = int(os.getenv("DATA_WIDTH", "32"))
