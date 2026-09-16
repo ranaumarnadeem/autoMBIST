@@ -636,6 +636,27 @@ def test_cli_mats_plus_algo_accepted(tmp_path: Path, base_config: dict[str, obje
     assert "mats_plus_top" in wrapper_text
 
 
+def test_cli_checkerboard_algo_accepted(tmp_path: Path, base_config: dict[str, object]) -> None:
+    """Verify CLI accepts checkerboard algorithm selection (RTL wrapper-generation path)."""
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    result = runner.invoke(
+        app,
+        [
+            "generate",
+            "--config", str(config_path),
+            "--out", str(outdir),
+            "--algo", "checkerboard",
+        ],
+    )
+
+    assert result.exit_code == 0
+    wrapper_text = (outdir / "sram_1rw" / "sram_1rw_mbist.v").read_text(encoding="utf-8")
+    assert "checkerboard_top" in wrapper_text
+
+
 def test_invalid_algo_raises(tmp_path: Path, base_config: dict[str, object]) -> None:
     config_path = tmp_path / "config.yml"
     outdir = tmp_path / "out"

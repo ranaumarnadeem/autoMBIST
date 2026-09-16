@@ -136,7 +136,7 @@ def test_onchip_col_repair_analyzer_and_remaps_share_matching_parameters(tmp_pat
     assert ".NUM_SPARE_COLS(1)" in col_remap_block
 
 
-def test_onchip_col_repair_works_for_all_four_algos(tmp_path: Path) -> None:
+def test_onchip_col_repair_works_for_all_five_algos(tmp_path: Path) -> None:
     """Column repair generalizes across every algo generator.py wires
     fail_bitmask for (_COL_SELFREPAIR_ALGOS) -- not a march-c-only accident."""
     for algo, top_module in (
@@ -144,6 +144,7 @@ def test_onchip_col_repair_works_for_all_four_algos(tmp_path: Path) -> None:
         ("march-raw", "march_raw_top"),
         ("march-x", "march_x_top"),
         ("mats-plus", "mats_plus_top"),
+        ("checkerboard", "checkerboard_top"),
     ):
         text = _render(tmp_path, _onchip_col_repair(), f"col_repair_{algo}", algo=algo)
         assert "onchip_2d_repair_analyzer #(" in text

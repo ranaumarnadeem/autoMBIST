@@ -152,10 +152,16 @@ def test_onchip_selfrepair_now_works_for_march_raw(tmp_path: Path) -> None:
     assert ".bist_fail_addr(algo_fail_addr)," in text
 
 
-def test_onchip_selfrepair_now_works_for_march_x_and_mats_plus(tmp_path: Path) -> None:
-    """The two new generated algorithms (Workstream B1) are self-repair-ready
-    from day one: single-port, fail_valid/fail_addr wired up like march-c's."""
-    for algo, top_module in (("march-x", "march_x_top"), ("mats-plus", "mats_plus_top")):
+def test_onchip_selfrepair_now_works_for_march_x_mats_plus_and_checkerboard(tmp_path: Path) -> None:
+    """These generated algorithms are self-repair-ready from day one: single-port,
+    fail_valid/fail_addr wired up like march-c's. checkerboard's address-dependent
+    write/expected data never reaches this scaffold -- it only ever consumes
+    fail_valid/fail_addr, never a value -- so it's a free addition here too."""
+    for algo, top_module in (
+        ("march-x", "march_x_top"),
+        ("mats-plus", "mats_plus_top"),
+        ("checkerboard", "checkerboard_top"),
+    ):
         text = _render(tmp_path, _onchip(), f"onchip_{algo}", algo=algo)
         assert "onchip_row_repair_analyzer #(" in text
         assert "onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl (" in text
