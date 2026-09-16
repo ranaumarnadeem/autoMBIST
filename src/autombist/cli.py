@@ -369,7 +369,7 @@ def generate(
     seed: int | None = typer.Option(None, "--seed", help="Random seed for reproducible fault injection (optional)"),
     fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at (SA0/SA1), transition-up, transition-down, or port-coupling (march-1r1w only; march-2rw supports stuck-at/transition only)"),
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
-    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, march-2rw, march-x, or mats-plus"),
+    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, march-2rw, march-x, mats-plus, or checkerboard"),
 ) -> None:
     r"""Generate MBIST wrapper, RTL, and optionally fault masks.
 
@@ -453,7 +453,7 @@ def run(
     seed: int | None = typer.Option(None, "--seed", help="Random seed for reproducible fault injection"),
     fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at, transition-up, transition-down, or port-coupling (march-1r1w only; march-2rw supports stuck-at/transition only)"),
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
-    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, march-2rw, march-x, or mats-plus"),
+    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, march-2rw, march-x, mats-plus, or checkerboard"),
     verbose: bool = typer.Option(False, "--verbose", help="Print full simulator console output and detailed logs"),
     faultflow: bool = typer.Option(False, "--faultflow/--no-faultflow", help="After sim, grade the MBIST controller logic with FaultFlow (Linux/WSL)"),
     faultflow_repo: Path | None = typer.Option(None, "--faultflow-repo", envvar="FAULTFLOW_HOME", help="FaultFlow repo path (or set FAULTFLOW_HOME)"),

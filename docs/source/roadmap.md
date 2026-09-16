@@ -73,9 +73,18 @@ progress, and what's further out.
   negative op codes to avoid the wait-op space) threaded through both march
   engines. Scores 20/29 on `faults.example.txt` — the same total as march_c,
   but a different profile (catches SOF, which march_c misses; misses
-  CFin/CFid, which march_c catches). Research-shell only for now — the
-  separate RTL wrapper-generation path (real synthesizable BIST hardware)
-  doesn't have it yet, see below
+  CFin/CFid, which march_c catches)
+- `checkerboard` on the RTL wrapper-generation path too (`rtl/checkerboard/`
+  algo+fsm+top triple) — the first classic-path algo module whose value
+  depends on address, not just (phase, op_step): a new `addr_lsb` input
+  (wired from the FSM's own address register) drives the write/expected-data
+  mux, `{DATA_WIDTH{addr_lsb}}` or its complement, matching the research-shell
+  engine's own `wc`/`wcb`/`rc`/`rcb` semantics exactly. Self-repair and column
+  repair are free additions on top — `fail_bitmask` is a pure per-bit
+  mismatch, never a data value, so nothing downstream needed to change.
+  Verified against real Verilator: the hand-written controller drives exactly
+  its own 4-element spec (address order, op structure, and per-address
+  values), not just that faults get detected
 - `wrap-test-access`: wraps a generated design's control/status ports with an
   IEEE 1149.1/1687 (JTAG/IJTAG) test-access network and can emit its ICL
   description, via the external [warptap](https://github.com/ranaumarnadeem/warptap)
@@ -99,12 +108,9 @@ progress, and what's further out.
 
 - Real fuse/NVM device physics behind repair persistence (today's persistence
   is register-level: the load path exists, the storage element is out of scope)
-- A broader march-algorithm library: `checkerboard` is done (see above) --
-  galloping/GALPAT and similar patterns beyond the current built-ins remain
-  open. Also open: `checkerboard` on the RTL wrapper-generation path (a new
-  `rtl/checkerboard/` algo+fsm+top triple with an address-dependent write-data
-  mux, not just a `.alg` file) for real synthesizable BIST hardware, not just
-  the research-shell fault-coverage proof
+- A broader march-algorithm library: `checkerboard` is done, on both paths
+  (see above) -- galloping/GALPAT and similar patterns beyond the current
+  built-ins remain open
 - Test-access wrapping for the ports this doesn't cover yet: the rest of
   diagnosis readback (`diag_valid`/`diag_addr` — real boundary ports, now
   available via direct pins, see on-chip diagnosis logging above; `diag_overflow`

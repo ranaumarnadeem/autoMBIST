@@ -186,9 +186,10 @@ redundancy:
 
 `onchip_selfrepair` currently requires `--algo` to be one of `march-c`,
 `march-raw`, `march-1r1w` (a 1-read-port + 1-write-port config, `type: r`/
-`type: w`), `march-x`, or `mats-plus`. `march-2rw` isn't wired up yet -- its
-two concurrent same-cycle compares break the on-chip analyzer's
-single-fail-per-cycle assumption and would need new arbiter RTL.
+`type: w`), `march-2rw` (a 2-read-write-port config; its concurrent
+same-cycle dual compare needed no arbiter RTL -- both ports always compare
+the same address when reading concurrently), `march-x`, `mats-plus`, or
+`checkerboard`.
 
 `march-1r1w` is the one multi-port shape `redundancy:` accepts, and only in
 this autonomous form (no `repair_ports:` — self-repair and tester-driven
