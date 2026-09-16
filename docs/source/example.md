@@ -128,9 +128,8 @@ signoff).
   with no macro at all: `autombist test --addr-width 8 --data-width 8 --algo
   march_c --faults faults.txt`.
 - march-C isn't the only self-repair-capable algorithm: `onchip_selfrepair`
-  also works with `march-raw`, `march-x`, `mats-plus`, and (as a multi-port
-  scaffold) `march-1r1w` — only `march-2rw`'s concurrent same-cycle dual
-  compare is out of scope by design. See
+  also works with `march-raw`, `march-x`, `mats-plus`, `checkerboard`, and
+  (as multi-port scaffolds) `march-1r1w` and `march-2rw`. See
   [`flow/newalgo/`](https://github.com/ranaumarnadeem/autoMBIST/tree/main/flow/newalgo)
   for march-X and MATS+ each wrapping a different real OpenRAM macro and
   hardened clean through the same LibreLane recipe.

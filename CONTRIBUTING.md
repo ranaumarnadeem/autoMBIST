@@ -185,7 +185,7 @@ src/autombist/engine/   The algo-shell RTL + docs: fault_ram.sv (fault-injectabl
 
 src/autombist/algos/    Built-in `.alg` march-algorithm specs for the research
                          engine (march_b, march_c, march_c_plus, march_ss,
-                         march_x, march_y, mats_plus).
+                         march_x, march_y, mats_plus, checkerboard).
 
 src/autombist/repair/   The BIRA/BISR Python library (bira.py and friends) —
                          redundancy analysis and repair-signature encoding

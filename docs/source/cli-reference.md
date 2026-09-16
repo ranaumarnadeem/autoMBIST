@@ -64,7 +64,7 @@ autombist generate [OPTIONS]
 | `--seed INTEGER` | none | Random seed for reproducible fault injection (optional) |
 | `--fault-type TEXT` | `stuck-at` | Fault model: `stuck-at` (SA0/SA1), `transition-up`, `transition-down`, or `port-coupling` (march-1r1w only; march-2rw supports stuck-at/transition only) |
 | `--pulse-width-ns INTEGER` | `2` | Pulse width in clock cycles for transition faults |
-| `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, or `mats-plus` |
+| `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, `mats-plus`, or `checkerboard` |
 | `--help` | | Show this message and exit |
 
 If `--config` is omitted, autombist looks for `config.yml` in the current working
@@ -202,7 +202,7 @@ autombist run [OPTIONS]
 | `--seed INTEGER` | none | Random seed for reproducible fault injection |
 | `--fault-type TEXT` | `stuck-at` | Fault model: `stuck-at`, `transition-up`, `transition-down`, or `port-coupling` (march-1r1w only; march-2rw supports stuck-at/transition only) |
 | `--pulse-width-ns INTEGER` | `2` | Pulse width in clock cycles for transition faults |
-| `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, or `mats-plus` |
+| `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, `mats-plus`, or `checkerboard` |
 | `--verbose` | off | Print full simulator console output and detailed logs |
 | `--faultflow` / `--no-faultflow` | `--no-faultflow` | After sim, grade the MBIST controller logic with FaultFlow (Linux/WSL) |
 | `--faultflow-repo PATH` | none (env var `FAULTFLOW_HOME`) | FaultFlow repo path (or set `FAULTFLOW_HOME`) |

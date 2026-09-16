@@ -78,9 +78,9 @@ which port *composition* is required, and this is enforced at generate time:
   `rw` plus an `r`, all raise a config error).
 - `march-2rw` requires **exactly two `rw` ports** — one `rw` plus one `r`
   (or `w`), or only one `rw` port, is rejected.
-- Every other algo (`march-c`, `march-raw`, `march-x`, `mats-plus`) still
-  requires **exactly one port**, of any type — a 2-port config is rejected
-  for them.
+- Every other algo (`march-c`, `march-raw`, `march-x`, `mats-plus`,
+  `checkerboard`) still requires **exactly one port**, of any type — a 2-port
+  config is rejected for them.
 
 A 1R1W config (one read-only port, one write-only port):
 
