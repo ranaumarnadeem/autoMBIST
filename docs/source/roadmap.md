@@ -91,9 +91,17 @@ progress, and what's further out.
   package — verified with a real Icarus simulation of the inserted RTL,
   reading `self_repair_busy` through the scan path after writing
   `self_repair_start`, against the real three-macro `mem_subsystem_mbist`.
-  Also wraps `diag_overflow` (`--onchip-diagnosis`, confirmed single-bit) —
-  the rest of diagnosis readback and the wide repair ports remain further out
-  (see below)
+  Now wraps the wide (multi-bit) ports too, not just the always-1-bit ones —
+  `diag_valid`/`diag_addr` (the rest of diagnosis readback),
+  `fuse_row_repair_en`/`fuse_faulty_row_addr` (repair persistence load-in),
+  and any `repair_ports:` tester-driven passthrough pins — sized from a
+  `--config` snapshot rather than restated by hand. This was blocked on an
+  upstream `icl_parser` bug in warptap's vendored ICL parsing (fixed in
+  warptap v0.0.2, confirmed directly against a real width>1 round-trip, not
+  just the changelog) and verified end-to-end with two new real-Icarus tests:
+  a real 12-bit write reaching the real repair-persistence FSM, and a real
+  4-bit/24-bit read surviving a real clocked scan chain shared with 13 other
+  instruments
 - A proven LibreLane hardening recipe for real OpenRAM sky130 macros,
   including self-repair-wrapped variants across multiple algorithms
   (march-c, march-x, mats-plus) — this is the top-level place-and-route
@@ -111,14 +119,6 @@ progress, and what's further out.
 - A broader march-algorithm library: `checkerboard` is done, on both paths
   (see above) -- galloping/GALPAT and similar patterns beyond the current
   built-ins remain open
-- Test-access wrapping for the ports this doesn't cover yet: the rest of
-  diagnosis readback (`diag_valid`/`diag_addr` — real boundary ports, now
-  available via direct pins, see on-chip diagnosis logging above; `diag_overflow`
-  itself is already wrapped, see `wrap-test-access` in the Done section) and
-  the wide repair ports (`fuse_*`, `row_repair_en`, `col_repair_en`,
-  `faulty_bit`) — both multi-bit, blocked on an upstream `icl_parser` bug in
-  warptap's vendored ICL parsing (not on any RTL gap); a fix is in and a new
-  warptap release is expected, at which point this is worth revisiting
 - A shared controller across multiple memories, rather than one controller
   instance per memory
 

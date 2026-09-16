@@ -313,15 +313,23 @@ autombist wrap-test-access [OPTIONS]
 | `--source PATH` | none (repeatable, required) | A source file the design needs — generated wrapper(s), shared algorithm/repair RTL, macro models |
 | `--top TEXT` | none (required) | Top module name to insert the test-access network into |
 | `--out PATH` | `out/test-access` | Output directory for the inserted Verilog (and `--emit-icl`'s ICL file) |
-| `--onchip-selfrepair` | off | Also wrap `self_repair_start`/`done`/`fail`/`busy` — must match the redundancy config the sources were generated with |
-| `--onchip-repair-persistence` | off | Also wrap `repair_load`/`repair_load_done` — must match the redundancy config the sources were generated with |
-| `--onchip-diagnosis` | off | Also wrap `diag_overflow` — must match the redundancy config the sources were generated with |
+| `--onchip-selfrepair` | off | Also wrap `self_repair_start`/`done`/`fail`/`busy`. Omit when passing `--config` |
+| `--onchip-repair-persistence` | off | Also wrap `repair_load`/`repair_load_done`. Omit when passing `--config` |
+| `--onchip-diagnosis` | off | Also wrap `diag_overflow`. Omit when passing `--config` |
+| `--config PATH` | none | Path to the `config.yml` snapshot `generate` wrote alongside these sources — derives the three flags above PLUS the wide-port geometry needed to also wrap `diag_valid`/`diag_addr`/`fuse_row_repair_en`/`fuse_faulty_row_addr`/any `repair_ports:`. Without it, only the always-1-bit ports are wrapped. Errors if combined with any of the three flags above (ambiguous — pick one source) |
 | `--emit-icl` | off | Also emit an ICL description of the inserted network |
 
-Wraps exactly the always-1-bit control/status ports a generated wrapper exposes:
-`test_mode`, `bist_start`, `bist_done`, `bist_fail`, and — with the matching
-flags — `self_repair_start`/`done`/`fail`/`busy`,
-`repair_load`/`repair_load_done`, and `diag_overflow`.
+Without `--config`: wraps exactly the always-1-bit control/status ports a
+generated wrapper exposes — `test_mode`, `bist_start`, `bist_done`,
+`bist_fail`, and, with the matching flags, `self_repair_start`/`done`/`fail`/
+`busy`, `repair_load`/`repair_load_done`, and `diag_overflow`.
+
+With `--config`: also wraps the wide (multi-bit) ports the geometry in that
+snapshot calls for — `diag_valid`/`diag_addr` (the rest of diagnosis
+readback), `fuse_row_repair_en`/`fuse_faulty_row_addr` (repair persistence
+load-in), and any `repair_ports:` tester-driven passthrough pins. These are
+real boundary ports on the generated wrapper, just multi-bit, and get the
+same control/status treatment as any 1-bit port, at their real width.
 
 The inserted module adds exactly 5 new top-level ports — the standard IEEE
 1149.1 TAP interface — and keeps every original port declared alongside them,
@@ -358,25 +366,21 @@ so the original output pin keeps being driven exactly as before, in parallel
 with the new JTAG read path. Nothing about reading these ports functionally
 changes.
 
-Two things this command deliberately does **not** wrap:
+One thing this command never wraps: **`fail_valid`/`fail_addr` and
+`unrepairable`** — these are not ports at all on the generated wrapper; they
+are internal wires, never promoted to the boundary. `self_repair_fail`
+(already wrapped, above) is `unrepairable`'s externally-visible reflection.
+`row_repair_en`/`faulty_row_addr`/`col_repair_en`/`faulty_bit` are the same
+story specifically *under* `onchip_selfrepair` (internal wires there) — under
+the tester-driven `repair_ports:` config instead (mutually exclusive with
+`onchip_selfrepair`), they ARE real boundary ports, wrappable via `--config`
+like any other `repair_ports:` entry.
 
-- **`fail_valid`/`fail_addr` and `unrepairable`** — these are not ports at all
-  on the generated wrapper; they are internal wires, never promoted to the
-  boundary. `self_repair_fail` (already wrapped, above) is `unrepairable`'s
-  externally-visible reflection.
-- **The rest of diagnosis readback (`diag_valid`, `diag_addr`) and the wide
-  repair ports** (`fuse_row_repair_en`, `fuse_faulty_row_addr`,
-  `row_repair_en`, `faulty_row_addr`, `col_repair_en`, `faulty_bit`) — these
-  ARE real boundary ports, but multi-bit, so out of scope for now. Every port
-  this command wraps today is confirmed exactly 1 bit wide, which matters:
-  warptap's own test suite found and documented a real bug in its vendored
-  ICL parser triggered specifically by width-greater-than-1 instruments.
-  Wrapping the wider ports is real, separate future work once that's
-  resolved, not a corner cut here.
-
-Requires (Linux/WSL only): `pip install warptap` (or the `test-access` extra —
-`pip install "autombist[test-access]"`), plus Yosys and Icarus Verilog on PATH.
-warptap shells out to both; neither is bundled.
+Requires (Linux/WSL only): `pip install warptap>=0.0.2` (or the `test-access`
+extra — `pip install "autombist[test-access]"`), plus Yosys and Icarus Verilog
+on PATH. warptap shells out to both; neither is bundled. `>=0.0.2` matters: an
+earlier warptap has a real bug in its vendored ICL parser on any width>1
+instrument, which every wide port above needs.
 
 ### Examples
 
@@ -388,6 +392,23 @@ autombist wrap-test-access \
     --source out/sram_1rw/march_c/march_c_top.sv \
     --source out/sram_1rw/sram_model.sv \
     --top sram_1rw_mbist --emit-icl
+```
+
+With `--config` (also wraps `diag_valid`/`diag_addr`/`fuse_row_repair_en`/
+`fuse_faulty_row_addr`, sized from the snapshot's own redundancy geometry):
+
+```bash
+autombist wrap-test-access \
+    --source out/sram_1rw/sram_1rw_mbist.v \
+    --source out/sram_1rw/march_c/march_c_algo.sv \
+    --source out/sram_1rw/march_c/march_c_fsm.sv \
+    --source out/sram_1rw/march_c/march_c_top.sv \
+    --source out/sram_1rw/onchip_row_repair_analyzer.sv \
+    --source out/sram_1rw/onchip_selfrepair_ctrl.sv \
+    --source out/sram_1rw/onchip_diagnosis_log.sv \
+    --source out/sram_1rw/repair_remap_row.sv \
+    --source out/sram_1rw/sram_model.sv \
+    --top sram_1rw_mbist --config out/sram_1rw/config.yml --emit-icl
 ```
 
 ### Output
