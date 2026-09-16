@@ -66,11 +66,16 @@ _STATUS_PORTS = (
     "repair_load_done",
     "diag_overflow",
 )
-# Present once onchip_repair_persistence/onchip_diagnosis are on, deliberately never
-# wrapped (see testaccess.py's module docstring for why) -- checked as the negative case
-# alongside _CONTROL_PORTS/_STATUS_PORTS in
-# test_control_ports_are_jtag_exclusive_status_ports_are_not.
-_EXCLUDED_WIDE_PORTS = ("fuse_row_repair_en", "fuse_faulty_row_addr", "diag_valid", "diag_addr")
+# Present once onchip_repair_persistence/onchip_diagnosis are on AND their geometry is
+# given (num_spare_rows/num_diagnosis_entries/addr_width) -- checked alongside
+# _CONTROL_PORTS/_STATUS_PORTS in test_control_ports_are_jtag_exclusive_status_ports_are_not.
+# Widths match that test's own fixture (num_spare_rows=2, num_diagnosis_entries=4, addr_width=6).
+_WIDE_PORTS = {
+    "fuse_row_repair_en": ("control", 2),
+    "fuse_faulty_row_addr": ("control", 12),
+    "diag_valid": ("status", 4),
+    "diag_addr": ("status", 24),
+}
 # Always present, on every config, never candidates for classify_test_access_ports at all
 # (clk/rst_n are infrastructure; func_* is the functional read/write path, not a
 # control/status instrument) -- see test_control_ports_are_jtag_exclusive_status_ports_are_not.
@@ -173,16 +178,18 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
        build_instrument_specs choosing WRITE vs READ), checked here against warptap's real
        output rather than mocked.
 
-    A third fact, pinned down the same way: the wide ports this module deliberately does
-    not wrap (fuse_row_repair_en, fuse_faulty_row_addr -- present because this config
-    turns on onchip_repair_persistence; diag_valid, diag_addr -- present because this
-    config also turns on onchip_diagnosis) get no SIB treatment of any kind, not even an
-    observe tap -- confirmed by (a) their direct passthrough connection into
-    onchip_row_repair_analyzer/onchip_diagnosis_log still being exactly what
-    wrapper_template.j2 generated, untouched, (b) no warptap_sib_* instance existing for
-    any of them, and (c) the chain having exactly the 11 wrapped ports (10 base +
-    diag_overflow, the one diagnosis port that IS wrappable -- single-bit, unlike its two
-    siblings), not 14.
+    A third fact, exercising this module's wide-port support (fuse_row_repair_en,
+    fuse_faulty_row_addr -- present because this config turns on
+    onchip_repair_persistence and passes num_spare_rows/addr_width; diag_valid,
+    diag_addr -- onchip_diagnosis plus num_diagnosis_entries/addr_width): these get the
+    SAME control/status treatment as any 1-bit port -- instrument_write/bc1_shift_only,
+    a real warptap_sib_* instance, direction matching their role -- just at their real
+    width, confirmed both via the rendered Verilog and directly against
+    graph.chain[i].instrument's own width/direction/signal_bits (the exact width>1 path
+    that used to hit warptap's vendored icl_parser AssertionError bug this whole feature
+    was blocked on). The chain has 15 ports total: 4 base + 4 self-repair + 4 persistence
+    (repair_load, fuse_row_repair_en, fuse_faulty_row_addr, repair_load_done) + 3
+    diagnosis (diag_valid, diag_addr, diag_overflow).
 
     A fourth: fail_valid/fail_addr are not merely unwrapped, they are not wrapper ports at
     all under any config, checked against the top module's own port list directly (not
@@ -196,12 +203,14 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
     and this also confirms the inserted TAP genuinely runs in its own clock domain (tap_core
     is clocked by tck/trst_n alone, never clk/rst_n, traced directly).
     """
+    from warptap.icl_model import SignalBinding
+
     config = {
         "memory_name": "sram_1rw", "wrapper_module_name": "sram_1rw_mbist",
         "addr_width": 6, "data_width": 8, "we_active_low": True,
         "ports": {"clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "we": "we0", "csb": "csb0"},
         "redundancy": {
-            "num_spare_rows": 1, "num_spare_cols": 0,
+            "num_spare_rows": 2, "num_spare_cols": 0,
             "onchip_selfrepair": True, "onchip_repair_persistence": True,
             "onchip_diagnosis": True, "num_diagnosis_entries": 4,
         },
@@ -227,11 +236,13 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
     inserted_verilog, graph, _root = wrap_test_access(
         sources, "sram_1rw_mbist",
         onchip_selfrepair=True, onchip_repair_persistence=True, onchip_diagnosis=True,
+        num_spare_rows=2, num_diagnosis_entries=4, addr_width=6,
     )
-    assert len(graph.chain) == 11, (
-        "expected exactly the 11 wrapped ports in the chain (10 base + diag_overflow) -- "
-        "a longer chain would mean an excluded wide port (including diag_valid/diag_addr) "
-        "got swept in too"
+    assert len(graph.chain) == 15, (
+        "expected exactly 15 wrapped ports in the chain (4 base + 4 self-repair + "
+        "4 persistence incl. the 2 new wide ones + 3 diagnosis incl. the 2 new wide "
+        "ones) -- a different count would mean a wide port's geometry gate didn't fire "
+        "the way this fixture's config expects"
     )
 
     # fail_valid/fail_addr are never wrapper ports at all (confirmed directly against
@@ -287,50 +298,48 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
             f"{port}'s observe cell should tap the real signal directly by name"
         )
 
-    for port in _EXCLUDED_WIDE_PORTS:
-        assert f".{port}({port})" in inserted_verilog, (
-            f"{port}'s direct passthrough connection into onchip_row_repair_analyzer "
-            "should survive insertion completely untouched, exactly as wrapper_template.j2 "
-            "generated it -- this port is not supposed to be wrapped at all"
+    chain_by_name = {n.instrument.name: n.instrument for n in graph.chain}
+    for port, (role, width) in _WIDE_PORTS.items():
+        assert f"warptap_sib_{port}" in inserted_verilog, (
+            f"{port} (a wide port) should now get real SIB treatment -- found no "
+            f"warptap_sib_{port}* instance"
         )
-        assert f"warptap_sib_{port}" not in inserted_verilog, (
-            f"{port} should have no SIB treatment at all (it is a wide, multi-bit-capable "
-            f"port excluded from v1 scope) -- found a warptap_sib_{port}* instance anyway"
+        instrument = chain_by_name.get(port)
+        assert instrument is not None, f"{port} missing from the SIB chain entirely"
+        assert instrument.width == width, f"{port} expected width {width}, got {instrument.width}"
+        expected_direction = "WRITE" if role == "control" else "READ"
+        assert instrument.direction.name == expected_direction, (
+            f"{port} expected direction {expected_direction}, got {instrument.direction.name}"
+        )
+        # The exact bit-order convention wrap_test_access's build_instrument_specs relies
+        # on: signal_bits[k] binds bit k of the real port -- checked directly against the
+        # real InstrumentNode warptap constructed, not just inferred from width matching.
+        assert instrument.signal_bits == tuple(SignalBinding(port, i) for i in range(width)), (
+            f"{port}'s signal_bits do not follow the expected bit-order convention"
         )
 
 
-def test_tester_driven_repair_ports_are_not_wrapped(tmp_path: Path) -> None:
-    """The other half of the wide-repair-port exclusion: row_repair_en/faulty_row_addr/
-    col_repair_en/faulty_bit, declared through an explicit `repair_ports` config list
-    rather than the onchip_selfrepair/onchip_repair_persistence flags. This needs its own
-    fixture rather than extending test_control_ports_are_jtag_exclusive_status_ports_are_not
-    above: generator.py rejects onchip_selfrepair together with column repair, so a design
-    exercising col_repair_en/faulty_bit cannot also carry self_repair_*/fuse_* ports.
+_REPAIR_PORTS_CONFIG = {
+    "memory_name": "sram_1rw", "wrapper_module_name": "sram_1rw_mbist",
+    "addr_width": 4, "data_width": 8, "we_active_low": True,
+    "ports": {
+        "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0",
+        "we": "we0", "csb": "csb0", "spare_wen": "spare_wen0",
+    },
+    "redundancy": {"num_spare_rows": 2, "num_spare_cols": 1},
+    # bit_index_width = ceil(log2(data_width=8)) = 3, so faulty_bit is 1 spare col * 3.
+    "repair_ports": [
+        {"name": "row_repair_en", "width": 2, "dir": "input"},
+        {"name": "faulty_row_addr", "width": 8, "dir": "input"},
+        {"name": "col_repair_en", "width": 1, "dir": "input"},
+        {"name": "faulty_bit", "width": 3, "dir": "input"},
+    ],
+}
 
-    Same two checks as the fuse_* pair, for all four ports at once: each keeps its exact
-    pre-insertion passthrough connection untouched, and none gets any warptap_sib_*
-    instance. Also pins the chain at exactly the base 4 (test_mode/bist_start/bist_done/
-    bist_fail) -- with no onchip_selfrepair here, that is everything wrap_test_access
-    should ever produce for this design.
-    """
-    config = {
-        "memory_name": "sram_1rw", "wrapper_module_name": "sram_1rw_mbist",
-        "addr_width": 4, "data_width": 8, "we_active_low": True,
-        "ports": {
-            "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0",
-            "we": "we0", "csb": "csb0", "spare_wen": "spare_wen0",
-        },
-        "redundancy": {"num_spare_rows": 2, "num_spare_cols": 1},
-        # bit_index_width = ceil(log2(data_width=8)) = 3, so faulty_bit is 1 spare col * 3.
-        "repair_ports": [
-            {"name": "row_repair_en", "width": 2, "dir": "input"},
-            {"name": "faulty_row_addr", "width": 8, "dir": "input"},
-            {"name": "col_repair_en", "width": 1, "dir": "input"},
-            {"name": "faulty_bit", "width": 3, "dir": "input"},
-        ],
-    }
+
+def _generate_repair_ports_sources(tmp_path: Path) -> list[Path]:
     config_path = tmp_path / "config.yml"
-    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    config_path.write_text(yaml.safe_dump(_REPAIR_PORTS_CONFIG, sort_keys=False), encoding="utf-8")
     wrapper_path = generate_from_config(config_path, tmp_path / "gen", algo="march-c")
     shared = wrapper_path.parent
     sources = [
@@ -345,21 +354,69 @@ def test_tester_driven_repair_ports_are_not_wrapped(tmp_path: Path) -> None:
     ]
     for src in sources:
         assert src.is_file(), f"expected generated openMBIST source missing: {src}"
+    return sources
+
+
+def test_tester_driven_repair_ports_are_not_wrapped_when_omitted(tmp_path: Path) -> None:
+    """The opt-out-by-omission case: this config's generated RTL has real
+    row_repair_en/faulty_row_addr/col_repair_en/faulty_bit boundary ports (via
+    `repair_ports:`), but wrap_test_access is called WITHOUT `repair_ports=` -- the same
+    call shape every pre-wide-port-support caller used. Confirms this stays exactly the
+    backward-compatible no-op: each port keeps its pre-insertion passthrough connection
+    untouched, none gets any warptap_sib_* instance, and the chain is exactly the base 4
+    (test_mode/bist_start/bist_done/bist_fail) -- with no onchip_selfrepair here, that is
+    everything wrap_test_access produces when repair_ports is omitted.
+
+    Needs its own fixture rather than reusing
+    test_control_ports_are_jtag_exclusive_status_ports_are_not's: generator.py rejects
+    onchip_selfrepair together with column repair, so a design exercising
+    col_repair_en/faulty_bit cannot also carry self_repair_*/fuse_* ports.
+    """
+    sources = _generate_repair_ports_sources(tmp_path)
 
     inserted_verilog, graph, _root = wrap_test_access(sources, "sram_1rw_mbist")
     assert len(graph.chain) == 4, (
         "expected only the base 4 ports -- a longer chain would mean a tester-driven "
-        "repair port got swept in"
+        "repair port got swept in despite repair_ports not being passed"
     )
 
     for port in ("row_repair_en", "faulty_row_addr", "col_repair_en", "faulty_bit"):
         assert f".{port}({port})" in inserted_verilog, (
             f"{port}'s direct passthrough connection should survive insertion untouched -- "
-            "this port is not supposed to be wrapped at all"
+            "repair_ports was not passed, so nothing here should be wrapped"
         )
         assert f"warptap_sib_{port}" not in inserted_verilog, (
-            f"{port} should have no SIB treatment at all -- found a warptap_sib_{port}* "
-            "instance anyway"
+            f"{port} should have no SIB treatment at all when repair_ports is omitted -- "
+            f"found a warptap_sib_{port}* instance anyway"
+        )
+
+
+def test_tester_driven_repair_ports_are_wrapped_when_given(tmp_path: Path) -> None:
+    """The other half: the SAME generated RTL as the omitted case above, but
+    wrap_test_access is now given `repair_ports=` matching the config's own list --
+    every one of the four tester-driven repair ports should get real, correctly-widthed
+    SIB treatment (all four are dir='input' in this fixture -- control/WRITE)."""
+    sources = _generate_repair_ports_sources(tmp_path)
+
+    inserted_verilog, graph, _root = wrap_test_access(
+        sources, "sram_1rw_mbist", repair_ports=_REPAIR_PORTS_CONFIG["repair_ports"],
+    )
+    assert len(graph.chain) == 8, (
+        "expected the base 4 plus all 4 repair_ports entries"
+    )
+
+    chain_by_name = {n.instrument.name: n.instrument for n in graph.chain}
+    for rp in _REPAIR_PORTS_CONFIG["repair_ports"]:
+        port, width = rp["name"], rp["width"]
+        assert f"warptap_sib_{port}" in inserted_verilog, (
+            f"{port} should now get real SIB treatment -- found no warptap_sib_{port}* instance"
+        )
+        instrument = chain_by_name.get(port)
+        assert instrument is not None, f"{port} missing from the SIB chain entirely"
+        assert instrument.width == width, f"{port} expected width {width}, got {instrument.width}"
+        assert instrument.direction.name == "WRITE", (
+            f"{port} has dir='input' (tester writes it) -- expected WRITE direction, "
+            f"got {instrument.direction.name}"
         )
 
 
@@ -456,6 +513,12 @@ def test_icl_round_trips_through_the_vendored_parser(tmp_path: Path) -> None:
     ANTLR discards the comments those values are recorded in, so every reimported instrument
     always comes back with signal_bits=()/capture_value=0 regardless of the original network
     -- asserting equality there would be asserting a guarantee that does not exist.
+
+    Also passes num_spare_rows/addr_width, adding a real width=6 fuse_faulty_row_addr
+    WRITE instrument -- the single most relevant regression test for the bug that
+    blocked wide-port support in the first place: warptap v0.0.1's vendored icl_parser
+    threw a bare AssertionError constructing an IclRegisterModel for ANY width>1
+    instrument, and that construction happens inside import_icl below.
     """
     icl_parser_dir = Path.home() / "warptap" / "third_party" / "icl_parser"
     if not icl_parser_dir.is_dir() or not any(icl_parser_dir.iterdir()):
@@ -505,11 +568,17 @@ def test_icl_round_trips_through_the_vendored_parser(tmp_path: Path) -> None:
 
     _inserted_verilog, graph, root = wrap_test_access(
         sources, "sram_1rw_mbist", onchip_selfrepair=True, onchip_repair_persistence=True,
+        num_spare_rows=1, addr_width=6,
     )
-    assert len(graph.chain) == 10
+    assert len(graph.chain) == 12
     assert {n.instrument.direction.name for n in graph.chain} == {"WRITE", "READ"}, (
         "expected a real mix of both directions in this fixture -- a round-trip test with "
         "only one direction wouldn't actually exercise import_icl's direction detection"
+    )
+    widths_by_name = {n.instrument.name: n.instrument.width for n in graph.chain}
+    assert widths_by_name["fuse_faulty_row_addr"] == 6, (
+        "expected a real width>1 instrument in this fixture -- this is exactly the "
+        "scenario warptap v0.0.1's vendored icl_parser AssertionError blocked"
     )
 
     icl_path = tmp_path / "sram_1rw_mbist_test_access.icl"
