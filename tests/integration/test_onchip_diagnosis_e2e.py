@@ -36,7 +36,7 @@ BASE_PORTS = {"clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "w
 # Self-repair-capable single-port algos (matches test_onchip_selfrepair_e2e.py):
 # diagnosis is a second, independent consumer of the same fail_valid/fail_addr
 # stream every one of these already produces.
-SELFREPAIR_ALGOS = ["march-c", "march-raw", "march-x", "mats-plus"]
+SELFREPAIR_ALGOS = ["march-c", "march-raw", "march-x", "mats-plus", "checkerboard"]
 
 
 def _config(memory_name: str, wrapper_module_name: str, num_spare_rows: int, num_diagnosis_entries: int) -> dict:
