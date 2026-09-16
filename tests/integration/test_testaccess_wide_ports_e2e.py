@@ -1,6 +1,14 @@
-"""Real-Icarus proof that wide (multi-bit) WRITE and READ ports actually work through
-a real, clocked JTAG scan path -- not just the structural (real Yosys ingest + real SIB
-insertion, but no clocking) proof in test_testaccess_warptap_e2e.py.
+"""Real-Icarus proof that every control/status port this fixture's config can produce
+actually works through a real, clocked JTAG scan path -- not just the structural (real
+Yosys ingest + real SIB insertion, but no clocking) proof in
+test_testaccess_warptap_e2e.py. Covers both the wide (multi-bit) ports
+(fuse_faulty_row_addr/fuse_row_repair_en WRITE, diag_valid/diag_addr READ) and the
+always-1-bit ones that were previously only structurally verified anywhere in this
+project (test_mode/bist_start/bist_done/bist_fail, self_repair_done/self_repair_fail,
+diag_overflow) -- self_repair_busy and the always-1-bit self_repair_start are the only
+ones with a prior clocked-simulation proof (test_testaccess_warptap_e2e.py's
+test_self_repair_start_write_and_busy_read_through_real_jtag), and even that only
+proves self-repair STARTED, not that it ran to completion.
 
 Deliberately uses a NEW, small, purpose-built single-wrapper fixture
 (tb_sram_1rw_mbist.v) rather than the shared flow/multimem mem_subsystem_mbist.sv
@@ -8,6 +16,11 @@ fixture test_self_repair_start_write_and_busy_read_through_real_jtag reuses: tha
 hand-written 3-macro integration file has no persistence/diagnosis ports of its own
 today, and adding them there would be an avoidable-risk edit to a fixture shared with
 tests/hardware/test_mem_subsystem_mbist.py.
+
+The tester-driven repair_ports: passthrough ports (row_repair_en/faulty_row_addr/
+col_repair_en/faulty_bit) are NOT covered here -- they need a genuinely different
+fixture (no onchip_selfrepair) and a testbench that also drives the functional bus, see
+test_testaccess_repair_ports_e2e.py.
 
 Same skip conditions as test_testaccess_warptap_e2e.py (warptap, iverilog, yosys).
 """
@@ -277,3 +290,135 @@ def test_wide_read_addr_survives_real_jtag_fault_free(tmp_path: Path) -> None:
         f"diag_addr expected all-zero on a fault-free run, observed through the real "
         f"JTAG scan path -- got {results[0]}"
     )
+
+
+def test_base_bist_completes_through_real_jtag(tmp_path: Path) -> None:
+    """The base march-C BIST quartet (test_mode/bist_start control, bist_done/bist_fail
+    status) -- always present on every wrapper, previously only structurally verified
+    (real Yosys ingest + SIB insertion, no clocking). wrapper_template.j2's
+    `effective_bist_start = (bist_start && test_mode && !self_repair_busy) ||
+    ctrl_bist_start` collapses to `bist_start && test_mode` since self-repair is never
+    triggered here -- both must be WRITTEN AND HELD (an instrument_write shadow
+    register only changes on Update-DR), matching march_c_fsm.sv's own
+    `ST_DONE: if (!start) ...` (dropping either early would truncate the run).
+
+    march-C is 10n; for this fixture's addr_width=6 (n=64) and the generator's default
+    READ_LATENCY=1, a full pass is ~1601 cycles (traced directly through
+    march_c_fsm.sv's own ST_ISSUE/ST_WAIT/ST_CHECK states: 2 cycles/write,
+    2+READ_LATENCY cycles/read, 5 of each per address) -- iRunLoop(2500) below is a
+    generous margin, not a tight estimate. Both reads chained in one program (proven
+    safe: check_reads' masked .passed comparison is per-target, independent of how
+    many other reads share the program) rather than two separate simulation runs, to
+    avoid paying for the ~2500-cycle wait twice.
+    """
+    from warptap.pdl_interpreter import PDLInterpreter
+    from warptap.pdl_verify import check_reads, correlate_observed
+
+    sources = _generate_sources(tmp_path)
+    inserted_verilog, graph, root = wrap_test_access(
+        sources, "sram_1rw_mbist",
+        onchip_selfrepair=True, onchip_repair_persistence=True, onchip_diagnosis=True,
+        num_spare_rows=2, num_diagnosis_entries=4, addr_width=6,
+    )
+    assert len(graph.chain) == 15
+
+    pdl = PDLInterpreter(graph, root)
+    pdl.iTarget("test_mode")
+    pdl.iWrite(1)
+    pdl.iApply()
+    pdl.iTarget("bist_start")
+    pdl.iWrite(1)
+    pdl.iApply()
+    pdl.iRunLoop(2500)
+    pdl.iTarget("bist_done")
+    pdl.iRead(1)
+    pdl.iApply()
+    pdl.iTarget("bist_fail")
+    pdl.iRead(0)
+    pdl.iApply()
+
+    ir_ops, tdo_by_cycle = _run_pdl_program(pdl.program, tmp_path, inserted_verilog)
+    observed = correlate_observed(ir_ops, tdo_by_cycle)
+    results = check_reads(ir_ops, observed)
+
+    assert len(results) == 2
+    assert results[0].passed, f"bist_done expected 1 after a full march-C pass -- got {results[0]}"
+    assert results[1].passed, f"bist_fail expected 0 on a fault-free run -- got {results[1]}"
+
+
+def test_self_repair_completes_through_real_jtag(tmp_path: Path) -> None:
+    """self_repair_done/self_repair_fail: the on-chip self-repair FSM's other two
+    status outputs -- self_repair_busy, its third, is already proven by
+    test_self_repair_start_write_and_busy_read_through_real_jtag
+    (test_testaccess_warptap_e2e.py), but only that self-repair STARTED, not that it
+    finished. onchip_selfrepair_ctrl.sv's own fault-free trace (S_IDLE ->
+    S_ANALYZE_KICK -> S_ANALYZE_WAIT -> S_ANALYZE_LATCH -> S_DECIDE -> S_VERIFY_KICK ->
+    S_VERIFY_WAIT -> S_DONE) runs a FULL march-C analyze pass AND a full march-C verify
+    pass before `self_repair_done &lt;= 1; self_repair_fail &lt;= bist_fail` (0, fault-free)
+    -- roughly 2x a plain BIST pass's ~1601 cycles. self_repair_busy does NOT drop
+    before self_repair_done asserts (it is a pure function of `ctrl_state != S_IDLE`,
+    staying high through all of S_DONE too, confirmed independently by
+    tests/hardware/test_soc_hw_selfrepair.py) -- this test polls self_repair_done
+    directly rather than treating self_repair_busy dropping as "done"."""
+    from warptap.pdl_interpreter import PDLInterpreter
+    from warptap.pdl_verify import check_reads, correlate_observed
+
+    sources = _generate_sources(tmp_path)
+    inserted_verilog, graph, root = wrap_test_access(
+        sources, "sram_1rw_mbist",
+        onchip_selfrepair=True, onchip_repair_persistence=True, onchip_diagnosis=True,
+        num_spare_rows=2, num_diagnosis_entries=4, addr_width=6,
+    )
+    assert len(graph.chain) == 15
+
+    pdl = PDLInterpreter(graph, root)
+    pdl.iTarget("self_repair_start")
+    pdl.iWrite(1)
+    pdl.iApply()
+    pdl.iRunLoop(5000)
+    pdl.iTarget("self_repair_done")
+    pdl.iRead(1)
+    pdl.iApply()
+    pdl.iTarget("self_repair_fail")
+    pdl.iRead(0)
+    pdl.iApply()
+
+    ir_ops, tdo_by_cycle = _run_pdl_program(pdl.program, tmp_path, inserted_verilog)
+    observed = correlate_observed(ir_ops, tdo_by_cycle)
+    results = check_reads(ir_ops, observed)
+
+    assert len(results) == 2
+    assert results[0].passed, (
+        f"self_repair_done expected 1 after a full analyze+verify pass -- got {results[0]}"
+    )
+    assert results[1].passed, f"self_repair_fail expected 0 on a fault-free run -- got {results[1]}"
+
+
+def test_diag_overflow_survives_real_jtag_fault_free(tmp_path: Path) -> None:
+    """diag_overflow's own turn in the same family as
+    test_wide_read_survives_real_jtag_fault_free/
+    test_wide_read_addr_survives_real_jtag_fault_free -- the third and last
+    diagnosis-log status port, previously only structurally verified. Fault-free run,
+    so expect 0 (no overflow -- nothing was ever logged)."""
+    from warptap.pdl_interpreter import PDLInterpreter
+    from warptap.pdl_verify import check_reads, correlate_observed
+
+    sources = _generate_sources(tmp_path)
+    inserted_verilog, graph, root = wrap_test_access(
+        sources, "sram_1rw_mbist",
+        onchip_selfrepair=True, onchip_repair_persistence=True, onchip_diagnosis=True,
+        num_spare_rows=2, num_diagnosis_entries=4, addr_width=6,
+    )
+    assert len(graph.chain) == 15
+
+    pdl = PDLInterpreter(graph, root)
+    pdl.iTarget("diag_overflow")
+    pdl.iRead(0)
+    pdl.iApply()
+
+    ir_ops, tdo_by_cycle = _run_pdl_program(pdl.program, tmp_path, inserted_verilog)
+    observed = correlate_observed(ir_ops, tdo_by_cycle)
+    results = check_reads(ir_ops, observed)
+
+    assert len(results) == 1
+    assert results[0].passed, f"diag_overflow expected 0 on a fault-free run -- got {results[0]}"
