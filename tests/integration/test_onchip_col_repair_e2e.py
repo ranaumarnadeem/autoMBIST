@@ -45,7 +45,7 @@ COL_PORTS = {
 # Self-repair-capable single-port algos with column repair wired up
 # (generator.py's _COL_SELFREPAIR_ALGOS) -- march-1r1w/march-2rw are deferred,
 # see rtl/onchip_2d_repair_analyzer.sv and generator.py's comment.
-COL_SELFREPAIR_ALGOS = ["march-c", "march-raw", "march-x", "mats-plus"]
+COL_SELFREPAIR_ALGOS = ["march-c", "march-raw", "march-x", "mats-plus", "checkerboard"]
 
 # gap_demo's residual-fail set depends on march visitation order -- see
 # sram_spares_col_gap_demo.v's header and test_onchip_col_repair.py's

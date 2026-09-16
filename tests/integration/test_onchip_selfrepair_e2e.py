@@ -60,12 +60,12 @@ def _config(memory_name: str, wrapper_module_name: str, num_spare_rows: int) -> 
     }
 
 
-# Self-repair-capable single-port algos (Workstreams A + B1): march_c_top,
-# march_raw_top, march_x_top, and mats_plus_top all stream fail_valid/
-# fail_addr, and the single-port wrapper branch consumes that stream
-# generically -- so every scenario below runs against all four, proving
-# self-repair isn't a march-c-only accident.
-SELFREPAIR_ALGOS = ["march-c", "march-raw", "march-x", "mats-plus"]
+# Self-repair-capable single-port algos (Workstreams A + B1, plus
+# checkerboard): march_c_top, march_raw_top, march_x_top, mats_plus_top, and
+# checkerboard_top all stream fail_valid/fail_addr, and the single-port
+# wrapper branch consumes that stream generically -- so every scenario below
+# runs against all five, proving self-repair isn't a march-c-only accident.
+SELFREPAIR_ALGOS = ["march-c", "march-raw", "march-x", "mats-plus", "checkerboard"]
 
 
 def _generate(tmp_path: Path, config: dict, subdir: str, algo: str = "march-c") -> Path:
