@@ -687,6 +687,51 @@ def test_cli_init_creates_scaffold_files(tmp_path: Path) -> None:
     assert openram_cfg["word_size"] == 32
 
 
+def test_wrap_test_access_config_and_legacy_flags_conflict(tmp_path: Path) -> None:
+    """--config derives the flags itself -- passing both is ambiguous, so it's a hard
+    error rather than silently picking one source, matching this repo's own
+    never-silently-accept-ambiguous-input style. Fails before touching warptap at all
+    (no `pip install warptap` needed to run this test)."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        yaml.safe_dump({"addr_width": 4, "wrapper_module_name": "x"}), encoding="utf-8",
+    )
+    source = tmp_path / "x.v"
+    source.write_text("module x(); endmodule\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "wrap-test-access",
+            "--source", str(source), "--top", "x",
+            "--config", str(config_path), "--onchip-selfrepair",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "--config already derives" in _plain(result.output)
+
+
+def test_wrap_test_access_config_top_mismatch_errors(tmp_path: Path) -> None:
+    """A --config snapshot whose wrapper_module_name disagrees with --top is almost
+    certainly sources/config from two different generate runs -- caught with a clear
+    message before any Yosys/warptap work, not a confusing failure deep inside
+    insertion. Also doesn't need warptap installed."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        yaml.safe_dump({"addr_width": 4, "wrapper_module_name": "other_module"}), encoding="utf-8",
+    )
+    source = tmp_path / "x.v"
+    source.write_text("module x(); endmodule\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["wrap-test-access", "--source", str(source), "--top", "x", "--config", str(config_path)],
+    )
+    assert result.exit_code == 1
+    assert "does not match" in _plain(result.output)
+    assert "other_module" in _plain(result.output)
+
+
 def test_cli_init_refuses_overwrite_without_force(tmp_path: Path) -> None:
     outdir = tmp_path / "starter"
     outdir.mkdir(parents=True)

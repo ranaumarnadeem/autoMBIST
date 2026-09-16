@@ -534,17 +534,55 @@ def grade_controller(
 
 def _wrap_test_access(
     sources: list[Path], top: str, out: Path, *,
-    onchip_selfrepair: bool, onchip_repair_persistence: bool, onchip_diagnosis: bool, emit_icl: bool,
+    onchip_selfrepair: bool, onchip_repair_persistence: bool, onchip_diagnosis: bool,
+    config: Path | None, emit_icl: bool,
 ) -> None:
-    from autombist.testaccess import TestAccessUnavailable, classify_test_access_ports, wrap_test_access
+    from autombist.testaccess import (
+        TestAccessUnavailable,
+        classify_test_access_ports,
+        test_access_kwargs_from_config,
+        wrap_test_access,
+    )
+
+    if config is not None:
+        if onchip_selfrepair or onchip_repair_persistence or onchip_diagnosis:
+            typer.secho(
+                "autombist: --config already derives --onchip-selfrepair/"
+                "--onchip-repair-persistence/--onchip-diagnosis from the snapshot -- "
+                "omit them when passing --config",
+                err=True, fg=typer.colors.RED,
+            )
+            raise typer.Exit(code=1)
+        try:
+            loaded = yaml.safe_load(config.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        if not isinstance(loaded, dict):
+            typer.secho(f"autombist: {config} must be a YAML mapping", err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        if loaded.get("wrapper_module_name") != top:
+            typer.secho(
+                f"autombist: --top {top!r} does not match {config}'s own "
+                f"wrapper_module_name {loaded.get('wrapper_module_name')!r} -- --config "
+                "and --source/--top likely come from different generate runs",
+                err=True, fg=typer.colors.RED,
+            )
+            raise typer.Exit(code=1)
+        try:
+            ta_kwargs = test_access_kwargs_from_config(loaded)
+        except ValueError as exc:
+            typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+    else:
+        ta_kwargs = {
+            "onchip_selfrepair": onchip_selfrepair,
+            "onchip_repair_persistence": onchip_repair_persistence,
+            "onchip_diagnosis": onchip_diagnosis,
+        }
 
     try:
-        inserted_verilog, graph, root = wrap_test_access(
-            sources, top,
-            onchip_selfrepair=onchip_selfrepair,
-            onchip_repair_persistence=onchip_repair_persistence,
-            onchip_diagnosis=onchip_diagnosis,
-        )
+        inserted_verilog, graph, root = wrap_test_access(sources, top, **ta_kwargs)
     except TestAccessUnavailable as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
@@ -556,13 +594,10 @@ def _wrap_test_access(
     verilog_path = out / f"{top}_test_access.v"
     verilog_path.write_text(inserted_verilog, encoding="utf-8")
 
-    ports = classify_test_access_ports(
-        onchip_selfrepair=onchip_selfrepair, onchip_repair_persistence=onchip_repair_persistence,
-        onchip_diagnosis=onchip_diagnosis,
-    )
+    ports = classify_test_access_ports(**ta_kwargs)
     typer.echo(f"Wrapped {len(ports)} control/status port(s) with a JTAG/IJTAG test-access network:")
     for i, p in enumerate(ports):
-        typer.echo(f"  chain[{i}] {p.name} ({p.role})")
+        typer.echo(f"  chain[{i}] {p.name} ({p.role}, width={p.width})")
     typer.echo(f"Inserted Verilog: {verilog_path}")
 
     if emit_icl:
@@ -578,27 +613,28 @@ def wrap_test_access_cmd(
     source: list[Path] = typer.Option(..., "--source", help="A source file the design needs (repeatable) -- generated wrapper(s), shared algorithm/repair RTL, macro models"),
     top: str = typer.Option(..., "--top", help="Top module name to insert the test-access network into"),
     out: Path = typer.Option("out/test-access", "--out", help="Output directory for the inserted Verilog (and --emit-icl's ICL file)"),
-    onchip_selfrepair: bool = typer.Option(False, "--onchip-selfrepair", help="Also wrap self_repair_start/done/fail/busy -- must match the redundancy config the sources were generated with"),
-    onchip_repair_persistence: bool = typer.Option(False, "--onchip-repair-persistence", help="Also wrap repair_load/repair_load_done -- must match the redundancy config the sources were generated with"),
-    onchip_diagnosis: bool = typer.Option(False, "--onchip-diagnosis", help="Also wrap diag_overflow -- must match the redundancy config the sources were generated with"),
+    onchip_selfrepair: bool = typer.Option(False, "--onchip-selfrepair", help="Also wrap self_repair_start/done/fail/busy -- must match the redundancy config the sources were generated with. Omit when passing --config"),
+    onchip_repair_persistence: bool = typer.Option(False, "--onchip-repair-persistence", help="Also wrap repair_load/repair_load_done -- must match the redundancy config the sources were generated with. Omit when passing --config"),
+    onchip_diagnosis: bool = typer.Option(False, "--onchip-diagnosis", help="Also wrap diag_overflow -- must match the redundancy config the sources were generated with. Omit when passing --config"),
+    config: Path | None = typer.Option(None, "--config", help="Path to the config.yml snapshot `generate` wrote alongside these sources -- derives the flags above PLUS the wide-port geometry (diag_valid/diag_addr/fuse_row_repair_en/fuse_faulty_row_addr/repair_ports) needed to wrap them. Without it, only the always-1-bit ports are wrapped, exactly as before wide-port support"),
     emit_icl: bool = typer.Option(False, "--emit-icl", help="Also emit an ICL description of the inserted network"),
 ) -> None:
     """Wrap a generated design's control/status ports with a JTAG/IJTAG test-access
     network, via the external warptap package.
 
-    Wraps exactly the always-1-bit control/status ports a generated wrapper exposes --
-    test_mode, bist_start, bist_done, bist_fail, and (with the matching flags)
-    self_repair_start/done/fail/busy, repair_load/repair_load_done, and diag_overflow.
-    fail_valid/fail_addr and unrepairable are not wrapped because they are not ports at
-    all on the generated wrapper -- internal wires, never promoted to the boundary; see
-    docs/ijtag-handoff.md's Stage-0 finding. diag_valid/diag_addr (the rest of diagnosis
-    readback) and the wide repair ports (fuse_*, row_repair_en, col_repair_en,
-    faulty_bit) ARE real boundary ports but not wrapped yet -- multi-bit, and the
-    vendored icl_parser this relies on for ICL validation has a real, tracked bug on any
-    width>1 instrument; see src/autombist/testaccess.py's own module docstring.
+    Wraps every control/status port a generated wrapper can expose: the always-1-bit
+    ones -- test_mode, bist_start, bist_done, bist_fail, and (with the matching flags)
+    self_repair_start/done/fail/busy, repair_load/repair_load_done, diag_overflow --
+    and, when --config is given, the wide ones too: diag_valid/diag_addr (the rest of
+    diagnosis readback), fuse_row_repair_en/fuse_faulty_row_addr (repair persistence
+    load-in), and any repair_ports: tester-driven passthrough pins. fail_valid/fail_addr
+    and unrepairable are never wrapped -- not ports at all on the generated wrapper,
+    internal wires never promoted to the boundary; see
+    src/autombist/testaccess.py's own module docstring.
 
-    Requirements (Linux/WSL): `pip install warptap`, plus Yosys and Icarus Verilog on
-    PATH (warptap shells out to both; neither is bundled).
+    Requirements (Linux/WSL): `pip install warptap` (>=0.0.2 -- earlier versions have a
+    real bug on any width>1 port), plus Yosys and Icarus Verilog on PATH (warptap shells
+    out to both; neither is bundled).
 
     Examples:
       autombist wrap-test-access --source out/sram_1rw/sram_1rw_mbist.v \\
@@ -607,12 +643,16 @@ def wrap_test_access_cmd(
           --source out/sram_1rw/march_c/march_c_top.sv \\
           --source out/sram_1rw/sram_model.sv \\
           --top sram_1rw_mbist --emit-icl
+
+      autombist wrap-test-access --source out/sram_1rw/sram_1rw_mbist.v ... \\
+          --top sram_1rw_mbist --config out/sram_1rw/config.yml --emit-icl
     """
     _wrap_test_access(
         source, top, out,
         onchip_selfrepair=onchip_selfrepair,
         onchip_repair_persistence=onchip_repair_persistence,
         onchip_diagnosis=onchip_diagnosis,
+        config=config,
         emit_icl=emit_icl,
     )
 
