@@ -47,7 +47,7 @@ from .fault_ram_gen import conflicting_port_faults, render_and_write
 from .fsm_harness import check_ports, gather_sibling_sources
 from .synth_engine import synthesize_alg, synth_verification_faults
 
-# The 15 DSL-covered built-ins' names, for distinguishing "custom" registry
+# The 25 DSL-covered built-ins' names, for distinguishing "custom" registry
 # entries (added via add_fault_type) from the defaults in `list types`.
 _DEFAULT_REGISTRY_NAMES = frozenset(p.name for p in default_registry())
 
@@ -522,8 +522,8 @@ class AlgoShell(cmd.Cmd):
                         detected/total (also becomes the 'last run' result,
                         usable by write_report/write_diagnosis)
           --write PATH  also write the human .alg text form
-        Never targets SOF/AF_NOACC/AF_ALIAS/CFDS (structurally fixed types,
-        not expressible in the Sensitize/Effect DSL -- see
+        Never targets SOF/AF_NOACC/AF_ALIAS/CFDS/DRF/HSD (structurally fixed
+        types, not expressible in the Sensitize/Effect DSL -- see
         fault_primitives.py) or any raw_sv custom primitive (no DSL
         description to synthesize against) -- the printed summary always
         states "targets M/N" so the exclusion is visible, never implied."""
