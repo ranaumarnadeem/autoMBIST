@@ -78,6 +78,7 @@ _VALID_TRANSITIONS = ("up", "down", "either", "p0", "x")
 _VALID_ON = ("victim", "aggressor")
 _VALID_EFFECT_KINDS = ("force", "invert", "block_write", "corrupt_read", "force_read")
 _VALID_PORTS = ("0", "1", "x")
+_VALID_PREV = ("x", "0w0", "0w1", "1w0", "1w1")
 _NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
@@ -101,6 +102,19 @@ class Sensitize:
                              # CFtr/CFwd/CFrd/CFir/CFdrd family). "x" = unconstrained, which is
                              # what every pre-existing built-in means, so the emitted RTL for
                              # them stays byte-identical.
+    prev: str = "x"         # the VICTIM's own immediately-preceding operation, required for a
+                             # dynamic (2-operation) fault: "x"|"0w0"|"0w1"|"1w0"|"1w1" -- a pair
+                             # token, not a bare op. "<p>w<d>" means "the last op on this exact
+                             # cell was a write that saw pre-value <p> and wrote <d>" (Hamdioui/
+                             # Al-Ars/van de Goor VTS 2002's own S=xwyry restriction: only a write
+                             # immediately followed by a read is validated to sensitize a dynamic
+                             # fault; read-then-anything and write-then-write are that paper's own
+                             # open question, not modeled here). Read-effect only in this DSL (see
+                             # validate()) -- there is no "previous op was a read" token, since a
+                             # read has no pre/written pair to gate on, matching why the paper
+                             # restricts to xwyry in the first place. "x" = unconstrained, which is
+                             # what every pre-existing built-in means, so the emitted RTL for them
+                             # stays byte-identical.
 
 
 @dataclass(slots=True)
@@ -144,6 +158,8 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
         raise FaultPrimitiveError(f"sensitize.port must be one of {_VALID_PORTS}")
     if prim.sensitize.agg_pre not in _VALID_BIT_TOKENS:
         raise FaultPrimitiveError(f"sensitize.agg_pre must be one of {_VALID_BIT_TOKENS}")
+    if prim.sensitize.prev not in _VALID_PREV:
+        raise FaultPrimitiveError(f"sensitize.prev must be one of {_VALID_PREV}")
     if prim.raw_sv is not None:
         if prim.sensitize.port != "x":
             raise FaultPrimitiveError(
@@ -162,6 +178,18 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
                 "generated arm's condition, and a raw_sv arm body is copied verbatim. "
                 "Test mem[FQ[i].aa][FQ[i].ab] yourself inside the raw_sv text instead, "
                 "and leave sensitize.agg_pre='x'"
+            )
+        if prim.sensitize.prev != "x":
+            # Same structural reason as agg_pre: the last-op clause is emitted as
+            # part of the generated arm's condition, and a raw_sv arm body is
+            # copied verbatim -- the clause would be accepted and then silently
+            # dropped.
+            raise FaultPrimitiveError(
+                f"sensitize.prev={prim.sensitize.prev!r} cannot be combined with "
+                "raw_sv: the last-op gate is emitted as a clause on the generated "
+                "arm's condition, and a raw_sv arm body is copied verbatim. Test "
+                "lop_w/lop_a/lop_pre/lop_d yourself inside the raw_sv text instead, "
+                "and leave sensitize.prev='x'"
             )
         return  # remaining DSL fields are not codegen-relevant for a raw_sv primitive
 
@@ -191,6 +219,20 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
             "they would share one parameter, so the victim and aggressor states could "
             "never differ. Give one of them a literal '0'/'1', or use the other parameter"
         )
+    if prim.sensitize.prev != "x" and prim.sensitize.pre != prim.sensitize.prev[-1]:
+        # prev's last character is the WRITTEN digit of the qualifying write
+        # (e.g. "0w1" wrote 1). Between that write committing and the current
+        # read happening, the cell genuinely holds that written value absent
+        # the fault -- so sensitize.pre (what the read expects pre-fault) must
+        # equal it. A mismatch is not a different fault, it is a contradiction:
+        # the write's own effect (the FIRST char of prev, resolved against the
+        # SAME bit) already fixes what the cell holds when the read arrives.
+        raise FaultPrimitiveError(
+            f"sensitize.pre={prim.sensitize.pre!r} is inconsistent with "
+            f"sensitize.prev={prim.sensitize.prev!r}: the qualifying write's own "
+            f"written value ({prim.sensitize.prev[-1]!r}) is what the cell holds "
+            "when the read happens, so pre must equal it"
+        )
     if prim.sensitize.written not in _VALID_BIT_TOKENS:
         raise FaultPrimitiveError(f"sensitize.written must be one of {_VALID_BIT_TOKENS}")
     if prim.sensitize.transition not in _VALID_TRANSITIONS:
@@ -215,6 +257,21 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
             "codegen arm can target the aggressor's own storage. Use "
             "sensitize.on='aggressor' to gate the sensitizing condition on the "
             "aggressor's access; the effect still lands on the victim"
+        )
+
+    if prim.sensitize.prev != "x" and prim.category != "read_effect":
+        # prev encodes "the victim's own last op was this write" -- meaningful
+        # only at the site that checks it against a SUBSEQUENT access, which in
+        # this DSL is read_effect's read arm. A write_effect/static_clamp arm
+        # has no "subsequent access" of its own to gate on; the write IS the
+        # event. (There is also no token for "previous op was a read" -- a read
+        # has no pre/written pair to encode, matching why VTS 2002 restricts to
+        # S=xwyry in the first place; see the Sensitize.prev field comment.)
+        raise FaultPrimitiveError(
+            f"sensitize.prev={prim.sensitize.prev!r} is only meaningful for "
+            f"category='read_effect' (got {prim.category!r}): it gates the "
+            "CURRENT read on what immediately preceded it, which only a "
+            "read-path arm evaluates"
         )
 
     if prim.category == "static_clamp":
@@ -258,6 +315,7 @@ def to_dict(prim: FaultPrimitive) -> dict[str, Any]:
             "pre": prim.sensitize.pre, "written": prim.sensitize.written,
             "transition": prim.sensitize.transition, "on": prim.sensitize.on,
             "port": prim.sensitize.port, "agg_pre": prim.sensitize.agg_pre,
+            "prev": prim.sensitize.prev,
         },
         "effect": {
             "kind": prim.effect.kind, "value": prim.effect.value,
@@ -278,6 +336,7 @@ def from_dict(data: dict[str, Any]) -> FaultPrimitive:
             pre=str(sens.get("pre", "x")), written=str(sens.get("written", "x")),
             transition=str(sens.get("transition", "x")), on=str(sens.get("on", "victim")),
             port=str(sens.get("port", "x")), agg_pre=str(sens.get("agg_pre", "x")),
+            prev=str(sens.get("prev", "x")),
         ),
         effect=Effect(
             kind=str(eff.get("kind", "force")), value=eff.get("value"),

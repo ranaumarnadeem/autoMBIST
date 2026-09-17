@@ -337,3 +337,81 @@ def test_from_dict_defaults_agg_pre_to_x_when_absent() -> None:
     # Older JSON fault-type files predate the field and must still load.
     prim = from_dict({"name": "MYNEW", "category": "static_clamp", "effect": {"kind": "force", "value": "1"}})
     assert prim.sensitize.agg_pre == "x"
+
+
+# ---------------------------------------------------------------------------
+# sensitize.prev: the last-op gate (VTS 2002 dynamic/2-operation faults).
+# No built-in sets this yet -- the DSL field lands ahead of the primitives
+# (same split as agg_pre: 74c637a added the field, e6db4de the 10 types).
+# ---------------------------------------------------------------------------
+
+
+def test_prev_rejects_an_unknown_token() -> None:
+    with pytest.raises(FaultPrimitiveError, match="sensitize.prev must be one of"):
+        validate(
+            _prim(category="read_effect", sensitize=Sensitize(pre="0", prev="0w2"),
+                  effect=Effect(kind="force_read", value="1")),
+            existing_names=set(),
+        )
+
+
+def test_prev_rejected_with_raw_sv() -> None:
+    with pytest.raises(FaultPrimitiveError, match="cannot be combined with raw_sv"):
+        validate(
+            _prim(category="read_effect", sensitize=Sensitize(pre="0", prev="0w0"),
+                  raw_sv="if (1) begin observed = 1'b1; end"),
+            existing_names=set(),
+        )
+
+
+@pytest.mark.parametrize("category,effect", [
+    ("static_clamp", Effect(kind="force", value="1")),
+    ("write_effect", Effect(kind="force", value="1")),
+])
+def test_prev_rejected_outside_read_effect(category: str, effect: Effect) -> None:
+    """prev gates the CURRENT read on what immediately preceded it -- only a
+    read-path arm evaluates a 'what just happened' clause; a write_effect or
+    static_clamp arm IS the event, with nothing later of its own to gate."""
+    with pytest.raises(FaultPrimitiveError, match="only meaningful for category='read_effect'"):
+        validate(
+            _prim(category=category, sensitize=Sensitize(pre="0", written="0", prev="0w0"), effect=effect),
+            existing_names=set(),
+        )
+
+
+def test_prev_rejected_when_inconsistent_with_pre() -> None:
+    """prev="0w1" means the qualifying write left the cell holding 1 -- pre
+    (what the read expects pre-fault) must agree, or the primitive asserts a
+    contradiction about what the cell holds when the read happens."""
+    with pytest.raises(FaultPrimitiveError, match="inconsistent with sensitize.prev"):
+        validate(
+            _prim(category="read_effect", sensitize=Sensitize(pre="0", prev="0w1"),
+                  effect=Effect(kind="force_read", value="1")),
+            existing_names=set(),
+        )
+
+
+def test_prev_consistent_with_pre_is_allowed() -> None:
+    # DYN_RDF00's own shape: prev="0w0" (wrote 0 over a 0), pre="0" (the read
+    # expects to see that 0) -- consistent, not rejected.
+    validate(
+        _prim(category="read_effect", sensitize=Sensitize(pre="0", prev="0w0"),
+              effect=Effect(kind="force_read", value="1")),
+        existing_names=set(),
+    )
+
+
+def test_prev_survives_to_dict_from_dict_roundtrip() -> None:
+    original = FaultPrimitive(
+        "MYDYNAMIC", "read_effect",
+        Sensitize(pre="1", prev="1w1"),
+        Effect(kind="force_read", value="0"),
+    )
+    assert to_dict(original)["sensitize"]["prev"] == "1w1"
+    assert from_dict(to_dict(original)) == original
+
+
+def test_from_dict_defaults_prev_to_x_when_absent() -> None:
+    # Older JSON fault-type files predate the field and must still load.
+    prim = from_dict({"name": "MYNEW", "category": "static_clamp", "effect": {"kind": "force", "value": "1"}})
+    assert prim.sensitize.prev == "x"
