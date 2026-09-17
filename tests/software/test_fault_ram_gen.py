@@ -443,10 +443,11 @@ def test_agg_pre_alone_replaces_the_empty_condition_sentinel() -> None:
 
 
 def test_agg_pre_changes_the_registry_hash() -> None:
-    """The build cache is keyed on registry_hash. If agg_pre were missing from
-    to_dict(), two registries differing only in it would hash identically and
-    the second would silently reuse the first's compiled engine -- i.e. run
-    against the wrong RTL while reporting success."""
+    """registry_hash isn't the live build-cache key (that's
+    _engine_build_cache_key, over rendered source bytes) but it must still be
+    sensitive to every semantic field. If agg_pre were missing from to_dict(),
+    two registries differing only in it would hash identically -- exactly the
+    kind of silent collision a real cache key must never have."""
     base = default_registry()
     gated = default_registry() + [_agg(agg_pre="p0")]
     ungated = default_registry() + [_agg()]

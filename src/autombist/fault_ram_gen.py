@@ -275,8 +275,11 @@ def render_and_write(registry: list[FaultPrimitive], path: Path, num_ports: int 
 
 
 def registry_hash(registry: list[FaultPrimitive]) -> str:
-    """A stable hash of the registry's semantic content, for build caching:
-    re-render/recompile fault_ram.sv only when the registry actually changed."""
+    """A stable hash of the registry's semantic content. Not wired into the
+    real build cache -- that's `_engine_build_cache_key` in algo_engine.py,
+    keyed on the rendered fault_ram.sv source bytes rather than the registry
+    directly. Used by tests to check that registry changes (e.g. an added
+    `agg_pre`) actually change the hash, i.e. wouldn't silently collide."""
     import hashlib
     import json
 
