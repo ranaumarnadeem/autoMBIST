@@ -40,7 +40,14 @@ module march_1r1w_fsm #(
     // port 0 (the read port) ever asserts a compare, so this stream is exactly
     // as single-fail-per-cycle as march_c_fsm's -- no arbitration needed.
     output logic                  fail_valid,
-    output logic [ADDR_WIDTH-1:0] fail_addr
+    output logic [ADDR_WIDTH-1:0] fail_addr,
+
+    // On-chip 2D (row+column) BIRA streaming interface: which specific bit(s)
+    // mismatched, valid whenever fail_valid is. Per-bit `!==`, not a plain
+    // XOR -- see march_c_fsm.sv's identical comment; the same reasoning
+    // applies verbatim (only port 0 ever compares, so this is exactly as
+    // single-fail-per-cycle as fail_valid itself).
+    output logic [DATA_WIDTH-1:0] fail_bitmask
 );
 
     localparam logic [2:0] LAST_PHASE = 3'd5;
@@ -107,6 +114,13 @@ module march_1r1w_fsm #(
     // just also exposed live instead of only latched into a sticky bit.
     assign fail_valid = (state_q == ST_CHECK) && do_read[0] && (mem_rdata0 !== expected_q);
     assign fail_addr  = addr_q;
+
+    genvar gb;
+    generate
+        for (gb = 0; gb < DATA_WIDTH; gb++) begin : g_fail_bitmask
+            assign fail_bitmask[gb] = (state_q == ST_CHECK) && do_read[0] && (mem_rdata0[gb] !== expected_q[gb]);
+        end
+    endgenerate
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin

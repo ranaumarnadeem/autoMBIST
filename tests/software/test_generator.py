@@ -636,6 +636,27 @@ def test_cli_mats_plus_algo_accepted(tmp_path: Path, base_config: dict[str, obje
     assert "mats_plus_top" in wrapper_text
 
 
+def test_cli_checkerboard_algo_accepted(tmp_path: Path, base_config: dict[str, object]) -> None:
+    """Verify CLI accepts checkerboard algorithm selection (RTL wrapper-generation path)."""
+    config_path = tmp_path / "config.yml"
+    outdir = tmp_path / "out"
+    _write_yaml(config_path, base_config)
+
+    result = runner.invoke(
+        app,
+        [
+            "generate",
+            "--config", str(config_path),
+            "--out", str(outdir),
+            "--algo", "checkerboard",
+        ],
+    )
+
+    assert result.exit_code == 0
+    wrapper_text = (outdir / "sram_1rw" / "sram_1rw_mbist.v").read_text(encoding="utf-8")
+    assert "checkerboard_top" in wrapper_text
+
+
 def test_invalid_algo_raises(tmp_path: Path, base_config: dict[str, object]) -> None:
     config_path = tmp_path / "config.yml"
     outdir = tmp_path / "out"
@@ -664,6 +685,51 @@ def test_cli_init_creates_scaffold_files(tmp_path: Path) -> None:
     openram_cfg = yaml.safe_load((outdir / "openram.yml").read_text(encoding="utf-8"))
     assert openram_cfg["tech"] == "scn4m_subm"
     assert openram_cfg["word_size"] == 32
+
+
+def test_wrap_test_access_config_and_legacy_flags_conflict(tmp_path: Path) -> None:
+    """--config derives the flags itself -- passing both is ambiguous, so it's a hard
+    error rather than silently picking one source, matching this repo's own
+    never-silently-accept-ambiguous-input style. Fails before touching warptap at all
+    (no `pip install warptap` needed to run this test)."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        yaml.safe_dump({"addr_width": 4, "wrapper_module_name": "x"}), encoding="utf-8",
+    )
+    source = tmp_path / "x.v"
+    source.write_text("module x(); endmodule\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "wrap-test-access",
+            "--source", str(source), "--top", "x",
+            "--config", str(config_path), "--onchip-selfrepair",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "--config already derives" in _plain(result.output)
+
+
+def test_wrap_test_access_config_top_mismatch_errors(tmp_path: Path) -> None:
+    """A --config snapshot whose wrapper_module_name disagrees with --top is almost
+    certainly sources/config from two different generate runs -- caught with a clear
+    message before any Yosys/warptap work, not a confusing failure deep inside
+    insertion. Also doesn't need warptap installed."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        yaml.safe_dump({"addr_width": 4, "wrapper_module_name": "other_module"}), encoding="utf-8",
+    )
+    source = tmp_path / "x.v"
+    source.write_text("module x(); endmodule\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["wrap-test-access", "--source", str(source), "--top", "x", "--config", str(config_path)],
+    )
+    assert result.exit_code == 1
+    assert "does not match" in _plain(result.output)
+    assert "other_module" in _plain(result.output)
 
 
 def test_cli_init_refuses_overwrite_without_force(tmp_path: Path) -> None:

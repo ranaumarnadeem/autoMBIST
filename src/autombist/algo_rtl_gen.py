@@ -84,6 +84,14 @@ def _validate(spec: AlgSpec) -> None:
                 "FSM has no idle state, so elapsed-time ops (t<N>) have no RTL "
                 "equivalent at all. Wait ops are research-mode only"
             )
+        if any(op not in (_OP_R0, _OP_R1, _OP_W0, _OP_W1) and op < WAIT_BASE for op in element.ops):
+            raise AlgoRtlError(
+                f"'{spec.name}' element {index} contains an address-dependent op (e.g. a "
+                "checkerboard wc/wcb/rc/rcb) -- the classic-path table is a pure "
+                "(phase, op_step) -> value lookup with no addr input at all, so it has no "
+                "fixed ALL_ZERO/ALL_ONE RTL equivalent for a value that varies by address. "
+                "Checkerboard-style algorithms are research-mode (algo-shell) only"
+            )
         if len(element.ops) > MAX_RTL_OPS:
             raise AlgoRtlError(
                 f"'{spec.name}' element {index} has {len(element.ops)} ops, but the "

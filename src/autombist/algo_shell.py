@@ -182,7 +182,7 @@ class AlgoShell(cmd.Cmd):
 
     def _render_fault_ram_for(self, workdir: Path) -> Path:
         """Render fault_ram.sv from the session's registry into workdir. The
-        registry starts as the 21 built-ins (default_registry() + the 6 fixed
+        registry starts as the 31 built-ins (default_registry() + the 6 fixed
         types the template always includes); add_fault_type appends to it, so
         this always reflects any custom types the researcher has defined.
         num_ports follows the configured memory (set_memory --ports) so a
@@ -550,7 +550,15 @@ class AlgoShell(cmd.Cmd):
         # Always state the covered count, then warn separately. Previously the
         # count only appeared when nothing was uncovered, so a partial result
         # showed the shortfall without ever showing what WAS achieved.
-        self._out(f"  covered: {len(result.covered)}/{len(result.targeted)}")
+        self._out(f"  covered: {len(result.covered)}/{len(result.targeted)}"
+                  " (at the synthesizer's resolved parameters)")
+        if any(p.name in set(result.covered) and (
+                p.sensitize.transition == "p0" or p.sensitize.pre == "p0"
+                or p.sensitize.agg_pre != "x" or p.effect.value in ("p0", "p1"))
+               for p in self.session.registry):
+            self._out("  NOTE: parameterized types are covered at ONE resolved"
+                      " parameter value; a fault list using another value may"
+                      " escape (see resolve_params in synth_engine.py)")
         if result.uncovered:
             self._out(f"  WARNING: {len(result.uncovered)} NOT covered: {', '.join(result.uncovered)}")
         if "write" in flags:

@@ -64,7 +64,7 @@ autombist generate [OPTIONS]
 | `--seed INTEGER` | none | Random seed for reproducible fault injection (optional) |
 | `--fault-type TEXT` | `stuck-at` | Fault model: `stuck-at` (SA0/SA1), `transition-up`, `transition-down`, or `port-coupling` (march-1r1w only; march-2rw supports stuck-at/transition only) |
 | `--pulse-width-ns INTEGER` | `2` | Pulse width in clock cycles for transition faults |
-| `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, or `mats-plus` |
+| `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, `mats-plus`, or `checkerboard` |
 | `--help` | | Show this message and exit |
 
 If `--config` is omitted, autombist looks for `config.yml` in the current working
@@ -202,7 +202,7 @@ autombist run [OPTIONS]
 | `--seed INTEGER` | none | Random seed for reproducible fault injection |
 | `--fault-type TEXT` | `stuck-at` | Fault model: `stuck-at`, `transition-up`, `transition-down`, or `port-coupling` (march-1r1w only; march-2rw supports stuck-at/transition only) |
 | `--pulse-width-ns INTEGER` | `2` | Pulse width in clock cycles for transition faults |
-| `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, or `mats-plus` |
+| `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, `mats-plus`, or `checkerboard` |
 | `--verbose` | off | Print full simulator console output and detailed logs |
 | `--faultflow` / `--no-faultflow` | `--no-faultflow` | After sim, grade the MBIST controller logic with FaultFlow (Linux/WSL) |
 | `--faultflow-repo PATH` | none (env var `FAULTFLOW_HOME`) | FaultFlow repo path (or set `FAULTFLOW_HOME`) |
@@ -293,6 +293,140 @@ autombist grade-controller --out out --no-run     # just emit the bundle
 - With `--no-run`: only the bundle is emitted; the terminal prints the bundle path
   and the exact command to run it manually on Linux/WSL
   (`FAULTFLOW_HOME=<path> bash <bundle>/run_faultflow.sh`)
+
+---
+
+## wrap-test-access
+
+Wrap a generated design's control/status ports with an IEEE 1149.1 (JTAG/TAP) +
+IEEE 1687 (IJTAG/ICL) test-access network, via the external
+[warptap](https://github.com/ranaumarnadeem/warptap) package.
+
+### Syntax
+
+```bash
+autombist wrap-test-access [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--source PATH` | none (repeatable, required) | A source file the design needs — generated wrapper(s), shared algorithm/repair RTL, macro models |
+| `--top TEXT` | none (required) | Top module name to insert the test-access network into |
+| `--out PATH` | `out/test-access` | Output directory for the inserted Verilog (and `--emit-icl`'s ICL file) |
+| `--onchip-selfrepair` | off | Also wrap `self_repair_start`/`done`/`fail`/`busy`. Omit when passing `--config` |
+| `--onchip-repair-persistence` | off | Also wrap `repair_load`/`repair_load_done`. Omit when passing `--config` |
+| `--onchip-diagnosis` | off | Also wrap `diag_overflow`. Omit when passing `--config` |
+| `--config PATH` | none | Path to the `config.yml` snapshot `generate` wrote alongside these sources — derives the three flags above PLUS the wide-port geometry needed to also wrap `diag_valid`/`diag_addr`/`fuse_row_repair_en`/`fuse_faulty_row_addr`/any `repair_ports:`. Without it, only the always-1-bit ports are wrapped. Errors if combined with any of the three flags above (ambiguous — pick one source) |
+| `--emit-icl` | off | Also emit an ICL description of the inserted network |
+
+Without `--config`: wraps exactly the always-1-bit control/status ports a
+generated wrapper exposes — `test_mode`, `bist_start`, `bist_done`,
+`bist_fail`, and, with the matching flags, `self_repair_start`/`done`/`fail`/
+`busy`, `repair_load`/`repair_load_done`, and `diag_overflow`.
+
+With `--config`: also wraps the wide (multi-bit) ports the geometry in that
+snapshot calls for — `diag_valid`/`diag_addr` (the rest of diagnosis
+readback), `fuse_row_repair_en`/`fuse_faulty_row_addr` (repair persistence
+load-in), and any `repair_ports:` tester-driven passthrough pins. These are
+real boundary ports on the generated wrapper, just multi-bit, and get the
+same control/status treatment as any 1-bit port, at their real width.
+
+The inserted module adds exactly 5 new top-level ports — the standard IEEE
+1149.1 TAP interface — and keeps every original port declared alongside them,
+same name and direction:
+
+| New port | Direction | Purpose |
+|---|---|---|
+| `tck` | input | Test clock |
+| `tms` | input | Test mode select |
+| `tdi` | input | Test data in |
+| `tdo` | output | Test data out |
+| `trst_n` | input | Test reset, active low |
+
+Confirmed directly against a real generated design: the wrapped module's own
+port list, and independently the `--emit-icl` output's `TCKPort`/`TMSPort`/
+`ScanInPort`/`ScanOutPort`/`TRSTPort` declarations, agree on these 5 names.
+
+**Control ports (`test_mode`, `bist_start`, and — when wrapped —
+`self_repair_start`, `repair_load`) become JTAG-exclusive.** Confirmed
+directly in the generated netlist: the write instrument that replaces each of
+these is a pure JTAG shadow register (`pin_out` changes only on an explicit
+Update-DR with that segment selected) with no port at all for an external
+signal to feed it. The original top-level pin is still declared, for
+interface stability, but has zero fan-out anywhere in the design — after
+wrapping, driving it directly does nothing; the *only* way to start BIST or
+enter test mode is through the JTAG/IJTAG network. Tie these input pins off
+(or leave them per your integration's convention for an unused input) in the
+final chip.
+
+Status ports (`bist_done`, `bist_fail`, and their self-repair/persistence
+counterparts) are **not** affected this way: the SIB only taps them
+non-destructively (a boundary-scan observe cell watching the real signal),
+so the original output pin keeps being driven exactly as before, in parallel
+with the new JTAG read path. Nothing about reading these ports functionally
+changes.
+
+One thing this command never wraps: **`fail_valid`/`fail_addr` and
+`unrepairable`** — these are not ports at all on the generated wrapper; they
+are internal wires, never promoted to the boundary. `self_repair_fail`
+(already wrapped, above) is `unrepairable`'s externally-visible reflection.
+`row_repair_en`/`faulty_row_addr`/`col_repair_en`/`faulty_bit` are the same
+story specifically *under* `onchip_selfrepair` (internal wires there) — under
+the tester-driven `repair_ports:` config instead (mutually exclusive with
+`onchip_selfrepair`), they ARE real boundary ports, wrappable via `--config`
+like any other `repair_ports:` entry.
+
+Requires (Linux/WSL only): `pip install warptap>=0.0.2` (or the `test-access`
+extra — `pip install "autombist[test-access]"`), plus Yosys and Icarus Verilog
+on PATH. warptap shells out to both; neither is bundled. `>=0.0.2` matters: an
+earlier warptap has a real bug in its vendored ICL parser on any width>1
+instrument, which every wide port above needs.
+
+### Examples
+
+```bash
+autombist wrap-test-access \
+    --source out/sram_1rw/sram_1rw_mbist.v \
+    --source out/sram_1rw/march_c/march_c_algo.sv \
+    --source out/sram_1rw/march_c/march_c_fsm.sv \
+    --source out/sram_1rw/march_c/march_c_top.sv \
+    --source out/sram_1rw/sram_model.sv \
+    --top sram_1rw_mbist --emit-icl
+```
+
+With `--config` (also wraps `diag_valid`/`diag_addr`/`fuse_row_repair_en`/
+`fuse_faulty_row_addr`, sized from the snapshot's own redundancy geometry):
+
+```bash
+autombist wrap-test-access \
+    --source out/sram_1rw/sram_1rw_mbist.v \
+    --source out/sram_1rw/march_c/march_c_algo.sv \
+    --source out/sram_1rw/march_c/march_c_fsm.sv \
+    --source out/sram_1rw/march_c/march_c_top.sv \
+    --source out/sram_1rw/onchip_row_repair_analyzer.sv \
+    --source out/sram_1rw/onchip_selfrepair_ctrl.sv \
+    --source out/sram_1rw/onchip_diagnosis_log.sv \
+    --source out/sram_1rw/repair_remap_row.sv \
+    --source out/sram_1rw/sram_model.sv \
+    --top sram_1rw_mbist --config out/sram_1rw/config.yml --emit-icl
+```
+
+### Output
+
+- `<out>/<top>_test_access.v` — the inserted, synthesizable Verilog
+- `<out>/<top>_test_access.icl` — with `--emit-icl`, the network's IEEE 1687 ICL
+  description
+- A terminal listing of every wrapped port, in scan-chain order, with its role
+  (`control` or `status`)
+
+### What this does not do
+
+This command inserts the test-access network and (optionally) describes it in
+ICL. It does not drive it: writing a PDL scenario (which port to write, what
+value, what to read back and when) or emitting SVF/STAPL/STIL patterns from one
+is a separate step, using warptap's own `PDLInterpreter`/`to_svf`/`to_stapl`/
+`to_stil` directly against the `(graph, root)` this command's underlying library
+function (`autombist.testaccess.wrap_test_access`) returns.
 
 ---
 

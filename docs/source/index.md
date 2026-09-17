@@ -30,6 +30,11 @@ autoMBIST is:
   [`flow/soc/`](https://github.com/ranaumarnadeem/autoMBIST/tree/main/flow/soc)
   walkthrough in {doc}`example`.
 
+- **Synthesizes march tests, not just grades them** — the research
+  platform can construct a new march test directly from the fault model
+  instead of only grading one you wrote (27n at 16 elements, verified 38/38
+  against real Verilator at both memory init values).
+
 - **Reproducible** — simulation and coverage-gated CI run inside a Nix flake
   (pinned Icarus/Verilator/Yosys/cocotb) that also puts the CLI on `PATH` with
   no separate install step; Apache-2.0 licensed.

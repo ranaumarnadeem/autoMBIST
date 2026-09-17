@@ -1,8 +1,8 @@
 """March algorithm specs (`.alg`) for the fault-campaign engine.
 
 A ``.alg`` file is human-readable: one march *element* per line, ``DIR OP [OP ...]``
-with ``DIR`` in {up, down, either} and ``OP`` in {r0, r1, w0, w1}; ``#`` comments and
-blank lines are ignored. Example (March C-)::
+with ``DIR`` in {up, down, either} and ``OP`` in {r0, r1, w0, w1, wc, wcb, rc, rcb};
+``#`` comments and blank lines are ignored. Example (March C-)::
 
     either w0
     up   r0 w1
@@ -33,6 +33,21 @@ cycles total), not once. To get a single bounded idle window (e.g. between
 two march elements for a DRF differential test), account for this
 multiplication explicitly -- either divide the desired total by the memory's
 depth, or use a small/known depth.
+
+Four ops are checkerboard-flavored: ``wc``/``wcb`` write, and ``rc``/``rcb``
+read-and-expect, a value that is a function of the CURRENT ADDRESS (``addr &
+1``, and its complement for the ``b`` variants) rather than a fixed literal --
+the one thing every other op deliberately does not need. Encoded as NEGATIVE
+op codes (see :data:`OP_WC`/:data:`OP_WCB`/:data:`OP_RC`/:data:`OP_RCB`)
+because codes >= :data:`WAIT_BASE` are entirely claimed by the wait-op space,
+leaving no free room above 3 -- negative codes are backward compatible by
+construction and need no special-casing in the numeric serialization (a
+negative decimal round-trips through ``str()``/``$sscanf`` exactly like a
+positive one). ``wc``/``wcb`` accept the same ``.PORT`` suffix as any other
+op; ``rc``/``rcb`` compose with ``+BACKGROUND`` exactly like ``r0``/``r1`` do
+(the single computed bit still routes through the engine's existing
+per-campaign background-mask XOR). See ``checkerboard.alg`` for the built-in
+that uses them.
 """
 from __future__ import annotations
 
@@ -43,16 +58,30 @@ from pathlib import Path
 
 DIR_MAP = {"up": 0, "down": 1, "either": 2}
 DIR_NAME = {0: "up", 1: "down", 2: "either"}
-OP_MAP = {"r0": 0, "r1": 1, "w0": 2, "w1": 3}
-OP_NAME = {0: "r0", 1: "r1", 2: "w0", 3: "w1"}
+
+# wc/wcb/rc/rcb (checkerboard): the driven/expected value is a function of the
+# CURRENT ADDRESS (addr & 1), not a fixed literal like r0/r1/w0/w1 -- the one
+# thing every other op in this DSL deliberately does not need. Encoded as
+# NEGATIVE integers rather than extending past 3: codes >= WAIT_BASE (4) are
+# entirely claimed by the wait-op encoding (WAIT_BASE + N, N up to
+# MAX_WAIT_CYCLES), so there is no free room above 3. Negative codes are
+# backward compatible by construction (nothing existing assumes op >= 0), and
+# compose for free with length_n's `op < WAIT_BASE` check (negative values are
+# correctly counted as real ops, unlike waits) and numeric_line()'s plain
+# `str(x)` serialization (a negative decimal needs no special-casing, and
+# both SystemVerilog engines' `$sscanf(..., "%d", ...)` parse a leading '-'
+# natively). See march_engine.sv's dispatch for the RTL side of this.
+OP_WC, OP_WCB, OP_RC, OP_RCB = -1, -2, -3, -4
+OP_MAP = {"r0": 0, "r1": 1, "w0": 2, "w1": 3, "wc": OP_WC, "wcb": OP_WCB, "rc": OP_RC, "rcb": OP_RCB}
+OP_NAME = {0: "r0", 1: "r1", 2: "w0", 3: "w1", OP_WC: "wc", OP_WCB: "wcb", OP_RC: "rc", OP_RCB: "rcb"}
 
 MAX_ELEMENTS = 16   # SystemVerilog prog[16]
 MAX_OPS = 8         # SystemVerilog ops[8]
 
 # Op codes >= WAIT_BASE encode an N-cycle wait/idle op: op_code = WAIT_BASE + N
 # (N >= 1). march_engine.sv's op-dispatch `case` already silently no-ops any
-# code outside {0,1,2,3} today, so this reuses that slot with zero numeric-
-# format growth -- to_numeric()/numeric_line() already emit str(x) for
+# code outside {0,1,2,3,wc,wcb,rc,rcb} today, so this reuses that slot with zero
+# numeric-format growth -- to_numeric()/numeric_line() already emit str(x) for
 # arbitrary ints, no `$sscanf` format-string change needed on the RTL side.
 WAIT_BASE = 4
 MAX_WAIT_CYCLES = 65535   # blocks a typo like "t500000" from stalling simulation
@@ -110,17 +139,26 @@ class AccessStep:
 
     @property
     def is_write(self) -> bool:
-        return self.op in (2, 3)
+        return self.op in (2, 3, OP_WC, OP_WCB)
 
     @property
     def write_value(self) -> int | None:
-        """0 for w0, 1 for w1, ``None`` for a read (whose expected data is not
-        visible on the memory bus -- it is validated instead by the golden pass
-        succeeding)."""
+        """0 for w0, 1 for w1, ``addr & 1`` for wc, its complement for wcb,
+        ``None`` for a read (whose expected data is not visible on the memory
+        bus -- it is validated instead by the golden pass succeeding). wc/wcb
+        are address-DEPENDENT -- unlike w0/w1, the same op code yields a
+        different value at different addresses, which is the entire point of
+        a checkerboard op; ``self.addr`` is already a field on every
+        AccessStep, so this is a natural extension of the existing fixed-value
+        branches, not a structural change."""
         if self.op == 2:
             return 0
         if self.op == 3:
             return 1
+        if self.op == OP_WC:
+            return self.addr & 1
+        if self.op == OP_WCB:
+            return 1 - (self.addr & 1)
         return None
 
     def human(self) -> str:
@@ -248,14 +286,14 @@ def parse_alg(text: str, name: str) -> AlgSpec:
                     )
                 if not port_tok.isdigit() or int(port_tok) not in (0, 1):
                     raise AlgSpecError(
-                        f"{name}:{lineno}: bad port suffix in '{tok}' (use r0|r1|w0|w1, "
+                        f"{name}:{lineno}: bad port suffix in '{tok}' (use r0|r1|w0|w1|wc|wcb|rc|rcb, "
                         "optionally suffixed '.PORT' with PORT in {0, 1}, e.g. r0.1)"
                     )
                 port = int(port_tok)
             if key not in OP_MAP:
                 raise AlgSpecError(
-                    f"{name}:{lineno}: bad op '{tok}' (use r0|r1|w0|w1, or t<N> for an "
-                    "N-cycle wait)"
+                    f"{name}:{lineno}: bad op '{tok}' (use r0|r1|w0|w1|wc|wcb|rc|rcb, or t<N> "
+                    "for an N-cycle wait)"
                 )
             ops.append(OP_MAP[key])
             ports.append(port)

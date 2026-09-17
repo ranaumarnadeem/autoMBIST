@@ -17,6 +17,9 @@ module march_2rw_top #(
     output logic                  bist_busy,
     output logic                  bist_done,
     output logic                  bist_fail,
+    output logic                  bist_fail_valid,
+    output logic [ADDR_WIDTH-1:0] bist_fail_addr,
+    output logic [DATA_WIDTH-1:0] bist_fail_bitmask,
 
     // Port 0: full read/write.
     output logic                  sram_clk0,
@@ -65,7 +68,10 @@ module march_2rw_top #(
         .mem_wdata1(mem_wdata1),
         .busy(bist_busy),
         .done(bist_done),
-        .fail(bist_fail)
+        .fail(bist_fail),
+        .fail_valid(bist_fail_valid),
+        .fail_addr(bist_fail_addr),
+        .fail_bitmask(bist_fail_bitmask)
     );
 
     // Keep OpenRAM-style naming and active-low polarity at the boundary.

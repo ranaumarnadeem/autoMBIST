@@ -90,6 +90,26 @@ async def _run_until_done(
             both_write = both_active and mem_we0 == 1 and mem_we1 == 1
             both_read = both_active and mem_we0 == 0 and mem_we1 == 0
 
+            # SAFETY NET, unconditional (not gated behind rr_events, so all three
+            # tests in this file check it every run): march_2rw_fsm's fail_valid/
+            # fail_addr collapse both ports' compares into ONE address
+            # (fail_addr = addr_q) specifically because a concurrent read is only
+            # ever issued at a single shared address -- see march_2rw_fsm.sv's
+            # fail_valid comment. If a future change to march_2rw_algo.sv's table
+            # ever pairs a concurrent read with use_partner_addr1 (a genuinely
+            # different address per port), that assumption breaks silently for
+            # onchip_row_repair_analyzer -- this assertion is what would catch it.
+            if both_read:
+                assert mem_addr0 == mem_addr1, (
+                    "SAFETY NET: march_2rw_fsm compared two DIFFERENT addresses on "
+                    f"both ports the same cycle (phase={phase}, "
+                    f"mem_addr0=0x{mem_addr0:x}, mem_addr1=0x{mem_addr1:x}). "
+                    "onchip_row_repair_analyzer's fail_valid/fail_addr collapse to "
+                    "ONE address per cycle depends on this never happening -- see "
+                    "march_2rw_fsm.sv's fail_valid comment and generator.py's "
+                    "_SELFREPAIR_ALGOS gate."
+                )
+
             if ww_events is not None and both_write and mem_addr0 != mem_addr1:
                 ww_events.append(
                     {
