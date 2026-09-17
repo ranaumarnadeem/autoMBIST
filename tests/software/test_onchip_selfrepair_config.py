@@ -152,10 +152,16 @@ def test_onchip_selfrepair_now_works_for_march_raw(tmp_path: Path) -> None:
     assert ".bist_fail_addr(algo_fail_addr)," in text
 
 
-def test_onchip_selfrepair_now_works_for_march_x_and_mats_plus(tmp_path: Path) -> None:
-    """The two new generated algorithms (Workstream B1) are self-repair-ready
-    from day one: single-port, fail_valid/fail_addr wired up like march-c's."""
-    for algo, top_module in (("march-x", "march_x_top"), ("mats-plus", "mats_plus_top")):
+def test_onchip_selfrepair_now_works_for_march_x_mats_plus_and_checkerboard(tmp_path: Path) -> None:
+    """These generated algorithms are self-repair-ready from day one: single-port,
+    fail_valid/fail_addr wired up like march-c's. checkerboard's address-dependent
+    write/expected data never reaches this scaffold -- it only ever consumes
+    fail_valid/fail_addr, never a value -- so it's a free addition here too."""
+    for algo, top_module in (
+        ("march-x", "march_x_top"),
+        ("mats-plus", "mats_plus_top"),
+        ("checkerboard", "checkerboard_top"),
+    ):
         text = _render(tmp_path, _onchip(), f"onchip_{algo}", algo=algo)
         assert "onchip_row_repair_analyzer #(" in text
         assert "onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl (" in text
@@ -167,9 +173,13 @@ def test_onchip_selfrepair_now_works_for_march_x_and_mats_plus(tmp_path: Path) -
 def test_onchip_selfrepair_now_works_for_march_1r1w(tmp_path: Path) -> None:
     """Self-repair now generalizes to the multi-port march-1r1w shape too
     (Workstream A2): the multi-port wrapper branch gained its own analyzer/
-    ctrl/remap scaffold, fed by port 0's (the read port's) fail stream, and a
-    SINGLE repair_remap_row steers both ports since they always carry the
-    identical logical address (see march_1r1w_fsm.sv)."""
+    ctrl/remap scaffold, fed by port 0's (the read port's) fail stream, and
+    ONE repair_remap_row PER PORT steers each port's own address
+    independently -- general on purpose (see wrapper_template.j2's comment),
+    not special-cased per algo. march-1r1w's two ports happen to always carry
+    the identical logical address (see march_1r1w_fsm.sv), so its second
+    remap instance is a provable harmless duplicate here, not a structural
+    requirement -- march-2rw needs the same general machinery for real."""
     config = {
         "memory_name": "sram_spares_tiny_1r1w",
         "wrapper_module_name": "sram_spares_tiny_1r1w_mbist",
@@ -191,39 +201,87 @@ def test_onchip_selfrepair_now_works_for_march_1r1w(tmp_path: Path) -> None:
     assert "onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl (" in text
     assert ".bist_fail_valid(algo_fail_valid)," in text
     assert ".bist_fail_addr(algo_fail_addr)," in text
-    # A single remap, fed by port 0's (the read port's) logical address.
+    # One remap per port, each fed by that port's own logical address.
     assert ".addr_in(sram_addr0)" in text
-    assert text.count("repair_remap_row #(") == 1
-    # BOTH ports' memory pins take the SAME remapped physical address.
-    assert ".addr0(sram_addr_phys)" in text
-    assert ".addr1(sram_addr_phys)" in text
+    assert ".addr_in(sram_addr1)" in text
+    assert text.count("repair_remap_row #(") == 2
+    # Each port's memory pin takes its OWN remapped physical address (both
+    # happen to be numerically identical for march-1r1w at runtime, since
+    # both ports share one addr_q -- but they are two independent wires/
+    # instances now, not one shared wire).
+    assert ".addr0(sram_addr_phys0)" in text
+    assert ".addr1(sram_addr_phys1)" in text
     assert ".NUM_SPARE_ROWS(2)" in text
     # No tester-driven repair_ports boundary pins.
     assert "input  logic [2-1:0] row_repair_en" not in text
 
 
-def test_onchip_selfrepair_rejects_unsupported_algo(tmp_path: Path) -> None:
-    """march-2rw is still rejected: redundancy remains single-port only (its
-    own, separate restriction), so a 2-port march-2rw config combined with
-    onchip_selfrepair still fails -- proving the A1 allowlist relaxation for
-    march-raw didn't quietly open the door to multi-port algos the wrapper
-    template has no self-repair scaffold for yet."""
+_MARCH_2RW_PORTS = {
+    "porta": {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "csb": "csb0", "we": "web0"},
+    "portb": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "csb": "csb1", "we": "web1"},
+}
+
+
+def test_onchip_selfrepair_now_works_for_march_2rw(tmp_path: Path) -> None:
+    """march-2rw is no longer rejected: its concurrent same-cycle dual compare
+    doesn't need arbiter RTL (march_2rw_algo.sv's table only ever compares
+    both ports against the SAME address, see march_2rw_fsm.sv's fail_valid
+    comment), and the wrapper template's remap is now per-port in general
+    (not a march-1r1w special case) -- so march-2rw's two genuinely
+    independent addresses each get their own repair_remap_row instance."""
     config = {
         "memory_name": "sram_2rw_dut",
         "wrapper_module_name": "sram_2rw_dut_mbist",
         "addr_width": 6,
         "data_width": 8,
         "we_active_low": True,
-        "ports": {
-            "porta": {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "csb": "csb0", "we": "web0"},
-            "portb": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "csb": "csb1", "we": "web1"},
-        },
+        "ports": _MARCH_2RW_PORTS,
         "redundancy": {"num_spare_rows": 2, "num_spare_cols": 0, "onchip_selfrepair": True},
     }
-    config_path = tmp_path / "bad_multiport.yml"
+    config_path = tmp_path / "onchip_2rw.yml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    with pytest.raises(ConfigError, match="single-port"):
-        generate_from_config(config_path, tmp_path / "out", algo="march-2rw")
+    text = generate_from_config(config_path, tmp_path / "onchip_2rw", algo="march-2rw").read_text(encoding="utf-8")
+
+    assert "march_2rw_top #(" in text
+    assert "onchip_row_repair_analyzer #(" in text
+    assert "onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl (" in text
+    assert ".bist_fail_valid(algo_fail_valid)," in text
+    assert ".bist_fail_addr(algo_fail_addr)," in text
+    # One remap per port, each fed by that port's own (genuinely independent)
+    # logical address -- unlike march-1r1w, these are NOT numerically
+    # identical at runtime in general.
+    assert ".addr_in(sram_addr0)" in text
+    assert ".addr_in(sram_addr1)" in text
+    assert text.count("repair_remap_row #(") == 2
+    assert ".addr0(sram_addr_phys0)" in text
+    assert ".addr1(sram_addr_phys1)" in text
+    assert ".NUM_SPARE_ROWS(2)" in text
+    # No tester-driven repair_ports boundary pins.
+    assert "input  logic [2-1:0] row_repair_en" not in text
+
+
+def test_onchip_selfrepair_still_rejects_shape_algo_mismatch(tmp_path: Path) -> None:
+    """Relaxing the port-SHAPE gate to accept march-2rw's rw+rw topology
+    (alongside march-1r1w's r+w) must not quietly accept a shape/algo
+    mismatch -- a rw+rw config combined with algo=march-1r1w still needs
+    rejecting, just via a DIFFERENT validator now: _validate_redundancy's
+    shape gate no longer catches this case (rw+rw is now a recognized shape
+    in general), so _validate_port_topology's own per-algo role-count check
+    is what must still catch it. Confirmed call order: _validate_redundancy
+    runs inside load_config, strictly before _validate_port_topology."""
+    config = {
+        "memory_name": "sram_2rw_dut",
+        "wrapper_module_name": "sram_2rw_dut_mbist",
+        "addr_width": 6,
+        "data_width": 8,
+        "we_active_low": True,
+        "ports": _MARCH_2RW_PORTS,
+        "redundancy": {"num_spare_rows": 2, "num_spare_cols": 0, "onchip_selfrepair": True},
+    }
+    config_path = tmp_path / "mismatched.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ConfigError, match="requires exactly one port of each type"):
+        generate_from_config(config_path, tmp_path / "out", algo="march-1r1w")
 
 
 @pytest.mark.parametrize("bad", [1, "true", [], {}])

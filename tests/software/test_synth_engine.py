@@ -33,6 +33,7 @@ from autombist.synth_engine import (
 
 UP, DOWN, EITHER = DIR_MAP["up"], DIR_MAP["down"], DIR_MAP["either"]
 R0, R1, W0, W1 = OP_MAP["r0"], OP_MAP["r1"], OP_MAP["w0"], OP_MAP["w1"]
+WC, WCB, RC, RCB = OP_MAP["wc"], OP_MAP["wcb"], OP_MAP["rc"], OP_MAP["rcb"]
 
 REGISTRY = {p.name: p for p in default_registry()}
 
@@ -86,6 +87,19 @@ def test_replay_ignores_wait_ops():
     with_wait = _spec(Element(EITHER, [W0]), Element(UP, [WAIT_BASE + 20, R0]))
     without_wait = _spec(Element(EITHER, [W0]), Element(UP, [R0]))
     assert replay(with_wait, None) == replay(without_wait, None)
+
+
+@pytest.mark.parametrize("op", [WC, WCB, RC, RCB])
+def test_apply_op_rejects_checkerboard_ops_loudly(op):
+    """UNLIKE the wait-op no-op above: this oracle's 2-cell (v, a) model has
+    no address concept, so there is no faithful reduced representation of a
+    checkerboard op's address-dependent value -- silently falling through
+    would misclassify a wc/wcb write as a read (`is_write` is False for a
+    negative code) and fabricate a spurious assertion rather than harmlessly
+    skipping it. Dead code on the real synthesizer path today (its own
+    candidate builders never emit these), pure insurance."""
+    with pytest.raises(ValueError, match="no address concept"):
+        _apply_op(1, 0, op, "v", None)
 
 
 def test_detects_unaffected_by_an_inserted_wait_op():
@@ -545,3 +559,39 @@ def test_synthesize_elements_still_accepts_wildcard_agg_pre_targets():
     keep synthesizing."""
     elements, _ = synthesize_elements([p for p in default_registry() if p.name == "WDF0"])
     assert elements, "a wildcard-agg_pre target must still synthesize"
+
+
+def test_resolved_params_differ_from_the_shipped_fault_lists_and_that_is_load_bearing():
+    """The synthesizer's `covered` is coverage AT resolve_params()' chosen values,
+    not coverage of the type. This pins the mismatch that makes that distinction
+    observable, so neither side can drift without the test noticing.
+
+    resolve_params picks p0=0 for an agg_pre coupling type; engine/faults.example.txt
+    instantiates the same types at p0=1. Measured as a real Verilator campaign, the
+    synthesized 27n spec scores 22/29 against the shipped list and 27/29 once only
+    those p0 values are aligned -- CFDRD0, CFID, CFIR0, CFRD0 and CFWD0 all flip
+    from ESCAPED to DETECTED. (For scale: hand-designed March SS reaches 28/29 in
+    22n, so the synthesized spec is both longer and narrower.)
+
+    If a future change makes resolve_params agree with the shipped list, this test
+    fails and the docstring claiming the gap must be re-measured rather than left
+    asserting something that is no longer true."""
+    from autombist.algo_engine import load_fault_list
+    from autombist.alg_spec import find_engine_dir
+
+    shipped = {f.type: f for f in load_fault_list(find_engine_dir() / "faults.example.txt")}
+    mismatched = []
+    for name in ("CFDRD0", "CFIR0", "CFRD0", "CFWD0"):
+        prim, rec = REGISTRY[name], shipped[name]
+        p0, _p1 = resolve_params(prim)
+        assert prim.sensitize.agg_pre == "p0", name
+        if p0 != rec.p0:
+            mismatched.append((name, p0, rec.p0))
+
+    assert mismatched == [
+        ("CFDRD0", 0, 1), ("CFIR0", 0, 1), ("CFRD0", 0, 1), ("CFWD0", 0, 1),
+    ], (
+        "resolve_params/faults.example.txt agreement changed. Re-measure the "
+        "22/29 vs 27/29 gap documented in resolve_params' docstring before "
+        "updating this pin -- the docstring must not outlive the measurement."
+    )

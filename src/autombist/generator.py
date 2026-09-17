@@ -121,13 +121,14 @@ def _normalize_algo(algo: str) -> tuple[str, str]:
         "march-2rw": ("march_2rw", "march_2rw_top"),
         "march-x": ("march_x", "march_x_top"),
         "mats-plus": ("mats_plus", "mats_plus_top"),
+        "checkerboard": ("checkerboard", "checkerboard_top"),
     }
     if algo_value not in algo_map:
         suggestion = difflib.get_close_matches(algo_value, algo_map, n=1)
         hint = f" -- did you mean {suggestion[0]!r}?" if suggestion else ""
         raise ValueError(
             f"algo {algo!r} is not recognized{hint}. Must be one of: march-c, march-raw, "
-            "march-1r1w, march-2rw, march-x, mats-plus"
+            "march-1r1w, march-2rw, march-x, mats-plus, checkerboard"
         )
     return algo_map[algo_value]
 
@@ -135,12 +136,36 @@ def _normalize_algo(algo: str) -> tuple[str, str]:
 # Algorithms whose FSM/top stream fail_valid/fail_addr AND whose wrapper
 # branch has the on-chip self-repair scaffold (analyzer + ctrl + remap) wired
 # up, so redundancy.onchip_selfrepair is actually implementable. march-1r1w's
-# multi-port wrapper branch now has that scaffold too (Workstream A2); march-2rw
-# does not (its concurrent same-cycle dual compare breaks the analyzer's
-# single-fail-per-cycle assumption -- needs new arbiter RTL, out of scope).
-# march-x/mats-plus (Workstream B1) are single-port and got the fail stream
-# from day one, so they're free additions here too.
-_SELFREPAIR_ALGOS = frozenset({"march-c", "march-raw", "march-1r1w", "march-x", "mats-plus"})
+# and march-2rw's multi-port wrapper branches both have that scaffold now.
+# march-2rw's concurrent same-cycle dual compare does NOT need arbiter RTL:
+# march_2rw_algo.sv's table has exactly one phase (E2) where both ports
+# compare concurrently, and E2 never sets use_partner_addr1, so both reads
+# always target the identical addr_q -- a same-cycle OR of both compares is
+# correct (march_2rw_fsm.sv's fail_valid), and the invariant it depends on is
+# hardened as a hard assertion in tests/hardware/test_march_2rw.py, not just
+# claimed here. march-x/mats-plus (Workstream B1) are single-port and got the
+# fail stream from day one, so they're free additions here too. checkerboard is
+# the same: single-port, fail_valid/fail_addr/fail_bitmask from day one -- its
+# address-dependent write/expected data never reaches the repair analyzer,
+# which only ever consumes fail_valid/fail_addr/fail_bitmask, never a value.
+_SELFREPAIR_ALGOS = frozenset(
+    {"march-c", "march-raw", "march-1r1w", "march-2rw", "march-x", "mats-plus", "checkerboard"}
+)
+
+# Algorithms wired for on-chip COLUMN repair -- now every _SELFREPAIR_ALGOS
+# member. march-1r1w's read port compares exactly like the four single-port
+# algos (only port 0 ever asserts a compare, see march_1r1w_fsm.sv); its real
+# new work was in wrapper_template.j2's multi-port branch gaining its first
+# repair_remap_col instance at all (no tester-driven multi-port path exists
+# to have built one for). march-2rw's fail_bitmask is OR-combined across both
+# ports (march_2rw_fsm.sv), resting on the same same-address-when-concurrent
+# invariant that already justifies its word-level fail_valid; its wrapper
+# needs TWO independent repair_remap_col instances (one per port, each with
+# its own spare_wen), not one shared instance like march-1r1w -- march-2rw's
+# two ports are both fully read/write and can write DIFFERENT addresses the
+# same cycle (march_2rw_algo.sv's E1/E4), so there is no single reader/writer
+# to cross-wire one instance onto. See rtl/onchip_2d_repair_analyzer.sv.
+_COL_SELFREPAIR_ALGOS = frozenset(_SELFREPAIR_ALGOS)
 
 # Algorithms that require a specific multi-port shape. Every other algo
 # (march-c, march-raw) is still restricted to exactly 1 port.
@@ -594,6 +619,46 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
             "which only exists when onchip_selfrepair is enabled"
         )
 
+    onchip_diagnosis = block.get("onchip_diagnosis", False)
+    if not isinstance(onchip_diagnosis, bool):
+        raise ConfigError("redundancy.onchip_diagnosis must be a boolean")
+    if onchip_diagnosis and not onchip_selfrepair:
+        raise ConfigError(
+            "redundancy.onchip_diagnosis requires onchip_selfrepair: true -- "
+            "the diagnosis log extends the on-chip analyzer's fail stream, "
+            "which only exists when onchip_selfrepair is enabled"
+        )
+
+    num_diagnosis_entries = block.get("num_diagnosis_entries", 0)
+    if onchip_diagnosis:
+        if (
+            isinstance(num_diagnosis_entries, bool)
+            or not isinstance(num_diagnosis_entries, int)
+            or num_diagnosis_entries < 1
+        ):
+            raise ConfigError(
+                "redundancy.num_diagnosis_entries must be a positive integer "
+                "when redundancy.onchip_diagnosis is true"
+            )
+
+    onchip_col_repair = block.get("onchip_col_repair", False)
+    if not isinstance(onchip_col_repair, bool):
+        raise ConfigError("redundancy.onchip_col_repair must be a boolean")
+    if onchip_col_repair and not onchip_selfrepair:
+        raise ConfigError(
+            "redundancy.onchip_col_repair requires onchip_selfrepair: true -- "
+            "the on-chip 2D analyzer extends the on-chip row analyzer's fail "
+            "stream, which only exists when onchip_selfrepair is enabled"
+        )
+    if onchip_col_repair and onchip_repair_persistence:
+        raise ConfigError(
+            "redundancy.onchip_col_repair is not supported with "
+            "onchip_repair_persistence: true -- the persisted-repair-signature "
+            "load path (fuse_row_repair_en/fuse_faulty_row_addr) is row-only; "
+            "restoring it into the 2D analyzer would silently forget any "
+            "previously-computed column claims on every reset"
+        )
+
     num_spare_rows = block.get("num_spare_rows", 0)
     num_spare_cols = block.get("num_spare_cols", 0)
     for key, value in (
@@ -602,6 +667,19 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ConfigError(f"redundancy.{key} must be a non-negative integer")
+
+    if onchip_col_repair and num_spare_cols < 1:
+        raise ConfigError(
+            "redundancy.onchip_col_repair requires redundancy.num_spare_cols > 0 -- "
+            "the 2D analyzer's column-claim logic and repair_remap_col instance are "
+            "only wired into the wrapper when there's at least one spare column to "
+            "steer onto. Combined with the num_spare_cols>0 check below (which "
+            "requires onchip_col_repair whenever onchip_selfrepair is also set), "
+            "onchip_col_repair and (onchip_selfrepair and num_spare_cols>0) are kept "
+            "logically equivalent -- has_onchip_col_repair implies has_col_repair in "
+            "wrapper_template.j2, so its already-generic has_col_repair-gated memory "
+            "tail needs no on-chip-specific branch"
+        )
 
     if num_spare_rows < 1:
         raise ConfigError(
@@ -628,6 +706,17 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
             "model does not express"
         )
 
+    # Hoisted above both consumers below (the num_spare_cols>0 shape gate
+    # further down, and the multi-port shape gate right after it) -- needs to
+    # be unconditionally defined (not nested inside the len(...) != 1 block,
+    # which single-port configs skip entirely) since the spare_wen check
+    # inside num_spare_cols>0 references is_2rw_shape regardless of port
+    # count. Side-effect-free, so hoisting is behavior-neutral for every
+    # existing check.
+    port_types = sorted(pdata["type"] for pdata in loaded["normalized_ports"].values())
+    is_1r1w_shape = len(loaded["normalized_ports"]) == 2 and port_types == ["r", "w"]
+    is_2rw_shape = len(loaded["normalized_ports"]) == 2 and port_types == ["rw", "rw"]
+
     if num_spare_cols > 0:
         if num_spare_cols > int(loaded["data_width"]):
             raise ConfigError(
@@ -635,28 +724,30 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
                 f"({loaded['data_width']}) -- a spare column replaces a real bit "
                 "lane, so there cannot be more spares than bits"
             )
-        if onchip_selfrepair:
+        if onchip_selfrepair and not onchip_col_repair:
             raise ConfigError(
                 "redundancy.num_spare_cols > 0 is not supported with "
-                "onchip_selfrepair: true -- rtl/onchip_row_repair_analyzer.sv is "
-                "row-only, so the column-repair pins would exist but never be "
-                "driven (a silently no-op repair). Use the tester-driven path "
-                "(repair_ports with col_repair_en/faulty_bit) for column repair"
+                "onchip_selfrepair: true unless redundancy.onchip_col_repair is "
+                "also true -- rtl/onchip_row_repair_analyzer.sv is row-only, so "
+                "the column-repair pins would exist but never be driven (a "
+                "silently no-op repair). Use the tester-driven path (repair_ports "
+                "with col_repair_en/faulty_bit), or set onchip_col_repair: true "
+                "for the on-chip 2D analyzer"
             )
     if len(loaded["normalized_ports"]) != 1:
-        # The only multi-port shape redundancy tolerates is the march-1r1w
-        # r+w pair, and only when onchip_selfrepair drives it -- there is no
-        # tester-driven (repair_ports) multi-port path, and no algo is passed
-        # down to this function to check more precisely than "the port roles
-        # match march-1r1w's shape" (generate_from_config's later
-        # _validate_port_topology call is what actually confirms algo agrees).
-        port_types = sorted(pdata["type"] for pdata in loaded["normalized_ports"].values())
-        is_1r1w_shape = len(loaded["normalized_ports"]) == 2 and port_types == ["r", "w"]
-        if not (onchip_selfrepair and is_1r1w_shape):
+        # The only multi-port shapes redundancy tolerates are march-1r1w's
+        # r+w pair and march-2rw's rw+rw pair, and only when onchip_selfrepair
+        # drives it -- there is no tester-driven (repair_ports) multi-port
+        # path, and no algo is passed down to this function to check more
+        # precisely than "the port roles match one of these two shapes"
+        # (generate_from_config's later _validate_port_topology call is what
+        # actually confirms algo agrees).
+        if not (onchip_selfrepair and (is_1r1w_shape or is_2rw_shape)):
             raise ConfigError(
-                "redundancy is only supported for single-port memories, or the "
-                "1-read+1-write port shape when combined with "
-                "onchip_selfrepair (algo=march-1r1w)"
+                "redundancy is only supported for single-port memories, or "
+                "(when combined with onchip_selfrepair) the 1-read+1-write "
+                "port shape (algo=march-1r1w) or the 2-read/write port shape "
+                "(algo=march-2rw)"
             )
 
     if onchip_selfrepair:
@@ -729,11 +820,33 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         # The memory must expose its spare-column write-enable pin, or the
         # wrapper has nothing to drive spare_wen onto and the spare lanes would
         # never be written -- a silently no-op repair.
+        if is_2rw_shape:
+            # Both rw ports independently commit their own writes
+            # (sram_model_2rw.sv: mem[addr0] <= din0 / mem[addr1] <= din1 are
+            # fully independent, same cycle, possibly different rows --
+            # march_2rw_algo.sv's E1/E4), so column repair needs one
+            # repair_remap_col instance PER PORT, each with its OWN
+            # spare_wen -- "at least one port has spare_wen" (below) is not
+            # enough here: a row written only through the port lacking
+            # spare_wen would never get its spare lane written, a silent
+            # under-repair with the exact same config shape as a correct one.
+            missing = sorted(
+                pname for pname, pdata in loaded["normalized_ports"].items() if "spare_wen" not in pdata
+            )
+            if missing:
+                raise ConfigError(
+                    "redundancy.num_spare_cols > 0 with the 2-read/write port "
+                    "shape (both ports type 'rw') requires ports.<name>.spare_wen "
+                    f"on EVERY rw port, not just one -- missing on {missing}. Each "
+                    "port independently commits its own writes, so a row written "
+                    "only through the port lacking spare_wen would never get its "
+                    "spare lane written"
+                )
         # Scan every port, not just the first: on the 1r1w shape the read port
         # sorts first and structurally cannot carry spare_wen (see
         # OPTIONAL_PORT_KEYS_BY_TYPE), so inspecting only one port would look
         # past the write port that does.
-        if not any("spare_wen" in pdata for pdata in loaded["normalized_ports"].values()):
+        elif not any("spare_wen" in pdata for pdata in loaded["normalized_ports"].values()):
             port_name = next(iter(loaded["normalized_ports"]))
             raise ConfigError(
                 f"redundancy.num_spare_cols > 0 requires ports.{port_name}.spare_wen "
@@ -745,32 +858,39 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         # Column repair pins are a brand-new surface with no back-compat cost, so
         # validate them strictly (unlike the row pins, whose widths stay
         # unvalidated because tightening them would break existing configs).
-        expected_widths = {
-            "col_repair_en": num_spare_cols,
-            "faulty_bit": num_spare_cols * geometry.bit_index_width,
-        }
-        for pin, expected in expected_widths.items():
-            entry = by_name.get(pin)
-            if entry is None:
-                raise ConfigError(
-                    f"redundancy.num_spare_cols > 0 requires a repair_ports entry "
-                    f"named {pin!r} (width {expected}) to drive repair_remap_col"
-                )
-            if entry["width"] != expected:
-                raise ConfigError(
-                    f"repair_ports {pin!r} width must be {expected} for "
-                    f"num_spare_cols={num_spare_cols}, data_width="
-                    f"{geometry.word_size} (got {entry['width']})"
-                )
-            # dir matters as much as width: repair_remap_col takes these as
-            # INPUTS, so declaring one `output` puts an undriven wire on the
-            # boundary -- the tester gets no pin to drive, spare_wen goes X, and
-            # the repaired lane reads X rather than the spare.
-            if entry["dir"] != "input":
-                raise ConfigError(
-                    f"repair_ports {pin!r} must be dir: input (it drives "
-                    f"repair_remap_col's input port), got {entry['dir']!r}"
-                )
+        # Gated on not onchip_selfrepair: under onchip_col_repair, there is no
+        # repair_ports block at all (onchip_selfrepair is unconditionally
+        # mutually exclusive with repair_ports, checked above) -- the analyzer
+        # drives repair_remap_col directly. Without this guard every on-chip
+        # 2D config would fail here with "requires a repair_ports entry named
+        # col_repair_en" for pins it was never supposed to need.
+        if not onchip_selfrepair:
+            expected_widths = {
+                "col_repair_en": num_spare_cols,
+                "faulty_bit": num_spare_cols * geometry.bit_index_width,
+            }
+            for pin, expected in expected_widths.items():
+                entry = by_name.get(pin)
+                if entry is None:
+                    raise ConfigError(
+                        f"redundancy.num_spare_cols > 0 requires a repair_ports entry "
+                        f"named {pin!r} (width {expected}) to drive repair_remap_col"
+                    )
+                if entry["width"] != expected:
+                    raise ConfigError(
+                        f"repair_ports {pin!r} width must be {expected} for "
+                        f"num_spare_cols={num_spare_cols}, data_width="
+                        f"{geometry.word_size} (got {entry['width']})"
+                    )
+                # dir matters as much as width: repair_remap_col takes these as
+                # INPUTS, so declaring one `output` puts an undriven wire on the
+                # boundary -- the tester gets no pin to drive, spare_wen goes X, and
+                # the repaired lane reads X rather than the spare.
+                if entry["dir"] != "input":
+                    raise ConfigError(
+                        f"repair_ports {pin!r} must be dir: input (it drives "
+                        f"repair_remap_col's input port), got {entry['dir']!r}"
+                    )
     else:
         # ports.spare_wen with no column repair is NOT an error: it states a
         # fact about the macro ("this memory has a spare-column write enable"),
@@ -826,6 +946,9 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         "words_per_row": words_per_row,
         "onchip_selfrepair": onchip_selfrepair,
         "onchip_repair_persistence": onchip_repair_persistence,
+        "onchip_diagnosis": onchip_diagnosis,
+        "num_diagnosis_entries": num_diagnosis_entries,
+        "onchip_col_repair": onchip_col_repair,
     }
 
 
@@ -931,7 +1054,7 @@ def _find_rtl_dir() -> Path:
     )
 
 
-_ALGO_DIRS = {"march_c", "march_raw", "march_1r1w", "march_2rw", "march_x", "mats_plus"}
+_ALGO_DIRS = {"march_c", "march_raw", "march_1r1w", "march_2rw", "march_x", "mats_plus", "checkerboard"}
 
 
 def copy_mbist_rtl(outdir: Path, algo_dir: str | None = None) -> None:
@@ -1000,6 +1123,16 @@ def generate_from_config(
             "redundancy.onchip_selfrepair requires algo to be one of: "
             f"{', '.join(sorted(_SELFREPAIR_ALGOS))} in this phase "
             f"(fail_valid/fail_addr are only wired up for these algorithms); got algo={algo!r}"
+        )
+
+    if redundancy_cfg and redundancy_cfg.get("onchip_col_repair") and algo.strip().lower() not in _COL_SELFREPAIR_ALGOS:
+        # Same rationale as the _SELFREPAIR_ALGOS gate above: algo isn't seen
+        # by load_config/_validate_redundancy, so this narrower check (a
+        # strict subset -- see _COL_SELFREPAIR_ALGOS) has to live here too.
+        raise ConfigError(
+            "redundancy.onchip_col_repair requires algo to be one of: "
+            f"{', '.join(sorted(_COL_SELFREPAIR_ALGOS))} "
+            f"(fail_bitmask is only wired up for these algorithms); got algo={algo!r}"
         )
 
     outdir.mkdir(parents=True, exist_ok=True)

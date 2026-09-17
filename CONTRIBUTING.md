@@ -155,11 +155,10 @@ first thing to suspect.
 
 Note CI enforces a **90% coverage gate** (`--cov-fail-under=90`) and does **not**
 run `tests/hardware`'s own `make` target at all — only the 10 modules covered
-indirectly through `test_hardware_standalone_scripts_e2e.py` (see above). A
-separate `.github/workflows/publish.yml` still
-exists and would fire on a new tagged release (`python -m build` + `twine
-check`, no tests) — it hasn't run since the last PyPI upload; Nix, not PyPI,
-is the documented/supported way to get autoMBIST (see [SECURITY.md](SECURITY.md)).
+indirectly through `test_hardware_standalone_scripts_e2e.py` (see above). The
+`.github/workflows/publish.yml` PyPI-publish workflow that used to fire on a
+new tagged release has been removed — Nix, not PyPI, is the documented/
+supported way to get autoMBIST (see [SECURITY.md](SECURITY.md)).
 
 Keep your local `nix develop --command pytest tests/software tests/integration
 --cov=autombist --cov-report=term-missing` run passing at 90%+ coverage before
@@ -185,7 +184,7 @@ src/autombist/engine/   The algo-shell RTL + docs: fault_ram.sv (fault-injectabl
 
 src/autombist/algos/    Built-in `.alg` march-algorithm specs for the research
                          engine (march_b, march_c, march_c_plus, march_ss,
-                         march_x, march_y, mats_plus).
+                         march_x, march_y, mats_plus, checkerboard).
 
 src/autombist/repair/   The BIRA/BISR Python library (bira.py and friends) —
                          redundancy analysis and repair-signature encoding

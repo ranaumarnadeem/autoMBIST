@@ -194,6 +194,46 @@ def test_compare_wrong_address_diverges() -> None:
     assert result.divergences[0].index == 6
 
 
+# --------------------------------------------------------------------------- #
+# Checkerboard (wc/wcb/rc/rcb) -- proves seq_check needs ZERO code changes to
+# correctly handle an address-DEPENDENT expected value, once AccessStep.
+# is_write/write_value are address-aware (see alg_spec.py) -- _obs_from_expected
+# above already derives din generically from s.write_value/s.is_write, so a
+# correct controller trace against checkerboard.alg must self-match exactly
+# like any fixed-value algorithm, and a wrong value at one address must still
+# be caught, not silently accepted because "some address expects that value
+# anyway" (checkerboard's whole point is that the expected value DIFFERS by
+# address, so a naive checker that only tracked "0 or 1 somewhere" could miss
+# a same-polarity-wrong-address bug that a real controller could actually have).
+# --------------------------------------------------------------------------- #
+def test_compare_checkerboard_self_match_is_ok() -> None:
+    spec = resolve_algo("checkerboard")
+    steps = expand_expected_trace(spec, depth=4)
+    blocks = expand_expected_blocks(spec, depth=4)
+    obs = _obs_from_expected(steps, data_width=8)
+    result = compare_trace(blocks, obs, data_width=8)
+    assert result.matches is True
+    assert result.observed_count == result.expected_count == len(steps)
+    assert result.divergences == []
+
+
+def test_compare_checkerboard_wrong_value_at_one_address_diverges() -> None:
+    """A controller that wrote the WRONG polarity at one address (e.g. wrote
+    checkerboard's value for an even address at an odd one) must be caught --
+    proves the expected value is genuinely being computed per-address, not
+    just checked against a fixed 0/1 that happens to match half the time."""
+    spec = resolve_algo("checkerboard")
+    steps = expand_expected_trace(spec, depth=4)
+    blocks = expand_expected_blocks(spec, depth=4)
+    obs = _obs_from_expected(steps, data_width=8)
+    # steps[0] is "either wc" @ addr=0 -> correct din is 0x00; flip it to 0xFF.
+    assert steps[0].addr == 0 and steps[0].write_value == 0
+    obs[0] = ObservedAccess(port=0, is_write=True, addr=0, din=0xFF)
+    result = compare_trace(blocks, obs, data_width=8)
+    assert result.matches is False
+    assert result.divergences[0].index == 0
+
+
 def test_compare_wrong_write_value_diverges() -> None:
     # A controller that writes solid-0 where the spec says w1 (solid-1).
     spec = parse_alg("up w1", "w")

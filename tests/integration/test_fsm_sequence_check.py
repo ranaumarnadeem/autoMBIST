@@ -31,6 +31,7 @@ MARCH_C_TOP = REPO_ROOT / "rtl" / "march_c" / "march_c_top.sv"
 MARCH_2RW_TOP = REPO_ROOT / "rtl" / "march_2rw" / "march_2rw_top.sv"
 MARCH_X_TOP = REPO_ROOT / "rtl" / "march_x" / "march_x_top.sv"
 MATS_PLUS_TOP = REPO_ROOT / "rtl" / "mats_plus" / "mats_plus_top.sv"
+CHECKERBOARD_TOP = REPO_ROOT / "rtl" / "checkerboard" / "checkerboard_top.sv"
 
 runner = CliRunner()
 
@@ -100,6 +101,30 @@ def test_march_x_controller_matches_its_own_spec() -> None:
     assert result.sequence is not None
     assert result.sequence.matches is True, result.sequence.message()
     # march_x is 6n; over 16 words that's 96 memory operations.
+    assert result.sequence.observed_count == 6 * mem.depth
+    assert result.detected == 1
+
+
+def test_checkerboard_controller_matches_its_own_spec() -> None:
+    """checkerboard_top.sv (the RTL wrapper-generation path's first
+    address-aware algo module) must drive exactly its own 4-element .alg
+    spec: {either(wc); up(rc,wcb); down(rcb,wc); either(rc)} -- same op-count
+    shape as march_x (6n), but with address-dependent values. This is the
+    strongest available proof that addr_lsb (wired from the FSM's own addr_q)
+    produces the exact address order, op structure, AND per-address values
+    the spec requires, via the existing AccessStep.write_value machinery."""
+    sources = gather_sibling_sources(CHECKERBOARD_TOP)
+    module_name = check_ports(CHECKERBOARD_TOP.read_text(encoding="utf-8")).module_name
+    mem = MemoryParams(addr_width=4, data_width=8, init_val=1)
+
+    result = run_fsm_campaign(
+        mem, sources, module_name, [FaultRecord("SA0", 3, 0, 0, 0, 0, 0)],
+        expected_spec=resolve_algo("checkerboard"),
+    )
+
+    assert result.sequence is not None
+    assert result.sequence.matches is True, result.sequence.message()
+    # checkerboard is 6n; over 16 words that's 96 memory operations.
     assert result.sequence.observed_count == 6 * mem.depth
     assert result.detected == 1
 

@@ -25,7 +25,16 @@ module march_c_fsm #(
     // every distinct failing row as the march passes over it, not just "some
     // row failed." Purely additive: no existing signal's timing changes.
     output logic                  fail_valid,
-    output logic [ADDR_WIDTH-1:0] fail_addr
+    output logic [ADDR_WIDTH-1:0] fail_addr,
+
+    // On-chip 2D (row+column) BIRA streaming interface: which specific bit(s)
+    // mismatched, valid whenever fail_valid is. Per-bit `!==`, not a plain
+    // XOR: bit-for-bit equivalent to fail_valid's own 4-state comparison
+    // (XOR of an X bit is X, not 1, and would silently vanish from a "which
+    // bits are set" scan) -- a latent-safety fix, not an active one, since
+    // every current fault-injection model (saboteur_template.j2) only ever
+    // produces known 0/1 on mem_rdata, never X.
+    output logic [DATA_WIDTH-1:0] fail_bitmask
 );
 
     localparam logic [2:0] LAST_PHASE = 3'd5;
@@ -87,6 +96,13 @@ module march_c_fsm #(
     // just also exposed live instead of only latched into a sticky bit.
     assign fail_valid = (state_q == ST_CHECK) && do_read && (mem_rdata !== expected_q);
     assign fail_addr  = addr_q;
+
+    genvar gb;
+    generate
+        for (gb = 0; gb < DATA_WIDTH; gb++) begin : g_fail_bitmask
+            assign fail_bitmask[gb] = (state_q == ST_CHECK) && do_read && (mem_rdata[gb] !== expected_q[gb]);
+        end
+    endgenerate
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
