@@ -15,12 +15,12 @@ from autombist.fault_primitives import (
 )
 
 
-def test_default_registry_has_25_entries_no_fixed_overlap() -> None:
+def test_default_registry_has_37_entries_no_fixed_overlap() -> None:
     reg = default_registry()
     names = {p.name for p in reg}
-    assert len(names) == 25
+    assert len(names) == 37
     assert names.isdisjoint(FIXED_TYPE_NAMES)
-    assert len(names | set(FIXED_TYPE_NAMES)) == 31  # union = all 31 built-ins
+    assert len(names | set(FIXED_TYPE_NAMES)) == 43  # union = all 43 built-ins
 
 
 def test_default_registry_all_individually_valid() -> None:

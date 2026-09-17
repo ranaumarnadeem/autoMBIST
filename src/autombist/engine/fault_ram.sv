@@ -71,6 +71,15 @@ module fault_ram #(
                               // KEPT IN SYNC MANUALLY with
                               // templates/fault_ram_template.sv.j2's HSD
                               // check -- same caveat as T_DRF above.
+  // Dynamic (2-operation) single-cell faults (Hamdioui/Al-Ars/van de Goor,
+  // VTS 2002, Table 1): the single-cell fault of the same shape, gated on
+  // the victim's own IMMEDIATELY PRECEDING op being a qualifying write, not
+  // on its current pre-read state -- see the lop_*/prev_* register block and
+  // write_op()/read_op() below. KEPT IN SYNC MANUALLY with the registry
+  // entries in fault_primitives.py -- same caveat as T_CFTR0 etc. above.
+  localparam int T_DYN_RDF00=31,  T_DYN_RDF01=32,  T_DYN_RDF10=33,  T_DYN_RDF11=34;
+  localparam int T_DYN_DRDF00=35, T_DYN_DRDF01=36, T_DYN_DRDF10=37, T_DYN_DRDF11=38;
+  localparam int T_DYN_IRF00=39,  T_DYN_IRF01=40,  T_DYN_IRF10=41,  T_DYN_IRF11=42;
 
   typedef struct {
     int t;      // type code
@@ -84,6 +93,31 @@ module fault_ram #(
   string  FNAME[$];   // parallel: original type string for reporting
 
   logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
+
+  // ---------------- dynamic (2-operation) fault state ----------------
+  // A SINGLE register (not per-victim-address): "the victim's own
+  // immediately-preceding operation" is a property of the CELL, so an
+  // intervening write from elsewhere must be visible -- measured directly
+  // against a real 2-port render (see the generated template's identical
+  // block), even though this single-port twin never exercises the
+  // shared-across-ports case itself. Invalidated on entry to BOTH
+  // write_op() and read_op() (before either function's AF_NOACC/ALIAS
+  // pre-pass, so a dropped access still correctly breaks adjacency instead
+  // of leaving a stale write armed across it), recorded only at a real
+  // write's commit point. read_op() snapshots these into its own prev_*
+  // locals before invalidating (see read_op() below) -- the CURRENT read's
+  // own condition check needs what was true before this call started, not
+  // the just-cleared live value. KEPT IN SYNC MANUALLY with
+  // templates/fault_ram_template.sv.j2's identical block -- same caveat as
+  // T_DRF/T_HSD above.
+  bit                    lop_w = 1'b0;  // was the last op a write that committed?
+  int                    lop_a = -1;    // its effective address (post AF_ALIAS)
+  logic [DATA_WIDTH-1:0] lop_pre;       // the cell's content BEFORE that write
+  logic [DATA_WIDTH-1:0] lop_m;         // that write's bit mask
+  logic [DATA_WIDTH-1:0] lop_d;         // the value WRITTEN (not inferred from
+                                         // post-write cell content -- an
+                                         // intervening clamp would misattribute
+                                         // the fault; stored explicitly instead)
 
   // ---------------- fault list loading ----------------
   function automatic int type_code(string s);
@@ -118,11 +152,23 @@ module fault_ram #(
     if (s == "CFIR1")    return T_CFIR1;
     if (s == "CFDRD0")   return T_CFDRD0;
     if (s == "CFDRD1")   return T_CFDRD1;
+    if (s == "DYN_RDF00")  return T_DYN_RDF00;
+    if (s == "DYN_RDF01")  return T_DYN_RDF01;
+    if (s == "DYN_RDF10")  return T_DYN_RDF10;
+    if (s == "DYN_RDF11")  return T_DYN_RDF11;
+    if (s == "DYN_DRDF00") return T_DYN_DRDF00;
+    if (s == "DYN_DRDF01") return T_DYN_DRDF01;
+    if (s == "DYN_DRDF10") return T_DYN_DRDF10;
+    if (s == "DYN_DRDF11") return T_DYN_DRDF11;
+    if (s == "DYN_IRF00")  return T_DYN_IRF00;
+    if (s == "DYN_IRF01")  return T_DYN_IRF01;
+    if (s == "DYN_IRF10")  return T_DYN_IRF10;
+    if (s == "DYN_IRF11")  return T_DYN_IRF11;
     return -1;
   endfunction
 
   // KEPT IN SYNC MANUALLY with type_code() above (same caveat as T_DRF/T_HSD).
-  localparam string VALID_FAULT_TYPES = "SA0, SA1, TF0, TF1, WDF0, WDF1, RDF0, RDF1, DRDF0, DRDF1, IRF0, IRF1, SOF, AF_NOACC, AF_ALIAS, CFIN, CFID, CFST, CFDS, DRF, HSD, CFTR0, CFTR1, CFWD0, CFWD1, CFRD0, CFRD1, CFIR0, CFIR1, CFDRD0, CFDRD1";
+  localparam string VALID_FAULT_TYPES = "SA0, SA1, TF0, TF1, WDF0, WDF1, RDF0, RDF1, DRDF0, DRDF1, IRF0, IRF1, SOF, AF_NOACC, AF_ALIAS, CFIN, CFID, CFST, CFDS, DRF, HSD, CFTR0, CFTR1, CFWD0, CFWD1, CFRD0, CFRD1, CFIR0, CFIR1, CFDRD0, CFDRD1, DYN_RDF00, DYN_RDF01, DYN_RDF10, DYN_RDF11, DYN_DRDF00, DYN_DRDF01, DYN_DRDF10, DYN_DRDF11, DYN_IRF00, DYN_IRF01, DYN_IRF10, DYN_IRF11";
 
   int init_val;
 
@@ -231,6 +277,11 @@ module fault_ram #(
     logic [DATA_WIDTH-1:0] old, nxt;
     ea = int'(a);
 
+    // Dynamic-fault state: invalidate unconditionally before the AF pre-pass,
+    // so an AF_NOACC-dropped write (early `return` below) still breaks
+    // adjacency instead of leaving a PRIOR write's record armed across it.
+    lop_w = 1'b0;
+
     // Address decoder faults act on the whole word.
     foreach (FQ[i]) begin
       if (FQ[i].va != ea) continue;
@@ -266,6 +317,16 @@ module fault_ram #(
     end
 
     mem[ea] = nxt;
+
+    // Dynamic-fault state: record this write as the last op, now that it has
+    // genuinely committed (AF_NOACC would already have returned above). `d`,
+    // not `nxt`, is the written value -- see the register block's own note on
+    // why it must be stored explicitly rather than inferred from cell content.
+    lop_w   = 1'b1;
+    lop_a   = ea;
+    lop_pre = old;
+    lop_m   = m;
+    lop_d   = d;
 
     // Aggressor-side coupling triggers caused by this write.
     for (int b = 0; b < DATA_WIDTH; b++) begin
@@ -345,6 +406,18 @@ module fault_ram #(
   function automatic logic [DATA_WIDTH-1:0] read_op(input logic [ADDR_WIDTH-1:0] a);
     int ea;
     logic [DATA_WIDTH-1:0] old, rv;
+    // Dynamic-fault state: snapshot what was true BEFORE this read started --
+    // the read's own sensitize.prev condition (in the per-bit loop below)
+    // gates on THIS, not the live lop_* registers, since those get
+    // invalidated right below (unconditionally, before the AF pre-pass, so
+    // an AF_NOACC-dropped read still breaks adjacency for whatever comes
+    // next -- same reasoning as write_op()'s identical fix).
+    bit                    prev_w   = lop_w;
+    int                    prev_a   = lop_a;
+    logic [DATA_WIDTH-1:0] prev_pre = lop_pre;
+    logic [DATA_WIDTH-1:0] prev_m   = lop_m;
+    logic [DATA_WIDTH-1:0] prev_d   = lop_d;
+    lop_w = 1'b0;
     ea = int'(a);
 
     foreach (FQ[i]) begin
@@ -379,6 +452,23 @@ module fault_ram #(
           T_CFIR1:  if (old[b] == 1'b1 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]) begin rv[b] = 1'b0; FQ[i].hits++; end
           T_CFDRD0: if (old[b] == 1'b0 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]) begin mem[ea][b] = 1'b1; rv[b] = 1'b0; FQ[i].hits++; end
           T_CFDRD1: if (old[b] == 1'b1 && mem[FQ[i].aa][FQ[i].ab] == FQ[i].p0[0]) begin mem[ea][b] = 1'b0; rv[b] = 1'b1; FQ[i].hits++; end
+          // Dynamic (2-operation): same shape as RDF/DRDF/IRF above, gated on
+          // the victim's own IMMEDIATELY PRECEDING op (prev_*, snapshotted
+          // above) instead of its current pre-read state. <x><y>: x = that
+          // write's own pre-state, y = its written value (== old[b] here,
+          // which is why the arms below read cleanly as "flip/lie about y").
+          T_DYN_RDF00: if (prev_w && prev_a == ea && prev_m[b] && prev_pre[b] == 1'b0 && prev_d[b] == 1'b0) begin mem[ea][b] = 1'b1; rv[b] = 1'b1; FQ[i].hits++; end
+          T_DYN_RDF01: if (prev_w && prev_a == ea && prev_m[b] && prev_pre[b] == 1'b0 && prev_d[b] == 1'b1) begin mem[ea][b] = 1'b0; rv[b] = 1'b0; FQ[i].hits++; end
+          T_DYN_RDF10: if (prev_w && prev_a == ea && prev_m[b] && prev_pre[b] == 1'b1 && prev_d[b] == 1'b0) begin mem[ea][b] = 1'b1; rv[b] = 1'b1; FQ[i].hits++; end
+          T_DYN_RDF11: if (prev_w && prev_a == ea && prev_m[b] && prev_pre[b] == 1'b1 && prev_d[b] == 1'b1) begin mem[ea][b] = 1'b0; rv[b] = 1'b0; FQ[i].hits++; end
+          T_DYN_DRDF00: if (prev_w && prev_a == ea && prev_m[b] && prev_pre[b] == 1'b0 && prev_d[b] == 1'b0) begin mem[ea][b] = 1'b1; rv[b] = 1'b0; FQ[i].hits++; end
+          T_DYN_DRDF01: if (prev_w && prev_a == ea && prev_m[b] && prev_pre[b] == 1'b0 && prev_d[b] == 1'b1) begin mem[ea][b] = 1'b0; rv[b] = 1'b1; FQ[i].hits++; end
+          T_DYN_DRDF10: if (prev_w && prev_a == ea && prev_m[b] && prev_pre[b] == 1'b1 && prev_d[b] == 1'b0) begin mem[ea][b] = 1'b1; rv[b] = 1'b0; FQ[i].hits++; end
+          T_DYN_DRDF11: if (prev_w && prev_a == ea && prev_m[b] && prev_pre[b] == 1'b1 && prev_d[b] == 1'b1) begin mem[ea][b] = 1'b0; rv[b] = 1'b1; FQ[i].hits++; end
+          T_DYN_IRF00: if (prev_w && prev_a == ea && prev_m[b] && prev_pre[b] == 1'b0 && prev_d[b] == 1'b0) begin rv[b] = 1'b1; FQ[i].hits++; end
+          T_DYN_IRF01: if (prev_w && prev_a == ea && prev_m[b] && prev_pre[b] == 1'b0 && prev_d[b] == 1'b1) begin rv[b] = 1'b0; FQ[i].hits++; end
+          T_DYN_IRF10: if (prev_w && prev_a == ea && prev_m[b] && prev_pre[b] == 1'b1 && prev_d[b] == 1'b0) begin rv[b] = 1'b1; FQ[i].hits++; end
+          T_DYN_IRF11: if (prev_w && prev_a == ea && prev_m[b] && prev_pre[b] == 1'b1 && prev_d[b] == 1'b1) begin rv[b] = 1'b0; FQ[i].hits++; end
           T_SOF:   begin rv[b] = dout[b]; FQ[i].hits++; end   // output keeper returns stale data
           default: ;
         endcase
