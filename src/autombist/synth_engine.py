@@ -873,6 +873,7 @@ class SynthResult:
     covered: list[str]
     uncovered: list[str]
     excluded_fixed: list[str] = field(default_factory=lambda: list(FIXED_TYPE_NAMES))
+    excluded_unsupported: list[str] = field(default_factory=list)
 
 
 def synthesize_alg(
@@ -885,6 +886,15 @@ def synthesize_alg(
     description for this module's oracle to interpret, so it is excluded the
     same way).
 
+    ``sensitize.prev`` (dynamic/2-operation) primitives are excluded here too
+    -- the oracle below (``_apply_op``) is stateless across calls (no
+    last-operation memory), so it cannot yet evaluate a ``prev`` clause.
+    Reported separately via ``excluded_unsupported`` rather than silently
+    dropped into ``uncovered``, since "uncovered" implies the walk tried and
+    failed, not that the type was never a candidate. Real oracle support
+    lands with dynamic faults' own synthesizer step; this exclusion is
+    removed then, not extended.
+
     ``sensitize.agg_pre`` (two-cell coupling) primitives ARE targeted: the
     oracle reads the aggressor's held state, and the walk credits one only
     when :func:`detects` confirms it under both aggressor placements. Six of
@@ -895,13 +905,15 @@ def synthesize_alg(
     placement only, so they land in ``uncovered`` rather than being claimed --
     covering them needs a chained bidirectional builder (see
     docs/coupling-family-plan.md, Step 6)."""
-    target = [p for p in registry if p.raw_sv is None]
+    unsupported = [p.name for p in registry if p.raw_sv is None and p.sensitize.prev != "x"]
+    target = [p for p in registry if p.raw_sv is None and p.sensitize.prev == "x"]
     elements, uncovered = synthesize_elements(target, max_elements=max_elements, max_ops=max_ops, init_val=init_val)
     targeted_names = [p.name for p in target]
     covered = [n for n in targeted_names if n not in uncovered]
     spec = AlgSpec(name=name, elements=elements)
     return SynthResult(
         spec=spec, targeted=targeted_names, covered=covered, uncovered=uncovered,
+        excluded_unsupported=unsupported,
     )
 
 

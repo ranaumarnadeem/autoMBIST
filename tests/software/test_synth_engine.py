@@ -344,6 +344,22 @@ def test_synthesize_excludes_raw_sv_primitives():
     assert "RAWX" not in result.targeted
 
 
+def test_synthesize_excludes_dynamic_prev_primitives_as_unsupported():
+    """The oracle has no operation-history state yet (see synthesize_alg's own
+    docstring) -- a prev-using primitive must be reported via
+    excluded_unsupported, not silently dropped into uncovered (which would
+    imply the walk tried and failed, not that it was never a candidate)."""
+    reg = default_registry() + [
+        FaultPrimitive(
+            "DYNX", "read_effect", Sensitize(pre="0", prev="0w0"), Effect(kind="force_read", value="1"),
+        )
+    ]
+    result = synthesize_alg(reg, "t")
+    assert "DYNX" not in result.targeted
+    assert "DYNX" not in result.uncovered
+    assert result.excluded_unsupported == ["DYNX"]
+
+
 def test_synthesize_respects_max_elements_cap():
     result = synthesize_alg(default_registry(), "t", max_elements=3)
     assert len(result.spec.elements) <= 3
