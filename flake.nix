@@ -45,7 +45,7 @@
         # fail at the first real command.
         autombist = python.pkgs.buildPythonApplication {
           pname = "autombist";
-          version = "1.1.2";
+          version = "0.0.1";
           src = ./.;
           format = "pyproject";
 
