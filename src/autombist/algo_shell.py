@@ -524,11 +524,9 @@ class AlgoShell(cmd.Cmd):
           --write PATH  also write the human .alg text form
         Never targets SOF/AF_NOACC/AF_ALIAS/CFDS/DRF/HSD (structurally fixed
         types, not expressible in the Sensitize/Effect DSL -- see
-        fault_primitives.py), any raw_sv custom primitive (no DSL description
-        to synthesize against), or any sensitize.prev (dynamic/2-operation)
-        primitive (the oracle has no operation-history state yet) -- the
-        printed summary always states "targets M/N" so every exclusion is
-        visible, never implied."""
+        fault_primitives.py) or any raw_sv custom primitive (no DSL
+        description to synthesize against) -- the printed summary always
+        states "targets M/N" so the exclusion is visible, never implied."""
         pos, flags = _parse_flags(
             _tokenize(arg), {"elements": int, "max-ops": int, "verify": None, "write": str}
         )
@@ -543,13 +541,11 @@ class AlgoShell(cmd.Cmd):
             init_val=init_val,
         )
         self.session.algos[name] = result.spec
-        total = len(result.targeted) + len(result.excluded_fixed) + len(result.excluded_unsupported)
-        excl_msg = f"excludes {', '.join(result.excluded_fixed)}: structurally fixed types"
-        if result.excluded_unsupported:
-            excl_msg += f"; {', '.join(result.excluded_unsupported)}: dynamic (sensitize.prev), not yet synthesizable"
+        total = len(result.targeted) + len(result.excluded_fixed)
         self._out(
             f"synthesized '{name}': {result.spec.length_n}n, {len(result.spec.elements)} elements -- "
-            f"targets {len(result.targeted)}/{total} registry primitives ({excl_msg})"
+            f"targets {len(result.targeted)}/{total} registry primitives "
+            f"(excludes {', '.join(result.excluded_fixed)}: structurally fixed types)"
         )
         # Always state the covered count, then warn separately. Previously the
         # count only appeared when nothing was uncovered, so a partial result
