@@ -453,3 +453,58 @@ def test_agg_pre_changes_the_registry_hash() -> None:
     ungated = default_registry() + [_agg()]
     assert registry_hash(gated) != registry_hash(ungated)
     assert registry_hash(gated) != registry_hash(base)
+
+
+# ---------------------------------------------------------------------------
+# sensitize.prev: the last-op gate (dynamic/2-operation faults).
+# ---------------------------------------------------------------------------
+
+
+def _dyn(**sens: str) -> FaultPrimitive:
+    return FaultPrimitive(
+        "TDYN", "read_effect", Sensitize(pre="0", **sens), Effect(kind="force_read", value="1"),
+    )
+
+
+def test_prev_emits_the_last_op_clause_on_a_read_victim_arm() -> None:
+    arm = render_read_victim_arm(_dyn(prev="0w0"))
+    assert "prev_w && prev_a == ea && prev_m[b] && prev_pre[b] == 1'b0 && prev_d[b] == 1'b0" in arm
+    # ANDed onto the victim's own pre-clause, not replacing it.
+    assert "old[b] == 1'b0 && prev_w && prev_a == ea" in arm
+
+
+def test_prev_reads_the_correct_digits_for_each_pair_token() -> None:
+    # "1w0": pre=1 (want_pre), written=0 (want_d) -- not the same digit twice.
+    # _dyn()'s own default pre="0" already matches "1w0"'s written digit.
+    arm = render_read_victim_arm(_dyn(prev="1w0"))
+    assert "prev_pre[b] == 1'b1 && prev_d[b] == 1'b0" in arm
+
+
+def test_prev_wildcard_emits_no_clause() -> None:
+    # The property every byte-identical built-in render depends on.
+    assert "prev_" not in render_read_victim_arm(_dyn())
+
+
+def test_prev_alone_replaces_the_empty_condition_sentinel() -> None:
+    """Same sentinel rule agg_pre/port follow: a primitive constraining ONLY
+    the last-op state must render `if (prev_w && ...)`, not `if (1'b1 &&
+    prev_w && ...)`."""
+    prim = FaultPrimitive(
+        "TDYNO", "read_effect", Sensitize(pre="x", prev="0w0"), Effect(kind="force_read", value="1"),
+    )
+    arm = render_read_victim_arm(prim)
+    assert "if (prev_w && prev_a == ea" in arm
+    assert "1'b1 &&" not in arm
+
+
+def test_render_fault_ram_omits_dynamic_scaffolding_when_unused() -> None:
+    """needs_dynamic_state must gate the lop_*/prev_* scaffolding -- present
+    with a prev-using primitive, absent (and the render byte-identical to the
+    pre-dynamic-faults baseline) without one."""
+    text_plain = render_fault_ram(default_registry())
+    assert "lop_w" not in text_plain
+    assert "prev_w" not in text_plain
+
+    text_dyn = render_fault_ram(default_registry() + [_dyn(prev="0w0")])
+    assert "bit                    lop_w = 1'b0;" in text_dyn
+    assert "bit                    prev_w   = lop_w;" in text_dyn
