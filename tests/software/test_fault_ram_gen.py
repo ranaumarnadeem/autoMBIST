@@ -133,19 +133,21 @@ def test_render_fault_ram_num_ports_1_implicit_and_explicit_are_identical() -> N
 def test_render_fault_ram_num_ports_1_is_byte_identical_to_pre_phase_golden() -> None:
     """Pins render_fault_ram(default_registry()) to its exact sha256. Deliberately
     re-pinned across both Workstream K (DRF) and Workstream L (HSD), again
-    for the fatal-cascade fix, and again for the two-cell coupling family
-    (agg_pre, ten new registry entries) (had_fatal guard + valid-type-name list in the
-    unknown-fault-type message): each added a new fixed type or a real text
-    change, so num_ports=1 text growth each time is the expected, intended
-    outcome, not a regression. Any *future* edit that changes a byte of this
-    rendering must still fail this test and prompt a deliberate re-pin, exactly
-    as these were."""
+    for the fatal-cascade fix, again for the two-cell coupling family
+    (agg_pre, ten new registry entries), and now again for dynamic
+    (2-operation) faults (sensitize.prev, twelve new registry entries plus
+    the lop_*/prev_* scaffolding, gated but now actually present since
+    default_registry() carries prev-using primitives): each added a new
+    fixed type or a real text change, so num_ports=1 text growth each time is
+    the expected, intended outcome, not a regression. Any *future* edit that
+    changes a byte of this rendering must still fail this test and prompt a
+    deliberate re-pin, exactly as these were."""
     import hashlib
 
     text = render_fault_ram(default_registry())
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    assert len(text) == 16895
-    assert digest == "bef86c6af2cc4711aa41ce47c4a6b4e585853ab53aa89f0f5b0c78cdd7a47536"
+    assert len(text) == 23078
+    assert digest == "fbe0d8a1561c41dcc4bf1d9d940399faef08224c7fb6e2ab68d3c6794b982309"
 
 
 # --------------------------------------------------------------------------- #
@@ -499,9 +501,12 @@ def test_prev_alone_replaces_the_empty_condition_sentinel() -> None:
 
 def test_render_fault_ram_omits_dynamic_scaffolding_when_unused() -> None:
     """needs_dynamic_state must gate the lop_*/prev_* scaffolding -- present
-    with a prev-using primitive, absent (and the render byte-identical to the
-    pre-dynamic-faults baseline) without one."""
-    text_plain = render_fault_ram(default_registry())
+    with a prev-using primitive, absent (and the render byte-identical to a
+    registry with none) without one. default_registry() itself now carries
+    12 dynamic built-ins, so "unused" here means filtered down to the static
+    + coupling subset, not the live default."""
+    static_only = [p for p in default_registry() if p.sensitize.prev == "x"]
+    text_plain = render_fault_ram(static_only)
     assert "lop_w" not in text_plain
     assert "prev_w" not in text_plain
 

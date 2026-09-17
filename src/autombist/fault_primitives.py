@@ -1,15 +1,17 @@
 """The fault-primitive DSL: a declarative description of a memory functional
 fault, and the registry of built-ins that reproduces fault_ram.sv's behavior.
 
-Why a DSL at all: fault_ram.sv hardcodes 31 fault-type case arms/insertion
+Why a DSL at all: fault_ram.sv hardcodes 43 fault-type case arms/insertion
 sites across five functions/blocks (clamp_static, write_op's victim/
 aggressor/row-membership checks, read_op's victim loop). `add_fault_type`
 lets a researcher define a NEW fault type without editing SystemVerilog --
 fault_ram_gen.py turns a list of FaultPrimitive into the equivalent case
 arms.
 
-Coverage: 25 of the 31 built-ins fit this DSL cleanly. Six do not, and stay
-as fixed, hand-written scaffolding in the template (see fault_ram_gen.py):
+Coverage: 37 of the 43 built-ins fit this DSL cleanly (25 static + 12
+dynamic/2-operation, the latter gated by Sensitize.prev -- see the
+registry's own "Dynamic" section below). Six do not, and stay as fixed,
+hand-written scaffolding in the template (see fault_ram_gen.py):
   - SOF: its read-path arm reads the module-level `dout` register directly
     (cross-op state), which is outside the read_op() locals this DSL models.
   - AF_NOACC / AF_ALIAS: these run in an address-decoder *pre-pass*, before
@@ -454,5 +456,77 @@ def default_registry() -> list[FaultPrimitive]:
             "CFDRD1", "read_effect", Sensitize(pre="1", agg_pre="p0"),
             Effect(kind="force_read", value="0", also_read="1"),
             params_help={"p0": "aggressor hold state (0/1)"},          # <a; 1r1/0/1>
+        ),
+        # --- Dynamic (2-operation) single-cell faults ----------------------- #
+        # Hamdioui, Al-Ars & van de Goor, "Testing Static and Dynamic Faults in
+        # Random Access Memories", VTS 2002, Table 1 (single-cell dynamic
+        # FFMs) -- NOT the DATE 2006 paper cited above, which covers the
+        # static space only (see that citation's own note).
+        #
+        # Restricted, as the paper itself is, to S=xwyry: a write immediately
+        # followed by a read, the only sequence its SPICE analysis validated
+        # (Section 4). x is the victim's pre-write state, y the written value
+        # -- the paper's own dFFM<x><y> convention, which this repo's naming
+        # already follows (unlike TF0/TF1's divergence noted above, there is
+        # no naming mismatch to inherit here).
+        #
+        # Each is a read_effect primitive gated by sensitize.prev="<x>w<y>":
+        # "the victim's own last op was exactly this write." Between that
+        # write committing and this read firing, the cell genuinely holds y
+        # (validate() enforces sensitize.pre == y, the read's own pre-fault
+        # expectation). dRDF/dIRF/dDRDF are then the SAME shape as the
+        # existing static RDF/IRF/DRDF above, just gated on prev instead of
+        # the read's own pre-state directly:
+        #   dRDF:  force_read, value=NOT(y)   -- cell flips, read returns the flip
+        #   dIRF:  corrupt_read, value=NOT(y) -- cell unchanged, only the read lies
+        #   dDRDF: force_read, value=NOT(y), also_read=y -- flips AND deceptively
+        #          reads back the correct (pre-flip) value
+        FaultPrimitive(
+            "DYN_RDF00", "read_effect", Sensitize(pre="0", prev="0w0"),
+            Effect(kind="force_read", value="1"),                      # <0w0r0/up/1>
+        ),
+        FaultPrimitive(
+            "DYN_RDF01", "read_effect", Sensitize(pre="1", prev="0w1"),
+            Effect(kind="force_read", value="0"),                      # <0w1r1/down/0>
+        ),
+        FaultPrimitive(
+            "DYN_RDF10", "read_effect", Sensitize(pre="0", prev="1w0"),
+            Effect(kind="force_read", value="1"),                      # <1w0r0/up/1>
+        ),
+        FaultPrimitive(
+            "DYN_RDF11", "read_effect", Sensitize(pre="1", prev="1w1"),
+            Effect(kind="force_read", value="0"),                      # <1w1r1/down/0>
+        ),
+        FaultPrimitive(
+            "DYN_DRDF00", "read_effect", Sensitize(pre="0", prev="0w0"),
+            Effect(kind="force_read", value="1", also_read="0"),       # <0w0r0/up/0>
+        ),
+        FaultPrimitive(
+            "DYN_DRDF01", "read_effect", Sensitize(pre="1", prev="0w1"),
+            Effect(kind="force_read", value="0", also_read="1"),       # <0w1r1/down/1>
+        ),
+        FaultPrimitive(
+            "DYN_DRDF10", "read_effect", Sensitize(pre="0", prev="1w0"),
+            Effect(kind="force_read", value="1", also_read="0"),       # <1w0r0/up/0>
+        ),
+        FaultPrimitive(
+            "DYN_DRDF11", "read_effect", Sensitize(pre="1", prev="1w1"),
+            Effect(kind="force_read", value="0", also_read="1"),       # <1w1r1/down/1>
+        ),
+        FaultPrimitive(
+            "DYN_IRF00", "read_effect", Sensitize(pre="0", prev="0w0"),
+            Effect(kind="corrupt_read", value="1"),                    # <0w0r0/0/1>
+        ),
+        FaultPrimitive(
+            "DYN_IRF01", "read_effect", Sensitize(pre="1", prev="0w1"),
+            Effect(kind="corrupt_read", value="0"),                    # <0w1r1/1/0>
+        ),
+        FaultPrimitive(
+            "DYN_IRF10", "read_effect", Sensitize(pre="0", prev="1w0"),
+            Effect(kind="corrupt_read", value="1"),                    # <1w0r0/0/1>
+        ),
+        FaultPrimitive(
+            "DYN_IRF11", "read_effect", Sensitize(pre="1", prev="1w1"),
+            Effect(kind="corrupt_read", value="0"),                    # <1w1r1/1/0>
         ),
     ]
