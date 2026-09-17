@@ -74,13 +74,13 @@ def test_resolve_params_non_parameterized_primitive_is_zero_zero():
 # against a wait-containing spec being passed in directly.
 # --------------------------------------------------------------------------- #
 def test_apply_op_wait_is_a_true_noop():
-    v, a, observed = _apply_op(1, 0, WAIT_BASE + 5, "v", None)
-    assert (v, a, observed) == (1, 0, None)
+    v, a, observed, last_op = _apply_op(1, 0, WAIT_BASE + 5, "v", None, ("v", 0, 1))
+    assert (v, a, observed, last_op) == (1, 0, None, ("v", 0, 1))  # last_op untouched too
 
 
 def test_apply_op_wait_does_not_mutate_aggressor_role():
-    v, a, observed = _apply_op(1, 0, WAIT_BASE + 5, "a", None)
-    assert (v, a, observed) == (1, 0, None)
+    v, a, observed, last_op = _apply_op(1, 0, WAIT_BASE + 5, "a", None, ("v", 0, 1))
+    assert (v, a, observed, last_op) == (1, 0, None, ("v", 0, 1))
 
 
 def test_replay_ignores_wait_ops():
@@ -344,20 +344,20 @@ def test_synthesize_excludes_raw_sv_primitives():
     assert "RAWX" not in result.targeted
 
 
-def test_synthesize_excludes_dynamic_prev_primitives_as_unsupported():
-    """The oracle has no operation-history state yet (see synthesize_alg's own
-    docstring) -- a prev-using primitive must be reported via
-    excluded_unsupported, not silently dropped into uncovered (which would
-    imply the walk tried and failed, not that it was never a candidate)."""
+def test_synthesize_targets_and_covers_a_dynamic_prev_primitive():
+    """Real oracle support (the last_op snapshot threaded through _apply_op,
+    plus _prev_candidates' dedicated write-then-read builder) -- a
+    prev-using primitive is targeted and covered like any other DSL
+    primitive, not excluded."""
     reg = default_registry() + [
         FaultPrimitive(
             "DYNX", "read_effect", Sensitize(pre="0", prev="0w0"), Effect(kind="force_read", value="1"),
         )
     ]
     result = synthesize_alg(reg, "t")
-    assert "DYNX" not in result.targeted
-    assert "DYNX" not in result.uncovered
-    assert result.excluded_unsupported == ["DYNX"]
+    assert "DYNX" in result.targeted
+    assert "DYNX" in result.covered
+    assert detects(result.spec.elements, reg[-1])
 
 
 def test_synthesize_respects_max_elements_cap():
@@ -575,6 +575,71 @@ def test_synthesize_elements_still_accepts_wildcard_agg_pre_targets():
     keep synthesizing."""
     elements, _ = synthesize_elements([p for p in default_registry() if p.name == "WDF0"])
     assert elements, "a wildcard-agg_pre target must still synthesize"
+
+
+# ---------------------------------------------------------------------------
+# sensitize.prev: the last-op oracle state (dynamic/2-operation faults).
+# ---------------------------------------------------------------------------
+
+
+def test_detects_requires_the_write_immediately_before_the_read():
+    """The core ordering property, at the oracle level (mirrors the real
+    Verilator proof in fault_ram_gen's own commit): a qualifying write
+    immediately followed by the read detects; a read separating the write
+    from a LATER read breaks adjacency for that later read.
+
+    Needs a corrupt_read (IRF-shaped) fault, not force_read (RDF/DRDF): those
+    mutate storage, so a first-read detection and a second-read detection
+    aren't independently observable from one replay. corrupt_read never
+    touches storage, so each read's own divergence is a clean, separate
+    signal."""
+    irf = FaultPrimitive(
+        "DYN_IRF00", "read_effect", Sensitize(pre="0", prev="0w0"), Effect(kind="corrupt_read", value="1"),
+    )
+    spec = _spec(Element(EITHER, [W0]), Element(EITHER, [W0, R0, R0]))
+    obs = replay(spec, irf, init_val=1)
+    diverging = [i for i, (asserted, observed) in enumerate(obs) if asserted != observed]
+    assert diverging == [0], (
+        f"expected only the read immediately after the write (index 0) to diverge, got {diverging} of {obs}"
+    )
+
+
+def test_prev_condition_is_role_scoped_not_global():
+    """An aggressor-role write must NOT satisfy a victim's prev condition --
+    mirrors the RTL's address-scoped lop_a == ea check (a write to a
+    DIFFERENT address does not arm a dynamic fault at this one). Built via
+    replay() directly (role='a' ops), since no candidate builder here
+    constructs a cross-role scenario."""
+    dyn = FaultPrimitive(
+        "DYN_RDF00", "read_effect", Sensitize(pre="0", prev="0w0"), Effect(kind="force_read", value="1"),
+    )
+    v, a = 1, 1
+    last_op = None
+    for op, role in [(W0, "v"), (W0, "a")]:  # victim written first, then AGGRESSOR written
+        v, a, _, last_op = _apply_op(v, a, op, role, dyn, last_op)
+    # The most recent write was on role 'a', not 'v' -- a victim read now
+    # must NOT see prev satisfied, even though a qualifying 0w0 write did
+    # happen on the victim moments earlier.
+    _, _, observed, _ = _apply_op(v, a, R0, "v", dyn, last_op)
+    assert observed == 0, f"expected the aggressor's intervening write to break adjacency, got observed={observed}"
+
+
+def test_synthesize_elements_covers_a_lone_prev_target():
+    """_prev_candidates builds its own dedicated write-then-read element, so
+    a dynamic primitive is covered even with nothing else in the registry to
+    opportunistically supply the qualifying write."""
+    prim = FaultPrimitive(
+        "DYNF", "read_effect", Sensitize(pre="0", prev="0w0"), Effect(kind="force_read", value="1"),
+    )
+    _elements, uncovered = synthesize_elements([prim])
+    assert "DYNF" not in uncovered
+
+
+def test_synthesize_elements_still_accepts_wildcard_prev_targets():
+    """The prev-specific builder path must be additive: every pre-existing
+    built-in is prev='x' and must keep synthesizing exactly as before."""
+    elements, _ = synthesize_elements([p for p in default_registry() if p.name == "WDF0"])
+    assert elements, "a wildcard-prev target must still synthesize"
 
 
 def test_resolved_params_differ_from_the_shipped_fault_lists_and_that_is_load_bearing():

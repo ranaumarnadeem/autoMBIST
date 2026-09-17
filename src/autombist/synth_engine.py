@@ -179,6 +179,22 @@ def _matches_bit(token: str, actual: int, p0: int, p1: int) -> bool:
     return True if token == "x" else _resolve_bit(token, p0, p1) == actual
 
 
+def _matches_prev(token: str, last_op: tuple[str, int, int] | None, role: str) -> bool:
+    """True iff ``token`` (a Sensitize.prev pair token, or "x") is satisfied
+    by ``last_op`` for the CURRENT read's role. "x" always matches (the
+    wildcard every non-dynamic primitive uses). Otherwise the last op must
+    have been a write, on THIS SAME role (a write on the other role is
+    exactly as disqualifying as a different address in the real RTL -- see
+    _apply_op's docstring), whose own (pre, written) bits match token's two
+    digits."""
+    if token == "x":
+        return True
+    if last_op is None:
+        return False
+    last_role, pre_bit, written_bit = last_op
+    return last_role == role and pre_bit == int(token[0]) and written_bit == int(token[-1])
+
+
 def _classify_transition(old: int, new: int) -> str:
     if old == 0 and new == 1:
         return "up"
@@ -225,13 +241,32 @@ def _apply_static_clamp(v: int, a: int, fault: FaultPrimitive | None) -> int:
     return target if v != target else v
 
 
-def _apply_op(v: int, a: int, op: int, role: str, fault: FaultPrimitive | None) -> tuple[int, int, int | None]:
+def _apply_op(
+    v: int, a: int, op: int, role: str, fault: FaultPrimitive | None,
+    last_op: tuple[str, int, int] | None = None,
+) -> tuple[int, int, int | None, tuple[str, int, int] | None]:
     """Apply one r0/r1/w0/w1 op to the given role ('v' or 'a'). Returns
-    (new_v, new_a, observed) -- observed is non-None only for a read op on
-    role 'v' (the only target-observable role; Effect.target is always
-    "victim" for every primitive in this project). ``observed`` is the raw
-    simulated bit; the caller is responsible for comparing it against the
-    op's own literal assertion (0 for r0, 1 for r1) -- see module docstring."""
+    (new_v, new_a, observed, new_last_op) -- observed is non-None only for a
+    read op on role 'v' (the only target-observable role; Effect.target is
+    always "victim" for every primitive in this project). ``observed`` is the
+    raw simulated bit; the caller is responsible for comparing it against the
+    op's own literal assertion (0 for r0, 1 for r1) -- see module docstring.
+
+    ``last_op``/``new_last_op`` mirror fault_ram.sv's shared lop_w/lop_a/
+    lop_pre/lop_d register (see fault_ram_template.sv.j2's own comment) in
+    this oracle's simpler 2-cell shape: ``None`` when the last op was not a
+    write (or there wasn't one yet), else ``(role, pre_bit, written_bit)`` --
+    role stands in for "address" here, since the abstract model has only two
+    addresses (v and a) rather than a real address space, and a qualifying
+    write on the OTHER role is exactly as disqualifying as a different
+    address would be in the real RTL. Computed fresh from THIS op alone,
+    unconditionally, on every call -- not derived from the incoming
+    ``last_op`` -- exactly like the RTL's invalidate-then-maybe-record shape;
+    a read (either role) always invalidates, a write always (re)records.
+    There is no AF_NOACC/ALIAS "dropped access" concept here (those are
+    FIXED_TYPE_NAMES, never reachable by this synthesizer at all -- see the
+    module docstring), so unlike the RTL there is no early-return path to
+    protect against skipping the invalidate."""
     if op >= WAIT_BASE:
         # A wait/idle op: genuinely no-op for this abstract oracle -- no
         # address is touched, so nothing is asserted. DRF (the only fault
@@ -240,7 +275,7 @@ def _apply_op(v: int, a: int, op: int, role: str, fault: FaultPrimitive | None) 
         # docstring), so this branch exists purely so a wait-containing
         # spec, if ever passed to replay()/detects() directly, behaves
         # correctly rather than being silently misread as a read.
-        return v, a, None
+        return v, a, None, last_op
     if op not in (OP_R0, OP_R1, OP_W0, OP_W1):
         # A checkerboard op (wc/wcb/rc/rcb) or any other non-classic code.
         # UNLIKE the wait-op case above, this canNOT be treated as a no-op:
@@ -276,19 +311,22 @@ def _apply_op(v: int, a: int, op: int, role: str, fault: FaultPrimitive | None) 
                         and _matches_bit(fault.sensitize.written, written, p0, p1)  # type: ignore[arg-type]
                         and _matches_bit(fault.sensitize.agg_pre, a, p0, p1)):
                     v = _resolve_bit(fault.effect.value, p0, p1)
+            new_last_op = ("v", old_v, written)  # type: ignore[assignment]
         else:
             old_v = v
             observed = v
             if fault is not None and fault.category == "read_effect":
                 p0, p1 = resolve_params(fault)
                 if (_matches_bit(fault.sensitize.pre, old_v, p0, p1)
-                        and _matches_bit(fault.sensitize.agg_pre, a, p0, p1)):
+                        and _matches_bit(fault.sensitize.agg_pre, a, p0, p1)
+                        and _matches_prev(fault.sensitize.prev, last_op, "v")):
                     if fault.effect.kind == "corrupt_read":
                         observed = _resolve_bit(fault.effect.value, p0, p1)
                     else:  # force_read (RDF/DRDF)
                         v = _resolve_bit(fault.effect.value, p0, p1)
                         also = fault.effect.also_read if fault.effect.also_read is not None else fault.effect.value
                         observed = _resolve_bit(also, p0, p1)
+            new_last_op = None
     else:  # role == "a"
         if is_write:
             old_a = a
@@ -298,9 +336,14 @@ def _apply_op(v: int, a: int, op: int, role: str, fault: FaultPrimitive | None) 
                 transition = _classify_transition(old_a, written)  # type: ignore[arg-type]
                 if _transition_matches(fault.sensitize.transition, transition, p0):
                     v = (1 - v) if fault.effect.kind == "invert" else _resolve_bit(fault.effect.value, p0, p1)
-        # a read on role 'a' has no target-observable effect: not tracked.
+            new_last_op = ("a", old_a, written)  # type: ignore[assignment]
+        else:
+            # a read on role 'a' has no target-observable effect: not tracked,
+            # but it still invalidates -- exactly like the RTL's read_op()
+            # invalidating regardless of which "address" (role, here) it hit.
+            new_last_op = None
 
-    return v, a, observed
+    return v, a, observed, new_last_op
 
 
 def _role_order(direction: int, aggressor_gt_victim: bool) -> tuple[str, str]:
@@ -329,11 +372,12 @@ def replay(
     itself checks a read (against its own op code, not a parallel golden
     simulation; see module docstring)."""
     v = a = init_val
+    last_op: tuple[str, int, int] | None = None
     obs: list[tuple[int, int]] = []
     for elem, direction in zip(elements, resolve_directions(elements)):
         for role in _role_order(direction, aggressor_gt_victim):
             for op in elem.ops:
-                v, a, observed = _apply_op(v, a, op, role, fault)
+                v, a, observed, last_op = _apply_op(v, a, op, role, fault, last_op)
                 v = _apply_static_clamp(v, a, fault)
                 if role == "v" and observed is not None:
                     asserted = 0 if op == OP_R0 else 1
@@ -388,10 +432,11 @@ def _advance_golden(v: int, a: int, elements: list[Element], *, aggressor_gt_vic
     passes don't interact, the ORDER ``_role_order`` puts them in cannot
     change the result, so ``aggressor_gt_victim`` is accepted only for
     interface symmetry and never actually changes the answer here."""
+    last_op: tuple[str, int, int] | None = None
     for elem, direction in zip(elements, resolve_directions(elements)):
         for role in _role_order(direction, aggressor_gt_victim):
             for op in elem.ops:
-                v, a, _ = _apply_op(v, a, op, role, None)
+                v, a, _, last_op = _apply_op(v, a, op, role, None, last_op)
                 v = _apply_static_clamp(v, a, None)
     return v, a
 
@@ -740,6 +785,58 @@ def _agg_pre_candidates(
     return out
 
 
+def _prev_candidate_one(p: FaultPrimitive, golden_v: int) -> tuple[list[Element], int]:
+    """Dynamic (``sensitize.prev``) faults need a write with a SPECIFIC own
+    (pre, written) pair immediately followed by the sensitizing read --
+    unlike the generic read_effect shape in :func:`_element_op_variants`
+    (which only sets up ``sensitize.pre`` and skips the write entirely when
+    golden already matches, so it cannot reliably arrange a qualifying
+    write's OWN pre-state). Single-cell and single-direction by construction
+    -- no bidirectional chaining like :func:`_agg_pre_candidate_one` needs,
+    since there is no aggressor placement question here at all.
+
+    "prev" is a pair token "<x>w<y>": x is the qualifying write's own
+    pre-state, y its written value (== sensitize.pre, enforced by
+    fault_primitives.validate()). One element:
+      1. if golden isn't already at x, write x (so the qualifying write's
+         OWN pre-state is x, not whatever golden happened to be)
+      2. write y -- the qualifying write itself
+      3. the sensitizing read, literal y (matches golden: a write always
+         succeeds in the golden trace)
+      4. a second read, same literal, for DRDF-shaped types whose first read
+         deceptively reports the correct value -- same reasoning as
+         _element_op_variants' read_effect branch."""
+    x = int(p.sensitize.prev[0])
+    y = int(p.sensitize.prev[-1])
+    ops: list[int] = []
+    if golden_v != x:
+        ops.append(_bit_op(x, write=True))
+    ops.append(_bit_op(y, write=True))
+    needs_two = (
+        p.effect.kind == "force_read"
+        and p.effect.also_read is not None
+        and p.effect.also_read != p.effect.value
+    )
+    ops.append(_bit_op(y, write=False))
+    if needs_two:
+        ops.append(_bit_op(y, write=False))
+    return [Element(direction=DIR_UP, ops=ops)], y
+
+
+def _prev_candidates(
+    remaining: list[FaultPrimitive], golden_v: int,
+) -> list[tuple[list[Element], int]]:
+    """One candidate per sensitize.prev primitive. Direction is irrelevant
+    (single-cell, no aggressor role involved) -- DIR_UP throughout, same as
+    every other single-direction builder here defaults to."""
+    out: list[tuple[list[Element], int]] = []
+    for p in remaining:
+        if p.sensitize.prev == "x" or p.category != "read_effect":
+            continue
+        out.append(_prev_candidate_one(p, golden_v))
+    return out
+
+
 def _candidate_groups(
     remaining: list[FaultPrimitive], max_ops: int, golden_v: int, golden_a: int,
 ) -> list[tuple[list[Element], int]]:
@@ -748,6 +845,7 @@ def _candidate_groups(
         + _combo_candidates(remaining, golden_v, golden_a)
         + _aggressor_clamp_candidates(remaining, golden_v, golden_a)
         + _agg_pre_candidates(remaining, golden_v, golden_a)
+        + _prev_candidates(remaining, golden_v)
     )
 
 
@@ -873,7 +971,6 @@ class SynthResult:
     covered: list[str]
     uncovered: list[str]
     excluded_fixed: list[str] = field(default_factory=lambda: list(FIXED_TYPE_NAMES))
-    excluded_unsupported: list[str] = field(default_factory=list)
 
 
 def synthesize_alg(
@@ -886,14 +983,13 @@ def synthesize_alg(
     description for this module's oracle to interpret, so it is excluded the
     same way).
 
-    ``sensitize.prev`` (dynamic/2-operation) primitives are excluded here too
-    -- the oracle below (``_apply_op``) is stateless across calls (no
-    last-operation memory), so it cannot yet evaluate a ``prev`` clause.
-    Reported separately via ``excluded_unsupported`` rather than silently
-    dropped into ``uncovered``, since "uncovered" implies the walk tried and
-    failed, not that the type was never a candidate. Real oracle support
-    lands with dynamic faults' own synthesizer step; this exclusion is
-    removed then, not extended.
+    ``sensitize.prev`` (dynamic/2-operation) primitives ARE targeted:
+    ``_apply_op`` threads a ``last_op`` snapshot (mirroring fault_ram.sv's
+    shared lop_w/lop_a/lop_pre/lop_d register -- see its own docstring) and
+    :func:`_prev_candidates` builds a dedicated write-then-read element per
+    primitive, since the generic read_effect shape in
+    :func:`_element_op_variants` has no way to arrange a qualifying write's
+    OWN (pre, written) pair.
 
     ``sensitize.agg_pre`` (two-cell coupling) primitives ARE targeted: the
     oracle reads the aggressor's held state, and the walk credits one only
@@ -905,15 +1001,13 @@ def synthesize_alg(
     placement only, so they land in ``uncovered`` rather than being claimed --
     covering them needs a chained bidirectional builder (see
     docs/coupling-family-plan.md, Step 6)."""
-    unsupported = [p.name for p in registry if p.raw_sv is None and p.sensitize.prev != "x"]
-    target = [p for p in registry if p.raw_sv is None and p.sensitize.prev == "x"]
+    target = [p for p in registry if p.raw_sv is None]
     elements, uncovered = synthesize_elements(target, max_elements=max_elements, max_ops=max_ops, init_val=init_val)
     targeted_names = [p.name for p in target]
     covered = [n for n in targeted_names if n not in uncovered]
     spec = AlgSpec(name=name, elements=elements)
     return SynthResult(
         spec=spec, targeted=targeted_names, covered=covered, uncovered=uncovered,
-        excluded_unsupported=unsupported,
     )
 
 
