@@ -42,11 +42,15 @@ def test_comments_and_blank_lines_ignored() -> None:
 
 def test_builtins_resolve_and_match_reference_lengths() -> None:
     names = set(builtin_algos())
-    assert {"march_c", "mats_plus", "march_ss", "march_x"} <= names
+    assert {"march_c", "mats_plus", "march_ss", "march_x", "march_raw1"} <= names
     assert resolve_algo("march_c").length_n == 10
     assert len(resolve_algo("march_c").elements) == 6
     assert resolve_algo("march_ss").length_n == 22
     assert resolve_algo("march-c").length_n == 10  # dash alias
+    # VTS 2002 Figure 3's own length -- see the file's header for the
+    # independently-read citation.
+    assert resolve_algo("march_raw1").length_n == 13
+    assert len(resolve_algo("march_raw1").elements) == 9
 
 
 def test_roundtrip_numeric_line_count() -> None:

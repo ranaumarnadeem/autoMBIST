@@ -141,3 +141,23 @@ def test_dynamic_fault_activates_exactly_once_not_per_matching_read(generated_fa
     for fault_ram_sv in (None, out):
         result = run_algo_campaign(mem, spec, fault, fault_ram_sv=fault_ram_sv, verbose=True)
         assert result.faults[0].activations == 1
+
+
+def test_march_raw1_detects_all_twelve_dynamic_types(generated_fault_ram: Path) -> None:
+    """The built-in reference algorithm itself (not an ad-hoc probe): VTS
+    2002's own March RAW1, read directly from Figure 3, must detect every
+    single-cell dynamic FP it was built for -- on both the twin and the
+    generated file, each activating exactly once."""
+    spec = resolve_algo("march_raw1")
+    mem = MemoryParams(addr_width=4, data_width=8, init_val=1)
+    dyn_prims = [p for p in default_registry() if p.sensitize.prev != "x"]
+    faults = [FaultRecord(type=p.name, vaddr=7, vbit=4) for p in dyn_prims]
+
+    for fault_ram_sv in (None, generated_fault_ram):
+        result = run_algo_campaign(mem, spec, faults, fault_ram_sv=fault_ram_sv, verbose=True)
+        assert result.golden_clean
+        assert result.detected == len(dyn_prims), (
+            f"escaped: {sorted(f.record.type for f in result.faults if not f.detected)}"
+        )
+        for f in result.faults:
+            assert f.activations == 1, f"{f.record.type}: expected exactly 1 activation, got {f.activations}"
