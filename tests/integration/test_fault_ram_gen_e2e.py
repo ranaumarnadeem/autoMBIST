@@ -18,7 +18,13 @@ from autombist.fault_ram_gen import render_and_write  # noqa: E402
 # The P6 acceptance gate: fault_ram.sv, regenerated from the DSL registry,
 # must reproduce the hand-written engine's reference table bit-for-bit --
 # not just the totals, but which specific faults each algorithm catches.
-REFERENCE_COVERAGE = {"march_c": (20, 29), "mats_plus": (13, 29), "march_ss": (28, 29)}
+# MEASURED against faults.example.txt's 41 entries (29 static + 12 dynamic,
+# added when dynamic faults landed) -- march_ss's total dropped from 28/29 to
+# 32/41 not because it got worse (still misses only SOF among the static
+# entries), but because 8 of the 12 dynamic entries are new escapes: march_ss
+# was never designed for the S=xwyry adjacency, and only incidentally
+# detects the 4 "same-polarity" ones (see REFERENCE_PER_FAULT below).
+REFERENCE_COVERAGE = {"march_c": (20, 41), "mats_plus": (13, 41), "march_ss": (32, 41)}
 
 # From engine/README.md "Measured results" table (faults.example.txt, INIT=1):
 # fault type -> {algo: DETECTED/ESCAPED}, keyed by the exact instance in the file.
@@ -52,6 +58,25 @@ REFERENCE_PER_FAULT = {
     "CFIR1": {"march_c": True, "mats_plus": False, "march_ss": True},
     "CFDRD0": {"march_c": False, "mats_plus": False, "march_ss": True},
     "CFDRD1": {"march_c": False, "mats_plus": False, "march_ss": True},
+    # Dynamic (2-operation): none of these three algorithms have a w-then-r
+    # adjacency in their own construction (march_c/mats_plus are always
+    # r-then-w within an element; march_ss incidentally has same-polarity
+    # w-then-r for SOME address/polarity combos, which is why exactly the
+    # "0w0"/"1w1" (same-polarity) types -- RDF00/RDF11/IRF00/IRF11 -- detect
+    # under it and the "0w1"/"1w0" (transition) and all DRDF (deceptive,
+    # needs a second read) ones don't).
+    "DYN_RDF00": {"march_c": False, "mats_plus": False, "march_ss": True},
+    "DYN_RDF01": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_RDF10": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_RDF11": {"march_c": False, "mats_plus": False, "march_ss": True},
+    "DYN_DRDF00": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_DRDF01": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_DRDF10": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_DRDF11": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_IRF00": {"march_c": False, "mats_plus": False, "march_ss": True},
+    "DYN_IRF01": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_IRF10": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_IRF11": {"march_c": False, "mats_plus": False, "march_ss": True},
 }
 
 
@@ -93,6 +118,36 @@ def test_generated_fault_ram_matches_reference_per_fault(algo_name: str, generat
         fault_type = fault_result.record.type
         expected = REFERENCE_PER_FAULT[fault_type][algo_name]
         assert fault_result.detected == expected, f"{fault_type} under {algo_name}: expected {expected}"
+
+
+@pytest.mark.parametrize("algo_name", ["march_c", "mats_plus", "march_ss"])
+def test_twin_and_generated_agree_on_every_fault_in_the_example_list(
+    algo_name: str, generated_fault_ram: Path
+) -> None:
+    """The real differential the plan's critique asked for, replacing the
+    non-equivalence-checking version: the two tests above only ever exercise
+    the GENERATED file against hand-maintained reference numbers, never the
+    hand-written twin -- so a twin/generated divergence in any of the
+    ORIGINAL 29 fault types (not just the 12 dynamic ones added alongside
+    this test) could have gone undetected indefinitely. Runs the full
+    faults.example.txt against both engines and asserts per-fault agreement,
+    not just matching totals (which two different escape sets could
+    coincidentally produce)."""
+    faults_path = find_engine_dir() / "faults.example.txt"
+    records = load_fault_list(faults_path)
+    spec = resolve_algo(algo_name)
+    mem = MemoryParams(addr_width=8, data_width=8, init_val=1)
+
+    twin = run_algo_campaign(mem, spec, records, fault_ram_sv=None)
+    generated = run_algo_campaign(mem, spec, records, fault_ram_sv=generated_fault_ram)
+
+    assert twin.golden_clean and generated.golden_clean
+    mismatches = [
+        (t.record.type, t.detected, g.detected)
+        for t, g in zip(twin.faults, generated.faults)
+        if t.detected != g.detected
+    ]
+    assert mismatches == [], f"twin/generated disagree under {algo_name}: {mismatches}"
 
 
 # ---------------------------------------------------------------------------

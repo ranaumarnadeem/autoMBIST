@@ -31,3 +31,15 @@ CFIR0       152   6     153   6     1  0
 CFIR1       154   7     155   7     1  0
 CFDRD0      156   0     157   0     1  0
 CFDRD1      158   1     159   1     1  0
+DYN_RDF00   160   0     0     0     0  0
+DYN_RDF01   161   1     0     0     0  0
+DYN_RDF10   162   2     0     0     0  0
+DYN_RDF11   163   3     0     0     0  0
+DYN_DRDF00  164   4     0     0     0  0
+DYN_DRDF01  165   5     0     0     0  0
+DYN_DRDF10  166   6     0     0     0  0
+DYN_DRDF11  167   7     0     0     0  0
+DYN_IRF00   168   0     0     0     0  0
+DYN_IRF01   169   1     0     0     0  0
+DYN_IRF10   170   2     0     0     0  0
+DYN_IRF11   171   3     0     0     0  0
