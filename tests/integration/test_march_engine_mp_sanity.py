@@ -122,7 +122,7 @@ def _write_fault_list_explicit_ports(records: list[FaultRecord], path: Path) -> 
 
 # Copied verbatim from test_fault_ram_gen_e2e.py's REFERENCE_COVERAGE /
 # REFERENCE_PER_FAULT -- the OLD engine's (march_engine.sv) reference table.
-REFERENCE_COVERAGE = {"march_c": (20, 29), "mats_plus": (13, 29), "march_ss": (28, 29)}
+REFERENCE_COVERAGE = {"march_c": (20, 41), "mats_plus": (13, 41), "march_ss": (32, 41)}
 
 REFERENCE_PER_FAULT = {
     "SA0": {"march_c": True, "mats_plus": True, "march_ss": True},
@@ -154,6 +154,18 @@ REFERENCE_PER_FAULT = {
     "CFIR1": {"march_c": True, "mats_plus": False, "march_ss": True},
     "CFDRD0": {"march_c": False, "mats_plus": False, "march_ss": True},
     "CFDRD1": {"march_c": False, "mats_plus": False, "march_ss": True},
+    "DYN_RDF00": {"march_c": False, "mats_plus": False, "march_ss": True},
+    "DYN_RDF01": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_RDF10": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_RDF11": {"march_c": False, "mats_plus": False, "march_ss": True},
+    "DYN_DRDF00": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_DRDF01": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_DRDF10": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_DRDF11": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_IRF00": {"march_c": False, "mats_plus": False, "march_ss": True},
+    "DYN_IRF01": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_IRF10": {"march_c": False, "mats_plus": False, "march_ss": False},
+    "DYN_IRF11": {"march_c": False, "mats_plus": False, "march_ss": True},
 }
 
 

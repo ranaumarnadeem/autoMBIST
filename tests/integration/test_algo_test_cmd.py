@@ -27,11 +27,17 @@ from autombist.algo_engine import MemoryParams, load_fault_list, run_algo_campai
 # resolves to `down`, but neither one's detected-fault SET moved (confirmed
 # fault-by-fault, not just by total), and mats_plus/march_b have no trailing
 # `either` at all.
+#
+# MEASURED again against faults.example.txt's 41 entries (29 static + 12
+# dynamic, added alongside the dynamic-faults feature) -- every detected
+# COUNT is unchanged from the 29-entry table above (none of these four
+# algorithms create a write-immediately-followed-by-read adjacency at any
+# dynamic fault's address), only the total denominator moved.
 REFERENCE_COVERAGE = {
-    "march_c": (20, 29),
-    "mats_plus": (13, 29),
-    "march_ss": (28, 29),
-    "march_x": (14, 29),
+    "march_c": (20, 41),
+    "mats_plus": (13, 41),
+    "march_ss": (32, 41),
+    "march_x": (14, 41),
 }
 
 
