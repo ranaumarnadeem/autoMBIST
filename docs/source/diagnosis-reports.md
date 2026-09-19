@@ -25,7 +25,7 @@ shell).
 
 ## 1. Why this exists
 
-A fault campaign's headline number is a coverage percentage: `20/29 (68.97%)`,
+A fault campaign's headline number is a coverage percentage: `20/41 (48.78%)`,
 `detected/total`. That number answers "how good is this algorithm overall," but it
 cannot answer the question a hardware bring-up engineer or test engineer actually
 asks when triaging a failing part or tuning an algorithm:
@@ -133,8 +133,8 @@ real JSON arrays.
 
 ### 2.3 Worked example
 
-Run against this repo's own `src/autombist/engine/faults.example.txt` (29 faults,
-one of each of the 29 fault types a default list carries — the model has 31,
+Run against this repo's own `src/autombist/engine/faults.example.txt` (41 faults,
+one of each of the 41 fault types a default list carries — the model has 43,
 but `DRF` and `HSD` depend on the memory's configuration) on an 8×8 memory
 with `march_c`:
 
@@ -145,19 +145,19 @@ autombist test -aw 8 -dw 8 --algo march_c --faults faults.example.txt \
 
 ```
 autombist test: march_c (10n) on 8x8 memory, init=1
-  faults: 29   detected: 20   coverage: 68.97%
+  faults: 41   detected: 20   coverage: 48.78%
   build: 1.89s   run: 0.13s   sim: verilator
   diagnosis: diag.md
 ```
 
-The resulting `diag.md` (34 sparse cell rows out of a possible 256×8 grid):
+The resulting `diag.md` (56 sparse cell rows out of a possible 256×8 grid):
 
 ```markdown
 # autombist diagnosis — march_c
 
 Memory: 8x8, init=1
-Coverage: **20/29 (68.97%)**
-Cells: 34 (sparse: injection and/or observation sites only)
+Coverage: **20/41 (48.78%)**
+Cells: 56 (sparse: injection and/or observation sites only)
 
 | addr | bit | role        | fault_types_injected_here | detected_as_injection | escaped_types_here | times_observed_mismatch | observed_from_fault_types |
 | ---- | --- | ----------- | -------------------------- | ---------------------- | ------------------- | ------------------------- | --------------------------- |
@@ -169,12 +169,18 @@ Cells: 34 (sparse: injection and/or observation sites only)
 | 90   | 0   | injection   | AF_ALIAS                   | True                    |                      | 0                          |                              |
 | 91   | 0   | observation |                             | False                   |                      | 1                          | AF_ALIAS                     |
 | 100  | 2   | both        | CFIN                       | True                    |                      | 1                          | CFIN                         |
+| 160  | 0   | injection   | DYN_RDF00                  | False                   | DYN_RDF00            | 0                          |                              |
 ```
 
-(Trimmed for readability — the full table has all 34 rows, including all 8 bits
-of `addr=80` and `addr=91` from the `AF_NOACC`/`AF_ALIAS` address-decoder faults;
-see [Section 4](#4-address-decoder-vs-coupling-faults-a-non-obvious-distinction)
-below for why those two rows span whole words while the coupling rows don't.)
+(Trimmed for readability — the full table has all 56 rows, including all 8 bits
+of `addr=80` and `addr=91` from the `AF_NOACC`/`AF_ALIAS` address-decoder faults,
+and one `injection`-only row for each of the 12 `DYN_*` dynamic fault types at
+`addr=160..171` (all escape here — March C- never issues a same-address
+write-immediately-followed-by-read adjacency; see `engine/README.md`'s
+"Dynamic (2-operation) faults" section); see
+[Section 4](#4-address-decoder-vs-coupling-faults-a-non-obvious-distinction)
+below for why the `AF_NOACC`/`AF_ALIAS` rows span whole words while the
+coupling and dynamic rows don't.)
 
 The equivalent CSV (`--diagnosis-fmt csv`) is the same rows, comma-separated,
 with the header as the first line:
@@ -189,6 +195,7 @@ addr,bit,role,fault_types_injected_here,detected_as_injection,escaped_types_here
 90,0,injection,AF_ALIAS,True,,0,
 91,0,observation,,False,,1,AF_ALIAS
 100,2,both,CFIN,True,,1,CFIN
+160,0,injection,DYN_RDF00,False,DYN_RDF00,0,
 ```
 
 And the equivalent JSON (`--diagnosis-fmt json`) keeps list fields as real
@@ -199,9 +206,9 @@ arrays, and wraps the cells in a top-level object with campaign metadata:
   "schema_version": "1.0.0",
   "algo_name": "march_c",
   "mem": { "addr_width": 8, "data_width": 8, "init_val": 1, "num_ports": 1 },
-  "detected": 14,
-  "total": 29,
-  "coverage_percent": 68.96551724137932,
+  "detected": 20,
+  "total": 41,
+  "coverage_percent": 48.78048780487805,
   "cells": [
     {
       "addr": 10, "bit": 3, "role": "both",
@@ -226,6 +233,14 @@ arrays, and wraps the cells in a top-level object with campaign metadata:
       "escaped_types_here": [],
       "times_observed_mismatch": 1,
       "observed_from_fault_types": ["AF_ALIAS"]
+    },
+    {
+      "addr": 160, "bit": 0, "role": "injection",
+      "fault_types_injected_here": ["DYN_RDF00"],
+      "detected_as_injection": false,
+      "escaped_types_here": ["DYN_RDF00"],
+      "times_observed_mismatch": 0,
+      "observed_from_fault_types": []
     }
   ]
 }

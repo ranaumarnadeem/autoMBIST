@@ -10,7 +10,7 @@ the `.alg` grammar may still change. The classic path (`autombist generate` /
 
 This is the user guide for autoMBIST's **algo-shell** subsystem: the
 research-oriented half of the tool that grades march algorithms (and
-controller FSMs) against a 31-primitive functional fault model, using a
+controller FSMs) against a 43-primitive functional fault model, using a
 Verilator-driven behavioral RAM instead of a synthesizable memory macro. If
 you haven't already, read {doc}`architecture` first — its "Two
 subsystems, one repository" table and "The algo-shell" section explain how
@@ -24,7 +24,7 @@ Reach for the algo-shell (`test` / `algo`) when the question is about the
 March C- catch WDF faults?", "how does my hand-written march compare to
 March SS?", "does this FSM actually detect what it claims to?" It needs no
 real memory macro — `fault_ram.sv` is a behavioral stand-in — and it models
-31 functional fault primitives (coupling, disturbs, decoder faults) that the
+43 functional fault primitives (coupling, disturbs, decoder faults) that the
 classic path's structural stuck-at/transition masks don't cover. Reach for
 the classic path (`autombist generate` / `simulate` / `run`) when the
 question is about a specific memory instance you intend to actually tape
@@ -53,10 +53,10 @@ autombist test --addr-width INTEGER --data-width INTEGER --faults PATH [OPTIONS]
 |---|---|---|
 | `--addr-width`, `-aw` (required) | — | Memory address width in bits |
 | `--data-width`, `-dw` (required) | — | Memory data width in bits |
-| `--algo TEXT` | `march_c` | Built-in algorithm name (`march_c`, `march_c_plus`, `march_y`, `march_b`, `mats_plus`, `march_ss`, `march_x`, `checkerboard`) or a path to a `.alg` file |
+| `--algo TEXT` | `march_c` | Built-in algorithm name (`march_c`, `march_c_plus`, `march_y`, `march_b`, `mats_plus`, `march_ss`, `march_x`, `checkerboard`, `march_raw1`) or a path to a `.alg` file |
 | `--fsm PATH` | none | Validate a controller FSM `.sv` instead of an algorithm (takes precedence over `--algo`); sibling `.sv`/`.v` files in its directory are gathered automatically. No elem/op attribution in this mode — a black-box controller has no step counter to report |
 | `--faults PATH` (required) | — | Fault-list file: `TYPE VADDR VBIT AADDR ABIT P0 P1` per line (see the `add_fault`/`load_faults` entries in §3 for the full grammar, and the primitive table in §4) |
-| `--fault-types PATH` | none | JSON file with a list of custom fault-primitive specs, added to the built-in 29 (see §4 and `fault_primitives.py`'s module docstring for the schema) |
+| `--fault-types PATH` | none | JSON file with a list of custom fault-primitive specs, added to the built-in 41 (see §4 and `fault_primitives.py`'s module docstring for the schema) |
 | `--init INTEGER` | `1` | Memory init value (0 or 1) |
 | `--sim TEXT` | `verilator` | Simulator backend — Verilator only; Icarus cannot run the SV fault engine (it uses `foreach`, queues, and `final` blocks) |
 | `--verbose` | off | Print per-fault activation counts (`+FAULT_VERBOSE`); ORed with the top-level `autombist -v` flag, so `autombist -v test ...` has the same effect without touching this flag |
@@ -131,7 +131,7 @@ either.
 more algorithms and/or FSMs, build up a fault list by hand or generated,
 run campaigns, compare algorithms side by side, and export reports or a
 standalone testbench bundle. Built-in algorithms (`march_c`, `march_c_plus`, `march_y`, `march_b`,
-`mats_plus`, `march_ss`, `march_x`, `checkerboard`) are preloaded at start, so you can `run march_c`
+`mats_plus`, `march_ss`, `march_x`, `checkerboard`, `march_raw1`) are preloaded at start, so you can `run march_c`
 immediately without an `add_algo` call.
 
 ```bash
@@ -152,13 +152,15 @@ not tied to a specific fault list):
 
 ```
 algo> set_memory 8 8
-memory set: 8x8, init=1, ports=1
+memory set: 8x8, init=1, ports=1, words_per_row=1
 
 algo> list
 algos:
+  checkerboard  (6n, 4 elements)
   march_b  (17n, 5 elements)
   march_c  (10n, 6 elements)
   march_c_plus  (14n, 6 elements)
+  march_raw1  (13n, 9 elements)
   march_ss  (22n, 6 elements)
   march_x  (6n, 4 elements)
   march_y  (8n, 4 elements)
@@ -166,7 +168,7 @@ algos:
 fsms:
   (none registered; use add_fsm)
 faults: 0 loaded
-fault types (usable in add_fault/load_faults/gen_faults): SA0, SA1, TF0, TF1, WDF0, WDF1, RDF0, RDF1, DRDF0, DRDF1, IRF0, IRF1, SOF, AF_NOACC, AF_ALIAS, CFIN, CFID, CFST, CFDS
+fault types (usable in add_fault/load_faults/gen_faults): SA0, SA1, TF0, TF1, WDF0, WDF1, RDF0, RDF1, DRDF0, DRDF1, IRF0, IRF1, SOF, AF_NOACC, AF_ALIAS, CFIN, CFID, CFST, CFDS, CFTR0, CFTR1, CFWD0, CFWD1, CFRD0, CFRD1, CFIR0, CFIR1, CFDRD0, CFDRD1, DYN_RDF00, DYN_RDF01, DYN_RDF10, DYN_RDF11, DYN_DRDF00, DYN_DRDF01, DYN_DRDF10, DYN_DRDF11, DYN_IRF00, DYN_IRF01, DYN_IRF10, DYN_IRF11
 
 algo> add_fault SA0 5 1
 fault added: SA0 v=5.1 (total 1)
@@ -175,10 +177,10 @@ algo> add_fault CFIN 5 1 6 1 2 0
 fault added: CFIN v=5.1 (total 2)
 
 algo> gen_faults
-generated 29 faults
+generated 42 faults
 
 algo> run march_c
-march_c: 20/29 detected (68.97%)  build=5.40s run=0.11s
+march_c: 21/42 detected (50.00%)  build=5.40s run=0.15s
 
 algo> write_report /tmp/algo_report.md
 report written: /tmp/algo_report.md
@@ -187,18 +189,22 @@ algo> write_diagnosis /tmp/algo_diag.md
 diagnosis written: /tmp/algo_diag.md
 
 algo> compare_algo march_c -march SS,MATS
-march_c: 20/29 detected (68.97%)  build=5.22s run=0.11s
-march_ss: 28/29 detected (96.55%)  build=5.04s run=0.15s
-mats_plus: 13/29 detected (44.83%)  build=6.71s run=0.10s
+march_c: 21/42 detected (50.00%)  build=5.22s run=0.11s
+march_ss: 33/42 detected (78.57%)  build=5.04s run=0.11s
+mats_plus: 15/42 detected (35.71%)  build=6.71s run=0.07s
 
 | fault          | march_c | march_ss | mats_plus |
 | -------------- | ------- | -------- | --------- |
 | SA0@3.0        | D       | D        | D         |
 | ...
-| total          | 20/29   | 28/29    | 13/29     |
+| total          | 21/42   | 33/42    | 15/42     |
 
 algo> quit
 ```
+
+`gen_faults` picked up a 42nd (`DRF`) entry beyond the 41 unconditional
+built-ins here because `set_memory 8 8` defaults to a single physical port —
+see "Why 41 and not 43" in `engine/README.md`.
 
 Note `gen_faults` (with no session fault list to preserve) replaced the two
 `add_fault` calls above with one instance of every built-in type — that's
@@ -267,9 +273,11 @@ Load a fault-list file (`add_fault`'s grammar, above), replacing the current
 list unless `--append`.
 
 **`gen_faults [--all-types] [--n N --seed S]`**
-Generate a fault list: one instance of each of the 19 built-in types
-(default), or `N` random faults with `--n`/`--seed` for reproducibility.
-This *replaces* the session's current fault list.
+Generate a fault list: one instance of each of the 41 unconditional built-in
+types (default; plus `DRF`/`HSD` when the configured memory supports them —
+see `engine/README.md`'s "Why 41 and not 43"), or `N` random faults with
+`--n`/`--seed` for reproducibility. This *replaces* the session's current
+fault list.
 
 **`run <algo_name|fsm_name> [--verbose] [--check ALGO] [--backgrounds]`**
 Run a fault campaign for one registered algorithm or FSM against the
@@ -321,9 +329,9 @@ runnable via the bundle's `run_campaign.sh` without autoMBIST installed.
 
 **`list [algos|fsms|faults|types]`**
 Inspect session state; defaults to printing everything. `list types` shows
-the 29 unconditional built-in fault-type names usable in `add_fault`/
+the 41 unconditional built-in fault-type names usable in `add_fault`/
 `load_faults`/`gen_faults`, plus any custom types registered via
-`add_fault_type` in a separate "custom types" line. The model has 31: `DRF`
+`add_fault_type` in a separate "custom types" line. The model has 43: `DRF`
 and `HSD` are absent from this list because they depend on the memory's
 configuration, and `gen_faults` adds each only when it applies (see
 `src/autombist/engine/README.md` for the full model).
@@ -343,12 +351,12 @@ Exit the shell.
 
 ## 4. The fault-primitive DSL (`add_fault_type`)
 
-autoMBIST's fault engine (`fault_ram.sv`) natively implements 31 functional
-fault primitives. Twenty-five of them are generated from a small declarative
+autoMBIST's fault engine (`fault_ram.sv`) natively implements 43 functional
+fault primitives. Thirty-seven of them are generated from a small declarative
 DSL (`fault_primitives.py`); the remaining six (`AF_ALIAS`, `AF_NOACC`,
 `CFDS`, `DRF`, `HSD`, `SOF`) are fixed, hand-written scaffolding that doesn't
 fit the DSL's shape. `add_fault_type` lets you define **new** fault types in
-the DSL's terms — no SystemVerilog editing — and they compose with the 31
+the DSL's terms — no SystemVerilog editing — and they compose with the 43
 built-ins in the same fault list and reports.
 
 ### What the DSL can express
@@ -464,7 +472,7 @@ DSL's structural assumptions:
 | `AF_ALIAS` (Address-decoder, alias) | Accesses to `VADDR` land on a different word, `AADDR`, instead | Same pre-pass structural issue as `AF_NOACC` |
 | `CFDS` (Coupling Fault, Disturb by State/read) | An operation on the aggressor cell disturbs (inverts) the victim; `P0` selects *which* aggressor operation triggers it: `0`=read-0, `1`=read-1, `2`=non-transition write-0, `3`=non-transition write-1, `4`=any read | Its single `P0` parameter actually selects among five distinct sensitizing conditions spanning *both* the write-aggressor and read-aggressor code paths — it's really a union of several fault types under one name, not a single-site effect |
 
-For deep RTL-level detail on all 31 primitives — the full semantics table
+For deep RTL-level detail on all 43 primitives — the full semantics table
 with `<sensitizing-op/faulty-value/faulty-read>` notation, measured
 detect/escape results for the built-in march algorithms, and notes on how
 static clamps interact with coupling effects on the same bit — see
