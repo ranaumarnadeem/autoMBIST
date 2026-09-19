@@ -30,8 +30,8 @@ from typing import Any, Callable
 from .alg_spec import WAIT_BASE, AlgSpec, expand_expected_blocks, find_engine_dir
 from .seq_check import SequenceResult, compare_trace, parse_observed_trace
 
-# fault_ram.sv natively implements 31 functional fault primitives (see
-# engine/README.md). This tuple lists the 29 that are UNCONDITIONALLY
+# fault_ram.sv natively implements 43 functional fault primitives (see
+# engine/README.md). This tuple lists the 41 that are UNCONDITIONALLY
 # available; DRF and HSD are the other two, added at call time -- see below.
 # P6 (add_fault_type) will let researchers extend this set.
 #
@@ -65,6 +65,16 @@ BUILTIN_FAULT_TYPES: tuple[str, ...] = (
     # for and the simulation dies with "unknown fault type".
     "CFTR0", "CFTR1", "CFWD0", "CFWD1", "CFRD0", "CFRD1", "CFIR0", "CFIR1",
     "CFDRD0", "CFDRD1",
+    # Dynamic (2-operation, S=xwyry) single-cell family (VTS 2002). Each name's
+    # trailing two digits are the sensitizing write's own transition, read
+    # left-to-right as (cell value immediately before the write)(value
+    # written) -- e.g. RDF01 senses a 0-then-write-1 (transition) adjacency,
+    # immediately followed by a read of that same cell. No AADDR/ABIT/P0/P1
+    # needed -- the polarity is baked into the name, same convention as
+    # RDF0/RDF1 above.
+    "DYN_RDF00", "DYN_RDF01", "DYN_RDF10", "DYN_RDF11",
+    "DYN_DRDF00", "DYN_DRDF01", "DYN_DRDF10", "DYN_DRDF11",
+    "DYN_IRF00", "DYN_IRF01", "DYN_IRF10", "DYN_IRF11",
 )
 
 # Coupling types whose P0 carries the aggressor's required hold state (the
