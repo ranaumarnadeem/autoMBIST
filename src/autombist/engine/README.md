@@ -414,8 +414,40 @@ A Formal Notation and a Taxonomy," VTS 2000).
 | CFID | aggressor transition (P0 as above) forces victim bit to P1 |
 | CFST | while aggressor bit holds state P0, victim bit is forced to P1 |
 | CFDS | op on aggressor disturbs victim (invert). P0: 0=r0, 1=r1, 2=non-transition w0, 3=non-transition w1, 4=any read |
+| CFTR0 | <a; 0w1/0/->: aggressor holding P0 blocks the victim's up-transition write |
+| CFTR1 | <a; 1w0/1/->: symmetric, down-transition |
+| CFWD0 | <a; 0w0/1/->: aggressor holding P0 turns the victim's non-transition w0 into a flip to 1 |
+| CFWD1 | <a; 1w1/0/->: symmetric |
+| CFRD0 | <a; 0r0/1/1>: aggressor holding P0 turns a read of 0 into a flip-and-return-1 (RDF, gated) |
+| CFRD1 | <a; 1r1/0/0>: symmetric |
+| CFIR0 | <a; 0r0/0/1>: aggressor holding P0 turns a read of 0 into a lying 1 with the cell unchanged (IRF, gated) |
+| CFIR1 | <a; 1r1/1/0>: symmetric |
+| CFDRD0 | <a; 0r0/1/0>: aggressor holding P0 flips the cell to 1 but the read still (deceptively) returns 0 (DRDF, gated) |
+| CFDRD1 | <a; 1r1/0/1>: symmetric |
+| DYN_RDF00 | <0w0r0/1/1>: a non-transition w0 immediately followed by a read flips the cell to 1 and returns 1 |
+| DYN_RDF01 | <0w1r1/0/0>: symmetric, transition write |
+| DYN_RDF10 | <1w0r0/1/1>: symmetric |
+| DYN_RDF11 | <1w1r1/0/0>: symmetric |
+| DYN_DRDF00 | <0w0r0/1/0>: the same adjacency flips the cell to 1 but the read still (deceptively) returns 0 |
+| DYN_DRDF01 | <0w1r1/0/1>: symmetric |
+| DYN_DRDF10 | <1w0r0/1/0>: symmetric |
+| DYN_DRDF11 | <1w1r1/0/1>: symmetric |
+| DYN_IRF00 | <0w0r0/0/1>: the same adjacency returns 1 with the cell left unchanged |
+| DYN_IRF01 | <0w1r1/1/0>: symmetric |
+| DYN_IRF10 | <1w0r0/0/1>: symmetric |
+| DYN_IRF11 | <1w1r1/1/0>: symmetric |
 | DRF | victim bit inverts after P0 idle cycles since its last write, no access needed (see "Idle/wait op" above); single-port only |
 | HSD | victim bit forced toward P0 whenever a DIFFERENT address sharing its physical row (row = addr/words_per_row) is written (see "Half-Select Disturb" above); provably inert at the default words_per_row=1 |
+
+CFTR/CFWD/CFRD/CFIR/CFDRD extend the notation to two cells, `<Sa; Sv/F/R>`
+(Sa the aggressor's held state, Sv/F/R the victim's own sensitizing op /
+faulty value / faulty read, exactly as DATE 2006 Table 2 itself states it;
+this repo's TF0 is that paper's TF1, a pre-existing naming divergence --
+every other name matches its source paper directly). DYN_RDF/DRDF/IRF's `S`
+is the two-operation `xwyry` sequence itself (a write immediately followed
+by a read of the same cell, no intervening access) rather than a single op
+-- VTS 2002's own dFFM`<x><y>` convention for this family, which this
+repo's naming already follows; see "Dynamic (2-operation) faults" below.
 
 Multiple faults compose in file order; for clean attribution run serially
 with +FAULT_INDEX (what run_campaign.sh does). +FAULT_VERBOSE prints
@@ -574,6 +606,46 @@ above) -- including it here would show a universal escape that says nothing
 about HSD itself, only about the memory configuration this table happens to
 use. `gen_faults --all-types` includes HSD automatically once
 `words_per_row > 1` is configured (see that section).
+
+## Limits
+
+**Only S = xwyry is modeled.** VTS 2002's own SPICE analysis (Section 4)
+validated exactly one sensitizing sequence -- a write immediately followed
+by a read of the same cell, no intervening access of any kind -- and left
+broader sequences (`rxrx`, `rxwy`) as the paper's own open question, not an
+oversight of this implementation. "No intervening access" is enforced here
+by a single SHARED last-operation record (`lop_w`/`lop_a`/`lop_pre`/`lop_m`/
+`lop_d` in `fault_ram.sv`, `last_op` in `synth_engine.py`'s oracle) that
+EVERY `write_op()`/`read_op()` call -- to any address, on any port --
+invalidates unconditionally on entry (`read_op()` snapshots it into locals
+first, since only reads evaluate a `sensitize.prev` condition; `write_op()`
+just invalidates, then re-arms it with its own address/data once the write
+genuinely commits): only the operation *literally immediately preceding*
+the read, anywhere in the memory, can ever be "the last op." This was a
+measured design choice, not the obvious one: a
+per-port record and a per-victim-address record were both tried first and
+found wrong, in the same way -- an intervening write from a *different*
+port (or to the same address via a different port) must still be visible to
+the read that follows it, which a record scoped to "this port" or "this
+address alone" cannot represent on its own. A wait op is a genuine
+exception, not a narrower-record workaround: `w0 t5 r0` (a write, an idle
+wait, then a read) still sensitizes a same-polarity dynamic fault, because a
+wait touches no bus and never calls `write_op`/`read_op` at all (see
+"Idle/wait op" above) -- the shared record simply never sees it. Any other
+intervening op, to any address or port, does invalidate the adjacency.
+
+**The two-cell dynamic types are not implemented.** VTS 2002's own dynamic
+space also includes dCFds/dCFrd/dCFdrd/dCFir -- 32 FPs, an aggressor-gated
+version of the twelve single-cell types here, the same way
+CFTR/CFWD/CFRD/CFIR/CFDRD gate the static RDF/WDF/etc. family on an
+aggressor's held state. They are a deliberate v1 scope cut, on measurement
+rather than principle: nothing about the
+`sensitize.prev`/`lop_*` mechanism structurally prevents combining it with
+`agg_pre`, but doing so correctly needs its own bidirectional-placement
+treatment (the same aggressor-above/aggressor-below soundness requirement
+:func:`synthesize_elements` already enforces for the static two-cell family,
+extended to a sequence-sensitive victim condition) that has not been
+designed or measured yet.
 
 ## Semantics notes
 

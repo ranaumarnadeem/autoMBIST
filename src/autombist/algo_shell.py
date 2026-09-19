@@ -47,7 +47,7 @@ from .fault_ram_gen import conflicting_port_faults, render_and_write
 from .fsm_harness import check_ports, gather_sibling_sources
 from .synth_engine import synthesize_alg, synth_verification_faults
 
-# The 25 DSL-covered built-ins' names, for distinguishing "custom" registry
+# The 37 DSL-covered built-ins' names, for distinguishing "custom" registry
 # entries (added via add_fault_type) from the defaults in `list types`.
 _DEFAULT_REGISTRY_NAMES = frozenset(p.name for p in default_registry())
 
@@ -182,7 +182,7 @@ class AlgoShell(cmd.Cmd):
 
     def _render_fault_ram_for(self, workdir: Path) -> Path:
         """Render fault_ram.sv from the session's registry into workdir. The
-        registry starts as the 31 built-ins (default_registry() + the 6 fixed
+        registry starts as the 43 built-ins (default_registry() + the 6 fixed
         types the template always includes); add_fault_type appends to it, so
         this always reflects any custom types the researcher has defined.
         num_ports follows the configured memory (set_memory --ports) so a
