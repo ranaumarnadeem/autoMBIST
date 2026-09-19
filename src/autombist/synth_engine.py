@@ -3,7 +3,7 @@
 Cites Benso, Bosio, Di Carlo, Di Natale, Prinetto, "Automatic March Tests
 Generation for Static and Dynamic Faults in SRAMs," ETS 2005, and its
 extension "...for Static Linked Faults in SRAMs," DATE 2006. Given the
-current fault-type registry (the 25 DSL-expressible ``FaultPrimitive``
+current fault-type registry (the 37 DSL-expressible ``FaultPrimitive``
 entries -- see ``fault_primitives.py``), synthesizes a new march test (an
 ordinary :class:`~autombist.alg_spec.AlgSpec`) guaranteed to detect every
 targeted primitive, then hands it straight to ``run_algo_campaign`` for real
@@ -50,6 +50,20 @@ every coupling primitive gets two real fault records, one per placement, so
 ``do_synth --verify``'s Verilator campaign can actually falsify a
 placement-asymmetric result instead of only ever exercising the one placement
 the search happened to assume.
+
+For dynamic (2-operation, ``sensitize.prev``) faults, the up/down placement
+question does not arise at all -- like SA0/SA1/TF/WDF/RDF/IRF/DRDF, these are
+single-cell and never reference ``a``. What they need instead is state:
+``replay`` threads a ``last_op`` tuple (mirroring ``fault_ram.sv``'s ``lop_*``
+registers) across every op so a candidate's read can be checked against the
+op that immediately preceded it, not just the cell's current value.
+:func:`_prev_candidate_one` builds each targeted primitive its own
+qualifying write (with the correct pre-state, per ``sensitize.prev``'s
+``<x>w<y>`` pair) immediately followed by the sensitizing read -- and a
+SECOND read for the DRDF-shaped types, whose first read deceptively reports
+the correct value by definition, so only a following read exposes the
+corrupted cell (the same reasoning ``march_raw1.alg`` -- the hand-written
+literature reference for this exact family -- was built around).
 
 Excluded from synthesis targeting: the six fixed types
 (SOF/AF_NOACC/AF_ALIAS/CFDS/DRF/HSD -- see ``fault_primitives.py``'s module
@@ -135,15 +149,25 @@ def resolve_params(p: FaultPrimitive) -> tuple[int, int]:
     campaign against engine/faults.example.txt, whose coupling entries use
     ``p0=1`` while this function picks ``p0=0``:
 
-        as published      22/29   escapes CFDRD0 CFID CFIR0 CFRD0 CFWD0
-        params aligned    27/29   all five flip to DETECTED
+        as published      34/41   escapes CFDRD0 CFID CFIR0 CFRD0 CFWD0
+        params aligned    50/50   all five flip to DETECTED
 
-    So "covered 25/25" means 25 types at these parameters, not 25 types. For
-    reference the hand-designed March SS reaches 28/29 in 22n, i.e. shorter
-    AND broader than the synthesized 27n spec on the same fault list. (This means CFST resolves to ``p1=1`` here,
-      not the hand-tuned ``p1=0`` ``generate_all_types_faults`` uses for its
-      fixed demonstration fault list -- both are valid instantiations of the
-      same parameterized fault.)
+    So "covered 37/37" means 37 types at these parameters, not 37 types
+    unconditionally. For reference the hand-designed March SS reaches 32/41
+    in 22n -- shorter than the synthesized 27n spec, as before, but no
+    longer broader: 32 < 34 once the twelve dynamic types are in the fault
+    list, since the synthesizer targets all twelve (see
+    :func:`_prev_candidates`) while March SS's fixed literature structure
+    only happens to catch four of them (see engine/README.md's "Dynamic
+    (2-operation) faults"). Re-measured after the dynamic-faults family
+    landed -- the "as published"/"params aligned" split and the five
+    flipped coupling types are unchanged from before that work (all five
+    are static coupling types the p0 mismatch affects regardless of the
+    fault list's size), only the totals and the March SS comparison moved.
+
+    This means CFST resolves to ``p1=1`` here, not the hand-tuned ``p1=0``
+    ``generate_all_types_faults`` uses for its fixed demonstration fault
+    list -- both are valid instantiations of the same parameterized fault.
     """
     if p.sensitize.transition == "p0":
         p0 = 2
@@ -963,7 +987,7 @@ def synthesize_elements(
 class SynthResult:
     """``covered`` means covered AT THE PARAMETERS :func:`resolve_params`
     chose -- not for every instantiation of those types. See that function's
-    docstring for the measured gap (22/29 vs 27/29 on the same fault list,
+    docstring for the measured gap (34/41 vs 50/50 on the same fault list,
     depending only on the coupling entries' ``p0``)."""
 
     spec: AlgSpec
@@ -1033,7 +1057,7 @@ def synth_verification_faults(mem, targets: list[FaultPrimitive]) -> list:
     could never falsify a placement-asymmetric result -- exactly the gap
     that let this module claim "15/15, verified on real Verilator" for a
     spec that missed 3 of 15 primitives on half of all coupling placements.
-    (Those figures are historical: the registry had 15 primitives then, 25
+    (Those figures are historical: the registry had 15 primitives then, 37
     now. The failure mode they illustrate is not.)
 
     Both records reuse the SAME two addresses (``va``, ``va + 1``) with the

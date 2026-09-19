@@ -350,7 +350,7 @@ def from_dict(data: dict[str, Any]) -> FaultPrimitive:
 
 
 # --------------------------------------------------------------------------- #
-# The 25 DSL-expressible built-ins, semantically identical to fault_ram.sv.
+# The 37 DSL-expressible built-ins, semantically identical to fault_ram.sv.
 # --------------------------------------------------------------------------- #
 def default_registry() -> list[FaultPrimitive]:
     return [

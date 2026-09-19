@@ -395,6 +395,43 @@ A fault primitive is a JSON object with this shape:
   - `on` — whose access gates the fault: `"victim"` or `"aggressor"`. Only
     `"aggressor"`-gated faults are genuine coupling faults (two cells
     involved); `"victim"`-gated faults are single-cell.
+  - `agg_pre` — the two-cell coupling STATE gate: the value the aggressor
+    cell must be HOLDING while the victim is accessed (`"0"`, `"1"`, `"p0"`,
+    `"p1"`, or `"x"` for don't-care, same token set as `pre`). This is what
+    `CFST` and the whole two-cell family (`CFTR`/`CFWD`/`CFRD`/`CFIR`/`CFDRD`
+    — see `engine/README.md`'s two-cell `<Sa; Sv/F/R>` notation) are built
+    from: each is the single-cell fault of the same shape (a transition,
+    non-transition write, or read-disturb condition on `pre`/`written`),
+    additionally gated on the aggressor's held state via `agg_pre`. Not
+    combinable with `on="aggressor"` — that already gates the fault on the
+    aggressor's own ACCESS (a transition being written), which is a
+    different way of involving a second cell than gating on a value it
+    *holds*; use `on="victim"` with `agg_pre` for a state condition, or
+    `on="aggressor"` with `transition` for an access-triggered one. `pre`
+    and `agg_pre` also cannot both resolve to the same runtime parameter
+    (`"p0"`/`"p1"`) — they'd silently share one value at runtime, so the
+    victim and aggressor states could never actually differ, which is
+    exactly the case a two-cell fault exists to express. Not combinable
+    with `raw_sv` either, for the same structural reason as `prev` below —
+    test `mem[FQ[i].aa][FQ[i].ab]` directly in your `raw_sv` text instead.
+  - `prev` — the victim's own IMMEDIATELY PRECEDING operation, for a dynamic
+    (2-operation) fault sensitized by a write-then-read adjacency (VTS
+    2002's `S = xwyry`; see `engine/README.md`'s "Dynamic (2-operation)
+    faults" and "Limits"): `"0w0"`/`"0w1"`/`"1w0"`/`"1w1"` (`<pre-write
+    value>w<written value>`) or `"x"` (don't-care, the default — every
+    non-dynamic built-in leaves this alone). Only meaningful for
+    `category="read_effect"` — it gates the CURRENT read on what happened
+    immediately before it, which only a read-path arm evaluates — and
+    `sensitize.pre` must equal `prev`'s written digit (the cell genuinely
+    holds that value when the read arrives, absent the fault; any other
+    `pre` would contradict the write's own effect). Tracked by a single
+    engine-wide last-operation record, not per-address or per-port — see
+    `engine/README.md`'s "Limits" for exactly what counts as
+    "immediately preceding" (any intervening access anywhere breaks it; a
+    `t<N>` wait op does not, since it touches no bus). Not combinable with
+    `raw_sv` — the gate is emitted as a clause on the generated arm's
+    condition, which a verbatim `raw_sv` body bypasses; test
+    `lop_w`/`lop_a`/`lop_pre`/`lop_d` directly in your `raw_sv` text instead.
   - `port` — which physical port the sensitizing op must occur on: `"0"`,
     `"1"`, or `"x"` (wildcard — matches on address alone, the implicit
     behavior of every existing built-in). Only meaningful in a 2-port
