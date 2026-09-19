@@ -16,10 +16,13 @@
 # NOT a claim of static coverage -- this test exists to diagnose the dynamic
 # family specifically (see the paper's own Section 6.1: "If the purpose is
 # to diagnose the FFMs, then March RAW1 has to be used"), not to compete
-# with March SS/AB on general coverage. autoMBIST's synthesizer already
-# finds an efficient covering test tailored to the live registry (see
-# `synth` in the research shell); this is a literature-matched reference
-# algorithm, the same role march_b.alg plays for its own citable claim.
+# with March SS/AB on general coverage. Reference coverage: 36/41 on
+# faults.example.txt overall (real run_algo_campaign result), 12/12 on the
+# dynamic types specifically -- the 36 is incidental to its purpose, not
+# tuned for. autoMBIST's synthesizer already finds an efficient covering
+# test tailored to the live registry (see `synth` in the research shell);
+# this is a literature-matched reference algorithm, the same role
+# march_b.alg plays for its own citable claim.
 either w0
 either w0 r0
 either r0
