@@ -174,6 +174,20 @@ def _validate_shared_memory_params(shared: SharedMemoryParams) -> None:
                     f"match memories[0].{field} ({first_value}) -- every memory behind a "
                     "shared controller must share the same address/data mux bus geometry"
                 )
+        # init_val is a genuine RTL constraint too, discovered while building
+        # run_shared_campaign (step 7): fault_ram.sv's own +INIT=<n> plusarg
+        # is read unconditionally by every generate-instantiated copy (it is
+        # NOT FAULT_TAG-gated the way +FAULTS/+FAULT_INDEX now are), so every
+        # memory behind one shared controller is necessarily initialized to
+        # the same value -- this is not a design choice being imposed here,
+        # it's what the shared RTL mechanism already enforces.
+        if m.init_val != first.init_val:
+            raise CampaignError(
+                f"SharedMemoryParams.memories[{i}].init_val ({m.init_val}) does not "
+                f"match memories[0].init_val ({first.init_val}) -- fault_ram.sv's "
+                "+INIT= plusarg is shared by every memory behind one controller, "
+                "not FAULT_TAG-scoped like +FAULTS/+FAULT_INDEX"
+            )
 
 
 @dataclass(slots=True, frozen=True)
@@ -1346,6 +1360,131 @@ def run_word_oriented_campaign(
             return FaultResult(
                 index=i, record=record, detected=detected,
                 elem=elem, op=op, addr=addr, xor=xor_bits, activations=activations,
+            )
+
+        results = _run_faults_concurrently(
+            faults, _run_one_fault, progress_callback,
+            max_workers if max_workers is not None else _fault_concurrency(),
+        )
+
+        run_seconds = time.time() - start
+        detected_count = sum(1 for r in results if r.detected)
+        total = len(results)
+        coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
+
+        return CampaignResult(
+            algo_name=algo_name, mem=mem, golden_clean=True, faults=results,
+            detected=detected_count, total=total, coverage_percent=coverage,
+            build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
+        )
+    finally:
+        if own_tmp is not None:
+            own_tmp.cleanup()
+
+
+_SHARED_CAMPAIGN_ALGO_NAMES = {
+    "MATSP": "MATSP_SHARED", "MARCHCM": "MARCHCM_SHARED", "MARCHSS": "MARCHSS_SHARED",
+}
+
+
+def run_shared_campaign(
+    shared: SharedMemoryParams,
+    alg: str,
+    faults: list[FaultRecord],
+    *,
+    sim: str = "verilator",
+    workdir: Path | None = None,
+    verbose: bool = False,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cache_dir: Path | None = None,
+    max_workers: int | None = None,
+) -> CampaignResult:
+    """Shared-controller (docs/shared-hierarchical-mbist-plan.md) campaign
+    against shared_engine.sv -- step 7 of that plan's implementation order,
+    the wholly-separate-sibling-function pattern
+    run_word_oriented_campaign's own foundation commit established,
+    reusing compile_engine()/run_one() with the num_memories/FAULT_TAG
+    hooks steps 5-6 already added (unlike word-oriented's own "zero changes
+    to compile_engine" precedent -- this feature's own §5 genuinely needed
+    both).
+
+    ``alg``: one of ``"MATSP"``/``"MARCHCM"``/``"MARCHSS"`` (shared_engine.sv's
+    own built-in +ALG= table -- no +ALG_FILE support here yet, matching this
+    step's own scope; a real .alg-driven campaign is a future extension, not
+    part of the plan's v1 order).
+
+    Each ``FaultRecord.mi`` selects which physical memory (0..num_memories-1)
+    that fault targets, routed to fault_ram.sv's own FAULT_TAG-suffixed
+    +FAULTS<mi>/+FAULT_INDEX<mi> plusargs (step 5) -- every OTHER memory gets
+    no +FAULTS<n> at all for that run, so it stays golden by construction,
+    the mechanism step 5's own real proof already confirmed leaks nothing
+    cross-memory.
+
+    ``verbose``/``progress_callback``/``cache_dir``/``max_workers``: see
+    run_algo_campaign's docstring -- identical semantics, reused unchanged.
+    """
+    if alg not in _SHARED_CAMPAIGN_ALGO_NAMES:
+        raise CampaignError(
+            f"run_shared_campaign: alg must be one of {sorted(_SHARED_CAMPAIGN_ALGO_NAMES)}, got {alg!r}"
+        )
+    _validate_shared_memory_params(shared)
+    mem = shared.memories[0]
+    _validate_fault_addresses(mem, faults)
+    for record in faults:
+        if not (0 <= record.mi < shared.num_memories):
+            raise CampaignError(
+                f"fault {record.type}@{record.vaddr}.{record.vbit} has mi={record.mi}, "
+                f"out of range for {shared.num_memories} memories (0..{shared.num_memories - 1})"
+            )
+
+    algo_name = _SHARED_CAMPAIGN_ALGO_NAMES[alg]
+
+    own_tmp: tempfile.TemporaryDirectory[str] | None = None
+    if workdir is None:
+        own_tmp = tempfile.TemporaryDirectory(prefix="autombist-shared-")
+        workdir = Path(own_tmp.name)
+    else:
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        engine_dir = find_engine_dir()
+        sources = [engine_dir / "fault_ram.sv", engine_dir / "shared_engine.sv"]
+        top_module = "shared_engine"
+
+        artifact = compile_engine(
+            mem, sources=sources, top_module=top_module,
+            workdir=workdir, sim=sim, cache_dir=cache_dir,
+            num_memories=shared.num_memories,
+        )
+
+        plusargs = [f"+INIT={mem.init_val}", f"+ALG={alg}"]
+
+        start = time.time()
+
+        golden_out = run_one(artifact, extra_plusargs=plusargs)
+        golden_detected, *_ = parse_result_line(golden_out)
+        if golden_detected:
+            raise CampaignError(
+                f"golden run for '{algo_name}' unexpectedly reported DETECTED "
+                f"(no faults were injected). The engine is broken.\n{golden_out}"
+            )
+
+        def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
+            fault_file = workdir / f"fault_{i}.txt"
+            write_fault_list([record], fault_file)
+            extra = [
+                *plusargs,
+                f"+FAULTS{record.mi}={fault_file}",
+                f"+FAULT_INDEX{record.mi}=0",
+            ]
+            if verbose:
+                extra.append("+FAULT_VERBOSE")
+            out = run_one(artifact, extra_plusargs=extra)
+            detected, elem, op, addr, xor_bits = parse_result_line(out)
+            return FaultResult(
+                index=i, record=record, detected=detected,
+                elem=elem, op=op, addr=addr, xor=xor_bits,
             )
 
         results = _run_faults_concurrently(
