@@ -706,6 +706,19 @@ x both aggressor-hold polarities): 112/112 detected. See
 specific -- it says nothing about intra-word CFID/CFDS/CFTR/CFWD/CFRD/CFIR/
 CFDRD, whose own intra-word completeness (if any) has not been measured.
 
+**Placing intra-word coupling faults**: `generate_intra_word_faults()`
+(`algo_engine.py`) / `gen_faults --intra-word` in the shell places one
+instance of each of the 14 coupling-class primitives (CFIN, CFID, CFST,
+CFDS, and the two-cell CFTR/CFWD/CFRD/CFIR/CFDRD family) intra-word --
+`aaddr == vaddr`, a different bit lane of the same word -- rather than
+`generate_all_types_faults`' inter-word default. Needs `data_width >= 2`.
+Measured against `march_c` + `standard_backgrounds(8)`: 9 of the 14 detected
+(the CFST instance among them is provably always caught, per the guarantee
+above; the other 5 escapes -- CFDS, CFDRD0/1, CFWD0/1 -- are the same
+non-transition-write/read-after-read-shaped types march_c is weak against
+inter-word too, see the "Measured results" table). This is a placement
+helper, not a completeness claim for those other 13 types.
+
 Read fault evaluation uses the pre-read cell state; destructive read
 effects land after the returned value is formed. Static clamps (SAF, CFST)
 are re-applied after every operation, so they win over any coupling effect

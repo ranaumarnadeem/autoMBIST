@@ -608,6 +608,45 @@ def test_generate_all_types_faults_hsd_p0_opposite_of_init_val() -> None:
     assert hsd0.p0 == 1   # init=0 -> disturbed-toward 1
 
 
+def test_generate_intra_word_faults_places_every_coupling_type_intra_word() -> None:
+    from autombist.algo_engine import generate_intra_word_faults
+
+    mem = MemoryParams(addr_width=8, data_width=8)
+    records = generate_intra_word_faults(mem)
+    assert len(records) == 14  # CFIN, CFID, CFST, CFDS + the 10 two-cell CFTR/CFWD/CFRD/CFIR/CFDRD
+    expected_types = {
+        "CFIN", "CFID", "CFST", "CFDS",
+        "CFTR0", "CFTR1", "CFWD0", "CFWD1", "CFRD0", "CFRD1",
+        "CFIR0", "CFIR1", "CFDRD0", "CFDRD1",
+    }
+    assert {r.type for r in records} == expected_types
+    for r in records:
+        assert r.aaddr == r.vaddr, f"{r.type}: expected intra-word (aaddr==vaddr), got aaddr={r.aaddr} vaddr={r.vaddr}"
+        assert r.abit != r.vbit, f"{r.type}: victim and aggressor must be different bit lanes of the same word"
+
+
+def test_generate_intra_word_faults_matches_inter_word_p0_p1_convention() -> None:
+    """The sensitizing P0/P1 parameterization is a property of the TYPE, not
+    of where victim/aggressor are placed -- confirm intra-word placement
+    doesn't silently change it relative to generate_all_types_faults'
+    established inter-word convention."""
+    from autombist.algo_engine import generate_all_types_faults, generate_intra_word_faults
+
+    mem = MemoryParams(addr_width=8, data_width=8)
+    inter = {r.type: (r.p0, r.p1) for r in generate_all_types_faults(mem)}
+    intra = {r.type: (r.p0, r.p1) for r in generate_intra_word_faults(mem)}
+    for t, (p0, p1) in intra.items():
+        assert inter[t] == (p0, p1), t
+
+
+def test_generate_intra_word_faults_rejects_single_bit_memory() -> None:
+    from autombist.algo_engine import CampaignError, generate_intra_word_faults
+
+    mem = MemoryParams(addr_width=8, data_width=1)
+    with pytest.raises(CampaignError, match="data_width >= 2"):
+        generate_intra_word_faults(mem)
+
+
 def test_generate_random_faults_never_picks_hsd_at_default_words_per_row() -> None:
     from autombist.algo_engine import generate_random_faults
 
