@@ -417,6 +417,17 @@ def test_fault_record_to_line_emits_ports_even_at_zero_when_weight_set() -> None
     assert rec.to_line() == "CFIN 10 3 11 3 2 0 0 0 1.0"
 
 
+def test_fault_record_mi_defaults_to_zero_and_is_never_serialized() -> None:
+    # mi (shared-controller memory index, docs/shared-hierarchical-mbist-
+    # plan.md step 5) is a purely Python-side routing attribute -- a
+    # per-memory fault file is already scoped by which FAULT_TAG-suffixed
+    # plusarg loads it, so to_line() never emits it, at any mi value.
+    rec = FaultRecord(type="SA0", vaddr=10, vbit=3, aaddr=0, abit=0, p0=0, p1=0)
+    assert rec.mi == 0
+    rec_mi1 = FaultRecord(type="SA0", vaddr=10, vbit=3, aaddr=0, abit=0, p0=0, p1=0, mi=1)
+    assert rec_mi1.to_line() == rec.to_line() == "SA0 10 3 0 0 0 0"
+
+
 def test_parse_fault_list_old_7_8_9field_formats_unaffected_by_weight() -> None:
     assert parse_fault_list("SA0 10 3 0 0 0 0\n")[0].weight is None
     assert parse_fault_list("CFIN 10 3 11 3 2 0 1\n")[0].weight is None

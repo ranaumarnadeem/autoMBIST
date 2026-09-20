@@ -9,6 +9,15 @@
 // Init value:   +INIT=<0|1>          (default 1, see README)
 // Verbose:      +FAULT_VERBOSE       (per-fault activation counts at end of sim)
 //
+// FAULT_TAG (parameter, default "" -- every existing instantiation stays
+// byte-identical): when non-empty, this instance reads +FAULTS<TAG>/
+// +FAULT_INDEX<TAG> instead of the plain +FAULTS/+FAULT_INDEX names --
+// docs/shared-hierarchical-mbist-plan.md's own flagged real gap: a shared
+// controller's generate loop instantiates N copies of this same module
+// (shared_engine.sv), and without distinct plusarg names every copy would
+// read the identical global fault simultaneously, with no way to target
+// "fault N on memory M" specifically.
+//
 // Fault line format (decimal, '#' comments):
 //   TYPE  VADDR VBIT  AADDR ABIT  P0 P1
 // See README.md for per-type semantics. DRF reuses P0 as an idle-cycle-count
@@ -27,12 +36,13 @@ module fault_ram #(
   parameter int ADDR_WIDTH = 8,
   parameter int DATA_WIDTH = 8,
   parameter int DEPTH      = 1 << ADDR_WIDTH,
-  parameter int WORDS_PER_ROW = 1   // HSD (Workstream L): row(addr) = addr /
+  parameter int WORDS_PER_ROW = 1,  // HSD (Workstream L): row(addr) = addr /
                                       // WORDS_PER_ROW. Default 1 -> row(addr)
                                       // = addr for every address, so "a
                                       // different address in the same row" is
                                       // mathematically unsatisfiable and HSD
                                       // is provably inert -- see README.md.
+  parameter string FAULT_TAG = ""    // see header comment above
 )(
   input  logic                    clk,
   input  logic                    csb,    // active low chip select
@@ -174,6 +184,7 @@ module fault_ram #(
 
   initial begin
     string  fpath, line, ts;
+    string  faults_key, fault_index_key;
     int     fd, n, idx, sel;
     bit     had_fatal;
     fault_s f;
@@ -182,7 +193,12 @@ module fault_ram #(
     for (int a = 0; a < DEPTH; a++) mem[a] = {DATA_WIDTH{init_val[0]}};
     dout = '0;
 
-    if ($value$plusargs("FAULTS=%s", fpath)) begin
+    // FAULT_TAG="" (default) reproduces "FAULTS=%s"/"FAULT_INDEX=%d"
+    // exactly -- byte-identical to before this parameter existed.
+    faults_key = $sformatf("FAULTS%s=%%s", FAULT_TAG);
+    fault_index_key = $sformatf("FAULT_INDEX%s=%%d", FAULT_TAG);
+
+    if ($value$plusargs(faults_key, fpath)) begin
       fd = $fopen(fpath, "r");
       if (fd == 0) begin
         $display("FATAL: cannot open fault file %s", fpath);
@@ -222,7 +238,7 @@ module fault_ram #(
       $fclose(fd);
 
       if (!had_fatal) begin
-        if (!$value$plusargs("FAULT_INDEX=%d", sel)) sel = -1;
+        if (!$value$plusargs(fault_index_key, sel)) sel = -1;
         if (sel >= 0) begin
           if (sel >= FQ.size()) begin
             $display("FATAL: FAULT_INDEX %0d out of range (%0d faults)", sel, FQ.size());

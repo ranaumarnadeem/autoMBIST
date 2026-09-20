@@ -12,20 +12,22 @@
 // Unlike march_engine_mp.sv (N fixed at 2, hand-duplicated port buses),
 // NUM_MEMORIES here is a runtime parameter, so per-memory signals are
 // unpacked arrays driven through a generate/genvar loop of fault_ram
-// instances -- fault_ram.sv itself is reused completely unchanged, same
-// as every prior sibling engine in this project.
+// instances. fault_ram.sv's own write_op()/read_op() fault semantics stay
+// completely unchanged (same reuse pattern every prior sibling engine has
+// followed) -- the one real, deliberate exception is fault_ram.sv's new
+// FAULT_TAG parameter (step 5, below), needed because N generate
+// instances can't otherwise be individually fault-targeted.
 //
 //   +ALG_FILE=<file>   numeric element/op program (preferred; emitted by autombist)
 //   +ALG=MATSP|MARCHCM|MARCHSS   built-in fallback for tool-free smoke tests
 //   +BACKGROUND=<hex>  DW-bit data-background mask (default 0 = solid 0/1,
 //                      byte-identical to every campaign that omits it)
 //   plus all fault_ram plusargs (+FAULTS, +FAULT_INDEX, +INIT, +FAULT_VERBOSE)
-//   -- NOTE (step 4 of the plan above): fault targeting is not yet
-//   per-memory here (that's step 5's own scope, a real fault_ram.sv/
-//   FAULT_TAG change) -- every generate-instantiated fault_ram copy reads
-//   the SAME global +FAULTS/+FAULT_INDEX plusarg today, so a non-golden
-//   (faulted) run against N>1 memories is not yet meaningful; only a
-//   golden (no +FAULTS) run is proven at this step.
+//   -- per-memory fault targeting (step 5): each generate-instantiated
+//   fault_ram copy gets its own FAULT_TAG (gi as a string), so a fault
+//   for memory M specifically is loaded via +FAULTS<M>=<file>
+//   +FAULT_INDEX<M>=<n> -- e.g. +FAULTS0=faults.txt +FAULT_INDEX0=0
+//   targets memory 0 only, leaving memory 1 (no +FAULTS1 given) golden.
 //
 // AW/DW/WORDS_PER_ROW/NUM_MEMORIES are top parameters (Verilator:
 // -GAW=<n> -GDW=<n> -GWORDS_PER_ROW=<n> -GNUM_MEMORIES=<n>), matching
@@ -61,10 +63,19 @@ module shared_engine #(
   logic [DW-1:0] dout [NUM_MEMORIES];
   logic [DW-1:0] background_mask = '0;
 
+  // Each instance gets its own +FAULTS<gi>/+FAULT_INDEX<gi> plusarg name
+  // (fault_ram.sv's own FAULT_TAG parameter -- docs/shared-hierarchical-
+  // mbist-plan.md's flagged real gap, step 5): without this, every
+  // generate-instantiated copy would read the SAME global +FAULTS/
+  // +FAULT_INDEX simultaneously, with no way to target "fault N on memory
+  // M" specifically.
   genvar gi;
   generate
     for (gi = 0; gi < NUM_MEMORIES; gi++) begin : mem_inst
-      fault_ram #(.ADDR_WIDTH(AW), .DATA_WIDTH(DW), .WORDS_PER_ROW(WORDS_PER_ROW)) dut (
+      fault_ram #(
+        .ADDR_WIDTH(AW), .DATA_WIDTH(DW), .WORDS_PER_ROW(WORDS_PER_ROW),
+        .FAULT_TAG($sformatf("%0d", gi))
+      ) dut (
         .clk(clk), .csb(csb[gi]), .web(web[gi]), .wmask(wmask[gi]),
         .addr(addr[gi]), .din(din[gi]), .dout(dout[gi])
       );
