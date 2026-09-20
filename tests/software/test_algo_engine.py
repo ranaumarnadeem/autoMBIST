@@ -12,6 +12,7 @@ from autombist.algo_engine import (
     FaultRecord,
     FaultResult,
     MemoryParams,
+    SharedMemoryParams,
     parse_fault_hits,
     parse_fault_list,
     parse_fault_loaded,
@@ -23,6 +24,7 @@ from autombist.algo_engine import (
     _run_faults_concurrently,
     _source_digest,
     _validate_fault_addresses,
+    _validate_shared_memory_params,
 )
 
 
@@ -661,3 +663,75 @@ def test_generate_random_faults_can_pick_hsd_when_words_per_row_over_1() -> None
     mem = MemoryParams(addr_width=4, data_width=8, words_per_row=4)
     records = generate_random_faults(mem, 500, seed=1)
     assert any(r.type == "HSD" for r in records)
+
+
+# --------------------------------------------------------------------------- #
+# SharedMemoryParams -- step 3 of docs/shared-hierarchical-mbist-plan.md's
+# implementation order (the research-shell's own N-memories data model, a
+# separate concern from generator.py's parallel topology: shared-bus config
+# schema -- see the dataclass's own docstring).
+# --------------------------------------------------------------------------- #
+def test_shared_memory_params_num_memories_property() -> None:
+    shared = SharedMemoryParams(memories=[
+        MemoryParams(addr_width=4, data_width=8),
+        MemoryParams(addr_width=4, data_width=8),
+        MemoryParams(addr_width=4, data_width=8),
+    ])
+    assert shared.num_memories == 3
+
+
+def test_shared_memory_params_valid_config_passes() -> None:
+    shared = SharedMemoryParams(memories=[
+        MemoryParams(addr_width=4, data_width=8, words_per_row=2),
+        MemoryParams(addr_width=4, data_width=8, words_per_row=2),
+    ])
+    _validate_shared_memory_params(shared)  # must not raise
+
+
+def test_shared_memory_params_rejects_empty_memories() -> None:
+    with pytest.raises(CampaignError, match="must be non-empty"):
+        _validate_shared_memory_params(SharedMemoryParams(memories=[]))
+
+
+def test_shared_memory_params_rejects_num_ports_not_1() -> None:
+    shared = SharedMemoryParams(
+        memories=[MemoryParams(addr_width=4, data_width=8)], num_ports=2,
+    )
+    with pytest.raises(CampaignError, match="only supports num_ports=1"):
+        _validate_shared_memory_params(shared)
+
+
+def test_shared_memory_params_rejects_a_memory_with_num_ports_not_1() -> None:
+    shared = SharedMemoryParams(memories=[
+        MemoryParams(addr_width=4, data_width=8),
+        MemoryParams(addr_width=4, data_width=8, num_ports=2),
+    ])
+    with pytest.raises(CampaignError, match="every memory must itself have num_ports=1"):
+        _validate_shared_memory_params(shared)
+
+
+def test_shared_memory_params_rejects_mismatched_addr_width() -> None:
+    shared = SharedMemoryParams(memories=[
+        MemoryParams(addr_width=4, data_width=8),
+        MemoryParams(addr_width=5, data_width=8),
+    ])
+    with pytest.raises(CampaignError, match=r"memories\[1\]\.addr_width \(5\) does not match"):
+        _validate_shared_memory_params(shared)
+
+
+def test_shared_memory_params_rejects_mismatched_data_width() -> None:
+    shared = SharedMemoryParams(memories=[
+        MemoryParams(addr_width=4, data_width=8),
+        MemoryParams(addr_width=4, data_width=16),
+    ])
+    with pytest.raises(CampaignError, match=r"memories\[1\]\.data_width \(16\) does not match"):
+        _validate_shared_memory_params(shared)
+
+
+def test_shared_memory_params_rejects_mismatched_words_per_row() -> None:
+    shared = SharedMemoryParams(memories=[
+        MemoryParams(addr_width=4, data_width=8, words_per_row=1),
+        MemoryParams(addr_width=4, data_width=8, words_per_row=2),
+    ])
+    with pytest.raises(CampaignError, match=r"memories\[1\]\.words_per_row \(2\) does not match"):
+        _validate_shared_memory_params(shared)

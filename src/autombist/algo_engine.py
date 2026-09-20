@@ -123,6 +123,59 @@ class MemoryParams:
         return 1 << self.addr_width
 
 
+@dataclass(slots=True)
+class SharedMemoryParams:
+    """N memories behind one shared MBIST controller (docs/shared-
+    hierarchical-mbist-plan.md), sequenced one at a time via mux-select --
+    NOT the multi-port case (``MemoryParams.num_ports > 1``, one memory, N
+    physical port buses accessing the same silicon); this is N separate
+    memory instances behind one controller. A research-shell-only concern
+    (this campaign engine's own data model); the generation-shell's
+    parallel ``topology: shared-bus`` config schema (``generator.py``)
+    is a distinct concept living in a distinct module, by design (§4b's own
+    note on the two shells staying separate, matching how ``MemoryParams``
+    and the generation-shell's own flat per-memory config keys have always
+    been two independent things, never unified).
+
+    Validated at point-of-use (``_validate_shared_memory_params``), not in
+    ``__post_init__`` -- matching ``MemoryParams``' own convention (see its
+    ``words_per_row`` field comment): every entry must share ``addr_width``/
+    ``data_width``/``words_per_row``, since one shared address/data mux bus
+    needs uniform geometry across every memory it drives.
+    """
+    memories: list[MemoryParams]
+    num_ports: int = 1
+
+    @property
+    def num_memories(self) -> int:
+        return len(self.memories)
+
+
+def _validate_shared_memory_params(shared: SharedMemoryParams) -> None:
+    if shared.num_ports != 1:
+        raise CampaignError(
+            f"SharedMemoryParams only supports num_ports=1 (got {shared.num_ports}) -- "
+            "multi-port shared-bus coverage is undesigned, see "
+            "docs/shared-hierarchical-mbist-plan.md"
+        )
+    if not shared.memories:
+        raise CampaignError("SharedMemoryParams.memories must be non-empty")
+    if any(m.num_ports != 1 for m in shared.memories):
+        raise CampaignError("SharedMemoryParams: every memory must itself have num_ports=1")
+
+    first = shared.memories[0]
+    for i, m in enumerate(shared.memories[1:], start=1):
+        for field in ("addr_width", "data_width", "words_per_row"):
+            first_value = getattr(first, field)
+            this_value = getattr(m, field)
+            if this_value != first_value:
+                raise CampaignError(
+                    f"SharedMemoryParams.memories[{i}].{field} ({this_value}) does not "
+                    f"match memories[0].{field} ({first_value}) -- every memory behind a "
+                    "shared controller must share the same address/data mux bus geometry"
+                )
+
+
 @dataclass(slots=True, frozen=True)
 class DataBackground:
     """A word-oriented data background (van de Goor & Al-Ars): a DW-bit mask
