@@ -15,6 +15,7 @@ from autombist.alg_spec import AlgSpec, builtin_algos, find_engine_dir, load_alg
 from autombist.algo_engine import (  # noqa: E402
     FaultRecord,
     MemoryParams,
+    generate_intra_word_faults,
     load_fault_list,
     merge_background_results,
     run_algo_campaign,
@@ -181,6 +182,38 @@ def test_cfst_intra_word_completeness_across_all_bit_pairs(tmp_path: Path) -> No
         f"expected every intra-word CFST instance to be caught by at least one of "
         f"standard_backgrounds(8), got {merged.detected}/{merged.total}"
     )
+
+
+def test_generate_intra_word_faults_cfst_instance_is_detected(tmp_path: Path) -> None:
+    """generate_intra_word_faults' own CFST instance is one member of the
+    exact space test_cfst_intra_word_completeness_across_all_bit_pairs
+    already proved complete (every bit-lane pair x both aggressor-hold
+    polarities, real Verilator, 112/112) -- so it MUST be detected here too,
+    and asserting that directly (rather than re-deriving from the other
+    test) is what actually connects the generator to that guarantee, not
+    just a coincidence of both existing in the same file.
+
+    The other 13 coupling-class types generate_intra_word_faults places have
+    no such completeness proof (see engine/README.md's "Semantics notes" --
+    the CFST guarantee is explicitly scoped to CFST only). Measured here,
+    not asserted: 9/14 detected against march_c + standard_backgrounds(8),
+    escapes are CFDS/CFDRD0/CFDRD1/CFWD0/CFWD1 -- non-transition-write- and
+    read-after-read-shaped types march_c structurally doesn't exercise, the
+    same reason those types are weak against march_c inter-word too (see
+    engine/README.md's own coverage table). Recorded as a real number so a
+    future change to march_c or the generator has something concrete to
+    diff against, not so this count is treated as a completeness claim."""
+    mem = MemoryParams(addr_width=8, data_width=8, init_val=0)
+    faults = generate_intra_word_faults(mem)
+    spec = _march_c()
+
+    per_background = run_background_campaign(mem, spec, faults, workdir=tmp_path)
+    merged = merge_background_results(per_background)
+
+    cfst_result = next(fr for fr in merged.faults if fr.record.type == "CFST")
+    assert cfst_result.detected, "the CFST instance generate_intra_word_faults places must be caught"
+    assert merged.total == 14
+    assert merged.detected == 9
 
 
 def test_shell_compare_algo_backgrounds_flag() -> None:

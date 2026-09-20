@@ -207,6 +207,15 @@ def test_gen_faults_all_types() -> None:
     assert len(shell.session.faults) == 42  # 41 built-in primitives + DRF (single-port)
 
 
+def test_gen_faults_intra_word() -> None:
+    shell = _shell()
+    shell.onecmd("set_memory 8 8")
+    shell.onecmd("gen_faults --intra-word")
+    assert len(shell.session.faults) == 14  # the 14 coupling-class primitives, intra-word placed
+    assert all(f.vaddr == f.aaddr for f in shell.session.faults)
+    assert all(f.vbit != f.abit for f in shell.session.faults)
+
+
 def test_gen_faults_random_is_seed_reproducible() -> None:
     a, b = _shell(), _shell()
     for s in (a, b):

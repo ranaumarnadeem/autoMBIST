@@ -25,6 +25,7 @@ from .algo_engine import (
     FaultRecord,
     MemoryParams,
     generate_all_types_faults,
+    generate_intra_word_faults,
     generate_random_faults,
     load_fault_list,
     merge_background_results,
@@ -391,12 +392,17 @@ class AlgoShell(cmd.Cmd):
         self._warn_if_hsd_inert(records)
 
     def do_gen_faults(self, arg: str) -> None:
-        """gen_faults [--all-types] [--n N --seed S]
-        Generate a fault list: one of each built-in type (default), or N random faults."""
+        """gen_faults [--all-types] [--intra-word] [--n N --seed S]
+        Generate a fault list: one of each built-in type (default), one of
+        each of the 14 coupling-class types placed intra-word instead of the
+        default inter-word (--intra-word -- needs data_width >= 2), or N
+        random faults (--n)."""
         mem = self._require_memory()
-        pos, flags = _parse_flags(_tokenize(arg), {"all-types": None, "n": int, "seed": int})
+        pos, flags = _parse_flags(_tokenize(arg), {"all-types": None, "intra-word": None, "n": int, "seed": int})
         if "n" in flags:
             records = generate_random_faults(mem, int(flags["n"]), int(flags.get("seed", 0)))
+        elif "intra-word" in flags:
+            records = generate_intra_word_faults(mem)
         else:
             records = generate_all_types_faults(mem)
         self.session.faults = records

@@ -418,6 +418,30 @@ def _effective_all_types(mem: MemoryParams) -> tuple[str, ...]:
     return types
 
 
+def _coupling_p0_p1(t: str) -> tuple[int, int]:
+    """(p0, p1) for the coupling-class primitives that need a non-default
+    parameterization to be sensitizable at all -- shared between
+    generate_all_types_faults (inter-word placement) and
+    generate_intra_word_faults (intra-word placement), since the
+    sensitizing parameters are a property of the TYPE, independent of where
+    victim/aggressor are placed. Returns (0, 0) -- the "no special
+    parameterization needed" default -- for every non-coupling type."""
+    if t == "CFIN":
+        return 2, 0  # either direction
+    if t == "CFID":
+        return 2, 1  # either direction, forced to 1
+    if t == "CFST":
+        return 1, 0  # aggressor holds 1, victim forced to 0
+    if t in _AGGRESSOR_HOLD_TYPES:
+        # P0 is the aggressor's required hold state (CFST's convention). 1
+        # rather than 0 so the choice is not indistinguishable from the p0=0
+        # default a missing branch would leave behind.
+        return 1, 0
+    if t == "CFDS":
+        return 4, 0  # any read disturbs
+    return 0, 0
+
+
 def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
     """One instance of every built-in fault primitive, spread across the memory
     (mirrors the shape of engine/faults.example.txt, scaled to this memory).
@@ -431,21 +455,8 @@ def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
         vb = i % dw
         aa = (va + 1) % depth  # aggressor: different word, same bit lane
         ab = vb
-        p0 = p1 = 0
-        if t == "CFIN":
-            p0 = 2  # either direction
-        elif t == "CFID":
-            p0, p1 = 2, 1  # either direction, forced to 1
-        elif t == "CFST":
-            p0, p1 = 1, 0  # aggressor holds 1, victim forced to 0
-        elif t in _AGGRESSOR_HOLD_TYPES:
-            # P0 is the aggressor's required hold state (CFST's convention).
-            # 1 rather than 0 so the choice is not indistinguishable from the
-            # p0=0 default a missing branch would leave behind.
-            p0 = 1
-        elif t == "CFDS":
-            p0 = 4  # any read disturbs
-        elif t == "AF_ALIAS":
+        p0, p1 = _coupling_p0_p1(t)
+        if t == "AF_ALIAS":
             aa = (va + 2) % depth
         elif t == "DRF":
             # AADDR/ABIT unused (matches SOF/AF_NOACC's convention). P0 is the
@@ -467,6 +478,54 @@ def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
             # real disturb is actually observable rather than a same-value no-op.
             aa, ab = 0, 0
             p0 = 0 if mem.init_val else 1
+        records.append(FaultRecord(t, va, vb, aa, ab, p0, p1))
+    return records
+
+
+# The 14 coupling-class primitives -- the only ones with a genuine
+# victim/aggressor pair, hence the only ones "intra-word" vs "inter-word"
+# placement is meaningful for. Alphabetical for a deterministic iteration
+# order over _AGGRESSOR_HOLD_TYPES, which is a frozenset.
+_INTRA_WORD_COUPLING_TYPES: tuple[str, ...] = ("CFIN", "CFID", "CFST", "CFDS") + tuple(
+    sorted(_AGGRESSOR_HOLD_TYPES)
+)
+
+
+def generate_intra_word_faults(mem: MemoryParams) -> list[FaultRecord]:
+    """One instance of each of the 14 coupling-class fault primitives (CFIN,
+    CFID, CFST, CFDS, and the two-cell CFTR/CFWD/CFRD/CFIR/CFDRD family),
+    placed INTRA-word (``aaddr == vaddr``, a different bit lane of the SAME
+    word) rather than generate_all_types_faults' inter-word placement
+    (different word, same bit lane). Single-cell primitives have no
+    victim/aggressor distinction and are therefore not included here --
+    "intra-word" vs "inter-word" is meaningless for them.
+
+    Fills a real, previously-only-hand-tested gap: this project's own
+    default fault list (``faults.example.txt``) and ``gen_faults``'s default
+    output place every coupling-class fault inter-word, so every published
+    per-algorithm coverage number says nothing about intra-word
+    survivability (see engine/README.md's "Measured before/after delta" and
+    "Semantics notes" sections -- the latter also documents that
+    ``standard_backgrounds()`` is a *proven*-complete intra-word test for
+    CFST specifically, van de Goor & Tlili, DATE 1998; no such completeness
+    claim exists yet for the other 13 types this function places).
+
+    Needs ``data_width >= 2`` -- an intra-word fault needs a second bit lane
+    in the same word to place the aggressor at."""
+    if mem.data_width < 2:
+        raise CampaignError(
+            f"generate_intra_word_faults needs data_width >= 2 to place an aggressor "
+            f"at a second bit lane of the same word (got data_width={mem.data_width})"
+        )
+    depth = mem.depth
+    dw = mem.data_width
+    records: list[FaultRecord] = []
+    for i, t in enumerate(_INTRA_WORD_COUPLING_TYPES):
+        va = (i * 7 + 3) % depth
+        vb = i % dw
+        aa = va  # intra-word: SAME word as the victim, not a different one
+        ab = (vb + 1) % dw  # a different bit lane of that same word
+        p0, p1 = _coupling_p0_p1(t)
         records.append(FaultRecord(t, va, vb, aa, ab, p0, p1))
     return records
 
