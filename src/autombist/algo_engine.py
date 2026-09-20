@@ -228,6 +228,15 @@ class FaultRecord:
                                     # IFA/SPICE-derived campaign (see fault_primitives.py's
                                     # module docstring for the adapter contract this feeds).
                                     # None == unweighted -- today's only mode.
+    mi: int = 0              # shared-controller memory index (docs/shared-hierarchical-
+                               # mbist-plan.md) -- which physical memory this fault
+                               # targets, for a future run_shared_campaign (step 7) to
+                               # route into that memory's own +FAULTS<mi>/+FAULT_INDEX<mi>
+                               # file (fault_ram.sv's FAULT_TAG, step 5). Purely a
+                               # Python-side routing attribute -- NOT serialized by
+                               # to_line(): a per-memory fault file is already scoped by
+                               # which FAULT_TAG-suffixed plusarg loads it, so the file
+                               # format itself needs no change.
 
     def to_line(self) -> str:
         base = f"{self.type} {self.vaddr} {self.vbit} {self.aaddr} {self.abit} {self.p0} {self.p1}"
