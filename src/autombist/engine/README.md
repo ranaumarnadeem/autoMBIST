@@ -684,6 +684,28 @@ once `--backgrounds` runs (verified via real Verilator runs, both with and
 without the background loop; see
 `tests/integration/test_data_backgrounds_e2e.py`).
 
+**`standard_backgrounds` is a proven-complete intra-word CFST test, not just an
+empirically-good one.** A.J. van de Goor & I.B.S. Tlili, "March tests for
+word-oriented memories," DATE 1998, derives the minimal data-background
+sequence needed to detect every intra-word state coupling fault (CFst) in a
+`B`-bit word: `d = ceil(log2(B)) + 1` backgrounds -- one solid plus one
+column-stripe per bit of the bit-lane index -- chosen so that every pair of
+bit lanes differs under at least one background (CFst is state-only, not
+transition-dependent, so the paper's own DBs "can be applied in any
+sequence"). `standard_backgrounds`'s construction (solid + `ceil(log2(W))`
+column-stripe masks, `mask_k` set at bit `i` iff bit `k` of `i` is set) is
+exactly this method -- not derived from the paper, but independently
+identical to it, confirmed both combinatorially (every bit-lane pair
+differs under some mask, for every power-of-two width up to 32) and by a
+real, exhaustive Verilator campaign against every one of the 112 possible
+intra-word CFST instances in an 8-bit word (all 56 unordered bit-lane pairs
+x both aggressor-hold polarities): 112/112 detected. See
+`test_standard_backgrounds_distinguishes_every_bit_pair` and
+`test_cfst_intra_word_completeness_across_all_bit_pairs` in
+`tests/integration/test_data_backgrounds_e2e.py`. This guarantee is CFST-
+specific -- it says nothing about intra-word CFID/CFDS/CFTR/CFWD/CFRD/CFIR/
+CFDRD, whose own intra-word completeness (if any) has not been measured.
+
 Read fault evaluation uses the pre-read cell state; destructive read
 effects land after the returned value is formed. Static clamps (SAF, CFST)
 are re-applied after every operation, so they win over any coupling effect
