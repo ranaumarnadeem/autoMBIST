@@ -11,6 +11,7 @@ default) and none can pollute each other.
 """
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -84,6 +85,57 @@ def test_engine_build_cache_key_is_sensitive_to_every_field_that_affects_the_bui
     assert base != _engine_build_cache_key(
         mem, list(reversed(sources)), top_module, "verilator"
     ), "source content/order must be part of the key"
+    assert base != _engine_build_cache_key(
+        mem, sources, top_module, "verilator", num_memories=2
+    ), (
+        "num_memories must be part of the key (docs/shared-hierarchical-mbist-"
+        "plan.md step 6) -- unlike num_ports, it DOES reach a real -G flag, so "
+        "a NUM_MEMORIES=2 build and a NUM_MEMORIES=3 build must never collide"
+    )
+
+
+def test_shared_engine_builds_at_different_num_memories_never_collide(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end version of the cache-key assertion above: two real
+    compile_engine() calls against shared_engine.sv, identical in every way
+    except num_memories, must produce two separate cache entries and two
+    genuinely different (real, runnable) binaries -- not a silent collision
+    that would let a NUM_MEMORIES=3 build serve a NUM_MEMORIES=2 caller's
+    request. Step 6 of docs/shared-hierarchical-mbist-plan.md."""
+    calls = _count_exec_calls(monkeypatch)
+    mem = MemoryParams(addr_width=4, data_width=8)
+    engine_dir = find_engine_dir()
+    sources = [engine_dir / "fault_ram.sv", engine_dir / "shared_engine.sv"]
+    cache_dir = tmp_path / "cache"
+
+    artifact_n2 = compile_engine(
+        mem, sources=sources, top_module="shared_engine",
+        workdir=tmp_path / "n2", cache_dir=cache_dir, num_memories=2,
+    )
+    artifact_n3 = compile_engine(
+        mem, sources=sources, top_module="shared_engine",
+        workdir=tmp_path / "n3", cache_dir=cache_dir, num_memories=3,
+    )
+    assert len(calls) == 2, "two different num_memories values must each force a real build, no false cache hit"
+
+    entries = [p for p in cache_dir.iterdir() if p.is_dir()]
+    assert len(entries) == 2, "must land in two separate cache entries, not collide into one"
+
+    out_n2 = run_one(artifact_n2, extra_plusargs=["+ALG=MARCHCM"])
+    out_n3 = run_one(artifact_n3, extra_plusargs=["+ALG=MARCHCM"])
+    assert "RESULT ESCAPED alg=MARCHCM" in out_n2
+    assert "RESULT ESCAPED alg=MARCHCM" in out_n3
+    # A real functional difference between the two binaries -- not just two
+    # differently-named files that happen to behave identically -- confirmed
+    # the same way test_shared_engine_foundation.py's own golden-run timing
+    # proof works: N=3 (3 full passes) genuinely takes longer than N=2 (2
+    # passes). Not an exact 1.5x multiplier -- Verilator's own coarse
+    # "$finish at Nus" reporting rounds, so 3x a fractional per-memory time
+    # doesn't always land on a clean ratio (measured: 6us vs 10us, not 9us).
+    t2 = int(re.search(r"\$finish at (\d+)us", out_n2).group(1))
+    t3 = int(re.search(r"\$finish at (\d+)us", out_n3).group(1))
+    assert t3 > t2, f"expected N=3 to take strictly longer than N=2, got {t2}us vs {t3}us"
 
 
 def test_second_compile_with_identical_inputs_skips_verilator(
