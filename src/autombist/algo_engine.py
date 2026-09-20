@@ -774,12 +774,22 @@ def _source_digest(sources: list[Path]) -> str:
 
 
 def _engine_build_cache_key(
-    mem: MemoryParams, sources: list[Path], top_module: str, sim: str
+    mem: MemoryParams, sources: list[Path], top_module: str, sim: str,
+    num_memories: int = 1,
 ) -> str:
     """Content-addressed: source bytes + top module + the only mem.* fields
     that actually reach a verilator -G flag (addr_width/data_width/
     words_per_row -- NOT num_ports, num_wmasks, or init_val, none of which
-    compile_engine's command line ever references) + sim + tool version."""
+    compile_engine's command line ever references) + sim + tool version.
+
+    num_memories (docs/shared-hierarchical-mbist-plan.md, step 6) is NOT a
+    MemoryParams field -- it's compile_engine's own separate parameter for
+    shared_engine.sv's NUM_MEMORIES -- but it DOES reach a -G flag
+    (conditionally, like words_per_row), so it belongs in this key for the
+    same reason words_per_row does: unlike num_ports (deliberately
+    excluded above, since compile_engine's command line never references
+    it), a build at NUM_MEMORIES=2 and one at NUM_MEMORIES=3 produce
+    genuinely different binaries and must never collide in the cache."""
     parts = [
         sim,
         _verilator_version(),
@@ -787,6 +797,7 @@ def _engine_build_cache_key(
         str(mem.addr_width),
         str(mem.data_width),
         str(mem.words_per_row),
+        str(num_memories),
         _source_digest(sources),
     ]
     digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
@@ -859,6 +870,7 @@ def compile_engine(
     workdir: Path,
     sim: str = "verilator",
     cache_dir: Path | None = None,
+    num_memories: int = 1,
 ) -> BuildArtifact:
     _require_verilator(sim)
     workdir = Path(workdir)
@@ -874,6 +886,15 @@ def compile_engine(
     if mem.words_per_row != 1:
         _validate_words_per_row(mem)
         words_per_row_flags = [f"-GWORDS_PER_ROW={mem.words_per_row}"]
+    # Only shared_engine.sv (docs/shared-hierarchical-mbist-plan.md, step 6)
+    # exposes a NUM_MEMORIES top parameter -- every other top_module has no
+    # such parameter at all, so this flag must stay entirely absent at the
+    # default (1), matching words_per_row_flags' own convention: any
+    # existing caller that never passes num_memories is completely
+    # unaffected by shared_engine.sv's existence, byte-identical to before.
+    num_memories_flags: list[str] = []
+    if num_memories != 1:
+        num_memories_flags = [f"-GNUM_MEMORIES={num_memories}"]
     cmd = [
         "verilator", "--binary", "--timing",
         "-Wno-WIDTHTRUNC", "-Wno-WIDTHEXPAND",
@@ -883,6 +904,7 @@ def compile_engine(
         "-Wno-PINMISSING",
         f"-GAW={mem.addr_width}", f"-GDW={mem.data_width}",
         *words_per_row_flags,
+        *num_memories_flags,
         "--top-module", top_module,
         *[str(s) for s in sources],
         "-o", exe_name,
@@ -890,7 +912,7 @@ def compile_engine(
 
     if _engine_cache_enabled():
         cache_root = Path(cache_dir) if cache_dir is not None else _engine_cache_root()
-        key = _engine_build_cache_key(mem, sources, top_module, sim)
+        key = _engine_build_cache_key(mem, sources, top_module, sim, num_memories=num_memories)
         cache_entry_dir = cache_root / key
         cached_exe = cache_entry_dir / "obj_dir" / exe_name
         start = time.time()
