@@ -17,7 +17,6 @@ from jinja2 import Environment, PackageLoader, TemplateNotFound
 from .repair.types import SpareGeometry, SpareGeometryError
 
 REQUIRED_TOP_KEYS = (
-    "memory_name",
     "wrapper_module_name",
     "addr_width",
     "data_width",
@@ -25,10 +24,17 @@ REQUIRED_TOP_KEYS = (
     "ports",
 )
 OPTIONAL_TOP_KEYS = (
+    # memory_name is conditionally required, not universally: required under
+    # today's default (topology: dedicated, or topology omitted), forbidden
+    # under topology: shared-bus -- see _validate_shared_memories, the one
+    # place that actually enforces which of memory_name/memories applies.
+    "memory_name",
     "read_latency",
     "memory_has_fixed_geometry",
     "repair_ports",
     "redundancy",
+    "topology",
+    "memories",
 )
 # load_config is reused to re-parse generate_from_config's own written-out
 # config.yml snapshot (runner.py's _load_simulation_config), not just a user's
@@ -521,6 +527,69 @@ _WRAPPER_RESERVED_PINS = frozenset({
 })
 
 
+_VALID_TOPOLOGIES = ("dedicated", "shared-bus")
+
+
+def _validate_shared_memories(loaded: dict[str, Any]) -> None:
+    """Validate the ``topology:``/``memories:`` pair -- the config schema for
+    a shared-bus MBIST controller (docs/shared-hierarchical-mbist-plan.md
+    §4b, step 0 of that plan's implementation order). ``memory_name`` moved
+    from ``REQUIRED_TOP_KEYS`` to ``OPTIONAL_TOP_KEYS`` specifically so this
+    function is the one place that decides whether it's actually required --
+    see that constant's own comment.
+
+    ``topology`` absent, or ``"dedicated"``, is today's behaviour, byte-
+    identical: ``memory_name`` is required exactly as it always has been,
+    and ``memories`` must be absent. ``topology: shared-bus`` flips the
+    requirement -- one controller now drives N physical memories, so a
+    single ``memory_name`` is meaningless and ``memories`` (a non-empty
+    list of ``{name}`` entries, validated the same shape as
+    ``repair_ports`` below) becomes required instead. The two modes are
+    mutually exclusive by construction (each rejects the other's key
+    outright), not just by convention, so a config can never silently mix a
+    single dedicated memory with a shared-bus list.
+    """
+    topology = loaded.get("topology", "dedicated")
+    if topology not in _VALID_TOPOLOGIES:
+        raise ConfigError(f"topology must be one of {_VALID_TOPOLOGIES}, got {topology!r}")
+
+    if topology == "dedicated":
+        if "memories" in loaded:
+            raise ConfigError("memories is only valid under topology: shared-bus")
+        _require_keys(loaded, ("memory_name",), "root")
+        _validate_non_empty_str(loaded, "memory_name")
+        return
+
+    # topology == "shared-bus"
+    if "memory_name" in loaded:
+        raise ConfigError(
+            "memory_name is not valid under topology: shared-bus -- use "
+            "memories instead, one entry per physical memory"
+        )
+
+    entries = loaded.get("memories")
+    if not isinstance(entries, list) or not entries:
+        raise ConfigError("memories must be a non-empty list when topology: shared-bus")
+
+    seen: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        where = f"memories[{index}]"
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{where} must be a mapping")
+
+        name = entry.get("name")
+        if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
+            raise ConfigError(f"{where}.name must be a valid identifier")
+        if name in seen:
+            raise ConfigError(f"{where}: duplicate memory name {name!r}")
+        seen.add(name)
+
+        normalized.append({"name": name})
+
+    loaded["memories"] = normalized
+
+
 def _validate_repair_ports(loaded: dict[str, Any]) -> None:
     """Validate and normalise the OPTIONAL ``repair_ports:`` block.
 
@@ -965,7 +1034,7 @@ def load_config(config_path: Path) -> dict[str, Any]:
     _require_keys(loaded, REQUIRED_TOP_KEYS, "root")
     _reject_unknown_top_keys(loaded)
 
-    _validate_non_empty_str(loaded, "memory_name")
+    _validate_shared_memories(loaded)
     _validate_non_empty_str(loaded, "wrapper_module_name")
     _validate_positive_int(loaded, "addr_width")
     _validate_positive_int(loaded, "data_width")
