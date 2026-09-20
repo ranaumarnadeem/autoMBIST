@@ -109,7 +109,7 @@ wants the raw data rather than the printed report.
 `--fault-type stuck-at` is the classic path's built-in mask-fault injector —
 deliberately simpler than the research path's fault model below. It answers
 "does this generated RTL detect stuck-at/transition faults," not "how does
-march-C compare to march-SS across 31 fault primitives." For the latter, use
+march-C compare to march-SS across 43 fault primitives." For the latter, use
 Part 2.
 :::
 
@@ -135,10 +135,10 @@ memory set: 10x32, init=1, ports=1, words_per_row=1
 
 ```text
 algo> gen_faults --all-types
-generated 30 faults
+generated 42 faults
 ```
 
-30, not 31 or 29 — see {doc}`algo-shell-guide` for why the model, the
+42, not 43 or 41 — see {doc}`algo-shell-guide` for why the model, the
 default list, and what a given memory configuration actually gets differ.
 Here the memory is single-port, which is exactly the condition that admits
 the data retention fault (`DRF`); `words_per_row` is 1 (the default), which
@@ -149,7 +149,7 @@ omitted by oversight.
 
 ```text
 algo> run march_c
-march_c: 21/30 detected (70.00%)  build=15.1s run=0.1s
+march_c: 21/42 detected (50.00%)  build=15.1s run=0.1s
 ```
 
 ### Step 4. Compare it against others
@@ -159,25 +159,30 @@ algo> compare_algo march_c -march march_ss,march_b
 ```
 
 ```text
-| fault           | march_c | march_ss | march_b |
-| --------------- | ------- | -------- | ------- |
-| SA0@3.0         | D       | D        | D       |
-| WDF0@31.4       | E       | D        | E       |
-| DRDF0@59.8      | E       | D        | E       |
-| SOF@87.12       | E       | E        | D       |
-| CFWD0@150.21    | E       | D        | E       |
-| CFRD0@164.23    | D       | D        | E       |
-| CFDRD0@192.27   | E       | D        | E       |
-| DRF@206.29      | D       | D        | D       |
-| ...             |         |          |         |
-| total           | 21/30   | 29/30    | 20/30   |
+| fault            | march_c | march_ss | march_b |
+| ----------------- | ------- | -------- | ------- |
+| SA0@3.0           | D       | D        | D       |
+| WDF0@31.4         | E       | D        | E       |
+| DRDF0@59.8        | E       | D        | E       |
+| SOF@87.12         | E       | E        | D       |
+| CFWD0@150.21      | E       | D        | E       |
+| CFRD0@164.23      | D       | D        | E       |
+| CFDRD0@192.27     | E       | D        | E       |
+| DYN_RDF00@206.29  | E       | D        | E       |
+| DYN_RDF01@213.30  | E       | E        | D       |
+| DYN_DRDF00@234.1  | E       | E        | E       |
+| DRF@290.9         | D       | D        | D       |
+| ...               |         |          |         |
+| total             | 21/42   | 33/42    | 24/42   |
 ```
 
-(Rows abbreviated here; the real output lists all 30.) March-C never
+(Rows abbreviated here; the real output lists all 42.) March-C never
 performs a non-transition write, so it misses `WDF`; March-SS's superset
 construction catches it. March-B is the only one of the three that detects
-`SOF` — the same measured trade-offs documented in
-{doc}`algo-shell-guide`'s full coverage table.
+`SOF`, but unlike March-SS it detects none of the same-polarity dynamic
+types (`DYN_*00`/`DYN_*11`, e.g. `DYN_DRDF00` here) — the same measured
+trade-offs documented in {doc}`algo-shell-guide`'s full coverage table and
+`engine/README.md`'s "Dynamic (2-operation) faults" section.
 
 ### The scriptable equivalent
 
@@ -192,13 +197,13 @@ autombist test -aw 10 -dw 32 --algo march_c --faults bundle/faults.txt
 
 ```text
 autombist test: march_c (10n) on 10x32 memory, init=1
-  faults: 30   detected: 21   coverage: 70.00%
+  faults: 42   detected: 21   coverage: 50.00%
 ```
 
 `export_tb` writes the session's current fault list to `bundle/faults.txt`
 (alongside a runnable standalone testbench); `autombist test` is the
 single-command form of steps 1–3 above and reports the identical result —
-21/30, 70.00% — confirming the interactive shell and the scripted CLI agree
+21/42, 50.00% — confirming the interactive shell and the scripted CLI agree
 exactly rather than being two independently-implemented paths that happen to
 usually match.
 

@@ -119,7 +119,7 @@ def test_checkerboard_coverage_against_faults_example(tmp_path: Path) -> None:
     comment (see checkerboard.alg). Not pinned to a specific count here --
     the number belongs in the .alg file's header, hand-copied after reading
     this test's own output once; this test just proves the campaign runs
-    clean end-to-end against the full 29-fault reference list. addr_width=8/
+    clean end-to-end against the full 41-fault reference list. addr_width=8/
     data_width=8 matches test_fault_ram_gen_e2e.py's own reference-table
     dimensions -- faults.example.txt's addresses/bits need this size, unlike
     the depth=4 memory the hand-derived attribution tests above use."""

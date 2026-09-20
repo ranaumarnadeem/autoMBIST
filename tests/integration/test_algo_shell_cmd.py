@@ -17,7 +17,9 @@ from autombist.alg_spec import find_engine_dir  # noqa: E402
 from autombist.algo_shell import AlgoShell, Session  # noqa: E402
 
 # Reference coverage from src/autombist/engine/README.md "Measured results" table.
-REFERENCE_COVERAGE = {"march_c": (20, 29), "mats_plus": (13, 29), "march_ss": (28, 29)}
+# MEASURED against faults.example.txt's 41 entries (29 static + 12 dynamic) --
+# see test_fault_ram_gen_e2e.py's REFERENCE_COVERAGE for the full explanation.
+REFERENCE_COVERAGE = {"march_c": (20, 41), "mats_plus": (13, 41), "march_ss": (32, 41)}
 
 
 def _run_script(lines: list[str]) -> tuple[AlgoShell, str]:
@@ -36,7 +38,7 @@ def test_run_matches_reference_table() -> None:
         f"load_faults {faults}",
         "run march_c",
     ])
-    assert "20/29 detected" in out
+    assert "20/41 detected" in out
     result = shell.session.last_results["march_c"]
     assert (result.detected, result.total) == REFERENCE_COVERAGE["march_c"]
     assert shell.session.last_op == ("run", "march_c")
@@ -155,7 +157,7 @@ def test_run_campaign_sh_runs_a_non_builtin_algo_from_its_own_bundle(tmp_path: P
     assert "golden: clean" in result.stdout, combined
     # March X's measured coverage against faults.example.txt at 8x8 -- see
     # docs/source/algo-shell-guide.md's "How `either` gets resolved".
-    assert "coverage: 14 / 29 detected" in result.stdout, combined
+    assert "coverage: 14 / 41 detected" in result.stdout, combined
 
     algc.unlink()
     broken = run_campaign()
@@ -170,7 +172,7 @@ def test_run_campaign_sh_still_uses_the_builtin_table_with_no_algc_present(tmp_p
     src/autombist/engine. That path must be untouched by the .algc-preferring
     fix above. Uses MARCHCM, whose built-in table is march_c's -- and, since
     the either-direction fix landed earlier this session, is now provably
-    identical to march_c.algc's content, so 20/29 is the correct expectation
+    identical to march_c.algc's content, so 20/41 is the correct expectation
     either way this ever ran."""
     faults = find_engine_dir() / "faults.example.txt"
     bundle_dir = tmp_path / "bundle"
@@ -190,7 +192,7 @@ def test_run_campaign_sh_still_uses_the_builtin_table_with_no_algc_present(tmp_p
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined
     assert "golden: clean" in result.stdout, combined
-    assert "coverage: 20 / 29 detected" in result.stdout, combined
+    assert "coverage: 20 / 41 detected" in result.stdout, combined
 
 
 # A fault-list line whose type isn't in the registry makes fault_ram.sv's

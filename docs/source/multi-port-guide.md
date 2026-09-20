@@ -234,10 +234,11 @@ for the full breakdown.
 ## 3. Algo-shell: 2-port sessions and cross-port faults
 
 The algo-shell (`autombist algo`) is the interactive research shell for the
-richer 31-primitive functional fault library (stuck-at, transition,
-write/read disturb, address-decoder, and all nine coupling classes: CFIN,
-CFID, CFST, CFDS, plus the two-cell family CFTR/CFWD/CFRD/CFIR/CFDRD), run
-through Verilator. A 2-port session sees at most 30 of the 31: DRF's
+richer 43-primitive functional fault library (stuck-at, transition,
+write/read disturb, address-decoder, all nine coupling classes: CFIN,
+CFID, CFST, CFDS, plus the two-cell family CFTR/CFWD/CFRD/CFIR/CFDRD, and
+the twelve single-cell dynamic 2-operation types DYN_RDF/DYN_DRDF/DYN_IRF),
+run through Verilator. A 2-port session sees at most 42 of the 43: DRF's
 idle-cycle tracking is a single scalar register that has not been extended
 to `num_ports = 2`, so `gen_faults --all-types` omits it there. It has its own, independent
 multi-port surface, separate from the classic path's `ports:`/`--algo`

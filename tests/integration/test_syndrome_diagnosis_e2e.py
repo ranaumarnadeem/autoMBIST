@@ -68,38 +68,63 @@ def test_syndrome_reproduces_march_c_ambiguity_and_march_ss_resolves_wdf_drdf(tm
     # gets its own distinct (elem, op) group, separated from the others.
     #
     # "Distinct" is the claim, not "singleton". Since the two-cell coupling
-    # family landed, each single-cell type shares a syndrome with its coupling
-    # twin (CFWD1 is WDF1 plus an aggressor-state gate, so when both are
-    # detected they necessarily fire at the same elem/op). That is the syndrome
-    # analysis being CORRECT: from a failure signature alone you genuinely
-    # cannot distinguish a fault from its aggressor-gated variant -- that needs
-    # the aggressor's state, which the signature does not carry. So the
-    # assertion is that each type occupies its own group, admitting only its
-    # own coupling twin.
+    # family landed, WDF1/DRDF1 share a syndrome with their coupling twin
+    # (CFWD1 is WDF1 plus an aggressor-state gate, so when both are detected
+    # they necessarily fire at the same elem/op) -- WDF0/DRDF0 do NOT (measured,
+    # not assumed: CFWD0/CFDRD0 simply land in a different group here, so
+    # "shares with its coupling twin" was never a universal claim, only true
+    # for the two polarities that happen to). Since the dynamic (2-operation)
+    # fault family landed, WDF0/WDF1 ALSO share a syndrome with the two
+    # same-polarity dynamic types March SS catches at that exact polarity
+    # (DYN_RDF0X/DYN_IRF0X for WDF0, DYN_RDF1X/DYN_IRF1X for WDF1) -- a real,
+    # structural, newly-created ambiguity: March SS's non-transition `w0`
+    # immediately followed by `r0` (or `w1`/`r1`) is the SAME op pair that
+    # both catches WDF and sensitizes+detects the same-polarity dRDF/dIRF
+    # dynamic types, so a failure there cannot distinguish "non-transition
+    # write flipped the bit" from "write-then-read dynamically flipped it."
+    # DRDF0/DRDF1 are unaffected (no dynamic type shares their group here).
+    # None of this is the syndrome analysis being WRONG -- from a failure
+    # signature alone you genuinely cannot distinguish a fault from another
+    # whose sensitizing sequence fires at the identical point, whether that
+    # other fault is a coupling-gated variant or an unrelated dynamic one.
     ss_by_type: dict[str, frozenset[str]] = {}
     for g in ss_groups:
         if g["detected"] is True:
             for name in g["fault_types"]:
                 ss_by_type[name] = frozenset(g["fault_types"])
-    twin = {"WDF0": "CFWD0", "WDF1": "CFWD1", "DRDF0": "CFDRD0", "DRDF1": "CFDRD1"}
-    for wdf_type, coupling_twin in twin.items():
+    acceptable_extra = {
+        "WDF0": {"WDF0", "CFWD0", "DYN_RDF00", "DYN_IRF00"},
+        "WDF1": {"WDF1", "CFWD1", "DYN_RDF11", "DYN_IRF11"},
+        "DRDF0": {"DRDF0", "CFDRD0"},
+        "DRDF1": {"DRDF1", "CFDRD1"},
+    }
+    for wdf_type, acceptable in acceptable_extra.items():
         assert wdf_type in ss_by_type, wdf_type
-        assert ss_by_type[wdf_type] <= {wdf_type, coupling_twin}, (
-            f"{wdf_type} shares a syndrome with something other than its own "
-            f"coupling twin: {sorted(ss_by_type[wdf_type])}"
+        assert ss_by_type[wdf_type] <= acceptable, (
+            f"{wdf_type} shares a syndrome with something unexpected: "
+            f"{sorted(ss_by_type[wdf_type])}"
         )
     # ...and the four remain mutually distinguishable, which is the actual
     # March-SS-resolves-the-ambiguity claim.
-    assert len({ss_by_type[t] for t in twin}) == 4
+    assert len({ss_by_type[t] for t in acceptable_extra}) == 4
 
     # SOF is structurally undetectable against solid backgrounds (README's own
     # documented model limitation, unrelated to WDF/DRDF) -- still escapes,
-    # still ambiguous on its own under March SS (alone in its bucket, so
-    # actually NOT ambiguous once WDF/DRDF are pulled out -- confirms March SS
-    # doesn't just shrink the group, it fully resolves the WDF/DRDF members).
+    # and now shares that escape bucket with the eight dynamic (2-operation)
+    # types March SS's own structure doesn't sensitize+detect (the
+    # opposite-polarity dRDF/dIRF pairs plus all four dDRDF variants -- see
+    # engine/README.md's "Dynamic (2-operation) faults"): a real, measured
+    # ambiguity, not the pre-dynamic-faults "alone in its bucket" case this
+    # test used to assert. The WDF/DRDF-resolution claim above is still the
+    # actual point of this test and is unaffected -- confirmed separately,
+    # fault by fault, not inferred from this bucket being empty of them.
     ss_escaped = next(g for g in ss_groups if g["detected"] is False)
-    assert ss_escaped["fault_types"] == ["SOF"]
-    assert ss_escaped["ambiguous"] is False
+    assert set(ss_escaped["fault_types"]) == {
+        "SOF", "DYN_RDF01", "DYN_RDF10", "DYN_DRDF00", "DYN_DRDF01",
+        "DYN_DRDF10", "DYN_DRDF11", "DYN_IRF01", "DYN_IRF10",
+    }
+    assert ss_escaped["ambiguous"] is True
+    assert not any(t in ss_escaped["fault_types"] for t in ("WDF0", "WDF1", "DRDF0", "DRDF1"))
 
     # The SAF(0)-vs-TF-vs-RDF-vs-IRF-vs-coupling-class ambiguity is a
     # DIFFERENT ambiguity March SS's WDF/DRDF-focused additions don't target

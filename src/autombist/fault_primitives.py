@@ -1,15 +1,17 @@
 """The fault-primitive DSL: a declarative description of a memory functional
 fault, and the registry of built-ins that reproduces fault_ram.sv's behavior.
 
-Why a DSL at all: fault_ram.sv hardcodes 31 fault-type case arms/insertion
+Why a DSL at all: fault_ram.sv hardcodes 43 fault-type case arms/insertion
 sites across five functions/blocks (clamp_static, write_op's victim/
 aggressor/row-membership checks, read_op's victim loop). `add_fault_type`
 lets a researcher define a NEW fault type without editing SystemVerilog --
 fault_ram_gen.py turns a list of FaultPrimitive into the equivalent case
 arms.
 
-Coverage: 25 of the 31 built-ins fit this DSL cleanly. Six do not, and stay
-as fixed, hand-written scaffolding in the template (see fault_ram_gen.py):
+Coverage: 37 of the 43 built-ins fit this DSL cleanly (25 static + 12
+dynamic/2-operation, the latter gated by Sensitize.prev -- see the
+registry's own "Dynamic" section below). Six do not, and stay as fixed,
+hand-written scaffolding in the template (see fault_ram_gen.py):
   - SOF: its read-path arm reads the module-level `dout` register directly
     (cross-op state), which is outside the read_op() locals this DSL models.
   - AF_NOACC / AF_ALIAS: these run in an address-decoder *pre-pass*, before
@@ -78,6 +80,7 @@ _VALID_TRANSITIONS = ("up", "down", "either", "p0", "x")
 _VALID_ON = ("victim", "aggressor")
 _VALID_EFFECT_KINDS = ("force", "invert", "block_write", "corrupt_read", "force_read")
 _VALID_PORTS = ("0", "1", "x")
+_VALID_PREV = ("x", "0w0", "0w1", "1w0", "1w1")
 _NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
@@ -101,6 +104,19 @@ class Sensitize:
                              # CFtr/CFwd/CFrd/CFir/CFdrd family). "x" = unconstrained, which is
                              # what every pre-existing built-in means, so the emitted RTL for
                              # them stays byte-identical.
+    prev: str = "x"         # the VICTIM's own immediately-preceding operation, required for a
+                             # dynamic (2-operation) fault: "x"|"0w0"|"0w1"|"1w0"|"1w1" -- a pair
+                             # token, not a bare op. "<p>w<d>" means "the last op on this exact
+                             # cell was a write that saw pre-value <p> and wrote <d>" (Hamdioui/
+                             # Al-Ars/van de Goor VTS 2002's own S=xwyry restriction: only a write
+                             # immediately followed by a read is validated to sensitize a dynamic
+                             # fault; read-then-anything and write-then-write are that paper's own
+                             # open question, not modeled here). Read-effect only in this DSL (see
+                             # validate()) -- there is no "previous op was a read" token, since a
+                             # read has no pre/written pair to gate on, matching why the paper
+                             # restricts to xwyry in the first place. "x" = unconstrained, which is
+                             # what every pre-existing built-in means, so the emitted RTL for them
+                             # stays byte-identical.
 
 
 @dataclass(slots=True)
@@ -144,6 +160,8 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
         raise FaultPrimitiveError(f"sensitize.port must be one of {_VALID_PORTS}")
     if prim.sensitize.agg_pre not in _VALID_BIT_TOKENS:
         raise FaultPrimitiveError(f"sensitize.agg_pre must be one of {_VALID_BIT_TOKENS}")
+    if prim.sensitize.prev not in _VALID_PREV:
+        raise FaultPrimitiveError(f"sensitize.prev must be one of {_VALID_PREV}")
     if prim.raw_sv is not None:
         if prim.sensitize.port != "x":
             raise FaultPrimitiveError(
@@ -162,6 +180,18 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
                 "generated arm's condition, and a raw_sv arm body is copied verbatim. "
                 "Test mem[FQ[i].aa][FQ[i].ab] yourself inside the raw_sv text instead, "
                 "and leave sensitize.agg_pre='x'"
+            )
+        if prim.sensitize.prev != "x":
+            # Same structural reason as agg_pre: the last-op clause is emitted as
+            # part of the generated arm's condition, and a raw_sv arm body is
+            # copied verbatim -- the clause would be accepted and then silently
+            # dropped.
+            raise FaultPrimitiveError(
+                f"sensitize.prev={prim.sensitize.prev!r} cannot be combined with "
+                "raw_sv: the last-op gate is emitted as a clause on the generated "
+                "arm's condition, and a raw_sv arm body is copied verbatim. Test "
+                "lop_w/lop_a/lop_pre/lop_d yourself inside the raw_sv text instead, "
+                "and leave sensitize.prev='x'"
             )
         return  # remaining DSL fields are not codegen-relevant for a raw_sv primitive
 
@@ -191,6 +221,20 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
             "they would share one parameter, so the victim and aggressor states could "
             "never differ. Give one of them a literal '0'/'1', or use the other parameter"
         )
+    if prim.sensitize.prev != "x" and prim.sensitize.pre != prim.sensitize.prev[-1]:
+        # prev's last character is the WRITTEN digit of the qualifying write
+        # (e.g. "0w1" wrote 1). Between that write committing and the current
+        # read happening, the cell genuinely holds that written value absent
+        # the fault -- so sensitize.pre (what the read expects pre-fault) must
+        # equal it. A mismatch is not a different fault, it is a contradiction:
+        # the write's own effect (the FIRST char of prev, resolved against the
+        # SAME bit) already fixes what the cell holds when the read arrives.
+        raise FaultPrimitiveError(
+            f"sensitize.pre={prim.sensitize.pre!r} is inconsistent with "
+            f"sensitize.prev={prim.sensitize.prev!r}: the qualifying write's own "
+            f"written value ({prim.sensitize.prev[-1]!r}) is what the cell holds "
+            "when the read happens, so pre must equal it"
+        )
     if prim.sensitize.written not in _VALID_BIT_TOKENS:
         raise FaultPrimitiveError(f"sensitize.written must be one of {_VALID_BIT_TOKENS}")
     if prim.sensitize.transition not in _VALID_TRANSITIONS:
@@ -215,6 +259,21 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
             "codegen arm can target the aggressor's own storage. Use "
             "sensitize.on='aggressor' to gate the sensitizing condition on the "
             "aggressor's access; the effect still lands on the victim"
+        )
+
+    if prim.sensitize.prev != "x" and prim.category != "read_effect":
+        # prev encodes "the victim's own last op was this write" -- meaningful
+        # only at the site that checks it against a SUBSEQUENT access, which in
+        # this DSL is read_effect's read arm. A write_effect/static_clamp arm
+        # has no "subsequent access" of its own to gate on; the write IS the
+        # event. (There is also no token for "previous op was a read" -- a read
+        # has no pre/written pair to encode, matching why VTS 2002 restricts to
+        # S=xwyry in the first place; see the Sensitize.prev field comment.)
+        raise FaultPrimitiveError(
+            f"sensitize.prev={prim.sensitize.prev!r} is only meaningful for "
+            f"category='read_effect' (got {prim.category!r}): it gates the "
+            "CURRENT read on what immediately preceded it, which only a "
+            "read-path arm evaluates"
         )
 
     if prim.category == "static_clamp":
@@ -258,6 +317,7 @@ def to_dict(prim: FaultPrimitive) -> dict[str, Any]:
             "pre": prim.sensitize.pre, "written": prim.sensitize.written,
             "transition": prim.sensitize.transition, "on": prim.sensitize.on,
             "port": prim.sensitize.port, "agg_pre": prim.sensitize.agg_pre,
+            "prev": prim.sensitize.prev,
         },
         "effect": {
             "kind": prim.effect.kind, "value": prim.effect.value,
@@ -278,6 +338,7 @@ def from_dict(data: dict[str, Any]) -> FaultPrimitive:
             pre=str(sens.get("pre", "x")), written=str(sens.get("written", "x")),
             transition=str(sens.get("transition", "x")), on=str(sens.get("on", "victim")),
             port=str(sens.get("port", "x")), agg_pre=str(sens.get("agg_pre", "x")),
+            prev=str(sens.get("prev", "x")),
         ),
         effect=Effect(
             kind=str(eff.get("kind", "force")), value=eff.get("value"),
@@ -289,7 +350,7 @@ def from_dict(data: dict[str, Any]) -> FaultPrimitive:
 
 
 # --------------------------------------------------------------------------- #
-# The 25 DSL-expressible built-ins, semantically identical to fault_ram.sv.
+# The 37 DSL-expressible built-ins, semantically identical to fault_ram.sv.
 # --------------------------------------------------------------------------- #
 def default_registry() -> list[FaultPrimitive]:
     return [
@@ -395,5 +456,77 @@ def default_registry() -> list[FaultPrimitive]:
             "CFDRD1", "read_effect", Sensitize(pre="1", agg_pre="p0"),
             Effect(kind="force_read", value="0", also_read="1"),
             params_help={"p0": "aggressor hold state (0/1)"},          # <a; 1r1/0/1>
+        ),
+        # --- Dynamic (2-operation) single-cell faults ----------------------- #
+        # Hamdioui, Al-Ars & van de Goor, "Testing Static and Dynamic Faults in
+        # Random Access Memories", VTS 2002, Table 1 (single-cell dynamic
+        # FFMs) -- NOT the DATE 2006 paper cited above, which covers the
+        # static space only (see that citation's own note).
+        #
+        # Restricted, as the paper itself is, to S=xwyry: a write immediately
+        # followed by a read, the only sequence its SPICE analysis validated
+        # (Section 4). x is the victim's pre-write state, y the written value
+        # -- the paper's own dFFM<x><y> convention, which this repo's naming
+        # already follows (unlike TF0/TF1's divergence noted above, there is
+        # no naming mismatch to inherit here).
+        #
+        # Each is a read_effect primitive gated by sensitize.prev="<x>w<y>":
+        # "the victim's own last op was exactly this write." Between that
+        # write committing and this read firing, the cell genuinely holds y
+        # (validate() enforces sensitize.pre == y, the read's own pre-fault
+        # expectation). dRDF/dIRF/dDRDF are then the SAME shape as the
+        # existing static RDF/IRF/DRDF above, just gated on prev instead of
+        # the read's own pre-state directly:
+        #   dRDF:  force_read, value=NOT(y)   -- cell flips, read returns the flip
+        #   dIRF:  corrupt_read, value=NOT(y) -- cell unchanged, only the read lies
+        #   dDRDF: force_read, value=NOT(y), also_read=y -- flips AND deceptively
+        #          reads back the correct (pre-flip) value
+        FaultPrimitive(
+            "DYN_RDF00", "read_effect", Sensitize(pre="0", prev="0w0"),
+            Effect(kind="force_read", value="1"),                      # <0w0r0/up/1>
+        ),
+        FaultPrimitive(
+            "DYN_RDF01", "read_effect", Sensitize(pre="1", prev="0w1"),
+            Effect(kind="force_read", value="0"),                      # <0w1r1/down/0>
+        ),
+        FaultPrimitive(
+            "DYN_RDF10", "read_effect", Sensitize(pre="0", prev="1w0"),
+            Effect(kind="force_read", value="1"),                      # <1w0r0/up/1>
+        ),
+        FaultPrimitive(
+            "DYN_RDF11", "read_effect", Sensitize(pre="1", prev="1w1"),
+            Effect(kind="force_read", value="0"),                      # <1w1r1/down/0>
+        ),
+        FaultPrimitive(
+            "DYN_DRDF00", "read_effect", Sensitize(pre="0", prev="0w0"),
+            Effect(kind="force_read", value="1", also_read="0"),       # <0w0r0/up/0>
+        ),
+        FaultPrimitive(
+            "DYN_DRDF01", "read_effect", Sensitize(pre="1", prev="0w1"),
+            Effect(kind="force_read", value="0", also_read="1"),       # <0w1r1/down/1>
+        ),
+        FaultPrimitive(
+            "DYN_DRDF10", "read_effect", Sensitize(pre="0", prev="1w0"),
+            Effect(kind="force_read", value="1", also_read="0"),       # <1w0r0/up/0>
+        ),
+        FaultPrimitive(
+            "DYN_DRDF11", "read_effect", Sensitize(pre="1", prev="1w1"),
+            Effect(kind="force_read", value="0", also_read="1"),       # <1w1r1/down/1>
+        ),
+        FaultPrimitive(
+            "DYN_IRF00", "read_effect", Sensitize(pre="0", prev="0w0"),
+            Effect(kind="corrupt_read", value="1"),                    # <0w0r0/0/1>
+        ),
+        FaultPrimitive(
+            "DYN_IRF01", "read_effect", Sensitize(pre="1", prev="0w1"),
+            Effect(kind="corrupt_read", value="0"),                    # <0w1r1/1/0>
+        ),
+        FaultPrimitive(
+            "DYN_IRF10", "read_effect", Sensitize(pre="0", prev="1w0"),
+            Effect(kind="corrupt_read", value="1"),                    # <1w0r0/0/1>
+        ),
+        FaultPrimitive(
+            "DYN_IRF11", "read_effect", Sensitize(pre="1", prev="1w1"),
+            Effect(kind="corrupt_read", value="0"),                    # <1w1r1/1/0>
         ),
     ]

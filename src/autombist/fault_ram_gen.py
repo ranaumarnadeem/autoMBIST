@@ -86,9 +86,9 @@ def _bit_literal(token: str | None) -> str:
     raise ValueError(f"not a resolvable bit token: {token!r}")
 
 
-def _cond_clauses(pre: str, written: str | None, agg_pre: str = "x") -> str:
+def _cond_clauses(pre: str, written: str | None, agg_pre: str = "x", prev: str = "x") -> str:
     """Join the victim-side sensitizing clauses, plus the optional aggressor-state
-    gate, into one condition (or the ``1'b1`` no-constraint sentinel).
+    and last-op gates, into one condition (or the ``1'b1`` no-constraint sentinel).
 
     ``agg_pre`` reads the aggressor's stored bit -- the same expression
     ``render_static_clamp_arm`` already emits for CFST. Every identifier in it is
@@ -97,6 +97,15 @@ def _cond_clauses(pre: str, written: str | None, agg_pre: str = "x") -> str:
     ``FQ[i].va``/``FQ[i].vb``, and ``.aa``/``.ab`` come off the same struct.
     Defaults to the ``"x"`` wildcard every pre-existing built-in uses, which keeps
     their rendered arms byte-identical.
+
+    ``prev`` (dynamic/2-operation faults) reads ``prev_w``/``prev_a``/``prev_m``/
+    ``prev_pre``/``prev_d`` -- read_op()'s LOCAL snapshot of the shared last-op
+    registers taken before this call invalidates them (see the template's own
+    comment on why the condition must not reference the live ``lop_*`` state
+    directly). Only ever passed by ``render_read_victim_arm``, since
+    ``validate()`` restricts ``sensitize.prev`` to ``read_effect``; the other
+    two callers use the default and get the unconstrained clause set, same as
+    every pre-existing built-in.
     """
     clauses: list[str] = []
     if pre != "x":
@@ -105,6 +114,12 @@ def _cond_clauses(pre: str, written: str | None, agg_pre: str = "x") -> str:
         clauses.append(f"d[b] == {_bit_literal(written)}")
     if agg_pre != "x":
         clauses.append(f"mem[FQ[i].aa][FQ[i].ab] == {_bit_literal(agg_pre)}")
+    if prev != "x":
+        want_pre, want_d = prev[0], prev[-1]
+        clauses.append(
+            f"prev_w && prev_a == ea && prev_m[b] && "
+            f"prev_pre[b] == {_bit_literal(want_pre)} && prev_d[b] == {_bit_literal(want_d)}"
+        )
     return " && ".join(clauses) if clauses else "1'b1"
 
 
@@ -174,7 +189,9 @@ def render_write_aggressor_arm(p: FaultPrimitive, num_ports: int = 1) -> str:
 def render_read_victim_arm(p: FaultPrimitive, num_ports: int = 1) -> str:
     if p.raw_sv is not None:
         return f"T_{p.name}: {p.raw_sv}"
-    cond = _with_port(_cond_clauses(p.sensitize.pre, None, p.sensitize.agg_pre), p, num_ports)
+    cond = _with_port(
+        _cond_clauses(p.sensitize.pre, None, p.sensitize.agg_pre, p.sensitize.prev), p, num_ports
+    )
     value = _bit_literal(p.effect.value)
     if p.effect.kind == "corrupt_read":
         return f"T_{p.name}: if ({cond}) begin rv[b] = {value}; FQ[i].hits++; end"
@@ -264,6 +281,12 @@ def render_fault_ram(registry: list[FaultPrimitive], num_ports: int = 1) -> str:
         "write_aggressor_arms": sites["write_aggressor"],
         "read_victim_arms": sites["read_victim"],
         "num_ports": num_ports,
+        # Gates the lop_*/prev_* scaffolding (module-level registers, the
+        # write_op()/read_op() invalidate-on-entry/record-on-exit lines) --
+        # unconditional would be always-correct but never byte-identical to
+        # the pre-dynamic-faults output for a registry that uses none of
+        # this. See fault_ram_template.sv.j2's own comment on the block.
+        "needs_dynamic_state": any(p.sensitize.prev != "x" for p in registry),
     }
     return _render_template(context, "fault_ram_template.sv.j2")
 
@@ -275,8 +298,11 @@ def render_and_write(registry: list[FaultPrimitive], path: Path, num_ports: int 
 
 
 def registry_hash(registry: list[FaultPrimitive]) -> str:
-    """A stable hash of the registry's semantic content, for build caching:
-    re-render/recompile fault_ram.sv only when the registry actually changed."""
+    """A stable hash of the registry's semantic content. Not wired into the
+    real build cache -- that's `_engine_build_cache_key` in algo_engine.py,
+    keyed on the rendered fault_ram.sv source bytes rather than the registry
+    directly. Used by tests to check that registry changes (e.g. an added
+    `agg_pre`) actually change the hash, i.e. wouldn't silently collide."""
     import hashlib
     import json
 
