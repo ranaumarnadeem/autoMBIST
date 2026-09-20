@@ -8,10 +8,11 @@ progress, and what's further out.
 
 - MBIST wrapper generation for single- and multi-port memories (`march-c`,
   `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, `mats-plus`)
-- A 31-primitive functional fault model and research shell, independent of
-  any real memory macro, with seven built-in march algorithms (`march_b`,
-  `march_c`, `march_c_plus`, `march_ss`, `march_x`, `march_y`, `mats_plus`) —
-  a separate list from the classic-path wrapper-generation algorithms above
+- A 43-primitive functional fault model and research shell, independent of
+  any real memory macro, with nine built-in march algorithms (`march_b`,
+  `march_c`, `march_c_plus`, `march_ss`, `march_x`, `march_y`, `mats_plus`,
+  `checkerboard`, `march_raw1`) — a separate list from the classic-path
+  wrapper-generation algorithms above
 - BIRA (redundancy analysis) as a 2D solver, both row and column allocation
 - BISR — tester-driven, and (for every current algo: `march-c`, `march-raw`,
   `march-x`, `mats-plus`, and the multi-port `march-1r1w`/`march-2rw`) a fully
@@ -71,9 +72,10 @@ progress, and what's further out.
   `.alg` file: every existing op's value was a fixed function of phase alone,
   so the DSL gained four address-DEPENDENT ops (`wc`/`wcb`/`rc`/`rcb`,
   negative op codes to avoid the wait-op space) threaded through both march
-  engines. Scores 20/29 on `faults.example.txt` — the same total as march_c,
+  engines. Scores 20/41 on `faults.example.txt` — the same total as march_c,
   but a different profile (catches SOF, which march_c misses; misses
-  CFin/CFid, which march_c catches)
+  CFin/CFid, which march_c catches). Neither detects any of the 12 dynamic
+  (2-operation) fault types added since -- same total, still, by coincidence
 - `checkerboard` on the RTL wrapper-generation path too (`rtl/checkerboard/`
   algo+fsm+top triple) — the first classic-path algo module whose value
   depends on address, not just (phase, op_step): a new `addr_lsb` input

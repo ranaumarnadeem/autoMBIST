@@ -17,7 +17,7 @@ Runs unmodified under Xcelium (xrun) and Verilator 5.x.
     march_engine_mp.sv     num_ports=2 counterpart of march_engine.sv -- same file-driven
                            .alg + fault-list grammar, extended with a port-suffix/column
                            for genuine cross-port coupling (see "Multi-port" below)
-    faults.example.txt    one instance of every implemented fault primitive (29)
+    faults.example.txt    one instance of every implemented fault primitive (41)
     run_campaign.sh       serial campaign: one sim per fault, CSV out
 
 ## Quick start
@@ -414,8 +414,40 @@ A Formal Notation and a Taxonomy," VTS 2000).
 | CFID | aggressor transition (P0 as above) forces victim bit to P1 |
 | CFST | while aggressor bit holds state P0, victim bit is forced to P1 |
 | CFDS | op on aggressor disturbs victim (invert). P0: 0=r0, 1=r1, 2=non-transition w0, 3=non-transition w1, 4=any read |
+| CFTR0 | <a; 0w1/0/->: aggressor holding P0 blocks the victim's up-transition write |
+| CFTR1 | <a; 1w0/1/->: symmetric, down-transition |
+| CFWD0 | <a; 0w0/1/->: aggressor holding P0 turns the victim's non-transition w0 into a flip to 1 |
+| CFWD1 | <a; 1w1/0/->: symmetric |
+| CFRD0 | <a; 0r0/1/1>: aggressor holding P0 turns a read of 0 into a flip-and-return-1 (RDF, gated) |
+| CFRD1 | <a; 1r1/0/0>: symmetric |
+| CFIR0 | <a; 0r0/0/1>: aggressor holding P0 turns a read of 0 into a lying 1 with the cell unchanged (IRF, gated) |
+| CFIR1 | <a; 1r1/1/0>: symmetric |
+| CFDRD0 | <a; 0r0/1/0>: aggressor holding P0 flips the cell to 1 but the read still (deceptively) returns 0 (DRDF, gated) |
+| CFDRD1 | <a; 1r1/0/1>: symmetric |
+| DYN_RDF00 | <0w0r0/1/1>: a non-transition w0 immediately followed by a read flips the cell to 1 and returns 1 |
+| DYN_RDF01 | <0w1r1/0/0>: symmetric, transition write |
+| DYN_RDF10 | <1w0r0/1/1>: symmetric |
+| DYN_RDF11 | <1w1r1/0/0>: symmetric |
+| DYN_DRDF00 | <0w0r0/1/0>: the same adjacency flips the cell to 1 but the read still (deceptively) returns 0 |
+| DYN_DRDF01 | <0w1r1/0/1>: symmetric |
+| DYN_DRDF10 | <1w0r0/1/0>: symmetric |
+| DYN_DRDF11 | <1w1r1/0/1>: symmetric |
+| DYN_IRF00 | <0w0r0/0/1>: the same adjacency returns 1 with the cell left unchanged |
+| DYN_IRF01 | <0w1r1/1/0>: symmetric |
+| DYN_IRF10 | <1w0r0/0/1>: symmetric |
+| DYN_IRF11 | <1w1r1/1/0>: symmetric |
 | DRF | victim bit inverts after P0 idle cycles since its last write, no access needed (see "Idle/wait op" above); single-port only |
 | HSD | victim bit forced toward P0 whenever a DIFFERENT address sharing its physical row (row = addr/words_per_row) is written (see "Half-Select Disturb" above); provably inert at the default words_per_row=1 |
+
+CFTR/CFWD/CFRD/CFIR/CFDRD extend the notation to two cells, `<Sa; Sv/F/R>`
+(Sa the aggressor's held state, Sv/F/R the victim's own sensitizing op /
+faulty value / faulty read, exactly as DATE 2006 Table 2 itself states it;
+this repo's TF0 is that paper's TF1, a pre-existing naming divergence --
+every other name matches its source paper directly). DYN_RDF/DRDF/IRF's `S`
+is the two-operation `xwyry` sequence itself (a write immediately followed
+by a read of the same cell, no intervening access) rather than a single op
+-- VTS 2002's own dFFM`<x><y>` convention for this family, which this
+repo's naming already follows; see "Dynamic (2-operation) faults" below.
 
 Multiple faults compose in file order; for clean attribution run serially
 with +FAULT_INDEX (what run_campaign.sh does). +FAULT_VERBOSE prints
@@ -425,8 +457,9 @@ activates 10 times and still escapes.
 
 ## Measured results, faults.example.txt, INIT=1 (defaults)
 
-29 faults: one instance of each of the 19 single-cell/decoder/coupling
-primitives, plus one of each of the ten two-cell coupling types.
+41 faults: one instance of each of the 19 single-cell/decoder/coupling
+primitives, the ten two-cell coupling types, and the twelve single-cell
+dynamic (2-operation) types (see "Dynamic (2-operation) faults" below).
 
 | Fault | MATS+ (5n) | March Y (8n) | March C- (10n) | March C+ (14n) | March B (17n) | March SS (22n) |
 |---|---|---|---|---|---|---|
@@ -447,30 +480,72 @@ primitives, plus one of each of the ten two-cell coupling types.
 | CFRD0, CFRD1 | E | E | D | D | D/E | D |
 | CFIR0, CFIR1 | E | E | D | D | D/E | D |
 | CFDRD0, CFDRD1 | E | E | E | D | E | D |
-| total | 13/29 | 17/29 | 20/29 | 25/29 | 19/29 | 28/29 |
+| DYN_RDF00, DYN_RDF11 | E | E | E | E | E | D |
+| DYN_RDF01, DYN_RDF10 | E | D | E | D | D | E |
+| DYN_DRDF00, DYN_DRDF11 | E | E | E | E | E | E |
+| DYN_DRDF01, DYN_DRDF10 | E | D | E | D | E | E |
+| DYN_IRF00, DYN_IRF11 | E | E | E | E | E | D |
+| DYN_IRF01, DYN_IRF10 | E | D | E | D | D | E |
+| total | 13/41 | 23/41 | 20/41 | 31/41 | 23/41 | 32/41 |
 
 These match the published coverage claims: March C- misses WDF (it never
 performs a non-transition write) and DRDF (no read-after-read); March SS
-adds both and covers all static simple faults *in this fault list* — the
-29 entries above, which now DO include the two-cell coupling family
-(CFtr/CFwd/CFrd/CFir/CFdrd). Dynamic (two-operation) faults remain outside
-it -- designed, not yet implemented.
+adds both and covers all static simple faults *in this fault list*. Every
+count above is a real `run_algo_campaign` result (`golden_clean=True` on
+every row), cross-checked against `synth_engine.py`'s independent pure-Python
+`(v, a)` replay oracle for all 12 dynamic types across all six algorithms (72
+cells, zero mismatches) -- two independently-coded implementations of the
+same spec agreeing, not one figure copied from the other.
 
-Note for whoever implements them: they are **not** in DATE 2006. That paper's
-Table 1 is single-cell *static* FFMs and Table 2 is two-cell *static* FFMs; the
-word "dynamic" appears in it only inside a reference title. The dynamic space
-comes from Hamdioui, Al-Ars & van de Goor, "Testing Static and Dynamic Faults
-in Random Access Memories", VTS 2002 (extended as JETTA 19(2), 2003). Restricted
-to its SPICE-validated sequence S = xwyry, that space is 12 single-cell FPs
-(dRDF, dDRDF, dIRF) and 32 two-cell FPs (dCFds, dCFrd, dCFdrd, dCFir) -- and it
-contains no dTF and no dWDF, which come from the later ETS 2005 space.
+## Dynamic (2-operation) faults
 
-**Why 29 and not 31.** The model has 31 primitives; a default fault list has
-29. DRF and HSD are the difference, and they are excluded by *configuration*,
+The twelve `DYN_RDF/DRDF/IRF` × `00/01/10/11` types are **not** in DATE 2006.
+That paper's Table 1 is single-cell *static* FFMs and Table 2 is two-cell
+*static* FFMs; the word "dynamic" appears in it only inside a reference
+title. The dynamic space comes from Hamdioui, Al-Ars & van de Goor, "Testing
+Static and Dynamic Faults in Random Access Memories", VTS 2002 (extended as
+JETTA 19(2), 2003). Restricted to its SPICE-validated sequence S = xwyry
+(a write immediately followed by a read of the *same* cell, no intervening
+access to it), that space is 12 single-cell FPs (dRDF, dDRDF, dIRF) and 32
+two-cell FPs (dCFds, dCFrd, dCFdrd, dCFir) -- this model implements the 12
+single-cell ones; the two-cell dynamic types are deferred (v1 scope cut, on
+measurement not principle). It contains no dTF and no dWDF, which come from
+the later ETS 2005 space.
+
+Each name's trailing two digits are the sensitizing write's own transition,
+read left-to-right as `(cell value immediately before the write)(value
+written)` -- `01` senses a 0-then-write-1 (transition) adjacency, `00` a
+0-then-write-0 (non-transition) one, and so on. **The measured split is
+governed entirely by that digit pair, not by algorithm length**: every
+algorithm here either detects the *same-polarity* pair (`*00`/`*11`) or the
+*opposite-polarity* pair (`*01`/`*10`), never a mix, because which pair an
+algorithm can even sensitize is fixed by which write transitions its own
+`.alg` element text issues immediately before a same-address read --
+`resolve_algo("march_y").elements`, not the fault list, decides this.
+March SS's extra `r0 r0 w0 r0 w1`-shaped elements create only non-transition
+write-then-read adjacencies (`*00`/`*11`); March Y/March C+/March B's
+`r0 w1 r1`-shaped elements create only transition ones (`*01`/`*10`); March
+C-, MATS+, and March X issue no same-address write-immediately-followed-by-
+read adjacency at all (every write in their elements is followed by a
+*different*-address op before that cell is read again), so they detect none
+of the 12 regardless of polarity.
+
+**March B detects DYN_RDF and DYN_IRF at `*01`/`*10` but not DYN_DRDF.** DRDF
+is deceptive by definition -- the sensitizing read itself still returns the
+correct value, so observing the corruption needs a *later* read of the same
+cell before any intervening write. March Y and March C+ get this for free
+(their very next element re-visits the same address read-first, in the
+opposite sweep direction); March B's analogous element moves on to a
+different address, so the corrupted cell is silently overwritten before
+March B ever reads it again. Confirmed against `synth_engine.py`'s oracle,
+not assumed from the `.alg` text alone.
+
+**Why 41 and not 43.** The model has 43 primitives; a default fault list has
+41. DRF and HSD are the difference, and they are excluded by *configuration*,
 not by omission: DRF needs a `wait` op and a single-port memory to sensitize,
 HSD needs `words_per_row > 1`. `gen_faults --all-types` adds each only when
-the memory supports it, so the totals below are out of 29 for this memory.
-Quote coverage as "N/29 against faults.example.txt", never as "N of the
+the memory supports it, so the totals below are out of 41 for this memory.
+Quote coverage as "N/41 against faults.example.txt", never as "N of the
 model". The MATS+ CFDS escape is a
 double-inversion masking between its up and down passes.
 
@@ -478,30 +553,39 @@ double-inversion masking between its up and down passes.
 DRDF/SOF-exposing read-after-read at each visited cell (`up r0 w1 r1` / `down
 r1 w0 r0`) for one of March C-'s two up-transition writes (element 4's `down
 r0 w1` is gone), which is exactly the write March C- uses to catch CFID from
-above. Net: two fewer operations per cell than March C-, +2 detected here
-(DRDF0/DRDF1/SOF gained, CFID lost).
+above -- and that same swap is what creates the `*01`/`*10` dynamic
+adjacencies March C- never issues. Net across all 41: +3 (nine gained --
+DRDF0/DRDF1/SOF plus six of the twelve dynamic types -- against six lost:
+CFID and five other two-cell coupling types March C-'s extra write still
+catches). Against the 29 static/coupling-only entries alone the swap is a
+net *loss* of 3 (17/29 vs 20/29) -- the dynamic family is the entire reason
+March Y's full-list standing is positive rather than negative.
 
 **March C+ (14n)** is the un-reduced original March C that March C- is
 van de Goor's reduction of -- putting back the trailing verify-read of each
 middle element March C- drops. Strictly better than March C- on every fault
-this table tracks (+3, zero regressions): the restored reads create the same
+this table tracks (+11, zero regressions): the restored reads create the same
 same-address, no-intervening-write double-read March Y's shorter form relies
-on for DRDF/SOF, without giving up March C-'s CFID-catching write.
+on for DRDF/SOF and for six of the twelve dynamic types, without giving up
+March C-'s CFID-catching write.
 
-**March B's standing reversed when the coupling family landed.** Against the
-19-fault list it beat March C- (15/19 vs 14/19) on the strength of SOF; against
-29 it now trails (19/29 vs 20/29), because March C- catches six of the ten
-two-cell coupling types to March B's four. The SOF advantage itself is
-unchanged and still real — element 2 (`up r0 w1 r1 w0 r0
-w1`) reads the same cell at opposite polarity within a single address visit, so
-the output keeper an SOF models is forced across reads of opposite expected
-data, which is precisely the condition described below as necessary to expose
-it. No other built-in does that. But the reason to reach for March B is
-*linked* coupling faults (one coupling fault masking another), and
-`faults.example.txt` contains no linked faults at all — so the property it is
-actually chosen for contributes nothing to this table. Read its 15/19 as a
-lower bound on a fault list that cannot test its real strength, not as the
-whole value of 7 extra operations over March C-.
+**March B's standing reversed twice as the fault list grew.** Against the
+original 19-fault list it beat March C- (15/19 vs 14/19) on the strength of
+SOF; against the 29-entry static+coupling list it trailed (19/29 vs 20/29),
+because March C- catches six of the ten two-cell coupling types to March B's
+four; against the full 41-entry list with dynamic faults it leads again
+(23/41 vs 20/41), picking up four of the twelve dynamic types (DYN_RDF and
+DYN_IRF at `*01`/`*10`, see above) that March C- structurally cannot reach at
+all. The SOF advantage itself is unchanged and still real — element 2 (`up
+r0 w1 r1 w0 r0 w1`) reads the same cell at opposite polarity within a single
+address visit, so the output keeper an SOF models is forced across reads of
+opposite expected data, which is precisely the condition described below as
+necessary to expose it. No other built-in does that. But the reason to reach
+for March B is *linked* coupling faults (one coupling fault masking another),
+and `faults.example.txt` contains no linked faults at all — so the property
+it is actually chosen for contributes nothing to this table. Read its 15/19
+as a lower bound on a fault list that cannot test its real strength, not as
+the whole value of 7 extra operations over March C-.
 
 SOF escapes solid
 data background March tests because the output keeper tracks neighboring
@@ -522,6 +606,46 @@ above) -- including it here would show a universal escape that says nothing
 about HSD itself, only about the memory configuration this table happens to
 use. `gen_faults --all-types` includes HSD automatically once
 `words_per_row > 1` is configured (see that section).
+
+## Limits
+
+**Only S = xwyry is modeled.** VTS 2002's own SPICE analysis (Section 4)
+validated exactly one sensitizing sequence -- a write immediately followed
+by a read of the same cell, no intervening access of any kind -- and left
+broader sequences (`rxrx`, `rxwy`) as the paper's own open question, not an
+oversight of this implementation. "No intervening access" is enforced here
+by a single SHARED last-operation record (`lop_w`/`lop_a`/`lop_pre`/`lop_m`/
+`lop_d` in `fault_ram.sv`, `last_op` in `synth_engine.py`'s oracle) that
+EVERY `write_op()`/`read_op()` call -- to any address, on any port --
+invalidates unconditionally on entry (`read_op()` snapshots it into locals
+first, since only reads evaluate a `sensitize.prev` condition; `write_op()`
+just invalidates, then re-arms it with its own address/data once the write
+genuinely commits): only the operation *literally immediately preceding*
+the read, anywhere in the memory, can ever be "the last op." This was a
+measured design choice, not the obvious one: a
+per-port record and a per-victim-address record were both tried first and
+found wrong, in the same way -- an intervening write from a *different*
+port (or to the same address via a different port) must still be visible to
+the read that follows it, which a record scoped to "this port" or "this
+address alone" cannot represent on its own. A wait op is a genuine
+exception, not a narrower-record workaround: `w0 t5 r0` (a write, an idle
+wait, then a read) still sensitizes a same-polarity dynamic fault, because a
+wait touches no bus and never calls `write_op`/`read_op` at all (see
+"Idle/wait op" above) -- the shared record simply never sees it. Any other
+intervening op, to any address or port, does invalidate the adjacency.
+
+**The two-cell dynamic types are not implemented.** VTS 2002's own dynamic
+space also includes dCFds/dCFrd/dCFdrd/dCFir -- 32 FPs, an aggressor-gated
+version of the twelve single-cell types here, the same way
+CFTR/CFWD/CFRD/CFIR/CFDRD gate the static RDF/WDF/etc. family on an
+aggressor's held state. They are a deliberate v1 scope cut, on measurement
+rather than principle: nothing about the
+`sensitize.prev`/`lop_*` mechanism structurally prevents combining it with
+`agg_pre`, but doing so correctly needs its own bidirectional-placement
+treatment (the same aggressor-above/aggressor-below soundness requirement
+:func:`synthesize_elements` already enforces for the static two-cell family,
+extended to a sequence-sensitive victim condition) that has not been
+designed or measured yet.
 
 ## Semantics notes
 

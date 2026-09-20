@@ -23,7 +23,7 @@ that do it — all behind one CLI. It's really two independent subsystems:
    RTL around it, with stuck-at/transition/inter-port-coupling fault injection
    through cocotb + Icarus Verilog.
 2. **Functional fault-primitive research platform** (`test`, `algo`) — an
-   independent, Verilator-driven toolchain built around a 31-primitive
+   independent, Verilator-driven toolchain built around a 43-primitive
    functional fault-model DSL and a programmable march-algorithm engine, for
    grading a march algorithm (or a real controller FSM) with no memory macro
    required.
@@ -125,8 +125,8 @@ autombist can find on this system with `autombist doctor`. Full walkthrough:
 ## Fault coverage
 
 The research path (`test`/`algo`) grades a march algorithm against a
-31-primitive functional fault model. Measured detection (**D**) vs escape
-(**E**) against `src/autombist/engine/faults.example.txt`, for the 29
+43-primitive functional fault model. Measured detection (**D**) vs escape
+(**E**) against `src/autombist/engine/faults.example.txt`, for the 41
 primitives in that fault list:
 
 | Fault | MATS+ (5n) | March Y (8n) | March C- (10n) | March C+ (14n) | March B (17n) | March SS (22n) |
@@ -148,11 +148,20 @@ primitives in that fault list:
 | CFRD0, CFRD1 | E | E | D | D | D/E | D |
 | CFIR0, CFIR1 | E | E | D | D | D/E | D |
 | CFDRD0, CFDRD1 | E | E | E | D | E | D |
-| **total** | **13/29** | **17/29** | **20/29** | **25/29** | **19/29** | **28/29** |
+| DYN_RDF00, DYN_RDF11 | E | E | E | E | E | D |
+| DYN_RDF01, DYN_RDF10 | E | D | E | D | D | E |
+| DYN_DRDF00, DYN_DRDF11 | E | E | E | E | E | E |
+| DYN_DRDF01, DYN_DRDF10 | E | D | E | D | E | E |
+| DYN_IRF00, DYN_IRF11 | E | E | E | E | E | D |
+| DYN_IRF01, DYN_IRF10 | E | D | E | D | D | E |
+| **total** | **13/41** | **23/41** | **20/41** | **31/41** | **23/41** | **32/41** |
 
-Seven built-in march algorithms ship with the research engine. Full
-per-primitive semantics, escape rationale, and the seventh algorithm
-(March X): [`src/autombist/engine/README.md`](src/autombist/engine/README.md).
+Nine built-in march algorithms ship with the research engine. Full
+per-primitive semantics, escape rationale, and the three not in the table
+above (March X; `checkerboard`, an address-parity test; `march_raw1`, the
+13n diagnostic reference for the dynamic fault family below — 36/41 overall,
+12/12 on the dynamic types specifically, by design):
+[`src/autombist/engine/README.md`](src/autombist/engine/README.md).
 
 ## Command overview
 

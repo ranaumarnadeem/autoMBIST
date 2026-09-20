@@ -102,6 +102,29 @@ module fault_ram #(
 
   logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
 
+{% if needs_dynamic_state %}
+  // ---------------- dynamic (2-operation) fault state ----------------
+  // A SINGLE register shared across ports (not per-port, not per-FQ-entry):
+  // "the victim's own immediately-preceding operation" is a property of the
+  // CELL, and an intervening write from the OTHER port to the same cell must
+  // be visible -- measured directly against a real 2-port render; a per-port
+  // version was tried and misses exactly that case. Invalidated on entry to
+  // BOTH write_op() and read_op() (before either function's AF_NOACC/ALIAS
+  // pre-pass, so a dropped access -- which never reaches the code below --
+  // still correctly breaks adjacency instead of leaving a stale write armed
+  // across it), recorded only at a real write's commit point. read_op()
+  // snapshots these into its own prev_* locals before invalidating (see
+  // read_op() below) -- the CURRENT read's own condition check needs what was
+  // true before this call started, not the just-cleared live value.
+  bit                    lop_w = 1'b0;  // was the last op a write that committed?
+  int                    lop_a = -1;    // its effective address (post AF_ALIAS)
+  logic [DATA_WIDTH-1:0] lop_pre;       // the cell's content BEFORE that write
+  logic [DATA_WIDTH-1:0] lop_m;         // that write's bit mask
+  logic [DATA_WIDTH-1:0] lop_d;         // the value WRITTEN (not inferred from
+                                         // post-write cell content -- an
+                                         // intervening clamp would misattribute
+                                         // the fault; stored explicitly instead)
+{% endif %}
   // ---------------- fault list loading ----------------
   function automatic int type_code(string s);
 {% for name, code in type_table %}
@@ -255,6 +278,12 @@ module fault_ram #(
     logic [DATA_WIDTH-1:0] old, nxt;
     ea = int'(a);
 
+{% if needs_dynamic_state %}
+    // Dynamic-fault state: invalidate unconditionally before the AF pre-pass,
+    // so an AF_NOACC-dropped write (early `return` below) still breaks
+    // adjacency instead of leaving a PRIOR write's record armed across it.
+    lop_w = 1'b0;
+{% endif %}
     // Address decoder faults act on the whole word (AF_NOACC/AF_ALIAS: fixed,
     // not registry-driven -- see fault_primitives.py module docstring).
     foreach (FQ[i]) begin
@@ -284,6 +313,17 @@ module fault_ram #(
 
     mem[ea] = nxt;
 
+{% if needs_dynamic_state %}
+    // Dynamic-fault state: record this write as the last op, now that it has
+    // genuinely committed (AF_NOACC would already have returned above). `d`,
+    // not `nxt`, is the written value -- see the register block's own note on
+    // why it must be stored explicitly rather than inferred from cell content.
+    lop_w   = 1'b1;
+    lop_a   = ea;
+    lop_pre = old;
+    lop_m   = m;
+    lop_d   = d;
+{% endif %}
     // Aggressor-side coupling triggers caused by this write.
     for (int b = 0; b < DATA_WIDTH; b++) begin
       bit up, dn, nt0, nt1;
@@ -343,6 +383,20 @@ module fault_ram #(
 {% endif %}
     int ea;
     logic [DATA_WIDTH-1:0] old, rv;
+{% if needs_dynamic_state %}
+    // Dynamic-fault state: snapshot what was true BEFORE this read started --
+    // the read's own sensitize.prev condition (in the per-bit loop below)
+    // gates on THIS, not the live lop_* registers, since those get
+    // invalidated right below (unconditionally, before the AF pre-pass, so
+    // an AF_NOACC-dropped read still breaks adjacency for whatever comes
+    // next -- same reasoning as write_op()'s identical fix).
+    bit                    prev_w   = lop_w;
+    int                    prev_a   = lop_a;
+    logic [DATA_WIDTH-1:0] prev_pre = lop_pre;
+    logic [DATA_WIDTH-1:0] prev_m   = lop_m;
+    logic [DATA_WIDTH-1:0] prev_d   = lop_d;
+    lop_w = 1'b0;
+{% endif %}
     ea = int'(a);
 
     foreach (FQ[i]) begin

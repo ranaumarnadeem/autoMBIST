@@ -10,8 +10,15 @@
 #
 # Measured on faults.example.txt, addr_width=8 data_width=8 init=1 (this
 # project's standard measurement config, matching engine/README.md's table):
-# 17/29, vs March C-'s 20/29 -- net +2. Per-fault delta vs March C-: GAINS
-# DRDF0, DRDF1, SOF; LOSES CFID.
+# 23/41, vs March C-'s 20/41 -- net +3. Per-fault delta vs March C-: GAINS
+# DRDF0, DRDF1, SOF, and six of the twelve dynamic (2-operation) types
+# (DYN_RDF01/10, DYN_DRDF01/10, DYN_IRF01/10 -- see engine/README.md's
+# "Dynamic (2-operation) faults"); LOSES CFID and five other two-cell
+# coupling types (CFIR0, CFIR1, CFRD0, CFRD1, CFTR0) that March C-'s extra
+# up-transition write still catches. Against the 29 static/coupling-only
+# entries alone (i.e. without the twelve dynamic types) the same swap is a
+# net LOSS of 3 (17/29 vs 20/29) -- the dynamic family is the entire reason
+# this algorithm's full-list standing is positive rather than negative.
 #
 # Mechanism (re-derived directly from fault_ram.sv's DRDF/SOF/CFID logic):
 # - DRDF0/DRDF1: element 2's ...w1,r1 and element 3's r1,w0... each read a
@@ -26,6 +33,15 @@
 #   a SOF-affected address mismatches on its very first read. March C-'s
 #   elements read only one polarity per full address pass, so neighbor dout
 #   state never disagrees with what's expected.
+# - DYN_RDF01/10, DYN_DRDF01/10, DYN_IRF01/10 (gained): the SAME `w1,r1` in
+#   element 2 and `w0,r0` in element 3 that arms DRDF0/DRDF1 above is also a
+#   same-address write-immediately-followed-by-read adjacency -- exactly the
+#   S=xwyry sequence the dynamic family needs. It is a transition write in
+#   both directions (0-then-w1, 1-then-w0), so only the opposite-polarity
+#   `*01`/`*10` half of each dynamic type is sensitized; March C- issues no
+#   such adjacency at all (every write there is followed by a
+#   different-address op before that cell is read again), so it detects
+#   none of the twelve regardless of polarity.
 # - CFID (lost): the aggressor's only up-transition write here is in element
 #   2 (ascending); for a victim address BELOW the aggressor's address, the
 #   victim's own ops for that pass already ran before the aggressor fires --

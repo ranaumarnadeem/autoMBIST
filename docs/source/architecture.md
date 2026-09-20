@@ -16,7 +16,7 @@ entry point (`autombist`), but not much else at runtime:
 | Entry points | `autombist generate` / `simulate` / `run` | `autombist test` / `autombist algo` |
 | Simulator | Icarus Verilog, via cocotb | Verilator 5.x (direct `--binary` build) |
 | Subject under test | An actual memory macro (e.g. OpenRAM-generated) wrapped in a generated MBIST harness | A behavioral fault-injectable RAM model (`fault_ram.sv`), independent of any real macro |
-| Fault model | Structural array faults: stuck-at (`SA0`/`SA1`), transition (up/down), inter-port coupling | 31 functional fault primitives (stuck-at, transition, write/read-disturb, address-decoder, nine coupling classes, data retention, half-select disturb) |
+| Fault model | Structural array faults: stuck-at (`SA0`/`SA1`), transition (up/down), inter-port coupling | 43 functional fault primitives (stuck-at, transition, write/read-disturb, address-decoder, nine coupling classes, twelve dynamic 2-operation types, data retention, half-select disturb) |
 | Purpose | Production-style test insertion: generate synthesizable MBIST RTL around a specific memory instance | Research/validation: develop and grade march algorithms (or controller FSMs) against a fault model, independent of any specific memory |
 | Report builder | `reporting.py` (`build_simulation_report`, JSON schema `1.2.0`) | `algo_reporting.py` (per-campaign / matrix / diagnosis, schema `1.0.0`) |
 
@@ -75,9 +75,11 @@ grade a march algorithm's fault coverage against a well-defined functional
 fault model. Its pieces:
 
 - **`fault_primitives.py`** — a declarative DSL describing a memory
-  functional fault as a `(category, sensitize, effect)` triple. 15 of the 31
+  functional fault as a `(category, sensitize, effect)` triple. 37 of the 43
   built-in fault types (SA0/SA1, TF0/TF1, WDF0/WDF1, CFIN/CFID/CFST, IRF0/IRF1,
-  RDF0/RDF1, DRDF0/DRDF1) are expressible this way; the other six (SOF,
+  RDF0/RDF1, DRDF0/DRDF1, the ten two-cell coupling types CFTR/CFWD/CFRD/
+  CFIR/CFDRD, and the twelve dynamic (2-operation) DYN_RDF/DYN_DRDF/DYN_IRF
+  types) are expressible this way; the other six (SOF,
   AF_NOACC, AF_ALIAS, CFDS, DRF, HSD) are fixed hand-written scaffolding
   because they don't fit the DSL's per-bit-site model: SOF/AF_NOACC/AF_ALIAS
   need cross-op state or an address-decoder pre-pass, CFDS is a union of
@@ -118,8 +120,8 @@ fault model. Its pieces:
   per-(address, bit) diagnosis / fail-bitmap table
   (`write_diagnosis_report`) — each in md/csv/json.
 - **`src/autombist/engine/README.md`** is the engine's own reference: exact
-  fault-list grammar, the semantics table for all 31 primitives, measured
-  coverage for six of the seven built-in march algorithms (MATS+, March Y,
+  fault-list grammar, the semantics table for all 43 primitives, measured
+  coverage for six of the nine built-in march algorithms (MATS+, March Y,
   March C-, March C+, March B, March SS) against `faults.example.txt`, and
   the full multi-port (`march_engine_mp.sv`) syntax. This document doesn't
   repeat that table — see it for the authoritative per-primitive semantics
@@ -265,7 +267,7 @@ purely to make that interoperation frictionless on the algo-shell side.
 ## See also
 
 - `src/autombist/engine/README.md` — the algo-shell engine's own reference:
-  exact fault-list/`.alg` grammar, the full 31-primitive semantics table,
+  exact fault-list/`.alg` grammar, the full 43-primitive semantics table,
   measured coverage numbers, multi-port (`march_engine_mp.sv`) syntax, and
   notes on using Cadence Xcelium instead of Verilator.
 - The repository README — installation, prerequisites, and the full command
