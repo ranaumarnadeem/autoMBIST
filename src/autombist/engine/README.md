@@ -17,6 +17,9 @@ Runs unmodified under Xcelium (xrun) and Verilator 5.x.
     march_engine_mp.sv     num_ports=2 counterpart of march_engine.sv -- same file-driven
                            .alg + fault-list grammar, extended with a port-suffix/column
                            for genuine cross-port coupling (see "Multi-port" below)
+    word_oriented_engine.sv  CFid/CFdst intra-word coupling runner -- no .alg spec at all,
+                           driven directly by a data-background sequence (see "Word-oriented
+                           intra-word coverage" below); single-port only
     faults.example.txt    one instance of every implemented fault primitive (41)
     run_campaign.sh       serial campaign: one sim per fault, CSV out
 
@@ -606,6 +609,69 @@ above) -- including it here would show a universal escape that says nothing
 about HSD itself, only about the memory configuration this table happens to
 use. `gen_faults --all-types` includes HSD automatically once
 `words_per_row > 1` is configured (see that section).
+
+## Word-oriented intra-word coverage (CFid/CFdst)
+
+A third, structurally different front from the two above: no `.alg` spec at
+all. `alg_spec.py`'s `MAX_OPS = 8` can't even hold a single DW=4 data-
+background sequence (18 ops -- 2 per state x 9 states) as one march element,
+so `word_oriented_engine.sv` is a dedicated top-level testbench -- same
+pattern as `march_engine_mp.sv`, reusing `fault_ram.sv`'s `write_op()`/
+`read_op()` completely unchanged -- driven directly by a *data-background
+sequence* (DBS) instead of march elements, per van de Goor & Tlili, "March
+tests for word-oriented memories," DATE 1998, Section 5. It targets
+**intra-word** coupling faults: a victim bit and an aggressor bit *within
+the same word*, which none of the coupling types above can express (their
+`vaddr`/`aaddr` fault-list fields are always different addresses).
+
+**The DBS construction** (Section 4.2 of the paper, re-derived and pinned
+against its own Table 4 (B=8, 12 states) and Table 5 (B=4, 9 states) in
+`tests/software/test_word_oriented.py`): for a B-bit word, `d = 3 +
+3*ceil(log2(B))` states. Level 0 tiles the base sequence `[00,11,00,01,10,
+01]` across the word 1 bit at a time (6 states). Each level 1..(levels-1)
+tiles the reduced sequence `[01,10,01]` at symbol width `2^level` (3 states
+per level). `word_oriented.py`'s `dbs_sequence()`/`write_dbs_file()`
+compute this in Python and hand it to the engine as a `+DBS_FILE=<path>`
+plusarg -- one hex DW-bit literal per line.
+
+**Usage:**
+
+    +DBS_FILE=<path>   the DBS, one hex DW-bit literal per line
+    +CFDST_MODE        if present: read each DBS value TWICE per address
+                        (w_Di, r_Di, r_Di) instead of once (w_Di, r_Di) --
+                        a conservative, deliberately-not-minimal superset of
+                        the paper's own further-optimized minimal CFdst
+                        sequence, chosen for implementation simplicity.
+                        Absent: CFid mode (w_Di, r_Di) only.
+
+Both modes print the same `RESULT DETECTED`/`RESULT ESCAPED` grammar as
+every other engine here, with `alg=CFID_WOM` or `alg=CFDST_WOM`. From
+Python: `run_word_oriented_campaign(mem, faults, mode="cfid"|"cfdst")` in
+`algo_engine.py` (single-port only -- multi-port intra-word coverage is
+undesigned). From the shell: `run cfid_wom` / `run cfdst_wom` (reserved
+names, not `add_algo`-registered -- see `algo_shell.py`'s
+`_WORD_ORIENTED_RUN_NAMES`); `--check`/`--backgrounds` don't apply (no
+AlgSpec, no `openram_shim.sv` involved).
+
+**Measured (DW=4, real Verilator, every ordered intra-word (vbit, abit)
+pair):**
+
+- **CFid: 24/24 detected.** Full, proven completeness -- both forced
+  polarities (P1) at every bit pair.
+- **CFdst, measured against this project's `CFDS` primitive (the closest
+  existing match -- parameterized by which aggressor op triggers the
+  disturb): 45/60 detected.** `P0=0` (r0-disturb), `P0=1` (r1-disturb),
+  `P0=4` (any-read-disturb) -- the paper's own CFdst subtype scope -- are
+  **12/12 each**, full coverage. `P0=2`/`P0=3` (non-transition write
+  triggers) are *outside* the paper's own CFdst subtype list (transition-
+  write and read-disturb only) and only partially caught -- `P0=2`: 6/12,
+  `P0=3`: 3/12 -- incidentally, wherever the DBS sequence happens to also
+  produce the right non-transition write at that bit position, not by
+  design. Not a bug: the DBS was constructed for the paper's own scope: this
+  measures how much of an unrelated, broader primitive it happens to catch
+  as a side effect. See `docs/algo-library-expansion-plan.md` (gitignored)
+  for the full derivation and the initial (wrong) all-or-nothing hypothesis
+  this corrected.
 
 ## Limits
 
