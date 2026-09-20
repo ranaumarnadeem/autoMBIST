@@ -2,13 +2,17 @@
 once, run one simulation per fault (plus a golden run), and parse the output
 grammar into structured results.
 
-Two "fronts" share this engine and its output grammar:
+Three "fronts" share this engine and its output grammar:
   - the algorithm front (``march_engine.sv`` driven by a ``.alg`` spec) -- P2
   - the FSM front (a generated harness around a researcher's controller) -- P5
+  - the word-oriented front (``word_oriented_engine.sv``, intra-word CFid/CFdst
+    coverage, run_word_oriented_campaign() -- no ``.alg`` spec at all, driven
+    directly by a data-background sequence)
 
-Both print exactly one line beginning with ``RESULT`` per run, so one parser
-serves both. The engine is Verilator-only: ``fault_ram.sv`` uses SystemVerilog
-queues, ``foreach``, and ``final`` blocks, none of which Icarus Verilog supports.
+All three print exactly one line beginning with ``RESULT`` per run, so one
+parser serves all of them. The engine is Verilator-only: ``fault_ram.sv`` uses
+SystemVerilog queues, ``foreach``, and ``final`` blocks, none of which Icarus
+Verilog supports.
 """
 from __future__ import annotations
 
@@ -1147,6 +1151,133 @@ def run_algo_campaign(
         return _run_campaign_against_artifact(
             artifact, mem, alg, faults, workdir=workdir, sim=sim, verbose=verbose,
             progress_callback=progress_callback, max_workers=max_workers,
+        )
+    finally:
+        if own_tmp is not None:
+            own_tmp.cleanup()
+
+
+_WORD_ORIENTED_MODES = {"cfid": ("CFID_WOM", False), "cfdst": ("CFDST_WOM", True)}
+
+
+def run_word_oriented_campaign(
+    mem: MemoryParams,
+    faults: list[FaultRecord],
+    *,
+    mode: str = "cfid",
+    sim: str = "verilator",
+    workdir: Path | None = None,
+    verbose: bool = False,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cache_dir: Path | None = None,
+    max_workers: int | None = None,
+) -> CampaignResult:
+    """Intra-word coupling-fault (CFid/CFdst) campaign against
+    word_oriented_engine.sv, van de Goor & Tlili's (DATE 1998) data-
+    background-sequence construction applied at every address -- see
+    engine/README.md's "Word-oriented intra-word coverage" section and
+    docs/algo-library-expansion-plan.md (gitignored) for the full citation
+    and the real completeness numbers this engine measures (24/24 CFid,
+    45/60 CFdst at DW=4, spiked before this function existed).
+
+    ``mode``: ``"cfid"`` (default, one read per DBS value) or ``"cfdst"``
+    (one extra read per DBS value, to catch a disturb that deceptively
+    returns the correct value on its own sensitizing read -- see
+    word_oriented_engine.sv's CFDST_MODE).
+
+    Unlike run_algo_campaign, there is no AlgSpec here at all -- this is not
+    a march test in the .alg grammar's sense (alg_spec.py's MAX_OPS=8 can't
+    even hold a single DW=4 DBS sequence as one march element, independent
+    of any op-vocabulary question) -- word_oriented_engine.sv is a dedicated
+    sibling to march_engine.sv, driven directly, the same architecture
+    already proven by march_engine_mp.sv (a structurally different top-level
+    testbench, the SAME unmodified fault_ram.sv underneath).
+
+    num_ports==1 only for now (mirrors _resolve_engine_sources' own
+    num_ports==2 dispatch would need its own, unresearched, design -- see
+    docs/algo-library-expansion-plan.md's "No multi-port" scope cut carried
+    over from the GALPAT epic's own precedent for exactly this kind of
+    undesigned extension).
+
+    ``cache_dir``/``max_workers``/``progress_callback``: see
+    run_algo_campaign's docstring -- identical semantics, reused unchanged.
+    """
+    if mode not in _WORD_ORIENTED_MODES:
+        raise CampaignError(f"run_word_oriented_campaign: mode must be one of {sorted(_WORD_ORIENTED_MODES)}, got {mode!r}")
+    if mem.num_ports != 1:
+        raise CampaignError(
+            f"run_word_oriented_campaign only supports num_ports=1 (got {mem.num_ports}) -- "
+            "multi-port word-oriented coverage is undesigned, see docs/algo-library-expansion-plan.md"
+        )
+    algo_name, cfdst_mode = _WORD_ORIENTED_MODES[mode]
+    _validate_fault_addresses(mem, faults)
+
+    own_tmp: tempfile.TemporaryDirectory[str] | None = None
+    if workdir is None:
+        own_tmp = tempfile.TemporaryDirectory(prefix="autombist-wom-")
+        workdir = Path(own_tmp.name)
+    else:
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from .word_oriented import write_dbs_file
+
+        engine_dir = find_engine_dir()
+        sources = [engine_dir / "fault_ram.sv", engine_dir / "word_oriented_engine.sv"]
+        top_module = "word_oriented_engine"
+
+        artifact = compile_engine(
+            mem, sources=sources, top_module=top_module,
+            workdir=workdir, sim=sim, cache_dir=cache_dir,
+        )
+
+        dbs_file = workdir / "dbs.txt"
+        write_dbs_file(mem.data_width, dbs_file)
+        fault_file = write_fault_list(faults, workdir / "faults.txt") if faults else None
+        plusargs = [f"+INIT={mem.init_val}", f"+DBS_FILE={dbs_file}"]
+        if cfdst_mode:
+            plusargs.append("+CFDST_MODE")
+
+        start = time.time()
+
+        golden_out = run_one(artifact, extra_plusargs=plusargs)
+        golden_detected, *_ = parse_result_line(golden_out)
+        if golden_detected:
+            raise CampaignError(
+                f"golden run for '{algo_name}' unexpectedly reported DETECTED "
+                f"(no faults were injected). The engine is broken.\n{golden_out}"
+            )
+
+        def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
+            out = run_one(
+                artifact, fault_file=fault_file, index=i,
+                verbose=verbose, extra_plusargs=plusargs,
+            )
+            detected, elem, op, addr, xor_bits = parse_result_line(out)
+            activations = None
+            if verbose:
+                hits = parse_fault_hits(out)
+                activations = hits[2] if hits else None
+            return FaultResult(
+                index=i, record=record, detected=detected,
+                elem=elem, op=op, addr=addr, xor=xor_bits, activations=activations,
+            )
+
+        results = _run_faults_concurrently(
+            faults, _run_one_fault, progress_callback,
+            max_workers if max_workers is not None else _fault_concurrency(),
+        )
+
+        run_seconds = time.time() - start
+        detected_count = sum(1 for r in results if r.detected)
+        total = len(results)
+        coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
+
+        return CampaignResult(
+            algo_name=algo_name, mem=mem, golden_clean=True, faults=results,
+            detected=detected_count, total=total, coverage_percent=coverage,
+            build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
         )
     finally:
         if own_tmp is not None:
