@@ -59,6 +59,51 @@ def test_compare_algo_matrix_matches_reference_table() -> None:
     assert [r.algo_name for r in shell.session.last_matrix] == ["march_c", "mats_plus", "march_ss"]
 
 
+def test_run_cfid_wom_dispatches_to_word_oriented_campaign() -> None:
+    """'run cfid_wom' is a reserved name (algo_shell.py's
+    _WORD_ORIENTED_RUN_NAMES), not an add_algo-registered spec -- it must
+    reach run_word_oriented_campaign, not _resolve_algo. 9/14: real,
+    freshly measured (gen_faults --intra-word's 14 intra-word coupling
+    instances at addr_width=3/data_width=4, same shell session shape as
+    the reference-table tests above)."""
+    shell, out = _run_script([
+        "set_memory 3 4",
+        "gen_faults --intra-word",
+        "run cfid_wom",
+    ])
+    assert "CFID_WOM: 9/14 detected" in out
+    result = shell.session.last_results["cfid_wom"]
+    assert result.algo_name == "CFID_WOM"
+    assert (result.detected, result.total) == (9, 14)
+    assert shell.session.last_op == ("run", "cfid_wom")
+
+
+def test_run_cfdst_wom_dispatches_to_word_oriented_campaign() -> None:
+    """Same wiring proof as above, CFdst mode (12/14, real measured)."""
+    shell, out = _run_script([
+        "set_memory 3 4",
+        "gen_faults --intra-word",
+        "run cfdst_wom",
+    ])
+    assert "CFDST_WOM: 12/14 detected" in out
+    result = shell.session.last_results["cfdst_wom"]
+    assert result.algo_name == "CFDST_WOM"
+    assert (result.detected, result.total) == (12, 14)
+
+
+def test_run_word_oriented_rejects_check_and_backgrounds_flags() -> None:
+    # AlgoShell.onecmd catches every do_* exception and prints via _err
+    # (keeps the REPL alive on a bad command) -- so these surface as
+    # "error: ..." lines in stdout, not raised exceptions.
+    shell, out = _run_script([
+        "set_memory 3 4",
+        "gen_faults --intra-word",
+        "run cfid_wom --backgrounds",
+        "run cfdst_wom --check march_c",
+    ])
+    assert out.count("error: --check/--backgrounds don't apply to the word-oriented front") == 2
+
+
 def test_write_report_after_compare(tmp_path: Path) -> None:
     faults = find_engine_dir() / "faults.example.txt"
     report_path = tmp_path / "matrix.csv"

@@ -32,6 +32,7 @@ from .algo_engine import (
     run_algo_campaign,
     run_background_campaign,
     run_fsm_campaign,
+    run_word_oriented_campaign,
     write_fault_list,
     _validate_words_per_row,
 )
@@ -51,6 +52,13 @@ from .synth_engine import synthesize_alg, synth_verification_faults
 # The 37 DSL-covered built-ins' names, for distinguishing "custom" registry
 # entries (added via add_fault_type) from the defaults in `list types`.
 _DEFAULT_REGISTRY_NAMES = frozenset(p.name for p in default_registry())
+
+# Reserved 'run'/'compare_algo' target names for the word-oriented front
+# (word_oriented_engine.sv, intra-word CFid/CFdst coverage) -- this front has
+# no AlgSpec at all (see algo_engine.py's run_word_oriented_campaign
+# docstring), so it can't be registered into session.algos like every other
+# target; checked by name in do_run before the fsms/algos dispatch instead.
+_WORD_ORIENTED_RUN_NAMES = {"cfid_wom": "cfid", "cfdst_wom": "cfdst"}
 
 # Shorthand aliases so `compare_algo mine -march C,X,SS` reads the way the
 # literature abbreviates these algorithms.
@@ -409,9 +417,12 @@ class AlgoShell(cmd.Cmd):
         self._out(f"generated {len(records)} faults")
 
     def do_run(self, arg: str) -> None:
-        """run <algo_name|fsm_name> [--verbose] [--check ALGO] [--backgrounds]
-        Run a fault campaign for one algorithm, or a registered FSM (from
-        add_fsm), against the current fault list. FSM runs report detect/
+        """run <algo_name|fsm_name|cfid_wom|cfdst_wom> [--verbose] [--check ALGO] [--backgrounds]
+        Run a fault campaign for one algorithm, a registered FSM (from
+        add_fsm), or the word-oriented intra-word coupling front (the two
+        reserved names 'cfid_wom'/'cfdst_wom' -- no AlgSpec, no FSM; see
+        run_word_oriented_campaign in algo_engine.py and engine/README.md's
+        "Word-oriented intra-word coverage" section). FSM runs report detect/
         escape only (--verbose has no effect for them).
         --check ALGO (FSM targets only): also verify the controller drives the
         exact march sequence of ALGO (a built-in name or a .alg path), address
@@ -420,14 +431,29 @@ class AlgoShell(cmd.Cmd):
         intra-word data-background set (solid + column-stripe patterns),
         merging results so a fault counts as detected if any background
         caught it. FSM targets don't support this (openram_shim.sv has no
-        +BACKGROUND path)."""
+        +BACKGROUND path). Word-oriented targets don't support --check or
+        --backgrounds either (own dedicated engine, no AlgSpec/openram_shim
+        involved)."""
         mem = self._require_memory()
         pos, flags = _parse_flags(_tokenize(arg), {"verbose": None, "check": str, "backgrounds": None})
         if not pos:
-            raise ValueError("usage: run <algo_name|fsm_name> [--verbose] [--check ALGO] [--backgrounds]")
+            raise ValueError("usage: run <algo_name|fsm_name|cfid_wom|cfdst_wom> [--verbose] [--check ALGO] [--backgrounds]")
         name = pos[0]
 
-        if name in self.session.fsms:
+        if name in _WORD_ORIENTED_RUN_NAMES:
+            if flags.get("check") or flags.get("backgrounds"):
+                raise ValueError(
+                    "--check/--backgrounds don't apply to the word-oriented front "
+                    "(cfid_wom/cfdst_wom -- no AlgSpec, no FSM)"
+                )
+            workdir = self.session.next_run_dir(f"run_{name}")
+            with fault_progress(len(self.session.faults)) as progress_cb:
+                result = run_word_oriented_campaign(
+                    mem, self.session.faults, mode=_WORD_ORIENTED_RUN_NAMES[name],
+                    sim=self.session.sim, workdir=workdir, verbose=bool(flags.get("verbose")),
+                    progress_callback=progress_cb,
+                )
+        elif name in self.session.fsms:
             if flags.get("backgrounds"):
                 raise ValueError(
                     "--backgrounds applies only to algorithm targets (FSM front has no +BACKGROUND path)"
@@ -689,6 +715,7 @@ class AlgoShell(cmd.Cmd):
             self._out("algos:")
             for name, spec in sorted(self.session.algos.items()):
                 self._out(f"  {name}  ({spec.length_n}n, {len(spec.elements)} elements)")
+            self._out("  cfid_wom, cfdst_wom  (word-oriented front, no AlgSpec -- always available, run-only)")
         if what in ("fsms", "all"):
             self._out("fsms:")
             for name, entry in sorted(self.session.fsms.items()):
