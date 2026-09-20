@@ -31,6 +31,7 @@ BASE = {
 DEDICATED = {**BASE, "memory_name": "sram_tiny"}
 SHARED_BUS = {
     **BASE,
+    "memory_name": "sram_tiny",  # the shared macro TYPE all `memories` entries instantiate
     "topology": "shared-bus",
     "memories": [{"name": "mem_bank0"}, {"name": "mem_bank1"}],
 }
@@ -73,12 +74,18 @@ def test_memories_rejected_under_dedicated_topology(tmp_path: Path) -> None:
 def test_valid_shared_bus_config_normalizes_memories(tmp_path: Path) -> None:
     loaded = _load(tmp_path, SHARED_BUS)
     assert loaded["memories"] == [{"name": "mem_bank0"}, {"name": "mem_bank1"}]
-    assert "memory_name" not in loaded
+    # memory_name is REQUIRED under shared-bus too -- it names the shared
+    # macro type every memories[] entry instantiates, a different concept
+    # from each entry's own per-instance name (corrected from an earlier,
+    # wrong "forbidden under shared-bus" draft -- see the docstring above
+    # _validate_shared_memories).
+    assert loaded["memory_name"] == "sram_tiny"
 
 
-def test_memory_name_rejected_together_with_shared_bus_topology(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="memory_name is not valid under topology: shared-bus"):
-        _load(tmp_path, {**SHARED_BUS, "memory_name": "sram_tiny"})
+def test_shared_bus_requires_memory_name(tmp_path: Path) -> None:
+    missing = {k: v for k, v in SHARED_BUS.items() if k != "memory_name"}
+    with pytest.raises(ConfigError, match="memory_name"):
+        _load(tmp_path, missing)
 
 
 def test_shared_bus_requires_memories(tmp_path: Path) -> None:

@@ -539,34 +539,36 @@ def _validate_shared_memories(loaded: dict[str, Any]) -> None:
     see that constant's own comment.
 
     ``topology`` absent, or ``"dedicated"``, is today's behaviour, byte-
-    identical: ``memory_name`` is required exactly as it always has been,
-    and ``memories`` must be absent. ``topology: shared-bus`` flips the
-    requirement -- one controller now drives N physical memories, so a
-    single ``memory_name`` is meaningless and ``memories`` (a non-empty
-    list of ``{name}`` entries, validated the same shape as
-    ``repair_ports`` below) becomes required instead. The two modes are
-    mutually exclusive by construction (each rejects the other's key
-    outright), not just by convention, so a config can never silently mix a
-    single dedicated memory with a shared-bus list.
+    identical: ``memory_name`` is required exactly as it always has been (the
+    one memory this controller drives), and ``memories`` must be absent.
+
+    ``topology: shared-bus`` ALSO requires ``memory_name`` -- corrected after
+    an initial draft of this function forbade it, reasoning "a single memory
+    doesn't make sense for N memories." That reasoning conflated two
+    different things ``memory_name`` was never distinguishing before this
+    feature existed: under ``dedicated`` it names the one memory INSTANCE;
+    under ``shared-bus`` every entry in ``memories`` shares the same macro
+    TYPE (uniform geometry is already required -- one controller, one mux
+    bus), and ``memory_name`` is what names *that shared type* for the N
+    per-instance ``u_mem_<name>`` instantiations wrapper_template.j2 renders
+    (see step 1). ``memories`` additionally becomes required -- a non-empty
+    list of ``{name}`` entries (per-instance labels, distinct from
+    ``memory_name``'s type), validated the same shape as ``repair_ports``
+    below.
     """
     topology = loaded.get("topology", "dedicated")
     if topology not in _VALID_TOPOLOGIES:
         raise ConfigError(f"topology must be one of {_VALID_TOPOLOGIES}, got {topology!r}")
 
+    _require_keys(loaded, ("memory_name",), "root")
+    _validate_non_empty_str(loaded, "memory_name")
+
     if topology == "dedicated":
         if "memories" in loaded:
             raise ConfigError("memories is only valid under topology: shared-bus")
-        _require_keys(loaded, ("memory_name",), "root")
-        _validate_non_empty_str(loaded, "memory_name")
         return
 
     # topology == "shared-bus"
-    if "memory_name" in loaded:
-        raise ConfigError(
-            "memory_name is not valid under topology: shared-bus -- use "
-            "memories instead, one entry per physical memory"
-        )
-
     entries = loaded.get("memories")
     if not isinstance(entries, list) or not entries:
         raise ConfigError("memories must be a non-empty list when topology: shared-bus")
