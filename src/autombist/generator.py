@@ -1182,6 +1182,36 @@ def generate_from_config(
             "models its own storage and has no concept of spare rows"
         )
 
+    is_shared_bus = config.get("topology", "dedicated") == "shared-bus"
+    if is_shared_bus:
+        # wrapper_template.j2's shared-bus memory-select mux (step 1 of
+        # docs/shared-hierarchical-mbist-plan.md's implementation order) is
+        # only implemented for the plain single-port, non-redundant,
+        # non-saboteur path -- these three combinations would otherwise
+        # silently render broken RTL (the redundancy/saboteur branches still
+        # reference memory_name as a single physical instance, which under
+        # shared-bus names a shared macro TYPE instead, not one instance to
+        # bind a repair remap or saboteur model to).
+        if use_saboteur:
+            raise ConfigError(
+                "topology: shared-bus cannot be combined with use_saboteur=True -- "
+                "the shared-bus controller-select mux is only implemented for the "
+                "plain (non-saboteur) memory path; see "
+                "docs/shared-hierarchical-mbist-plan.md §4a"
+            )
+        if config.get("redundancy"):
+            raise ConfigError(
+                "topology: shared-bus cannot be combined with redundancy: -- "
+                "the shared-bus controller-select mux is only implemented for "
+                "the non-redundant memory path; see "
+                "docs/shared-hierarchical-mbist-plan.md §4a"
+            )
+        if len(config["normalized_ports"]) != 1:
+            raise ConfigError(
+                "topology: shared-bus is only implemented for a single "
+                "physical port today; see docs/shared-hierarchical-mbist-plan.md §4a"
+            )
+
     redundancy_cfg = config.get("redundancy")
     if redundancy_cfg and redundancy_cfg.get("onchip_selfrepair") and algo.strip().lower() not in _SELFREPAIR_ALGOS:
         # algo is a generate_from_config keyword, never seen by load_config /
@@ -1208,7 +1238,14 @@ def generate_from_config(
 
     outdir.mkdir(parents=True, exist_ok=True)
 
-    module_outdir = outdir / config["memory_name"]
+    # Dedicated (today, unchanged): one memory_name names both the output
+    # directory and the generated files, since there's exactly one physical
+    # memory. Shared-bus: N physical memories share one controller, so the
+    # controller's own wrapper_module_name is the naming key instead -- the
+    # multi-port precedent's own answer to "one config, N things" is N
+    # *instances inside one module*, not N output directories (§4b).
+    output_stem = config["wrapper_module_name"] if is_shared_bus else config["memory_name"]
+    module_outdir = outdir / output_stem
     module_outdir.mkdir(parents=True, exist_ok=True)
 
     render_config = dict(config)
@@ -1287,7 +1324,7 @@ def generate_from_config(
     config_snapshot_path.write_text(yaml.safe_dump(render_config, sort_keys=False), encoding="utf-8")
 
     wrapper_text = render_wrapper(render_config)
-    wrapper_path = module_outdir / f"{config['memory_name']}_mbist.v"
+    wrapper_path = module_outdir / f"{output_stem}_mbist.v"
     wrapper_path.write_text(wrapper_text, encoding="utf-8")
 
     copy_mbist_rtl(module_outdir, algo_dir)
