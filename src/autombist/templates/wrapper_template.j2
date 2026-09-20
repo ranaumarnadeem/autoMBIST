@@ -9,6 +9,18 @@
 {% set has_onchip_diagnosis = has_onchip_selfrepair and redundancy.onchip_diagnosis %}
 {% set mode_signal = "effective_test_mode" if has_onchip_selfrepair else "test_mode" %}
 {% set start_signal = "effective_bist_start" if has_onchip_selfrepair else "bist_start && test_mode" %}
+{# Shared-bus MBIST controller (docs/shared-hierarchical-mbist-plan.md §4a):
+   one controller FSM (u_algo_top) sequenced across NUM_MEMORIES physical
+   memories one at a time, mux-selected. `memories` is only ever defined by
+   a topology: shared-bus config (step 2 of that plan) -- absent (every
+   config today), num_memories is exactly 1 and is_shared_bus is false, so
+   every existing render stays byte-identical. Scoped to the plain
+   single-port, non-redundant, non-self-repair, non-saboteur path only for
+   now; combining shared-bus with those is a config-validation concern
+   (step 2), not handled here. #}
+{% set num_memories = memories|length if memories is defined else 1 %}
+{% set is_shared_bus = num_memories > 1 %}
+{% set mem_sel_width = (num_memories - 1).bit_length() if is_shared_bus else 1 %}
 module {{ wrapper_module_name }} #(
     parameter integer ADDR_WIDTH = {{ addr_width }},
     parameter integer DATA_WIDTH = {{ data_width }}
@@ -99,6 +111,80 @@ module {{ wrapper_module_name }} #(
     assign effective_test_mode  = test_mode || ctrl_test_mode_override;
     assign effective_bist_start = (bist_start && test_mode && !self_repair_busy) || ctrl_bist_start;
 {% endif %}
+{% if is_shared_bus %}
+    // Sequences u_algo_top across mem_sel_q = 0..NUM_MEMORIES-1: SHB_RUN holds
+    // algo_bist_start high while one memory's pass runs; on algo_bist_done,
+    // SHB_ADVANCE drops algo_bist_start for exactly one cycle (forcing
+    // u_algo_top's own FSM back to its idle state via its existing
+    // bist_start-drop restart path -- no new reset signal needed, see
+    // docs/shared-hierarchical-mbist-plan.md §4a) before SHB_RUN re-raises it
+    // for the next memory. u_algo_top itself needs zero awareness of which
+    // memory it's driving -- this sequencer and the csb/dout mux below sit
+    // strictly between it and the memory instantiation(s), and its own
+    // address/data/write-enable path (sram_addr/sram_din/sram_we above) is
+    // completely unchanged.
+    typedef enum logic [1:0] {
+        SHB_IDLE,
+        SHB_RUN,
+        SHB_ADVANCE,
+        SHB_DONE
+    } shb_state_t;
+
+    shb_state_t             shb_state_q;
+    logic [{{ mem_sel_width }}-1:0] mem_sel_q;
+    logic                    algo_bist_start;
+    logic                    algo_bist_done;
+    logic                    algo_bist_fail;
+    logic                    shb_fail_q;
+    logic                    sram_csb_arr [{{ num_memories }}];
+    logic [DATA_WIDTH-1:0]   sram_dout_arr [{{ num_memories }}];
+
+    assign algo_bist_start = (shb_state_q == SHB_RUN);
+    assign bist_done       = (shb_state_q == SHB_DONE);
+    assign bist_fail       = shb_fail_q;
+    assign sram_dout       = sram_dout_arr[mem_sel_q];
+{% for i in range(num_memories) %}
+    assign sram_csb_arr[{{ i }}] = (mem_sel_q == {{ i }}) ? sram_csb : 1'b1;
+{% endfor %}
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            shb_state_q <= SHB_IDLE;
+            mem_sel_q   <= '0;
+            shb_fail_q  <= 1'b0;
+        end else begin
+            case (shb_state_q)
+                SHB_IDLE: begin
+                    if ({{ start_signal }}) begin
+                        mem_sel_q   <= '0;
+                        shb_fail_q  <= 1'b0;
+                        shb_state_q <= SHB_RUN;
+                    end
+                end
+                SHB_RUN: begin
+                    if (algo_bist_done) begin
+                        if (algo_bist_fail) shb_fail_q <= 1'b1;
+                        if (mem_sel_q == {{ num_memories - 1 }})
+                            shb_state_q <= SHB_DONE;
+                        else
+                            shb_state_q <= SHB_ADVANCE;
+                    end
+                end
+                SHB_ADVANCE: begin
+                    mem_sel_q   <= mem_sel_q + 1'b1;
+                    shb_state_q <= SHB_RUN;
+                end
+                SHB_DONE: begin
+                    // Parenthesized: start_signal (bist_start && test_mode in
+                    // the non-self-repair case) must be negated as a whole --
+                    // !bist_start && test_mode is NOT !(bist_start && test_mode).
+                    if (!({{ start_signal }})) shb_state_q <= SHB_IDLE;
+                end
+                default: shb_state_q <= SHB_IDLE;
+            endcase
+        end
+    end
+{% endif %}
 
     {{ algo_top_module }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
@@ -107,10 +193,17 @@ module {{ wrapper_module_name }} #(
     ) u_algo_top (
         .clk(clk),
         .rst_n(rst_n),
+{% if is_shared_bus %}
+        .bist_start(algo_bist_start),
+        .bist_busy(mbist_busy),
+        .bist_done(algo_bist_done),
+        .bist_fail(algo_bist_fail),
+{% else %}
         .bist_start({{ start_signal }}),
         .bist_busy(mbist_busy),
         .bist_done(bist_done),
         .bist_fail(bist_fail),
+{% endif %}
 {% if has_onchip_selfrepair %}
         .bist_fail_valid(algo_fail_valid),
         .bist_fail_addr(algo_fail_addr),
@@ -390,6 +483,33 @@ module {{ wrapper_module_name }} #(
 {% endif %}
     );
 {% else %}
+{% if is_shared_bus %}
+{% for mem in memories %}
+{% if memory_has_fixed_geometry %}
+    // memory_has_fixed_geometry: see the note on the redundancy instantiation
+    // above -- a real compiled macro keeps its own widths.
+    {{ memory_name }} u_mem_{{ mem.name }} (
+{% else %}
+    {{ memory_name }} #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .DATA_WIDTH(DATA_WIDTH)
+    ) u_mem_{{ mem.name }} (
+{% endif %}
+        .{{ pdata.clk }}(mbist_sram_clk),
+        .{{ pdata.csb }}(sram_csb_arr[{{ loop.index0 }}]),
+        .{{ pdata.addr }}(sram_addr),
+        .{{ pdata.din }}(sram_din),
+        .{{ pdata.we }}(sram_we),
+        .{{ pdata.dout }}(sram_dout_arr[{{ loop.index0 }}])
+{% if pdata.spare_wen %}
+      // Macro has a spare-column write enable but this design has no
+      // redundancy at all. Tie it off rather than leave a real macro's
+      // input floating -- '0 disables spare-column writes.
+      , .{{ pdata.spare_wen }}('0)
+{% endif %}
+    );
+{% endfor %}
+{% else %}
 {% if memory_has_fixed_geometry %}
     // memory_has_fixed_geometry: see the note on the redundancy instantiation
     // above -- a real compiled macro keeps its own widths.
@@ -413,6 +533,7 @@ module {{ wrapper_module_name }} #(
       , .{{ pdata.spare_wen }}('0)
 {% endif %}
     );
+{% endif %}
 {% endif %}
     {% endfor %}
 {% endif %}
