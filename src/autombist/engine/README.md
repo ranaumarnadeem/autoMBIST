@@ -20,6 +20,9 @@ Runs unmodified under Xcelium (xrun) and Verilator 5.x.
     word_oriented_engine.sv  CFid/CFdst intra-word coupling runner -- no .alg spec at all,
                            driven directly by a data-background sequence (see "Word-oriented
                            intra-word coverage" below); single-port only
+    shared_engine.sv       shared-controller (multi-memory) runner -- one algorithm
+                           controller sequenced across N separate fault_ram instances via a
+                           generate/genvar loop (see "Shared-controller (multi-memory)" below)
     faults.example.txt    one instance of every implemented fault primitive (41)
     run_campaign.sh       serial campaign: one sim per fault, CSV out
 
@@ -672,6 +675,90 @@ pair):**
   as a side effect. See `docs/algo-library-expansion-plan.md` (gitignored)
   for the full derivation and the initial (wrong) all-or-nothing hypothesis
   this corrected.
+
+## Shared-controller (multi-memory)
+
+A third structurally different front, alongside the algo front
+(`march_engine.sv`) and the word-oriented front above: one algorithm
+controller sequenced across N separate physical memories, one at a time
+(mux-select, not parallel access) -- `shared_engine.sv`, the RTL/
+simulation half of a broader shared-bus MBIST controller feature
+(`wrapper_template.j2`'s own `is_shared_bus` mux is the generation-shell
+half; see `docs/shared-hierarchical-mbist-plan.md`, gitignored, for the
+full design and every step's own real proof). Real, industry-documented
+precedent for this pattern: Siemens Tessent's "shared bus architecture"
+and Cadence Modus's "shared test access bus."
+
+Unlike `march_engine_mp.sv` (num_ports=2 on ONE memory -- two physical
+interfaces into the same silicon), `shared_engine.sv` drives N wholly
+*separate* `fault_ram` instances, built via a `generate`/`genvar` loop
+since N (`NUM_MEMORIES`) is a runtime parameter, not a fixed 2. The SAME
+algorithm runs to completion against memory 0, then restarts from scratch
+against memory 1, and so on -- never interleaved, mirroring the real RTL
+sequencer's own `SHB_IDLE`/`SHB_RUN`/`SHB_ADVANCE`/`SHB_DONE` states
+(`wrapper_template.j2`): `SHB_ADVANCE` drops the algorithm's own
+`bist_start` for exactly one cycle before re-raising it, reusing the
+algorithm FSM's *existing* bist_start-drop restart path rather than
+inventing a new reset signal.
+
+**Usage:** `+ALG=MATSP|MARCHCM|MARCHSS` (the same built-in table
+`march_engine.sv` has -- no `+ALG_FILE` support yet, a v1 scope cut, not a
+limitation of the mechanism). `NUM_MEMORIES` is a `-G` compile parameter,
+alongside the usual `AW`/`DW`/`WORDS_PER_ROW`. Per-memory fault targeting:
+each `generate`-instantiated `fault_ram` copy gets its own `FAULT_TAG`
+(`fault_ram.sv`'s new parameter, default `""` -- every OTHER engine's own
+instantiation is untouched, byte-identical), so a fault for memory M
+specifically is loaded via `+FAULTS<M>=<file> +FAULT_INDEX<M>=<n>` --
+e.g. `+FAULTS0=faults.txt +FAULT_INDEX0=0` targets memory 0 only, leaving
+memory 1 (no `+FAULTS1` given) golden. `RESULT` lines carry a trailing
+`mem=<n>` field identifying which memory detected the fault:
+
+    RESULT DETECTED alg=MARCHCM_SHARED elem=2 op=0 addr=3 xor=00000100 mem=0
+    RESULT ESCAPED  alg=MARCHCM_SHARED
+
+From Python: `run_shared_campaign(shared, alg, faults)` in `algo_engine.py`
+(`SharedMemoryParams(memories=[...])` -- every memory must share
+`addr_width`/`data_width`/`words_per_row`/`init_val`, one shared
+address/data mux bus and a shared, unconditional `+INIT=` plusarg;
+`FaultRecord.mi` selects which memory a fault targets, never serialized
+to the fault-list file itself -- a per-memory file is already scoped by
+which `FAULT_TAG`-suffixed plusarg loads it). From the shell:
+`set_shared_memory <addr_width> <data_width> <num_memories>` +
+`add_shared_fault TYPE VADDR VBIT MI [AADDR ABIT P0 P1]`, then
+`run shared_matsp`/`run shared_marchcm`/`run shared_marchss` (reserved
+names, separate session state from `set_memory`/`add_fault` --
+`--check`/`--backgrounds` don't apply, same as the word-oriented front).
+
+**Measured (real Verilator):**
+
+- **Golden run, both N=1 and N=2: clean (ESCAPED).** N=2's simulation
+  time is exactly 2x N=1's -- proves the second memory's full algorithm
+  pass genuinely runs, not a no-op that would still report ESCAPED for
+  the wrong reason.
+- **Per-memory fault isolation: zero cross-memory leakage.** A fault on
+  memory 0 (`+FAULTS0`/`+FAULT_INDEX0`, no `+FAULTS1` at all) reports
+  `mem=0`, never `mem=1`, and vice versa; memory 1's own detection is
+  confirmed to fire only after memory 0's full clean pass completes.
+- **`run_shared_campaign` end-to-end, hand-derived split: 2/3 detected.**
+  SA0 on memory 0 and SA1 on memory 1 both detected (any march test
+  catches a simple stuck-at, on either memory); DRF (Data Retention
+  Fault) on memory 0, with a huge idle threshold, escapes -- already
+  documented above ("Idle/wait op and Data Retention Fault (DRF)"), not
+  newly asserted here: no algorithm in `shared_engine.sv`'s built-in
+  table issues a `wait` op, so DRF escapes unconditionally against all
+  three, exactly like it does against `march_engine.sv`'s own MATS+/
+  March C-/March SS.
+
+**v1 scope cuts** (not limitations of the underlying mechanism -- see
+`docs/shared-hierarchical-mbist-plan.md`'s own open questions for what a
+follow-up would need): no `redundancy:`/`use_saboteur`/multi-port support
+combined with `topology: shared-bus` yet (the generation-shell rejects
+these combinations outright, with a clear error, rather than silently
+producing broken RTL); no `+ALG_FILE` support in `shared_engine.sv`, only
+the three built-ins; no controller-of-controllers (hierarchical)
+orchestration -- this is the flat "one controller, N memories" pattern
+only, deliberately built first since a hierarchical orchestrator needs
+something to orchestrate.
 
 ## Limits
 

@@ -113,6 +113,19 @@ progress, and what's further out.
   running a real program through self-repaired memory, both against
   defect-injectable behavioral models and the hardened OpenRAM macros (same
   per-macro signoff caveat as above)
+- A shared controller across multiple memories, rather than one controller
+  instance per memory: `shared_engine.sv` (research-shell simulation) plus
+  `wrapper_template.j2`'s own `topology: shared-bus` config schema and RTL
+  mux (generation-shell) -- one algorithm controller sequenced across N
+  separate physical memories, real industry precedent (Siemens Tessent
+  "shared bus architecture," Cadence Modus "shared test access bus"). v1
+  scope: the flat "one controller, N memories" case only, not yet combined
+  with on-chip redundancy/self-repair, the saboteur fault-injection path,
+  or multi-port memories, and not yet a hierarchical controller-of-
+  controllers orchestrator -- see engine/README.md's own "Shared-controller
+  (multi-memory)" section for the real measured numbers and exact scope
+  cuts, and `docs/shared-hierarchical-mbist-plan.md` (gitignored) for the
+  full design.
 
 ## Further out
 
@@ -121,8 +134,9 @@ progress, and what's further out.
 - A broader march-algorithm library: `checkerboard` is done, on both paths
   (see above) -- galloping/GALPAT and similar patterns beyond the current
   built-ins remain open
-- A shared controller across multiple memories, rather than one controller
-  instance per memory
+- Combining the shared-controller feature above with on-chip redundancy/
+  self-repair, the saboteur path, or multi-port memories; a hierarchical
+  controller-of-controllers orchestrator built on top of it
 
 ## How to help
 
