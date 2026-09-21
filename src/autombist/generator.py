@@ -1201,29 +1201,31 @@ def generate_from_config(
             )
         redundancy_block = config.get("redundancy")
         if redundancy_block:
-            # Plain on-chip row self-repair is the one redundancy shape wired
-            # into the shared-bus sequencer today (wrapper_template.j2's
-            # selfrepair_inst generate loop -- one analyzer/ctrl/remap per
-            # memory, see docs/shared-hierarchical-mbist-plan.md §9b).
-            # Tester-driven redundancy (repair_ports pins bind to a single
-            # physical remap, meaningless when N memories share the bus) and
-            # the extended on-chip features (column repair, persisted-repair
-            # load, diagnosis log) aren't wired per-memory yet -- each would
-            # silently render broken/incomplete RTL if allowed through here.
+            # On-chip row self-repair, with or without on-chip column repair,
+            # is wired into the shared-bus sequencer today
+            # (wrapper_template.j2's selfrepair_inst generate loop -- one
+            # analyzer/ctrl/remap (+ a repair_remap_col per memory when
+            # onchip_col_repair is set) per memory, see
+            # docs/shared-hierarchical-mbist-plan.md §9b). Tester-driven
+            # redundancy (repair_ports pins bind to a single physical remap,
+            # meaningless when N memories share the bus) and the remaining
+            # extended on-chip features (persisted-repair load, diagnosis
+            # log) aren't wired per-memory yet -- each would silently render
+            # broken/incomplete RTL if allowed through here.
             unsupported_shared_bus_redundancy = (
                 not redundancy_block.get("onchip_selfrepair")
-                or redundancy_block.get("onchip_col_repair")
                 or redundancy_block.get("onchip_repair_persistence")
                 or redundancy_block.get("onchip_diagnosis")
             )
             if unsupported_shared_bus_redundancy:
                 raise ConfigError(
-                    "topology: shared-bus only supports plain on-chip row "
-                    "self-repair redundancy today (redundancy.onchip_selfrepair: "
-                    "true, with onchip_col_repair/onchip_repair_persistence/"
-                    "onchip_diagnosis all false) -- tester-driven redundancy and "
-                    "the extended on-chip features are not yet wired for the "
-                    "shared-bus controller-select mux; see "
+                    "topology: shared-bus supports on-chip row self-repair "
+                    "and on-chip 2D (row+column) self-repair redundancy today "
+                    "(redundancy.onchip_selfrepair: true, with "
+                    "onchip_repair_persistence/onchip_diagnosis both false) -- "
+                    "tester-driven redundancy and the remaining extended "
+                    "on-chip features are not yet wired for the shared-bus "
+                    "controller-select mux; see "
                     "docs/shared-hierarchical-mbist-plan.md §9b"
                 )
         if len(config["normalized_ports"]) != 1:
