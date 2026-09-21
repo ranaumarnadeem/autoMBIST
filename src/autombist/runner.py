@@ -16,6 +16,23 @@ from .generator import load_config
 from .reporting import build_simulation_report, write_simulation_report, write_text_report
 
 
+def _wrapper_output_stem(config: dict[str, Any]) -> str:
+    """The generated wrapper's file-name stem: ``{stem}_mbist.v``.
+
+    Mirrors generator.py's own ``output_stem`` exactly -- dedicated topology
+    keys off ``memory_name`` (one physical memory), shared-bus keys off
+    ``wrapper_module_name`` (N memories share one controller, so there is no
+    single memory_name to name the file after; see
+    docs/shared-hierarchical-mbist-plan.md §4b/§9b). Distinct from the
+    MODULE name inside that file, which is always ``wrapper_module_name``
+    verbatim (dedicated conventionally sets wrapper_module_name to
+    ``{memory_name}_mbist``, making the two coincide there -- shared-bus
+    does not).
+    """
+    is_shared_bus = config.get("topology", "dedicated") == "shared-bus"
+    return config["wrapper_module_name"] if is_shared_bus else config["memory_name"]
+
+
 def _find_hardware_dir() -> Path:
     """Locate the tests/hardware directory for simulation.
     
@@ -178,6 +195,8 @@ def _build_clean_command(
         f"OUTDIR={module_outdir.parent}",
         f"MEMORY_NAME={config['memory_name']}",
         f"WRAPPER_MODULE={config['wrapper_module_name']}",
+        f"MODULE_OUTDIR={module_outdir}",
+        f"WRAPPER_FILE={module_outdir / (_wrapper_output_stem(config) + '_mbist.v')}",
         "USE_SABOTEUR=0",
         "FAULT_MODE=clean",
         "FAULTS=0",
@@ -223,6 +242,8 @@ def _build_fault_command(
         f"OUTDIR={module_outdir.parent}",
         f"MEMORY_NAME={config['memory_name']}",
         f"WRAPPER_MODULE={config['wrapper_module_name']}",
+        f"MODULE_OUTDIR={module_outdir}",
+        f"WRAPPER_FILE={module_outdir / (_wrapper_output_stem(config) + '_mbist.v')}",
         "USE_SABOTEUR=1",
         f"FAULT_MODE={fault_mode}",
         f"FAULTS={faults}",
@@ -265,7 +286,7 @@ def run_simulation(
     """
     start_time = time.time()
     config = _load_simulation_config(module_outdir)
-    wrapper_path = module_outdir / f"{config['memory_name']}_mbist.v"
+    wrapper_path = module_outdir / f"{_wrapper_output_stem(config)}_mbist.v"
 
     if not wrapper_path.exists():
         raise SimulationError(
