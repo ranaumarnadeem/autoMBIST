@@ -94,13 +94,68 @@ def test_generated_shared_bus_wrapper_elaborates_cleanly_with_real_verilator(tmp
     assert result.returncode == 0, f"Verilator lint failed:\n{result.stdout}\n{result.stderr}"
 
 
+def test_generated_shared_bus_selfrepair_wrapper_elaborates_cleanly_with_real_verilator(tmp_path: Path) -> None:
+    # docs/shared-hierarchical-mbist-plan.md §9b: plain on-chip row
+    # self-repair, generated through the REAL generate_from_config path (not
+    # a hand-built render_wrapper bypass) -- proves the relaxed validation
+    # above actually reaches working, elaboratable RTL for real users.
+    config = {
+        **BASE,
+        "memory_name": "sram_spares_tiny",
+        "ports": {**BASE["ports"], "we": "web0"},
+        "redundancy": {"num_spare_rows": 2, "num_spare_cols": 0, "onchip_selfrepair": True},
+    }
+    config_path = _write_config(tmp_path, config)
+    wrapper_path = generate_from_config(config_path, tmp_path / "out")
+    module_outdir = wrapper_path.parent
+
+    algo_dir = module_outdir / "march_c"
+    redundancy_files = [
+        module_outdir / name
+        for name in ("onchip_row_repair_analyzer.sv", "onchip_selfrepair_ctrl.sv", "repair_remap_row.sv")
+    ]
+    sram_fixture = REPO_ROOT / "tests" / "hardware" / "sram_spares_tiny.v"
+    sources = [wrapper_path, *sorted(algo_dir.glob("*.sv")), *redundancy_files, sram_fixture]
+
+    result = subprocess.run(
+        [
+            "verilator", "--lint-only", "--timing",
+            "-Wno-WIDTHTRUNC", "-Wno-WIDTHEXPAND", "-Wno-UNUSED", "-Wno-DECLFILENAME",
+            "-Wno-PINMISSING", "-Wno-PINCONNECTEMPTY", "-Wno-BLKSEQ",
+            *[str(s) for s in sources],
+        ],
+        capture_output=True, text=True, cwd=module_outdir,
+    )
+    assert result.returncode == 0, f"Verilator lint failed:\n{result.stdout}\n{result.stderr}"
+
+    # The bug this test guards against: the old singular self-repair
+    # instantiation block used to render unconditionally whenever
+    # onchip_selfrepair was set, duplicating the per-memory generate loop's
+    # own analyzer/ctrl/remap instances and referencing now-undeclared
+    # singular signals. Confirm exactly ONE generate-loop instantiation site
+    # exists in the rendered output, not two.
+    rendered = wrapper_path.read_text(encoding="utf-8")
+    assert rendered.count("genvar") == 1
+    assert rendered.count("endgenerate") == 1
+    assert rendered.count("onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl") == 1
+    assert rendered.count("onchip_row_repair_analyzer #(") == 1
+    assert rendered.count("repair_remap_row #(") == 1
+    # The old singular (non-array) declaration must not reappear alongside
+    # the per-memory sram_addr_phys_arr.
+    assert "sram_addr_phys;" not in rendered
+
+
 def test_shared_bus_rejects_use_saboteur(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path, BASE)
     with pytest.raises(ConfigError, match="use_saboteur=True"):
         generate_from_config(config_path, tmp_path / "out", use_saboteur=True)
 
 
-def test_shared_bus_rejects_redundancy(tmp_path: Path) -> None:
+def test_shared_bus_rejects_tester_driven_redundancy(tmp_path: Path) -> None:
+    # Tester-driven redundancy (no onchip_selfrepair) is still rejected: the
+    # repair_ports pins would bind to a single physical remap, meaningless
+    # when N memories share the bus. Plain on-chip row self-repair IS
+    # supported -- see test_generated_shared_bus_selfrepair_wrapper_elaborates_cleanly_with_real_verilator.
     config = {
         **BASE,
         "redundancy": {"num_spare_rows": 1},
@@ -108,7 +163,21 @@ def test_shared_bus_rejects_redundancy(tmp_path: Path) -> None:
                           {"name": "faulty_row_addr", "width": 6, "dir": "input"}],
     }
     config_path = _write_config(tmp_path, config)
-    with pytest.raises(ConfigError, match="redundancy:"):
+    with pytest.raises(ConfigError, match="shared-bus only supports plain on-chip row self-repair"):
+        generate_from_config(config_path, tmp_path / "out")
+
+
+def test_shared_bus_rejects_onchip_col_repair(tmp_path: Path) -> None:
+    # onchip_col_repair extends the row analyzer but isn't wired per-memory
+    # in the shared-bus generate loop yet (row-only today) -- see
+    # docs/shared-hierarchical-mbist-plan.md §9b.
+    config = {
+        **BASE,
+        "redundancy": {"num_spare_rows": 1, "num_spare_cols": 1, "onchip_selfrepair": True, "onchip_col_repair": True},
+        "ports": {**BASE["ports"], "spare_wen": "spare_wen0"},
+    }
+    config_path = _write_config(tmp_path, config)
+    with pytest.raises(ConfigError, match="shared-bus only supports plain on-chip row self-repair"):
         generate_from_config(config_path, tmp_path / "out")
 
 
