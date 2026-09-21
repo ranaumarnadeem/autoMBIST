@@ -104,6 +104,46 @@ def test_run_word_oriented_rejects_check_and_backgrounds_flags() -> None:
     assert out.count("error: --check/--backgrounds don't apply to the word-oriented front") == 2
 
 
+def test_run_shared_marchcm_dispatches_to_shared_campaign() -> None:
+    """'run shared_marchcm' is a reserved name (algo_shell.py's
+    _SHARED_RUN_NAMES), consuming session.shared_mem/shared_faults, not
+    session.mem/faults -- SA0/SA1 on two different memories, both always
+    detected by any march test, real measured 2/2."""
+    shell, out = _run_script([
+        "set_shared_memory 4 8 2",
+        "add_shared_fault SA0 3 2 0",
+        "add_shared_fault SA1 5 1 1",
+        "run shared_marchcm",
+    ])
+    assert "MARCHCM_SHARED: 2/2 detected" in out
+    result = shell.session.last_results["shared_marchcm"]
+    assert result.algo_name == "MARCHCM_SHARED"
+    assert (result.detected, result.total) == (2, 2)
+    assert shell.session.last_op == ("run", "shared_marchcm")
+
+
+def test_run_shared_campaign_requires_set_shared_memory_first() -> None:
+    shell, out = _run_script(["run shared_marchcm"])
+    assert "error: no shared memory configured" in out
+
+
+def test_add_shared_fault_rejects_mi_out_of_range() -> None:
+    shell, out = _run_script([
+        "set_shared_memory 4 8 2",
+        "add_shared_fault SA0 3 2 99",
+    ])
+    assert "error: mi=99 out of range for 2 memories" in out
+
+
+def test_run_shared_rejects_check_and_backgrounds_flags() -> None:
+    shell, out = _run_script([
+        "set_shared_memory 4 8 2",
+        "run shared_marchcm --backgrounds",
+        "run shared_marchss --check march_c",
+    ])
+    assert out.count("error: --check/--backgrounds don't apply to the shared-controller front") == 2
+
+
 def test_write_report_after_compare(tmp_path: Path) -> None:
     faults = find_engine_dir() / "faults.example.txt"
     report_path = tmp_path / "matrix.csv"
