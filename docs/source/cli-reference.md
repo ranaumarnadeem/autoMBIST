@@ -83,6 +83,14 @@ the optional `redundancy:`/`repair_ports:` blocks). One easy-to-miss key:
   each edge). A mismatch makes MBIST/self-repair report failures on a good
   memory — the usual symptom is a "phantom" unrepairable during on-chip
   self-repair against a real macro.
+- **`topology`** (`dedicated` (default) or `shared-bus`) plus **`memories`**
+  — switches from one controller/one memory to one controller
+  time-multiplexed across N memories (a `memories: [{name: ...}, ...]`
+  list). Single physical port only, no `--test`/saboteur, and only
+  `onchip_selfrepair`-based redundancy (tester-driven repair, persistence,
+  and diagnosis aren't wired per-memory yet). See the shared-bus section of
+  the Configuration reference below and {doc}`architecture` for how the
+  sequencer works.
 
 See the [Configuration reference](https://ranaumarnadeem.github.io/autoMBIST/configuration.html)
 on the docs site for the full key-by-key reference.
@@ -105,7 +113,12 @@ autombist generate --config config.yml --out out --test --faults 50 --seed 1234 
 
 ### Output
 
-Written under `out/<memory_name>/` (e.g. `out/input_demo_8x16_scn4m/`):
+Written under `out/<memory_name>/` (e.g. `out/input_demo_8x16_scn4m/`) —
+except under `topology: shared-bus`, where the directory and wrapper
+filename are keyed on `wrapper_module_name` instead
+(`out/<wrapper_module_name>/<wrapper_module_name>_mbist.v`), since N
+memories share one controller and there's no single `memory_name` to name
+them after:
 
 - `<memory_name>_mbist.v` — the main wrapper module
 - `<algo>/` (e.g. `march_c/`) — RTL for the selected `--algo` **only**; the other
