@@ -2,13 +2,17 @@
 once, run one simulation per fault (plus a golden run), and parse the output
 grammar into structured results.
 
-Two "fronts" share this engine and its output grammar:
+Three "fronts" share this engine and its output grammar:
   - the algorithm front (``march_engine.sv`` driven by a ``.alg`` spec) -- P2
   - the FSM front (a generated harness around a researcher's controller) -- P5
+  - the word-oriented front (``word_oriented_engine.sv``, intra-word CFid/CFdst
+    coverage, run_word_oriented_campaign() -- no ``.alg`` spec at all, driven
+    directly by a data-background sequence)
 
-Both print exactly one line beginning with ``RESULT`` per run, so one parser
-serves both. The engine is Verilator-only: ``fault_ram.sv`` uses SystemVerilog
-queues, ``foreach``, and ``final`` blocks, none of which Icarus Verilog supports.
+All three print exactly one line beginning with ``RESULT`` per run, so one
+parser serves all of them. The engine is Verilator-only: ``fault_ram.sv`` uses
+SystemVerilog queues, ``foreach``, and ``final`` blocks, none of which Icarus
+Verilog supports.
 """
 from __future__ import annotations
 
@@ -119,6 +123,73 @@ class MemoryParams:
         return 1 << self.addr_width
 
 
+@dataclass(slots=True)
+class SharedMemoryParams:
+    """N memories behind one shared MBIST controller (docs/shared-
+    hierarchical-mbist-plan.md), sequenced one at a time via mux-select --
+    NOT the multi-port case (``MemoryParams.num_ports > 1``, one memory, N
+    physical port buses accessing the same silicon); this is N separate
+    memory instances behind one controller. A research-shell-only concern
+    (this campaign engine's own data model); the generation-shell's
+    parallel ``topology: shared-bus`` config schema (``generator.py``)
+    is a distinct concept living in a distinct module, by design (§4b's own
+    note on the two shells staying separate, matching how ``MemoryParams``
+    and the generation-shell's own flat per-memory config keys have always
+    been two independent things, never unified).
+
+    Validated at point-of-use (``_validate_shared_memory_params``), not in
+    ``__post_init__`` -- matching ``MemoryParams``' own convention (see its
+    ``words_per_row`` field comment): every entry must share ``addr_width``/
+    ``data_width``/``words_per_row``, since one shared address/data mux bus
+    needs uniform geometry across every memory it drives.
+    """
+    memories: list[MemoryParams]
+    num_ports: int = 1
+
+    @property
+    def num_memories(self) -> int:
+        return len(self.memories)
+
+
+def _validate_shared_memory_params(shared: SharedMemoryParams) -> None:
+    if shared.num_ports != 1:
+        raise CampaignError(
+            f"SharedMemoryParams only supports num_ports=1 (got {shared.num_ports}) -- "
+            "multi-port shared-bus coverage is undesigned, see "
+            "docs/shared-hierarchical-mbist-plan.md"
+        )
+    if not shared.memories:
+        raise CampaignError("SharedMemoryParams.memories must be non-empty")
+    if any(m.num_ports != 1 for m in shared.memories):
+        raise CampaignError("SharedMemoryParams: every memory must itself have num_ports=1")
+
+    first = shared.memories[0]
+    for i, m in enumerate(shared.memories[1:], start=1):
+        for field in ("addr_width", "data_width", "words_per_row"):
+            first_value = getattr(first, field)
+            this_value = getattr(m, field)
+            if this_value != first_value:
+                raise CampaignError(
+                    f"SharedMemoryParams.memories[{i}].{field} ({this_value}) does not "
+                    f"match memories[0].{field} ({first_value}) -- every memory behind a "
+                    "shared controller must share the same address/data mux bus geometry"
+                )
+        # init_val is a genuine RTL constraint too, discovered while building
+        # run_shared_campaign (step 7): fault_ram.sv's own +INIT=<n> plusarg
+        # is read unconditionally by every generate-instantiated copy (it is
+        # NOT FAULT_TAG-gated the way +FAULTS/+FAULT_INDEX now are), so every
+        # memory behind one shared controller is necessarily initialized to
+        # the same value -- this is not a design choice being imposed here,
+        # it's what the shared RTL mechanism already enforces.
+        if m.init_val != first.init_val:
+            raise CampaignError(
+                f"SharedMemoryParams.memories[{i}].init_val ({m.init_val}) does not "
+                f"match memories[0].init_val ({first.init_val}) -- fault_ram.sv's "
+                "+INIT= plusarg is shared by every memory behind one controller, "
+                "not FAULT_TAG-scoped like +FAULTS/+FAULT_INDEX"
+            )
+
+
 @dataclass(slots=True, frozen=True)
 class DataBackground:
     """A word-oriented data background (van de Goor & Al-Ars): a DW-bit mask
@@ -171,6 +242,15 @@ class FaultRecord:
                                     # IFA/SPICE-derived campaign (see fault_primitives.py's
                                     # module docstring for the adapter contract this feeds).
                                     # None == unweighted -- today's only mode.
+    mi: int = 0              # shared-controller memory index (docs/shared-hierarchical-
+                               # mbist-plan.md) -- which physical memory this fault
+                               # targets, for a future run_shared_campaign (step 7) to
+                               # route into that memory's own +FAULTS<mi>/+FAULT_INDEX<mi>
+                               # file (fault_ram.sv's FAULT_TAG, step 5). Purely a
+                               # Python-side routing attribute -- NOT serialized by
+                               # to_line(): a per-memory fault file is already scoped by
+                               # which FAULT_TAG-suffixed plusarg loads it, so the file
+                               # format itself needs no change.
 
     def to_line(self) -> str:
         base = f"{self.type} {self.vaddr} {self.vbit} {self.aaddr} {self.abit} {self.p0} {self.p1}"
@@ -418,6 +498,30 @@ def _effective_all_types(mem: MemoryParams) -> tuple[str, ...]:
     return types
 
 
+def _coupling_p0_p1(t: str) -> tuple[int, int]:
+    """(p0, p1) for the coupling-class primitives that need a non-default
+    parameterization to be sensitizable at all -- shared between
+    generate_all_types_faults (inter-word placement) and
+    generate_intra_word_faults (intra-word placement), since the
+    sensitizing parameters are a property of the TYPE, independent of where
+    victim/aggressor are placed. Returns (0, 0) -- the "no special
+    parameterization needed" default -- for every non-coupling type."""
+    if t == "CFIN":
+        return 2, 0  # either direction
+    if t == "CFID":
+        return 2, 1  # either direction, forced to 1
+    if t == "CFST":
+        return 1, 0  # aggressor holds 1, victim forced to 0
+    if t in _AGGRESSOR_HOLD_TYPES:
+        # P0 is the aggressor's required hold state (CFST's convention). 1
+        # rather than 0 so the choice is not indistinguishable from the p0=0
+        # default a missing branch would leave behind.
+        return 1, 0
+    if t == "CFDS":
+        return 4, 0  # any read disturbs
+    return 0, 0
+
+
 def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
     """One instance of every built-in fault primitive, spread across the memory
     (mirrors the shape of engine/faults.example.txt, scaled to this memory).
@@ -431,21 +535,8 @@ def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
         vb = i % dw
         aa = (va + 1) % depth  # aggressor: different word, same bit lane
         ab = vb
-        p0 = p1 = 0
-        if t == "CFIN":
-            p0 = 2  # either direction
-        elif t == "CFID":
-            p0, p1 = 2, 1  # either direction, forced to 1
-        elif t == "CFST":
-            p0, p1 = 1, 0  # aggressor holds 1, victim forced to 0
-        elif t in _AGGRESSOR_HOLD_TYPES:
-            # P0 is the aggressor's required hold state (CFST's convention).
-            # 1 rather than 0 so the choice is not indistinguishable from the
-            # p0=0 default a missing branch would leave behind.
-            p0 = 1
-        elif t == "CFDS":
-            p0 = 4  # any read disturbs
-        elif t == "AF_ALIAS":
+        p0, p1 = _coupling_p0_p1(t)
+        if t == "AF_ALIAS":
             aa = (va + 2) % depth
         elif t == "DRF":
             # AADDR/ABIT unused (matches SOF/AF_NOACC's convention). P0 is the
@@ -467,6 +558,54 @@ def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
             # real disturb is actually observable rather than a same-value no-op.
             aa, ab = 0, 0
             p0 = 0 if mem.init_val else 1
+        records.append(FaultRecord(t, va, vb, aa, ab, p0, p1))
+    return records
+
+
+# The 14 coupling-class primitives -- the only ones with a genuine
+# victim/aggressor pair, hence the only ones "intra-word" vs "inter-word"
+# placement is meaningful for. Alphabetical for a deterministic iteration
+# order over _AGGRESSOR_HOLD_TYPES, which is a frozenset.
+_INTRA_WORD_COUPLING_TYPES: tuple[str, ...] = ("CFIN", "CFID", "CFST", "CFDS") + tuple(
+    sorted(_AGGRESSOR_HOLD_TYPES)
+)
+
+
+def generate_intra_word_faults(mem: MemoryParams) -> list[FaultRecord]:
+    """One instance of each of the 14 coupling-class fault primitives (CFIN,
+    CFID, CFST, CFDS, and the two-cell CFTR/CFWD/CFRD/CFIR/CFDRD family),
+    placed INTRA-word (``aaddr == vaddr``, a different bit lane of the SAME
+    word) rather than generate_all_types_faults' inter-word placement
+    (different word, same bit lane). Single-cell primitives have no
+    victim/aggressor distinction and are therefore not included here --
+    "intra-word" vs "inter-word" is meaningless for them.
+
+    Fills a real, previously-only-hand-tested gap: this project's own
+    default fault list (``faults.example.txt``) and ``gen_faults``'s default
+    output place every coupling-class fault inter-word, so every published
+    per-algorithm coverage number says nothing about intra-word
+    survivability (see engine/README.md's "Measured before/after delta" and
+    "Semantics notes" sections -- the latter also documents that
+    ``standard_backgrounds()`` is a *proven*-complete intra-word test for
+    CFST specifically, van de Goor & Tlili, DATE 1998; no such completeness
+    claim exists yet for the other 13 types this function places).
+
+    Needs ``data_width >= 2`` -- an intra-word fault needs a second bit lane
+    in the same word to place the aggressor at."""
+    if mem.data_width < 2:
+        raise CampaignError(
+            f"generate_intra_word_faults needs data_width >= 2 to place an aggressor "
+            f"at a second bit lane of the same word (got data_width={mem.data_width})"
+        )
+    depth = mem.depth
+    dw = mem.data_width
+    records: list[FaultRecord] = []
+    for i, t in enumerate(_INTRA_WORD_COUPLING_TYPES):
+        va = (i * 7 + 3) % depth
+        vb = i % dw
+        aa = va  # intra-word: SAME word as the victim, not a different one
+        ab = (vb + 1) % dw  # a different bit lane of that same word
+        p0, p1 = _coupling_p0_p1(t)
         records.append(FaultRecord(t, va, vb, aa, ab, p0, p1))
     return records
 
@@ -649,12 +788,22 @@ def _source_digest(sources: list[Path]) -> str:
 
 
 def _engine_build_cache_key(
-    mem: MemoryParams, sources: list[Path], top_module: str, sim: str
+    mem: MemoryParams, sources: list[Path], top_module: str, sim: str,
+    num_memories: int = 1,
 ) -> str:
     """Content-addressed: source bytes + top module + the only mem.* fields
     that actually reach a verilator -G flag (addr_width/data_width/
     words_per_row -- NOT num_ports, num_wmasks, or init_val, none of which
-    compile_engine's command line ever references) + sim + tool version."""
+    compile_engine's command line ever references) + sim + tool version.
+
+    num_memories (docs/shared-hierarchical-mbist-plan.md, step 6) is NOT a
+    MemoryParams field -- it's compile_engine's own separate parameter for
+    shared_engine.sv's NUM_MEMORIES -- but it DOES reach a -G flag
+    (conditionally, like words_per_row), so it belongs in this key for the
+    same reason words_per_row does: unlike num_ports (deliberately
+    excluded above, since compile_engine's command line never references
+    it), a build at NUM_MEMORIES=2 and one at NUM_MEMORIES=3 produce
+    genuinely different binaries and must never collide in the cache."""
     parts = [
         sim,
         _verilator_version(),
@@ -662,6 +811,7 @@ def _engine_build_cache_key(
         str(mem.addr_width),
         str(mem.data_width),
         str(mem.words_per_row),
+        str(num_memories),
         _source_digest(sources),
     ]
     digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
@@ -734,6 +884,7 @@ def compile_engine(
     workdir: Path,
     sim: str = "verilator",
     cache_dir: Path | None = None,
+    num_memories: int = 1,
 ) -> BuildArtifact:
     _require_verilator(sim)
     workdir = Path(workdir)
@@ -749,6 +900,15 @@ def compile_engine(
     if mem.words_per_row != 1:
         _validate_words_per_row(mem)
         words_per_row_flags = [f"-GWORDS_PER_ROW={mem.words_per_row}"]
+    # Only shared_engine.sv (docs/shared-hierarchical-mbist-plan.md, step 6)
+    # exposes a NUM_MEMORIES top parameter -- every other top_module has no
+    # such parameter at all, so this flag must stay entirely absent at the
+    # default (1), matching words_per_row_flags' own convention: any
+    # existing caller that never passes num_memories is completely
+    # unaffected by shared_engine.sv's existence, byte-identical to before.
+    num_memories_flags: list[str] = []
+    if num_memories != 1:
+        num_memories_flags = [f"-GNUM_MEMORIES={num_memories}"]
     cmd = [
         "verilator", "--binary", "--timing",
         "-Wno-WIDTHTRUNC", "-Wno-WIDTHEXPAND",
@@ -758,6 +918,7 @@ def compile_engine(
         "-Wno-PINMISSING",
         f"-GAW={mem.addr_width}", f"-GDW={mem.data_width}",
         *words_per_row_flags,
+        *num_memories_flags,
         "--top-module", top_module,
         *[str(s) for s in sources],
         "-o", exe_name,
@@ -765,7 +926,7 @@ def compile_engine(
 
     if _engine_cache_enabled():
         cache_root = Path(cache_dir) if cache_dir is not None else _engine_cache_root()
-        key = _engine_build_cache_key(mem, sources, top_module, sim)
+        key = _engine_build_cache_key(mem, sources, top_module, sim, num_memories=num_memories)
         cache_entry_dir = cache_root / key
         cached_exe = cache_entry_dir / "obj_dir" / exe_name
         start = time.time()
@@ -1088,6 +1249,258 @@ def run_algo_campaign(
         return _run_campaign_against_artifact(
             artifact, mem, alg, faults, workdir=workdir, sim=sim, verbose=verbose,
             progress_callback=progress_callback, max_workers=max_workers,
+        )
+    finally:
+        if own_tmp is not None:
+            own_tmp.cleanup()
+
+
+_WORD_ORIENTED_MODES = {"cfid": ("CFID_WOM", False), "cfdst": ("CFDST_WOM", True)}
+
+
+def run_word_oriented_campaign(
+    mem: MemoryParams,
+    faults: list[FaultRecord],
+    *,
+    mode: str = "cfid",
+    sim: str = "verilator",
+    workdir: Path | None = None,
+    verbose: bool = False,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cache_dir: Path | None = None,
+    max_workers: int | None = None,
+) -> CampaignResult:
+    """Intra-word coupling-fault (CFid/CFdst) campaign against
+    word_oriented_engine.sv, van de Goor & Tlili's (DATE 1998) data-
+    background-sequence construction applied at every address -- see
+    engine/README.md's "Word-oriented intra-word coverage" section and
+    docs/algo-library-expansion-plan.md (gitignored) for the full citation
+    and the real completeness numbers this engine measures (24/24 CFid,
+    45/60 CFdst at DW=4, spiked before this function existed).
+
+    ``mode``: ``"cfid"`` (default, one read per DBS value) or ``"cfdst"``
+    (one extra read per DBS value, to catch a disturb that deceptively
+    returns the correct value on its own sensitizing read -- see
+    word_oriented_engine.sv's CFDST_MODE).
+
+    Unlike run_algo_campaign, there is no AlgSpec here at all -- this is not
+    a march test in the .alg grammar's sense (alg_spec.py's MAX_OPS=8 can't
+    even hold a single DW=4 DBS sequence as one march element, independent
+    of any op-vocabulary question) -- word_oriented_engine.sv is a dedicated
+    sibling to march_engine.sv, driven directly, the same architecture
+    already proven by march_engine_mp.sv (a structurally different top-level
+    testbench, the SAME unmodified fault_ram.sv underneath).
+
+    num_ports==1 only for now (mirrors _resolve_engine_sources' own
+    num_ports==2 dispatch would need its own, unresearched, design -- see
+    docs/algo-library-expansion-plan.md's "No multi-port" scope cut carried
+    over from the GALPAT epic's own precedent for exactly this kind of
+    undesigned extension).
+
+    ``cache_dir``/``max_workers``/``progress_callback``: see
+    run_algo_campaign's docstring -- identical semantics, reused unchanged.
+    """
+    if mode not in _WORD_ORIENTED_MODES:
+        raise CampaignError(f"run_word_oriented_campaign: mode must be one of {sorted(_WORD_ORIENTED_MODES)}, got {mode!r}")
+    if mem.num_ports != 1:
+        raise CampaignError(
+            f"run_word_oriented_campaign only supports num_ports=1 (got {mem.num_ports}) -- "
+            "multi-port word-oriented coverage is undesigned, see docs/algo-library-expansion-plan.md"
+        )
+    algo_name, cfdst_mode = _WORD_ORIENTED_MODES[mode]
+    _validate_fault_addresses(mem, faults)
+
+    own_tmp: tempfile.TemporaryDirectory[str] | None = None
+    if workdir is None:
+        own_tmp = tempfile.TemporaryDirectory(prefix="autombist-wom-")
+        workdir = Path(own_tmp.name)
+    else:
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from .word_oriented import write_dbs_file
+
+        engine_dir = find_engine_dir()
+        sources = [engine_dir / "fault_ram.sv", engine_dir / "word_oriented_engine.sv"]
+        top_module = "word_oriented_engine"
+
+        artifact = compile_engine(
+            mem, sources=sources, top_module=top_module,
+            workdir=workdir, sim=sim, cache_dir=cache_dir,
+        )
+
+        dbs_file = workdir / "dbs.txt"
+        write_dbs_file(mem.data_width, dbs_file)
+        fault_file = write_fault_list(faults, workdir / "faults.txt") if faults else None
+        plusargs = [f"+INIT={mem.init_val}", f"+DBS_FILE={dbs_file}"]
+        if cfdst_mode:
+            plusargs.append("+CFDST_MODE")
+
+        start = time.time()
+
+        golden_out = run_one(artifact, extra_plusargs=plusargs)
+        golden_detected, *_ = parse_result_line(golden_out)
+        if golden_detected:
+            raise CampaignError(
+                f"golden run for '{algo_name}' unexpectedly reported DETECTED "
+                f"(no faults were injected). The engine is broken.\n{golden_out}"
+            )
+
+        def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
+            out = run_one(
+                artifact, fault_file=fault_file, index=i,
+                verbose=verbose, extra_plusargs=plusargs,
+            )
+            detected, elem, op, addr, xor_bits = parse_result_line(out)
+            activations = None
+            if verbose:
+                hits = parse_fault_hits(out)
+                activations = hits[2] if hits else None
+            return FaultResult(
+                index=i, record=record, detected=detected,
+                elem=elem, op=op, addr=addr, xor=xor_bits, activations=activations,
+            )
+
+        results = _run_faults_concurrently(
+            faults, _run_one_fault, progress_callback,
+            max_workers if max_workers is not None else _fault_concurrency(),
+        )
+
+        run_seconds = time.time() - start
+        detected_count = sum(1 for r in results if r.detected)
+        total = len(results)
+        coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
+
+        return CampaignResult(
+            algo_name=algo_name, mem=mem, golden_clean=True, faults=results,
+            detected=detected_count, total=total, coverage_percent=coverage,
+            build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
+        )
+    finally:
+        if own_tmp is not None:
+            own_tmp.cleanup()
+
+
+_SHARED_CAMPAIGN_ALGO_NAMES = {
+    "MATSP": "MATSP_SHARED", "MARCHCM": "MARCHCM_SHARED", "MARCHSS": "MARCHSS_SHARED",
+}
+
+
+def run_shared_campaign(
+    shared: SharedMemoryParams,
+    alg: str,
+    faults: list[FaultRecord],
+    *,
+    sim: str = "verilator",
+    workdir: Path | None = None,
+    verbose: bool = False,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cache_dir: Path | None = None,
+    max_workers: int | None = None,
+) -> CampaignResult:
+    """Shared-controller (docs/shared-hierarchical-mbist-plan.md) campaign
+    against shared_engine.sv -- step 7 of that plan's implementation order,
+    the wholly-separate-sibling-function pattern
+    run_word_oriented_campaign's own foundation commit established,
+    reusing compile_engine()/run_one() with the num_memories/FAULT_TAG
+    hooks steps 5-6 already added (unlike word-oriented's own "zero changes
+    to compile_engine" precedent -- this feature's own §5 genuinely needed
+    both).
+
+    ``alg``: one of ``"MATSP"``/``"MARCHCM"``/``"MARCHSS"`` (shared_engine.sv's
+    own built-in +ALG= table -- no +ALG_FILE support here yet, matching this
+    step's own scope; a real .alg-driven campaign is a future extension, not
+    part of the plan's v1 order).
+
+    Each ``FaultRecord.mi`` selects which physical memory (0..num_memories-1)
+    that fault targets, routed to fault_ram.sv's own FAULT_TAG-suffixed
+    +FAULTS<mi>/+FAULT_INDEX<mi> plusargs (step 5) -- every OTHER memory gets
+    no +FAULTS<n> at all for that run, so it stays golden by construction,
+    the mechanism step 5's own real proof already confirmed leaks nothing
+    cross-memory.
+
+    ``verbose``/``progress_callback``/``cache_dir``/``max_workers``: see
+    run_algo_campaign's docstring -- identical semantics, reused unchanged.
+    """
+    if alg not in _SHARED_CAMPAIGN_ALGO_NAMES:
+        raise CampaignError(
+            f"run_shared_campaign: alg must be one of {sorted(_SHARED_CAMPAIGN_ALGO_NAMES)}, got {alg!r}"
+        )
+    _validate_shared_memory_params(shared)
+    mem = shared.memories[0]
+    _validate_fault_addresses(mem, faults)
+    for record in faults:
+        if not (0 <= record.mi < shared.num_memories):
+            raise CampaignError(
+                f"fault {record.type}@{record.vaddr}.{record.vbit} has mi={record.mi}, "
+                f"out of range for {shared.num_memories} memories (0..{shared.num_memories - 1})"
+            )
+
+    algo_name = _SHARED_CAMPAIGN_ALGO_NAMES[alg]
+
+    own_tmp: tempfile.TemporaryDirectory[str] | None = None
+    if workdir is None:
+        own_tmp = tempfile.TemporaryDirectory(prefix="autombist-shared-")
+        workdir = Path(own_tmp.name)
+    else:
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        engine_dir = find_engine_dir()
+        sources = [engine_dir / "fault_ram.sv", engine_dir / "shared_engine.sv"]
+        top_module = "shared_engine"
+
+        artifact = compile_engine(
+            mem, sources=sources, top_module=top_module,
+            workdir=workdir, sim=sim, cache_dir=cache_dir,
+            num_memories=shared.num_memories,
+        )
+
+        plusargs = [f"+INIT={mem.init_val}", f"+ALG={alg}"]
+
+        start = time.time()
+
+        golden_out = run_one(artifact, extra_plusargs=plusargs)
+        golden_detected, *_ = parse_result_line(golden_out)
+        if golden_detected:
+            raise CampaignError(
+                f"golden run for '{algo_name}' unexpectedly reported DETECTED "
+                f"(no faults were injected). The engine is broken.\n{golden_out}"
+            )
+
+        def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
+            fault_file = workdir / f"fault_{i}.txt"
+            write_fault_list([record], fault_file)
+            extra = [
+                *plusargs,
+                f"+FAULTS{record.mi}={fault_file}",
+                f"+FAULT_INDEX{record.mi}=0",
+            ]
+            if verbose:
+                extra.append("+FAULT_VERBOSE")
+            out = run_one(artifact, extra_plusargs=extra)
+            detected, elem, op, addr, xor_bits = parse_result_line(out)
+            return FaultResult(
+                index=i, record=record, detected=detected,
+                elem=elem, op=op, addr=addr, xor=xor_bits,
+            )
+
+        results = _run_faults_concurrently(
+            faults, _run_one_fault, progress_callback,
+            max_workers if max_workers is not None else _fault_concurrency(),
+        )
+
+        run_seconds = time.time() - start
+        detected_count = sum(1 for r in results if r.detected)
+        total = len(results)
+        coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
+
+        return CampaignResult(
+            algo_name=algo_name, mem=mem, golden_clean=True, faults=results,
+            detected=detected_count, total=total, coverage_percent=coverage,
+            build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
         )
     finally:
         if own_tmp is not None:

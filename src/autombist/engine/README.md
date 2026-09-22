@@ -17,6 +17,12 @@ Runs unmodified under Xcelium (xrun) and Verilator 5.x.
     march_engine_mp.sv     num_ports=2 counterpart of march_engine.sv -- same file-driven
                            .alg + fault-list grammar, extended with a port-suffix/column
                            for genuine cross-port coupling (see "Multi-port" below)
+    word_oriented_engine.sv  CFid/CFdst intra-word coupling runner -- no .alg spec at all,
+                           driven directly by a data-background sequence (see "Word-oriented
+                           intra-word coverage" below); single-port only
+    shared_engine.sv       shared-controller (multi-memory) runner -- one algorithm
+                           controller sequenced across N separate fault_ram instances via a
+                           generate/genvar loop (see "Shared-controller (multi-memory)" below)
     faults.example.txt    one instance of every implemented fault primitive (41)
     run_campaign.sh       serial campaign: one sim per fault, CSV out
 
@@ -607,6 +613,153 @@ about HSD itself, only about the memory configuration this table happens to
 use. `gen_faults --all-types` includes HSD automatically once
 `words_per_row > 1` is configured (see that section).
 
+## Word-oriented intra-word coverage (CFid/CFdst)
+
+A third, structurally different front from the two above: no `.alg` spec at
+all. `alg_spec.py`'s `MAX_OPS = 8` can't even hold a single DW=4 data-
+background sequence (18 ops -- 2 per state x 9 states) as one march element,
+so `word_oriented_engine.sv` is a dedicated top-level testbench -- same
+pattern as `march_engine_mp.sv`, reusing `fault_ram.sv`'s `write_op()`/
+`read_op()` completely unchanged -- driven directly by a *data-background
+sequence* (DBS) instead of march elements, per van de Goor & Tlili, "March
+tests for word-oriented memories," DATE 1998, Section 5. It targets
+**intra-word** coupling faults: a victim bit and an aggressor bit *within
+the same word*, which none of the coupling types above can express (their
+`vaddr`/`aaddr` fault-list fields are always different addresses).
+
+**The DBS construction** (Section 4.2 of the paper, re-derived and pinned
+against its own Table 4 (B=8, 12 states) and Table 5 (B=4, 9 states) in
+`tests/software/test_word_oriented.py`): for a B-bit word, `d = 3 +
+3*ceil(log2(B))` states. Level 0 tiles the base sequence `[00,11,00,01,10,
+01]` across the word 1 bit at a time (6 states). Each level 1..(levels-1)
+tiles the reduced sequence `[01,10,01]` at symbol width `2^level` (3 states
+per level). `word_oriented.py`'s `dbs_sequence()`/`write_dbs_file()`
+compute this in Python and hand it to the engine as a `+DBS_FILE=<path>`
+plusarg -- one hex DW-bit literal per line.
+
+**Usage:**
+
+    +DBS_FILE=<path>   the DBS, one hex DW-bit literal per line
+    +CFDST_MODE        if present: read each DBS value TWICE per address
+                        (w_Di, r_Di, r_Di) instead of once (w_Di, r_Di) --
+                        a conservative, deliberately-not-minimal superset of
+                        the paper's own further-optimized minimal CFdst
+                        sequence, chosen for implementation simplicity.
+                        Absent: CFid mode (w_Di, r_Di) only.
+
+Both modes print the same `RESULT DETECTED`/`RESULT ESCAPED` grammar as
+every other engine here, with `alg=CFID_WOM` or `alg=CFDST_WOM`. From
+Python: `run_word_oriented_campaign(mem, faults, mode="cfid"|"cfdst")` in
+`algo_engine.py` (single-port only -- multi-port intra-word coverage is
+undesigned). From the shell: `run cfid_wom` / `run cfdst_wom` (reserved
+names, not `add_algo`-registered -- see `algo_shell.py`'s
+`_WORD_ORIENTED_RUN_NAMES`); `--check`/`--backgrounds` don't apply (no
+AlgSpec, no `openram_shim.sv` involved).
+
+**Measured (DW=4, real Verilator, every ordered intra-word (vbit, abit)
+pair):**
+
+- **CFid: 24/24 detected.** Full, proven completeness -- both forced
+  polarities (P1) at every bit pair.
+- **CFdst, measured against this project's `CFDS` primitive (the closest
+  existing match -- parameterized by which aggressor op triggers the
+  disturb): 45/60 detected.** `P0=0` (r0-disturb), `P0=1` (r1-disturb),
+  `P0=4` (any-read-disturb) -- the paper's own CFdst subtype scope -- are
+  **12/12 each**, full coverage. `P0=2`/`P0=3` (non-transition write
+  triggers) are *outside* the paper's own CFdst subtype list (transition-
+  write and read-disturb only) and only partially caught -- `P0=2`: 6/12,
+  `P0=3`: 3/12 -- incidentally, wherever the DBS sequence happens to also
+  produce the right non-transition write at that bit position, not by
+  design. Not a bug: the DBS was constructed for the paper's own scope: this
+  measures how much of an unrelated, broader primitive it happens to catch
+  as a side effect. See `docs/algo-library-expansion-plan.md` (gitignored)
+  for the full derivation and the initial (wrong) all-or-nothing hypothesis
+  this corrected.
+
+## Shared-controller (multi-memory)
+
+A third structurally different front, alongside the algo front
+(`march_engine.sv`) and the word-oriented front above: one algorithm
+controller sequenced across N separate physical memories, one at a time
+(mux-select, not parallel access) -- `shared_engine.sv`, the RTL/
+simulation half of a broader shared-bus MBIST controller feature
+(`wrapper_template.j2`'s own `is_shared_bus` mux is the generation-shell
+half; see `docs/shared-hierarchical-mbist-plan.md`, gitignored, for the
+full design and every step's own real proof). Real, industry-documented
+precedent for this pattern: Siemens Tessent's "shared bus architecture"
+and Cadence Modus's "shared test access bus."
+
+Unlike `march_engine_mp.sv` (num_ports=2 on ONE memory -- two physical
+interfaces into the same silicon), `shared_engine.sv` drives N wholly
+*separate* `fault_ram` instances, built via a `generate`/`genvar` loop
+since N (`NUM_MEMORIES`) is a runtime parameter, not a fixed 2. The SAME
+algorithm runs to completion against memory 0, then restarts from scratch
+against memory 1, and so on -- never interleaved, mirroring the real RTL
+sequencer's own `SHB_IDLE`/`SHB_RUN`/`SHB_ADVANCE`/`SHB_DONE` states
+(`wrapper_template.j2`): `SHB_ADVANCE` drops the algorithm's own
+`bist_start` for exactly one cycle before re-raising it, reusing the
+algorithm FSM's *existing* bist_start-drop restart path rather than
+inventing a new reset signal.
+
+**Usage:** `+ALG=MATSP|MARCHCM|MARCHSS` (the same built-in table
+`march_engine.sv` has -- no `+ALG_FILE` support yet, a v1 scope cut, not a
+limitation of the mechanism). `NUM_MEMORIES` is a `-G` compile parameter,
+alongside the usual `AW`/`DW`/`WORDS_PER_ROW`. Per-memory fault targeting:
+each `generate`-instantiated `fault_ram` copy gets its own `FAULT_TAG`
+(`fault_ram.sv`'s new parameter, default `""` -- every OTHER engine's own
+instantiation is untouched, byte-identical), so a fault for memory M
+specifically is loaded via `+FAULTS<M>=<file> +FAULT_INDEX<M>=<n>` --
+e.g. `+FAULTS0=faults.txt +FAULT_INDEX0=0` targets memory 0 only, leaving
+memory 1 (no `+FAULTS1` given) golden. `RESULT` lines carry a trailing
+`mem=<n>` field identifying which memory detected the fault:
+
+    RESULT DETECTED alg=MARCHCM_SHARED elem=2 op=0 addr=3 xor=00000100 mem=0
+    RESULT ESCAPED  alg=MARCHCM_SHARED
+
+From Python: `run_shared_campaign(shared, alg, faults)` in `algo_engine.py`
+(`SharedMemoryParams(memories=[...])` -- every memory must share
+`addr_width`/`data_width`/`words_per_row`/`init_val`, one shared
+address/data mux bus and a shared, unconditional `+INIT=` plusarg;
+`FaultRecord.mi` selects which memory a fault targets, never serialized
+to the fault-list file itself -- a per-memory file is already scoped by
+which `FAULT_TAG`-suffixed plusarg loads it). From the shell:
+`set_shared_memory <addr_width> <data_width> <num_memories>` +
+`add_shared_fault TYPE VADDR VBIT MI [AADDR ABIT P0 P1]`, then
+`run shared_matsp`/`run shared_marchcm`/`run shared_marchss` (reserved
+names, separate session state from `set_memory`/`add_fault` --
+`--check`/`--backgrounds` don't apply, same as the word-oriented front).
+
+**Measured (real Verilator):**
+
+- **Golden run, both N=1 and N=2: clean (ESCAPED).** N=2's simulation
+  time is exactly 2x N=1's -- proves the second memory's full algorithm
+  pass genuinely runs, not a no-op that would still report ESCAPED for
+  the wrong reason.
+- **Per-memory fault isolation: zero cross-memory leakage.** A fault on
+  memory 0 (`+FAULTS0`/`+FAULT_INDEX0`, no `+FAULTS1` at all) reports
+  `mem=0`, never `mem=1`, and vice versa; memory 1's own detection is
+  confirmed to fire only after memory 0's full clean pass completes.
+- **`run_shared_campaign` end-to-end, hand-derived split: 2/3 detected.**
+  SA0 on memory 0 and SA1 on memory 1 both detected (any march test
+  catches a simple stuck-at, on either memory); DRF (Data Retention
+  Fault) on memory 0, with a huge idle threshold, escapes -- already
+  documented above ("Idle/wait op and Data Retention Fault (DRF)"), not
+  newly asserted here: no algorithm in `shared_engine.sv`'s built-in
+  table issues a `wait` op, so DRF escapes unconditionally against all
+  three, exactly like it does against `march_engine.sv`'s own MATS+/
+  March C-/March SS.
+
+**v1 scope cuts** (not limitations of the underlying mechanism -- see
+`docs/shared-hierarchical-mbist-plan.md`'s own open questions for what a
+follow-up would need): no `redundancy:`/`use_saboteur`/multi-port support
+combined with `topology: shared-bus` yet (the generation-shell rejects
+these combinations outright, with a clear error, rather than silently
+producing broken RTL); no `+ALG_FILE` support in `shared_engine.sv`, only
+the three built-ins; no controller-of-controllers (hierarchical)
+orchestration -- this is the flat "one controller, N memories" pattern
+only, deliberately built first since a hierarchical orchestrator needs
+something to orchestrate.
+
 ## Limits
 
 **Only S = xwyry is modeled.** VTS 2002's own SPICE analysis (Section 4)
@@ -683,6 +836,41 @@ instruction) -- e.g. `CFID vaddr=5 vbit=0 aaddr=5 abit=1 p0=0(up) p1=1` on
 once `--backgrounds` runs (verified via real Verilator runs, both with and
 without the background loop; see
 `tests/integration/test_data_backgrounds_e2e.py`).
+
+**`standard_backgrounds` is a proven-complete intra-word CFST test, not just an
+empirically-good one.** A.J. van de Goor & I.B.S. Tlili, "March tests for
+word-oriented memories," DATE 1998, derives the minimal data-background
+sequence needed to detect every intra-word state coupling fault (CFst) in a
+`B`-bit word: `d = ceil(log2(B)) + 1` backgrounds -- one solid plus one
+column-stripe per bit of the bit-lane index -- chosen so that every pair of
+bit lanes differs under at least one background (CFst is state-only, not
+transition-dependent, so the paper's own DBs "can be applied in any
+sequence"). `standard_backgrounds`'s construction (solid + `ceil(log2(W))`
+column-stripe masks, `mask_k` set at bit `i` iff bit `k` of `i` is set) is
+exactly this method -- not derived from the paper, but independently
+identical to it, confirmed both combinatorially (every bit-lane pair
+differs under some mask, for every power-of-two width up to 32) and by a
+real, exhaustive Verilator campaign against every one of the 112 possible
+intra-word CFST instances in an 8-bit word (all 56 unordered bit-lane pairs
+x both aggressor-hold polarities): 112/112 detected. See
+`test_standard_backgrounds_distinguishes_every_bit_pair` and
+`test_cfst_intra_word_completeness_across_all_bit_pairs` in
+`tests/integration/test_data_backgrounds_e2e.py`. This guarantee is CFST-
+specific -- it says nothing about intra-word CFID/CFDS/CFTR/CFWD/CFRD/CFIR/
+CFDRD, whose own intra-word completeness (if any) has not been measured.
+
+**Placing intra-word coupling faults**: `generate_intra_word_faults()`
+(`algo_engine.py`) / `gen_faults --intra-word` in the shell places one
+instance of each of the 14 coupling-class primitives (CFIN, CFID, CFST,
+CFDS, and the two-cell CFTR/CFWD/CFRD/CFIR/CFDRD family) intra-word --
+`aaddr == vaddr`, a different bit lane of the same word -- rather than
+`generate_all_types_faults`' inter-word default. Needs `data_width >= 2`.
+Measured against `march_c` + `standard_backgrounds(8)`: 9 of the 14 detected
+(the CFST instance among them is provably always caught, per the guarantee
+above; the other 5 escapes -- CFDS, CFDRD0/1, CFWD0/1 -- are the same
+non-transition-write/read-after-read-shaped types march_c is weak against
+inter-word too, see the "Measured results" table). This is a placement
+helper, not a completeness claim for those other 13 types.
 
 Read fault evaluation uses the pre-read cell state; destructive read
 effects land after the returned value is formed. Static clamps (SAF, CFST)

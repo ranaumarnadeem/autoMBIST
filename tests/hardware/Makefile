@@ -15,6 +15,7 @@ PULSE_WIDTH_NS ?= 2
 ADDR_WIDTH ?= 10
 DATA_WIDTH ?= 32
 READ_LATENCY ?= 1
+NUM_MEMORIES ?= 2
 ALGO ?= march-c
 ALGO_DIR := $(subst -,_,$(ALGO))
 ALGO_TEST ?= 0
@@ -66,12 +67,23 @@ else
 REMAP_SOURCE :=
 endif
 
+# Caller-supplied extra Verilog sources, compiled into the same unit as
+# everything else below -- e.g. a defparam-override module a test writes to
+# give two otherwise-identical shared-bus memory instances distinct baked-in
+# defects (sram_spares_tiny.v's DEFECT_ADDR/_BIT/_SA1 are module parameters,
+# and shared-bus instantiates the same memory_name module N times, so a
+# defparam targeting one instance's hierarchical path is the only way to
+# differ them without a wrapper_template.j2 change). Empty by default --
+# every existing caller's VERILOG_SOURCES stays byte-identical.
+EXTRA_SOURCES ?=
+
 ifeq ($(ALGO_TEST),1)
 VERILOG_SOURCES := $(SRAM_SOURCE) \
                    $(ALGO_PROBE_SOURCE) \
                    $(MODULE_OUTDIR)/$(ALGO_DIR)/$(ALGO_DIR)_algo.sv \
                    $(MODULE_OUTDIR)/$(ALGO_DIR)/$(ALGO_DIR)_fsm.sv \
-                   $(MODULE_OUTDIR)/$(ALGO_DIR)/$(ALGO_DIR)_top.sv
+                   $(MODULE_OUTDIR)/$(ALGO_DIR)/$(ALGO_DIR)_top.sv \
+                   $(EXTRA_SOURCES)
 TOPLEVEL ?= algo_module_probe
 COCOTB_TEST_MODULES ?= test_algo_modules
 ifeq ($(ALGO),march-raw)
@@ -84,7 +96,8 @@ VERILOG_SOURCES := $(WRAPPER_FILE) \
                    $(SRAM_SOURCE) \
                    $(MODULE_OUTDIR)/$(ALGO_DIR)/$(ALGO_DIR)_algo.sv \
                    $(MODULE_OUTDIR)/$(ALGO_DIR)/$(ALGO_DIR)_fsm.sv \
-                   $(MODULE_OUTDIR)/$(ALGO_DIR)/$(ALGO_DIR)_top.sv
+                   $(MODULE_OUTDIR)/$(ALGO_DIR)/$(ALGO_DIR)_top.sv \
+                   $(EXTRA_SOURCES)
 TOPLEVEL ?= $(WRAPPER_MODULE)
 COCOTB_TEST_MODULES ?= test_mbist
 endif
@@ -103,6 +116,7 @@ export PULSE_WIDTH_NS
 export ADDR_WIDTH
 export DATA_WIDTH
 export READ_LATENCY
+export NUM_MEMORIES
 export NUM_DIAGNOSIS_ENTRIES
 export MEMORY_NAME
 export MODULE_OUTDIR

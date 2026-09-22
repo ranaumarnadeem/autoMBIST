@@ -24,13 +24,17 @@ from .algo_engine import (
     CampaignResult,
     FaultRecord,
     MemoryParams,
+    SharedMemoryParams,
     generate_all_types_faults,
+    generate_intra_word_faults,
     generate_random_faults,
     load_fault_list,
     merge_background_results,
     run_algo_campaign,
     run_background_campaign,
     run_fsm_campaign,
+    run_shared_campaign,
+    run_word_oriented_campaign,
     write_fault_list,
     _validate_words_per_row,
 )
@@ -50,6 +54,24 @@ from .synth_engine import synthesize_alg, synth_verification_faults
 # The 37 DSL-covered built-ins' names, for distinguishing "custom" registry
 # entries (added via add_fault_type) from the defaults in `list types`.
 _DEFAULT_REGISTRY_NAMES = frozenset(p.name for p in default_registry())
+
+# Reserved 'run'/'compare_algo' target names for the word-oriented front
+# (word_oriented_engine.sv, intra-word CFid/CFdst coverage) -- this front has
+# no AlgSpec at all (see algo_engine.py's run_word_oriented_campaign
+# docstring), so it can't be registered into session.algos like every other
+# target; checked by name in do_run before the fsms/algos dispatch instead.
+_WORD_ORIENTED_RUN_NAMES = {"cfid_wom": "cfid", "cfdst_wom": "cfdst"}
+
+# Reserved 'run' target names for the shared-controller front
+# (shared_engine.sv, docs/shared-hierarchical-mbist-plan.md) -- like the
+# word-oriented front, this has no AlgSpec (shared_engine.sv is driven by
+# its own built-in +ALG= table, not a march-element program), and it
+# consumes session.shared_mem/shared_faults instead of session.mem/faults
+# (see Session's own field comments), so it gets its own reserved-name
+# dispatch in do_run rather than being registered into session.algos.
+_SHARED_RUN_NAMES = {
+    "shared_matsp": "MATSP", "shared_marchcm": "MARCHCM", "shared_marchss": "MARCHSS",
+}
 
 # Shorthand aliases so `compare_algo mine -march C,X,SS` reads the way the
 # literature abbreviates these algorithms.
@@ -109,6 +131,16 @@ class Session:
     fsms: dict[str, FsmEntry] = field(default_factory=dict)
     faults: list[FaultRecord] = field(default_factory=list)
     registry: list[FaultPrimitive] = field(default_factory=default_registry)
+    # Shared-controller (docs/shared-hierarchical-mbist-plan.md) session
+    # state -- deliberately separate from mem/faults above, not folded into
+    # them: a shared-bus fault needs an mi (which physical memory) that a
+    # single-memory FaultRecord has no use for, and mixing the two lists
+    # would make an ordinary `run <algo>` silently pick up mi-tagged faults
+    # it can't act on. Configured by set_shared_memory/add_shared_fault,
+    # consumed by `run`'s own shared_matsp/shared_marchcm/shared_marchss
+    # reserved names (see _SHARED_RUN_NAMES).
+    shared_mem: SharedMemoryParams | None = None
+    shared_faults: list[FaultRecord] = field(default_factory=list)
     sim: str = "verilator"
     last_results: dict[str, CampaignResult] = field(default_factory=dict)
     last_matrix: list[CampaignResult] | None = None
@@ -259,6 +291,53 @@ class AlgoShell(cmd.Cmd):
             f"words_per_row={words_per_row}"
         )
 
+    def do_set_shared_memory(self, arg: str) -> None:
+        """set_shared_memory <addr_width> <data_width> <num_memories> [--init 0|1]
+        Configure N identical memories behind one shared controller
+        (shared_engine.sv, docs/shared-hierarchical-mbist-plan.md) -- separate
+        session state from set_memory/session.mem (see Session's own field
+        comments). Every memory gets the same addr_width/data_width/init
+        (SharedMemoryParams requires uniform geometry -- one shared address/
+        data mux bus, and fault_ram.sv's +INIT= plusarg is read unconditionally
+        by every instance, not FAULT_TAG-scoped like +FAULTS/+FAULT_INDEX)."""
+        pos, flags = _parse_flags(_tokenize(arg), {"init": int})
+        if len(pos) != 3:
+            raise ValueError("usage: set_shared_memory <addr_width> <data_width> <num_memories> [--init 0|1]")
+        aw, dw, count = int(pos[0]), int(pos[1]), int(pos[2])
+        if count < 1:
+            raise ValueError(f"num_memories must be >= 1, got {count}")
+        init = int(flags.get("init", 1))
+        self.session.shared_mem = SharedMemoryParams(
+            memories=[MemoryParams(addr_width=aw, data_width=dw, init_val=init) for _ in range(count)]
+        )
+        self.session.shared_faults = []
+        self._out(f"shared memory set: {count} x {aw}x{dw}, init={init}")
+
+    def do_add_shared_fault(self, arg: str) -> None:
+        """add_shared_fault TYPE VADDR VBIT MI [AADDR ABIT P0 P1]
+        Append one fault to the shared-controller fault list (separate from
+        add_fault/session.faults -- see Session's own field comments). MI
+        (required, no default -- unlike add_fault's optional vport/aport,
+        which physical memory a shared-bus fault targets is never a safe
+        thing to default) selects which of set_shared_memory's memories
+        (0..num_memories-1) this fault targets. AADDR/ABIT/P0/P1 default to
+        0 0 0 0 when omitted, matching add_fault's own convention."""
+        if self.session.shared_mem is None:
+            raise ValueError("no shared memory configured; run 'set_shared_memory <addr_width> <data_width> <num_memories>' first")
+        tokens = _tokenize(arg)
+        if len(tokens) not in (4, 8):
+            raise ValueError("usage: add_shared_fault TYPE VADDR VBIT MI [AADDR ABIT P0 P1]")
+        fault_type, va, vb, mi = tokens[0], int(tokens[1]), int(tokens[2]), int(tokens[3])
+        if not (0 <= mi < self.session.shared_mem.num_memories):
+            raise ValueError(
+                f"mi={mi} out of range for {self.session.shared_mem.num_memories} "
+                f"memories (0..{self.session.shared_mem.num_memories - 1})"
+            )
+        aa, ab, p0, p1 = (int(x) for x in tokens[4:8]) if len(tokens) == 8 else (0, 0, 0, 0)
+        record = FaultRecord(fault_type, va, vb, aa, ab, p0, p1, mi=mi)
+        self.session.shared_faults.append(record)
+        self._out(f"shared fault added: {fault_type} v={va}.{vb} mi={mi} (total {len(self.session.shared_faults)})")
+
     def do_add_algo(self, arg: str) -> None:
         """add_algo <path.alg> [--name NAME]
         Register a march algorithm spec (see the .alg format in the docs)."""
@@ -391,21 +470,34 @@ class AlgoShell(cmd.Cmd):
         self._warn_if_hsd_inert(records)
 
     def do_gen_faults(self, arg: str) -> None:
-        """gen_faults [--all-types] [--n N --seed S]
-        Generate a fault list: one of each built-in type (default), or N random faults."""
+        """gen_faults [--all-types] [--intra-word] [--n N --seed S]
+        Generate a fault list: one of each built-in type (default), one of
+        each of the 14 coupling-class types placed intra-word instead of the
+        default inter-word (--intra-word -- needs data_width >= 2), or N
+        random faults (--n)."""
         mem = self._require_memory()
-        pos, flags = _parse_flags(_tokenize(arg), {"all-types": None, "n": int, "seed": int})
+        pos, flags = _parse_flags(_tokenize(arg), {"all-types": None, "intra-word": None, "n": int, "seed": int})
         if "n" in flags:
             records = generate_random_faults(mem, int(flags["n"]), int(flags.get("seed", 0)))
+        elif "intra-word" in flags:
+            records = generate_intra_word_faults(mem)
         else:
             records = generate_all_types_faults(mem)
         self.session.faults = records
         self._out(f"generated {len(records)} faults")
 
     def do_run(self, arg: str) -> None:
-        """run <algo_name|fsm_name> [--verbose] [--check ALGO] [--backgrounds]
-        Run a fault campaign for one algorithm, or a registered FSM (from
-        add_fsm), against the current fault list. FSM runs report detect/
+        """run <algo_name|fsm_name|cfid_wom|cfdst_wom|shared_matsp|shared_marchcm|shared_marchss> [--verbose] [--check ALGO] [--backgrounds]
+        Run a fault campaign for one algorithm, a registered FSM (from
+        add_fsm), the word-oriented intra-word coupling front (the two
+        reserved names 'cfid_wom'/'cfdst_wom' -- no AlgSpec, no FSM; see
+        run_word_oriented_campaign in algo_engine.py and engine/README.md's
+        "Word-oriented intra-word coverage" section), or the shared-controller
+        front (the three reserved names 'shared_matsp'/'shared_marchcm'/
+        'shared_marchss' -- no AlgSpec either; needs set_shared_memory/
+        add_shared_fault first, not set_memory/add_fault; see
+        run_shared_campaign in algo_engine.py and
+        docs/shared-hierarchical-mbist-plan.md). FSM runs report detect/
         escape only (--verbose has no effect for them).
         --check ALGO (FSM targets only): also verify the controller drives the
         exact march sequence of ALGO (a built-in name or a .alg path), address
@@ -414,14 +506,53 @@ class AlgoShell(cmd.Cmd):
         intra-word data-background set (solid + column-stripe patterns),
         merging results so a fault counts as detected if any background
         caught it. FSM targets don't support this (openram_shim.sv has no
-        +BACKGROUND path)."""
-        mem = self._require_memory()
+        +BACKGROUND path). Word-oriented and shared-controller targets don't
+        support --check or --backgrounds either (own dedicated engines, no
+        AlgSpec/openram_shim involved)."""
         pos, flags = _parse_flags(_tokenize(arg), {"verbose": None, "check": str, "backgrounds": None})
         if not pos:
-            raise ValueError("usage: run <algo_name|fsm_name> [--verbose] [--check ALGO] [--backgrounds]")
+            raise ValueError(
+                "usage: run <algo_name|fsm_name|cfid_wom|cfdst_wom|shared_matsp|"
+                "shared_marchcm|shared_marchss> [--verbose] [--check ALGO] [--backgrounds]"
+            )
         name = pos[0]
 
-        if name in self.session.fsms:
+        if name in _SHARED_RUN_NAMES:
+            if flags.get("check") or flags.get("backgrounds"):
+                raise ValueError(
+                    "--check/--backgrounds don't apply to the shared-controller front "
+                    "(shared_matsp/shared_marchcm/shared_marchss -- no AlgSpec, no FSM)"
+                )
+            if self.session.shared_mem is None:
+                raise ValueError("no shared memory configured; run 'set_shared_memory <addr_width> <data_width> <num_memories>' first")
+            workdir = self.session.next_run_dir(f"run_{name}")
+            with fault_progress(len(self.session.shared_faults)) as progress_cb:
+                result = run_shared_campaign(
+                    self.session.shared_mem, _SHARED_RUN_NAMES[name], self.session.shared_faults,
+                    sim=self.session.sim, workdir=workdir, verbose=bool(flags.get("verbose")),
+                    progress_callback=progress_cb,
+                )
+            self.session.last_results[name] = result
+            self.session.last_op = ("run", name)
+            self._print_result_summary(result)
+            return
+
+        mem = self._require_memory()
+
+        if name in _WORD_ORIENTED_RUN_NAMES:
+            if flags.get("check") or flags.get("backgrounds"):
+                raise ValueError(
+                    "--check/--backgrounds don't apply to the word-oriented front "
+                    "(cfid_wom/cfdst_wom -- no AlgSpec, no FSM)"
+                )
+            workdir = self.session.next_run_dir(f"run_{name}")
+            with fault_progress(len(self.session.faults)) as progress_cb:
+                result = run_word_oriented_campaign(
+                    mem, self.session.faults, mode=_WORD_ORIENTED_RUN_NAMES[name],
+                    sim=self.session.sim, workdir=workdir, verbose=bool(flags.get("verbose")),
+                    progress_callback=progress_cb,
+                )
+        elif name in self.session.fsms:
             if flags.get("backgrounds"):
                 raise ValueError(
                     "--backgrounds applies only to algorithm targets (FSM front has no +BACKGROUND path)"
@@ -683,6 +814,11 @@ class AlgoShell(cmd.Cmd):
             self._out("algos:")
             for name, spec in sorted(self.session.algos.items()):
                 self._out(f"  {name}  ({spec.length_n}n, {len(spec.elements)} elements)")
+            self._out("  cfid_wom, cfdst_wom  (word-oriented front, no AlgSpec -- always available, run-only)")
+            self._out(
+                "  shared_matsp, shared_marchcm, shared_marchss  (shared-controller front, "
+                "no AlgSpec -- needs set_shared_memory first, run-only)"
+            )
         if what in ("fsms", "all"):
             self._out("fsms:")
             for name, entry in sorted(self.session.fsms.items()):
