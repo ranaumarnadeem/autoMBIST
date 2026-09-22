@@ -272,12 +272,15 @@ type; it is reserved for a future per-port victim gate. See
 Load a fault-list file (`add_fault`'s grammar, above), replacing the current
 list unless `--append`.
 
-**`gen_faults [--all-types] [--n N --seed S]`**
+**`gen_faults [--all-types] [--intra-word] [--n N --seed S]`**
 Generate a fault list: one instance of each of the 41 unconditional built-in
 types (default; plus `DRF`/`HSD` when the configured memory supports them —
-see `engine/README.md`'s "Why 41 and not 43"), or `N` random faults with
-`--n`/`--seed` for reproducibility. This *replaces* the session's current
-fault list.
+see `engine/README.md`'s "Why 41 and not 43"), one instance of each of the 14
+coupling-class types placed *intra-word* (`--intra-word` — same word,
+different bit lane, needs `data_width >= 2`; every other generation mode
+places coupling-class faults *inter-word* — see `engine/README.md`'s
+"Semantics notes"), or `N` random faults with `--n`/`--seed` for
+reproducibility. This *replaces* the session's current fault list.
 
 **`run <algo_name|fsm_name> [--verbose] [--check ALGO] [--backgrounds]`**
 Run a fault campaign for one registered algorithm or FSM against the

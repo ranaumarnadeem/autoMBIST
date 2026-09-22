@@ -17,7 +17,6 @@ from jinja2 import Environment, PackageLoader, TemplateNotFound
 from .repair.types import SpareGeometry, SpareGeometryError
 
 REQUIRED_TOP_KEYS = (
-    "memory_name",
     "wrapper_module_name",
     "addr_width",
     "data_width",
@@ -25,10 +24,17 @@ REQUIRED_TOP_KEYS = (
     "ports",
 )
 OPTIONAL_TOP_KEYS = (
+    # memory_name is conditionally required, not universally: required under
+    # today's default (topology: dedicated, or topology omitted), forbidden
+    # under topology: shared-bus -- see _validate_shared_memories, the one
+    # place that actually enforces which of memory_name/memories applies.
+    "memory_name",
     "read_latency",
     "memory_has_fixed_geometry",
     "repair_ports",
     "redundancy",
+    "topology",
+    "memories",
 )
 # load_config is reused to re-parse generate_from_config's own written-out
 # config.yml snapshot (runner.py's _load_simulation_config), not just a user's
@@ -521,6 +527,71 @@ _WRAPPER_RESERVED_PINS = frozenset({
 })
 
 
+_VALID_TOPOLOGIES = ("dedicated", "shared-bus")
+
+
+def _validate_shared_memories(loaded: dict[str, Any]) -> None:
+    """Validate the ``topology:``/``memories:`` pair -- the config schema for
+    a shared-bus MBIST controller (docs/shared-hierarchical-mbist-plan.md
+    §4b, step 0 of that plan's implementation order). ``memory_name`` moved
+    from ``REQUIRED_TOP_KEYS`` to ``OPTIONAL_TOP_KEYS`` specifically so this
+    function is the one place that decides whether it's actually required --
+    see that constant's own comment.
+
+    ``topology`` absent, or ``"dedicated"``, is today's behaviour, byte-
+    identical: ``memory_name`` is required exactly as it always has been (the
+    one memory this controller drives), and ``memories`` must be absent.
+
+    ``topology: shared-bus`` ALSO requires ``memory_name`` -- corrected after
+    an initial draft of this function forbade it, reasoning "a single memory
+    doesn't make sense for N memories." That reasoning conflated two
+    different things ``memory_name`` was never distinguishing before this
+    feature existed: under ``dedicated`` it names the one memory INSTANCE;
+    under ``shared-bus`` every entry in ``memories`` shares the same macro
+    TYPE (uniform geometry is already required -- one controller, one mux
+    bus), and ``memory_name`` is what names *that shared type* for the N
+    per-instance ``u_mem_<name>`` instantiations wrapper_template.j2 renders
+    (see step 1). ``memories`` additionally becomes required -- a non-empty
+    list of ``{name}`` entries (per-instance labels, distinct from
+    ``memory_name``'s type), validated the same shape as ``repair_ports``
+    below.
+    """
+    topology = loaded.get("topology", "dedicated")
+    if topology not in _VALID_TOPOLOGIES:
+        raise ConfigError(f"topology must be one of {_VALID_TOPOLOGIES}, got {topology!r}")
+
+    _require_keys(loaded, ("memory_name",), "root")
+    _validate_non_empty_str(loaded, "memory_name")
+
+    if topology == "dedicated":
+        if "memories" in loaded:
+            raise ConfigError("memories is only valid under topology: shared-bus")
+        return
+
+    # topology == "shared-bus"
+    entries = loaded.get("memories")
+    if not isinstance(entries, list) or not entries:
+        raise ConfigError("memories must be a non-empty list when topology: shared-bus")
+
+    seen: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        where = f"memories[{index}]"
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{where} must be a mapping")
+
+        name = entry.get("name")
+        if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
+            raise ConfigError(f"{where}.name must be a valid identifier")
+        if name in seen:
+            raise ConfigError(f"{where}: duplicate memory name {name!r}")
+        seen.add(name)
+
+        normalized.append({"name": name})
+
+    loaded["memories"] = normalized
+
+
 def _validate_repair_ports(loaded: dict[str, Any]) -> None:
     """Validate and normalise the OPTIONAL ``repair_ports:`` block.
 
@@ -965,7 +1036,7 @@ def load_config(config_path: Path) -> dict[str, Any]:
     _require_keys(loaded, REQUIRED_TOP_KEYS, "root")
     _reject_unknown_top_keys(loaded)
 
-    _validate_non_empty_str(loaded, "memory_name")
+    _validate_shared_memories(loaded)
     _validate_non_empty_str(loaded, "wrapper_module_name")
     _validate_positive_int(loaded, "addr_width")
     _validate_positive_int(loaded, "data_width")
@@ -1111,6 +1182,58 @@ def generate_from_config(
             "models its own storage and has no concept of spare rows"
         )
 
+    is_shared_bus = config.get("topology", "dedicated") == "shared-bus"
+    if is_shared_bus:
+        # wrapper_template.j2's shared-bus memory-select mux (step 1 of
+        # docs/shared-hierarchical-mbist-plan.md's implementation order) is
+        # only implemented for the plain single-port, non-redundant,
+        # non-saboteur path -- these three combinations would otherwise
+        # silently render broken RTL (the redundancy/saboteur branches still
+        # reference memory_name as a single physical instance, which under
+        # shared-bus names a shared macro TYPE instead, not one instance to
+        # bind a repair remap or saboteur model to).
+        if use_saboteur:
+            raise ConfigError(
+                "topology: shared-bus cannot be combined with use_saboteur=True -- "
+                "the shared-bus controller-select mux is only implemented for the "
+                "plain (non-saboteur) memory path; see "
+                "docs/shared-hierarchical-mbist-plan.md §4a"
+            )
+        redundancy_block = config.get("redundancy")
+        if redundancy_block:
+            # On-chip row self-repair, with or without on-chip column repair,
+            # is wired into the shared-bus sequencer today
+            # (wrapper_template.j2's selfrepair_inst generate loop -- one
+            # analyzer/ctrl/remap (+ a repair_remap_col per memory when
+            # onchip_col_repair is set) per memory, see
+            # docs/shared-hierarchical-mbist-plan.md §9b). Tester-driven
+            # redundancy (repair_ports pins bind to a single physical remap,
+            # meaningless when N memories share the bus) and the remaining
+            # extended on-chip features (persisted-repair load, diagnosis
+            # log) aren't wired per-memory yet -- each would silently render
+            # broken/incomplete RTL if allowed through here.
+            unsupported_shared_bus_redundancy = (
+                not redundancy_block.get("onchip_selfrepair")
+                or redundancy_block.get("onchip_repair_persistence")
+                or redundancy_block.get("onchip_diagnosis")
+            )
+            if unsupported_shared_bus_redundancy:
+                raise ConfigError(
+                    "topology: shared-bus supports on-chip row self-repair "
+                    "and on-chip 2D (row+column) self-repair redundancy today "
+                    "(redundancy.onchip_selfrepair: true, with "
+                    "onchip_repair_persistence/onchip_diagnosis both false) -- "
+                    "tester-driven redundancy and the remaining extended "
+                    "on-chip features are not yet wired for the shared-bus "
+                    "controller-select mux; see "
+                    "docs/shared-hierarchical-mbist-plan.md §9b"
+                )
+        if len(config["normalized_ports"]) != 1:
+            raise ConfigError(
+                "topology: shared-bus is only implemented for a single "
+                "physical port today; see docs/shared-hierarchical-mbist-plan.md §4a"
+            )
+
     redundancy_cfg = config.get("redundancy")
     if redundancy_cfg and redundancy_cfg.get("onchip_selfrepair") and algo.strip().lower() not in _SELFREPAIR_ALGOS:
         # algo is a generate_from_config keyword, never seen by load_config /
@@ -1137,7 +1260,14 @@ def generate_from_config(
 
     outdir.mkdir(parents=True, exist_ok=True)
 
-    module_outdir = outdir / config["memory_name"]
+    # Dedicated (today, unchanged): one memory_name names both the output
+    # directory and the generated files, since there's exactly one physical
+    # memory. Shared-bus: N physical memories share one controller, so the
+    # controller's own wrapper_module_name is the naming key instead -- the
+    # multi-port precedent's own answer to "one config, N things" is N
+    # *instances inside one module*, not N output directories (§4b).
+    output_stem = config["wrapper_module_name"] if is_shared_bus else config["memory_name"]
+    module_outdir = outdir / output_stem
     module_outdir.mkdir(parents=True, exist_ok=True)
 
     render_config = dict(config)
@@ -1216,7 +1346,7 @@ def generate_from_config(
     config_snapshot_path.write_text(yaml.safe_dump(render_config, sort_keys=False), encoding="utf-8")
 
     wrapper_text = render_wrapper(render_config)
-    wrapper_path = module_outdir / f"{config['memory_name']}_mbist.v"
+    wrapper_path = module_outdir / f"{output_stem}_mbist.v"
     wrapper_path.write_text(wrapper_text, encoding="utf-8")
 
     copy_mbist_rtl(module_outdir, algo_dir)

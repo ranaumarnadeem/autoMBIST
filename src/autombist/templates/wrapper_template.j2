@@ -9,6 +9,18 @@
 {% set has_onchip_diagnosis = has_onchip_selfrepair and redundancy.onchip_diagnosis %}
 {% set mode_signal = "effective_test_mode" if has_onchip_selfrepair else "test_mode" %}
 {% set start_signal = "effective_bist_start" if has_onchip_selfrepair else "bist_start && test_mode" %}
+{# Shared-bus MBIST controller (docs/shared-hierarchical-mbist-plan.md §4a):
+   one controller FSM (u_algo_top) sequenced across NUM_MEMORIES physical
+   memories one at a time, mux-selected. `memories` is only ever defined by
+   a topology: shared-bus config (step 2 of that plan) -- absent (every
+   config today), num_memories is exactly 1 and is_shared_bus is false, so
+   every existing render stays byte-identical. Scoped to the plain
+   single-port, non-redundant, non-self-repair, non-saboteur path only for
+   now; combining shared-bus with those is a config-validation concern
+   (step 2), not handled here. #}
+{% set num_memories = memories|length if memories is defined else 1 %}
+{% set is_shared_bus = num_memories > 1 %}
+{% set mem_sel_width = (num_memories - 1).bit_length() if is_shared_bus else 1 %}
 module {{ wrapper_module_name }} #(
     parameter integer ADDR_WIDTH = {{ addr_width }},
     parameter integer DATA_WIDTH = {{ data_width }}
@@ -74,7 +86,7 @@ module {{ wrapper_module_name }} #(
     logic selected_write_req;
     logic mbist_write_req;
 
-{% if has_onchip_selfrepair %}
+{% if has_onchip_selfrepair and not is_shared_bus %}
     // Declared here (not alongside their instantiations below) because Icarus
     // requires a wire's declaration to textually precede its use, and these
     // are read by u_algo_top's instantiation and the test_mode mux immediately
@@ -99,6 +111,306 @@ module {{ wrapper_module_name }} #(
     assign effective_test_mode  = test_mode || ctrl_test_mode_override;
     assign effective_bist_start = (bist_start && test_mode && !self_repair_busy) || ctrl_bist_start;
 {% endif %}
+{% if has_onchip_selfrepair and is_shared_bus %}
+    // Shared-controller self-repair (docs/shared-hierarchical-mbist-plan.md
+    // §9b): one independent onchip_selfrepair_ctrl + onchip_row_repair_analyzer
+    // + repair_remap_row per memory (generate loop, below, inside the
+    // is_shared_bus block where the outer sequencer lives) -- each memory's
+    // own defects are independent, so its own repair state must be too. Only
+    // algo_fail_valid/algo_fail_addr stay singular/broadcast: u_algo_top
+    // itself is singular (unaware of which memory it's driving, per step 1),
+    // so its own per-pass fail report is read by whichever memory's analyzer
+    // currently has registrar_enable_arr[mem_sel_q] asserted -- broadcasting
+    // is safe here because every OTHER instance's own registrar_enable stays
+    // deasserted unless it's genuinely that memory's turn (see §4c's own
+    // "broadcast is safe when downstream semantics are gated per-instance"
+    // principle). effective_test_mode is declared here too (still singular --
+    // one wrapper-level mux signal) but its own assign lives inside the
+    // is_shared_bus block below, where shb_selfrepair_mode_q/
+    // ctrl_test_mode_override_arr exist -- NOT the assign above, which would
+    // be a second, conflicting driver of the same net.
+    logic                  algo_fail_valid;
+    logic [ADDR_WIDTH-1:0] algo_fail_addr;
+    logic                  effective_test_mode;
+    logic                  self_repair_start_arr [{{ num_memories }}];
+    logic                  self_repair_done_arr  [{{ num_memories }}];
+    logic                  self_repair_fail_arr  [{{ num_memories }}];
+    logic                  self_repair_busy_arr  [{{ num_memories }}];
+    logic                  ctrl_test_mode_override_arr [{{ num_memories }}];
+    logic                  ctrl_bist_start_arr   [{{ num_memories }}];
+    logic                  registrar_enable_arr  [{{ num_memories }}];
+    logic                  latch_result_arr      [{{ num_memories }}];
+    logic                  unrepairable_arr       [{{ num_memories }}];
+    logic [{{ redundancy.num_spare_rows }}-1:0]            row_repair_en_arr   [{{ num_memories }}];
+    logic [{{ redundancy.num_spare_rows }}*ADDR_WIDTH-1:0] faulty_row_addr_arr [{{ num_memories }}];
+    logic [{{ redundancy.mem_addr_width }}-1:0]            sram_addr_phys_arr  [{{ num_memories }}];
+{% if has_onchip_col_repair %}
+    // On-chip 2D (row+column) self-repair, shared-bus: same per-memory
+    // partitioning as the row-only arrays above, extended for the column
+    // side. algo_fail_bitmask is singular/broadcast for the same reason
+    // algo_fail_valid/algo_fail_addr are (see comment above) -- u_algo_top
+    // itself has no per-memory concept.
+    logic [DATA_WIDTH-1:0]                                  algo_fail_bitmask;
+    logic [{{ redundancy.num_spare_cols }}-1:0]                            col_repair_en_arr  [{{ num_memories }}];
+    logic [{{ redundancy.num_spare_cols }}*{{ redundancy.bit_index_width }}-1:0] faulty_bit_arr [{{ num_memories }}];
+    logic [{{ redundancy.mem_data_width }}-1:0]                            sram_din_phys_arr  [{{ num_memories }}];
+    logic [{{ redundancy.mem_data_width }}-1:0]                            sram_dout_phys_arr [{{ num_memories }}];
+    logic [{{ redundancy.num_spare_cols }}-1:0]                            spare_wen_arr      [{{ num_memories }}];
+{% endif %}
+{% endif %}
+{% if is_shared_bus %}
+    // Sequences u_algo_top across mem_sel_q = 0..NUM_MEMORIES-1: SHB_RUN holds
+    // algo_bist_start high while one memory's pass runs; on algo_bist_done,
+    // SHB_ADVANCE drops algo_bist_start for exactly one cycle (forcing
+    // u_algo_top's own FSM back to its idle state via its existing
+    // bist_start-drop restart path -- no new reset signal needed, see
+    // docs/shared-hierarchical-mbist-plan.md §4a) before SHB_RUN re-raises it
+    // for the next memory. u_algo_top itself needs zero awareness of which
+    // memory it's driving -- this sequencer and the csb/dout mux below sit
+    // strictly between it and the memory instantiation(s), and its own
+    // address/data/write-enable path (sram_addr/sram_din/sram_we above) is
+    // completely unchanged.
+    typedef enum logic [1:0] {
+        SHB_IDLE,
+        SHB_RUN,
+        SHB_ADVANCE,
+        SHB_DONE
+    } shb_state_t;
+
+    shb_state_t             shb_state_q;
+    logic [{{ mem_sel_width }}-1:0] mem_sel_q;
+    logic                    algo_bist_start;
+    logic                    algo_bist_done;
+    logic                    algo_bist_fail;
+    logic                    shb_fail_q;
+    logic                    sram_csb_arr [{{ num_memories }}];
+    logic [DATA_WIDTH-1:0]   sram_dout_arr [{{ num_memories }}];
+{% if has_onchip_selfrepair %}
+    // Second orchestration mode, docs/shared-hierarchical-mbist-plan.md §9b:
+    // shb_selfrepair_mode_q, latched only at the SHB_IDLE exit that fires,
+    // selects whether SHB_RUN/SHB_DONE are running one plain algo pass per
+    // memory (mode_q=0, byte-identical to the has_onchip_selfrepair=false
+    // case below) or one full two-pass (analyze+verify) repair sequence per
+    // memory (mode_q=1) -- reusing the same four states, since both shapes
+    // are "wait for a trigger / run one pass and wait for its own done /
+    // advance to the next memory / hold the aggregate result"; only what
+    // counts as "this pass is done" and what drives u_algo_top differ.
+    logic                    shb_selfrepair_mode_q;
+    logic                    shb_selfrepair_done_q;
+    logic                    shb_selfrepair_fail_q;
+
+    // One independent onchip_row_repair_analyzer + onchip_selfrepair_ctrl +
+    // repair_remap_row per memory -- each reads u_algo_top's own PER-PASS
+    // algo_bist_done/algo_bist_fail directly (not the wrapper's aggregate
+    // bist_done/bist_fail, which only fires after ALL memories finish).
+    // mbist_busy/algo_fail_valid/algo_fail_addr stay singular (u_algo_top's
+    // own outputs, broadcast) -- see the declaration block above for why
+    // broadcasting fail_valid/fail_addr is safe here.
+    genvar gsr;
+    generate
+      for (gsr = 0; gsr < {{ num_memories }}; gsr++) begin : selfrepair_inst
+{% if has_onchip_col_repair %}
+        onchip_2d_repair_analyzer #(
+            .ADDR_WIDTH(ADDR_WIDTH),
+            .DATA_WIDTH(DATA_WIDTH),
+            .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }}),
+            .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+        ) u_onchip_analyzer (
+            .clk(clk),
+            .rst_n(rst_n),
+            .enable(registrar_enable_arr[gsr]),
+            .fail_valid(algo_fail_valid),
+            .fail_addr(algo_fail_addr),
+            .fail_bitmask(algo_fail_bitmask),
+            .latch_result(latch_result_arr[gsr]),
+            .repair_load(1'b0),
+            .fuse_row_repair_en('0),
+            .fuse_faulty_row_addr('0),
+            .repair_load_done(),
+            .row_repair_en(row_repair_en_arr[gsr]),
+            .faulty_row_addr(faulty_row_addr_arr[gsr]),
+            .col_repair_en(col_repair_en_arr[gsr]),
+            .faulty_bit(faulty_bit_arr[gsr]),
+            .unrepairable(unrepairable_arr[gsr])
+        );
+{% else %}
+        onchip_row_repair_analyzer #(
+            .ADDR_WIDTH(ADDR_WIDTH),
+            .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
+        ) u_onchip_analyzer (
+            .clk(clk),
+            .rst_n(rst_n),
+            .enable(registrar_enable_arr[gsr]),
+            .fail_valid(algo_fail_valid),
+            .fail_addr(algo_fail_addr),
+            .latch_result(latch_result_arr[gsr]),
+            .repair_load(1'b0),
+            .fuse_row_repair_en('0),
+            .fuse_faulty_row_addr('0),
+            .repair_load_done(),
+            .row_repair_en(row_repair_en_arr[gsr]),
+            .faulty_row_addr(faulty_row_addr_arr[gsr]),
+            .unrepairable(unrepairable_arr[gsr])
+        );
+{% endif %}
+
+        onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl (
+            .clk(clk),
+            .rst_n(rst_n),
+            .self_repair_start(self_repair_start_arr[gsr]),
+            .self_repair_done(self_repair_done_arr[gsr]),
+            .self_repair_fail(self_repair_fail_arr[gsr]),
+            .self_repair_busy(self_repair_busy_arr[gsr]),
+            .ctrl_test_mode_override(ctrl_test_mode_override_arr[gsr]),
+            .ctrl_bist_start(ctrl_bist_start_arr[gsr]),
+            .mbist_busy(mbist_busy),
+            .bist_done(algo_bist_done),
+            .bist_fail(algo_bist_fail),
+            .registrar_enable(registrar_enable_arr[gsr]),
+            .latch_result(latch_result_arr[gsr]),
+            .unrepairable(unrepairable_arr[gsr])
+        );
+
+        repair_remap_row #(
+            .ADDR_WIDTH(ADDR_WIDTH),
+            .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
+        ) u_repair_remap (
+            .addr_in(sram_addr),
+            .addr_out(sram_addr_phys_arr[gsr])
+          , .row_repair_en(row_repair_en_arr[gsr])
+          , .faulty_row_addr(faulty_row_addr_arr[gsr])
+        );
+{% if has_onchip_col_repair %}
+
+        repair_remap_col #(
+            .DATA_WIDTH(DATA_WIDTH),
+            .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+        ) u_repair_remap_col (
+            .din_in(sram_din),
+            .din_out(sram_din_phys_arr[gsr]),
+            .dout_in(sram_dout_phys_arr[gsr]),
+            .dout_out(sram_dout_arr[gsr]),
+            .spare_wen(spare_wen_arr[gsr]),
+            .col_repair_en(col_repair_en_arr[gsr]),
+            .faulty_bit(faulty_bit_arr[gsr])
+        );
+{% endif %}
+      end
+    endgenerate
+
+    assign algo_bist_start = shb_selfrepair_mode_q
+        ? ctrl_bist_start_arr[mem_sel_q]
+        : (shb_state_q == SHB_RUN);
+    assign effective_test_mode = test_mode
+        || (shb_selfrepair_mode_q && ctrl_test_mode_override_arr[mem_sel_q]);
+    assign bist_done       = (shb_state_q == SHB_DONE) && !shb_selfrepair_mode_q;
+    assign self_repair_busy = shb_selfrepair_mode_q && (shb_state_q != SHB_IDLE);
+    assign self_repair_done = shb_selfrepair_done_q;
+    assign self_repair_fail = shb_selfrepair_fail_q;
+{% for i in range(num_memories) %}
+    assign self_repair_start_arr[{{ i }}] =
+        shb_selfrepair_mode_q && (shb_state_q != SHB_IDLE) && (mem_sel_q == {{ i }});
+{% endfor %}
+{% else %}
+
+    assign algo_bist_start = (shb_state_q == SHB_RUN);
+    assign bist_done       = (shb_state_q == SHB_DONE);
+{% endif %}
+    assign bist_fail       = shb_fail_q;
+    assign sram_dout       = sram_dout_arr[mem_sel_q];
+{% for i in range(num_memories) %}
+    assign sram_csb_arr[{{ i }}] = (mem_sel_q == {{ i }}) ? sram_csb : 1'b1;
+{% endfor %}
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            shb_state_q <= SHB_IDLE;
+            mem_sel_q   <= '0;
+            shb_fail_q  <= 1'b0;
+{% if has_onchip_selfrepair %}
+            shb_selfrepair_mode_q <= 1'b0;
+            shb_selfrepair_done_q <= 1'b0;
+            shb_selfrepair_fail_q <= 1'b0;
+{% endif %}
+        end else begin
+            case (shb_state_q)
+                SHB_IDLE: begin
+{% if has_onchip_selfrepair %}
+                    if (self_repair_start && !mbist_busy) begin
+                        mem_sel_q              <= '0;
+                        shb_selfrepair_done_q  <= 1'b0;
+                        shb_selfrepair_fail_q  <= 1'b0;
+                        shb_selfrepair_mode_q  <= 1'b1;
+                        shb_state_q            <= SHB_RUN;
+                    end else if (bist_start && test_mode && !self_repair_start) begin
+                        mem_sel_q              <= '0;
+                        shb_fail_q             <= 1'b0;
+                        shb_selfrepair_mode_q  <= 1'b0;
+                        shb_state_q            <= SHB_RUN;
+                    end
+{% else %}
+                    if ({{ start_signal }}) begin
+                        mem_sel_q   <= '0;
+                        shb_fail_q  <= 1'b0;
+                        shb_state_q <= SHB_RUN;
+                    end
+{% endif %}
+                end
+                SHB_RUN: begin
+{% if has_onchip_selfrepair %}
+                    if (shb_selfrepair_mode_q) begin
+                        if (self_repair_done_arr[mem_sel_q]) begin
+                            if (self_repair_fail_arr[mem_sel_q])
+                                shb_selfrepair_fail_q <= 1'b1;
+                            if (mem_sel_q == {{ num_memories - 1 }}) begin
+                                shb_selfrepair_done_q <= 1'b1;
+                                shb_state_q            <= SHB_DONE;
+                            end else begin
+                                shb_state_q <= SHB_ADVANCE;
+                            end
+                        end
+                    end else begin
+                        if (algo_bist_done) begin
+                            if (algo_bist_fail) shb_fail_q <= 1'b1;
+                            if (mem_sel_q == {{ num_memories - 1 }})
+                                shb_state_q <= SHB_DONE;
+                            else
+                                shb_state_q <= SHB_ADVANCE;
+                        end
+                    end
+{% else %}
+                    if (algo_bist_done) begin
+                        if (algo_bist_fail) shb_fail_q <= 1'b1;
+                        if (mem_sel_q == {{ num_memories - 1 }})
+                            shb_state_q <= SHB_DONE;
+                        else
+                            shb_state_q <= SHB_ADVANCE;
+                    end
+{% endif %}
+                end
+                SHB_ADVANCE: begin
+                    mem_sel_q   <= mem_sel_q + 1'b1;
+                    shb_state_q <= SHB_RUN;
+                end
+                SHB_DONE: begin
+{% if has_onchip_selfrepair %}
+                    if (shb_selfrepair_mode_q) begin
+                        if (!self_repair_start) shb_state_q <= SHB_IDLE;
+                    end else begin
+                        if (!(bist_start && test_mode)) shb_state_q <= SHB_IDLE;
+                    end
+{% else %}
+                    // Parenthesized: start_signal (bist_start && test_mode in
+                    // the non-self-repair case) must be negated as a whole --
+                    // !bist_start && test_mode is NOT !(bist_start && test_mode).
+                    if (!({{ start_signal }})) shb_state_q <= SHB_IDLE;
+{% endif %}
+                end
+                default: shb_state_q <= SHB_IDLE;
+            endcase
+        end
+    end
+{% endif %}
 
     {{ algo_top_module }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
@@ -107,10 +419,17 @@ module {{ wrapper_module_name }} #(
     ) u_algo_top (
         .clk(clk),
         .rst_n(rst_n),
+{% if is_shared_bus %}
+        .bist_start(algo_bist_start),
+        .bist_busy(mbist_busy),
+        .bist_done(algo_bist_done),
+        .bist_fail(algo_bist_fail),
+{% else %}
         .bist_start({{ start_signal }}),
         .bist_busy(mbist_busy),
         .bist_done(bist_done),
         .bist_fail(bist_fail),
+{% endif %}
 {% if has_onchip_selfrepair %}
         .bist_fail_valid(algo_fail_valid),
         .bist_fail_addr(algo_fail_addr),
@@ -164,7 +483,7 @@ module {{ wrapper_module_name }} #(
 {% else %}
     {% for pname, pdata in normalized_ports.items() %}
 {% if has_redundancy %}
-{% if has_onchip_selfrepair %}
+{% if has_onchip_selfrepair and not is_shared_bus %}
     // Row redundancy (on-chip self-repair): an EXTERNAL repair remap sits between
     // the address mux and a stock spare-augmented memory. An on-chip analyzer +
     // sequencer compute and apply the repair signature autonomously -- no
@@ -300,6 +619,12 @@ module {{ wrapper_module_name }} #(
         .faulty_bit(faulty_bit)
     );
 {% endif %}
+{% elif has_onchip_selfrepair and is_shared_bus %}
+    // Shared-controller self-repair (docs/shared-hierarchical-mbist-plan.md
+    // §9b): the per-memory analyzer/ctrl/remap instances already exist above,
+    // inside the is_shared_bus generate loop (selfrepair_inst) -- nothing to
+    // instantiate here. sram_addr_phys_arr (declared alongside that loop) is
+    // what the memory instantiation below reads.
 {% else %}
     // Row redundancy: an EXTERNAL repair remap sits between the address mux and a
     // stock spare-augmented memory. The repair_ports pins drive the remap (not the
@@ -352,7 +677,46 @@ module {{ wrapper_module_name }} #(
 {% endif %}
 {% endif %}
 
+{% if is_shared_bus %}
+{% for mem in memories %}
 {% if memory_has_fixed_geometry %}
+    // memory_has_fixed_geometry: see the note on the redundancy instantiation
+    // above -- a real compiled macro keeps its own widths.
+    {{ memory_name }} u_mem_{{ mem.name }} (
+{% else %}
+    {{ memory_name }} #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .DATA_WIDTH(DATA_WIDTH),
+{% if has_onchip_col_repair %}
+        .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }}),
+        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+{% else %}
+        .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
+{% endif %}
+    ) u_mem_{{ mem.name }} (
+{% endif %}
+        .{{ pdata.clk }}(mbist_sram_clk),
+        .{{ pdata.csb }}(sram_csb_arr[{{ loop.index0 }}]),
+        .{{ pdata.addr }}(sram_addr_phys_arr[{{ loop.index0 }}]),
+{% if has_onchip_col_repair %}
+        .{{ pdata.din }}(sram_din_phys_arr[{{ loop.index0 }}]),
+        .{{ pdata.we }}(sram_we),
+        .{{ pdata.dout }}(sram_dout_phys_arr[{{ loop.index0 }}])
+      , .{{ pdata.spare_wen }}(spare_wen_arr[{{ loop.index0 }}])
+{% else %}
+        .{{ pdata.din }}(sram_din),
+        .{{ pdata.we }}(sram_we),
+        .{{ pdata.dout }}(sram_dout_arr[{{ loop.index0 }}])
+{% if pdata.spare_wen %}
+      // Macro has a spare-column write enable but this design has no
+      // column repair. Tie it off rather than leave a real macro's input
+      // floating -- '0 disables spare-column writes.
+      , .{{ pdata.spare_wen }}('0)
+{% endif %}
+{% endif %}
+    );
+{% endfor %}
+{% elif memory_has_fixed_geometry %}
     // memory_has_fixed_geometry: the memory's widths are compiled in (a real
     // OpenRAM macro), so no parameter overrides -- passing them would resize a
     // behavioural model away from the geometry that would actually be built.
@@ -369,6 +733,7 @@ module {{ wrapper_module_name }} #(
 {% endif %}
     ) u_sram (
 {% endif %}
+{% if not is_shared_bus %}
         .{{ pdata.clk }}(mbist_sram_clk),
         .{{ pdata.csb }}(sram_csb),
         .{{ pdata.addr }}(sram_addr_phys),
@@ -389,6 +754,34 @@ module {{ wrapper_module_name }} #(
 {% endif %}
 {% endif %}
     );
+{% endif %}
+{% else %}
+{% if is_shared_bus %}
+{% for mem in memories %}
+{% if memory_has_fixed_geometry %}
+    // memory_has_fixed_geometry: see the note on the redundancy instantiation
+    // above -- a real compiled macro keeps its own widths.
+    {{ memory_name }} u_mem_{{ mem.name }} (
+{% else %}
+    {{ memory_name }} #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .DATA_WIDTH(DATA_WIDTH)
+    ) u_mem_{{ mem.name }} (
+{% endif %}
+        .{{ pdata.clk }}(mbist_sram_clk),
+        .{{ pdata.csb }}(sram_csb_arr[{{ loop.index0 }}]),
+        .{{ pdata.addr }}(sram_addr),
+        .{{ pdata.din }}(sram_din),
+        .{{ pdata.we }}(sram_we),
+        .{{ pdata.dout }}(sram_dout_arr[{{ loop.index0 }}])
+{% if pdata.spare_wen %}
+      // Macro has a spare-column write enable but this design has no
+      // redundancy at all. Tie it off rather than leave a real macro's
+      // input floating -- '0 disables spare-column writes.
+      , .{{ pdata.spare_wen }}('0)
+{% endif %}
+    );
+{% endfor %}
 {% else %}
 {% if memory_has_fixed_geometry %}
     // memory_has_fixed_geometry: see the note on the redundancy instantiation
@@ -413,6 +806,7 @@ module {{ wrapper_module_name }} #(
       , .{{ pdata.spare_wen }}('0)
 {% endif %}
     );
+{% endif %}
 {% endif %}
     {% endfor %}
 {% endif %}
