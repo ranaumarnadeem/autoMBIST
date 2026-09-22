@@ -50,16 +50,29 @@ scoped follow-up:
   shared/hierarchical scoping doc — deliberately not started before the
   flat case was proven, which it now is).
 
-## FaultFlow integration — status needs re-verification
+## FaultFlow integration — status re-verified 2026-09-22
 
 The original approved plan (see memory / `docs/` history) had three parts:
-FaultFlow controller-grading integration itself (**shipped** —
-`grade-controller`, `run --faultflow`, fully documented), a list of
-autoMBIST bug fixes ("Part B"), and a v3 extension (IEEE-1500 intest on
-the blackboxed memory boundary, ~100-200 lines in FaultFlow's own
-`build_mode_config()`). Part B and v3's actual current status were not
-re-checked before this TODO was written — worth a real audit before
-assuming either is done or not done.
+
+- FaultFlow controller-grading integration itself — **shipped**
+  (`grade-controller`, `run --faultflow`, fully documented).
+- Part B (autoMBIST bug fixes) — **confirmed fixed**, all three named
+  items checked directly against current source: sim-time fault-mask
+  re-randomization (`tests/hardware/test_mbist.py`'s `_prepare_fault_files`
+  now consumes the masks `generate` already wrote, only regenerating when
+  missing), the `REPO_ROOT`/`--out` path-resolution bug (covered by
+  `tests/integration/test_cli_run_json_e2e.py`'s own regression test), and
+  the hardcoded `READ_LATENCY` (now `.READ_LATENCY({{ read_latency }})`,
+  fully config-driven). The "O(depth)/clock transition saboteur" item
+  specifically was **not** re-checked — still genuinely open/unverified.
+- v3 (IEEE-1500 intest on the blackboxed memory boundary) — **nuanced**:
+  FaultFlow itself already ships `intest`/`extest` CLI commands and
+  wrapper-mode config (`faultflow/cli.py`, `faultflow/config.py`), so the
+  underlying capability this plan called for exists. But autoMBIST's own
+  `faultflow_flow.py`/`cli.py` never reference `intest`/`extest`/
+  `wrapper_mode` at all — the integration side (actually using FaultFlow's
+  intest mode from `grade-controller`) is still unbuilt, not just
+  "pending in FaultFlow." Scoping that wiring is real, undone work.
 
 ## Housekeeping
 
