@@ -66,21 +66,21 @@ assuming either is done or not done.
 - ~~`main` significantly behind `dev`~~ / ~~no tagged release since the
   Nix migration~~ — resolved 2026-09-22: `dev` merged into `main` and
   `0.1.0` tagged as the first Nix-era release.
-- **`docs/source/roadmap.md` is stale** — found during milestone-4
-  scoping: still lists GALPAT as open (it's closed, measured zero
-  fault-coverage benefit), still lists "combining the shared-controller
-  feature with on-chip redundancy" as "Further out" (it's done, both row
-  and column repair), and doesn't mention `wrap-test-access` or
-  `yield-sweep` at all. Needs a real pass now that `main` is caught up.
+- ~~`docs/source/roadmap.md` is stale~~ — fixed 2026-09-22: GALPAT's status
+  corrected (investigated and deliberately not pursued, not "open"), the
+  shared-controller + on-chip self-repair combination moved from "Further
+  out" into "Done" (row + column), and the diagnosis-logging bullet's
+  stale "JTAG/IJTAG wrapping still pending" note removed (`wrap-test-access`
+  already covers it). `yield-sweep`/milestone 4 deliberately still excluded.
 - **Per-macro OpenRAM signoff (DRC/LVS on the macros' own GDS) is
   unresolved** — a stale vendored OpenRAM checkout, not a defect in this
   project's own RTL. Already documented honestly in
   `flow/multimem/mbist/README.md#honest-signoff-caveats`; tracked here so
   it doesn't get lost.
 - **MAINTAINERS.md does not exist yet.**
-- **GitHub repo description/topics** could use a refresh to reflect
-  multi-memory/shared-bus scope — discussed 2026-09-22, not yet decided
-  or acted on.
+- ~~GitHub repo description/topics refresh~~ — done 2026-09-22 (description
+  now mentions shared-bus/multi-memory + row/column repair; added
+  `openram`/`sky130`/`jtag` topics).
 - **`CONTRIBUTING.md`'s test-tier guidance doesn't warn that the newest
   `tests/integration/test_yield_sweep_*` and
   `tests/integration/test_shared_bus_*` files are meaningfully slower**

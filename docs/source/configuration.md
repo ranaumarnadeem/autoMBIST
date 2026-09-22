@@ -295,6 +295,84 @@ to that address after the signature is applied. Every flow here writes before
 it reads, so this is bounded in practice — but enabling repair midway through
 and reading without rewriting will surface the stale lane.
 
+## Shared-bus topology (multi-memory)
+
+By default (`topology: dedicated`, or `topology:` omitted) one generated
+controller drives exactly one memory instance. `topology: shared-bus`
+switches to one controller **time-multiplexed across N physical
+memories**, sequenced one at a time:
+
+```yaml
+topology: shared-bus
+memory_name: "sram_bank"          # the shared macro TYPE all instances use
+wrapper_module_name: shared_bus_ctrl
+memories:
+  - name: mem_bank0
+  - name: mem_bank1
+  - name: mem_bank2
+addr_width: 10
+data_width: 32
+we_active_low: true
+ports: { ... }                     # single physical port only
+```
+
+`memory_name` here names the *macro type* shared by every instance (uniform
+geometry is required — one controller, one mux bus), not one physical
+memory as it does under `topology: dedicated`. `memories:` is the list of
+**per-instance** labels — `wrapper_template.j2` renders one `u_mem_<name>`
+instantiation per entry, all of the same `memory_name` module.
+
+Output naming differs too: a dedicated config's output directory and
+wrapper filename are keyed on `memory_name` (there's one memory to name
+them after); a shared-bus config's are keyed on `wrapper_module_name`
+instead — `out/<wrapper_module_name>/<wrapper_module_name>_mbist.v`, not
+`out/<memory_name>/...`.
+
+**Current scope**, checked at config-load time:
+
+- **Single physical port only.** `ports:` must resolve to exactly one
+  port — `march-1r1w`/`march-2rw`-shaped multi-port configs aren't
+  combined with shared-bus yet.
+- **No saboteur.** `use_saboteur`/`--test` is rejected under shared-bus —
+  the fault-injection path isn't wired for the per-memory mux yet.
+- **Redundancy:** `redundancy: {onchip_selfrepair: true, ...}` is
+  supported, including `onchip_col_repair: true` (full row + column
+  on-chip self-repair) — one independent analyzer/controller/remap per
+  memory, proven with real cross-memory-isolation scenarios (distinct
+  defects in different memory banks repaired independently, with zero
+  interference). **Tester-driven redundancy** (`repair_ports:`, no
+  `onchip_selfrepair`), **`onchip_repair_persistence`**, and
+  **`onchip_diagnosis`** are all still rejected under shared-bus — none
+  are wired per-memory yet.
+
+A minimal shared-bus self-repair example:
+
+```yaml
+topology: shared-bus
+memory_name: sram_spares_tiny
+wrapper_module_name: shared_selfrepair_ctrl
+memories:
+  - name: mem_bank0
+  - name: mem_bank1
+addr_width: 2
+data_width: 4
+we_active_low: true
+ports:
+  clk: clk0
+  addr: addr0
+  din: din0
+  dout: dout0
+  we: web0
+  csb: csb0
+redundancy:
+  num_spare_rows: 2
+  num_spare_cols: 0
+  onchip_selfrepair: true
+```
+
+See {doc}`architecture` for how the sequencer and the self-repair
+orchestration mode actually work.
+
 ## OpenRAM synthesis config (`openram.yml`)
 
 A separate config, consumed by `autombist ram-synth`, describing the OpenRAM
