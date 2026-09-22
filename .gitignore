@@ -93,6 +93,10 @@ macros_1000/
 
 # Ignored markdown files
 changelog.md
+# Real, tracked project changelog -- the pattern above only exists to keep
+# vendored changelog.md files (OpenRAM/node_modules third-party packages)
+# out, not this one.
+!/CHANGELOG.md
 promptphase3.md
 *plan*.md
 plan-trans*.md
