@@ -33,6 +33,12 @@ functional access and MBIST access. With `--test`, it additionally renders a
 saboteur — a fault-injecting stand-in for the memory — for verification. This
 is the path that produces the RTL you'd actually synthesize and tape out.
 
+`topology: shared-bus` is a variant of this same path: one controller
+time-multiplexed across N physical memories instead of one controller per
+memory, optionally combined with on-chip self-repair (row-only or row+column)
+— see {doc}`architecture` for how the sequencer and the self-repair
+orchestration mode work, and {doc}`configuration` for the config shape.
+
 ## Algo-shell — fault-model research platform
 
 ```{mermaid}

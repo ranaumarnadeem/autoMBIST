@@ -16,9 +16,10 @@ autonomous MBIST + self-repair block, hardened together as one subsystem.
 Each macro is generated with one spare row + one spare column via OpenRAM
 (`scripts/synthesize_sram.py`), giving every memory a real, addressable spare
 to repair into — not a behavioral stand-in. This example uses the *autonomous
-on-chip* self-repair path, which is row-only, so its spare column is present in
-silicon but unused here; column repair is tester-driven (see
-{doc}`configuration`).
+on-chip* self-repair path in its **row-only** form, so the spare column is
+present in silicon but unused here — on-chip column repair exists too
+(`onchip_col_repair: true`, see {doc}`configuration`) but isn't demonstrated
+in this particular walkthrough.
 
 ## Generate a self-repairing wrapper
 
