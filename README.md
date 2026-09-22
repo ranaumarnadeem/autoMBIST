@@ -9,6 +9,12 @@ installation, worked examples, architecture, the CLI reference, the LibreLane
 hardening recipe, and the roadmap. This README is a fast overview; the docs
 site has the detail.
 
+> Development has been outpacing the docs site above — several features in
+> [CHANGELOG.md](CHANGELOG.md)'s `0.1.0` release (multi-memory/shared-bus
+> topology, JTAG/IJTAG test-access wrapping, FaultFlow controller grading,
+> and more) aren't reflected there yet. Check CHANGELOG.md for the most
+> current picture until the docs site catches up.
+
 **An open-source, OpenRAM-integrated MBIST + BIRA + BISR generator and
 march-algorithm research platform — proven through open RTL-to-GDS closure on
 sky130.**
