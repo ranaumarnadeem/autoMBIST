@@ -153,8 +153,11 @@ Opt-in via a `redundancy:` block, paired with either `repair_ports:`
 (tester-driven) or `onchip_selfrepair: true` (autonomous). Single-port
 memories only, except the 1-read+1-write `march-1r1w` port shape when paired
 with `onchip_selfrepair: true` (see below). `num_spare_cols` may be non-zero
-on the **tester-driven** path (see "Column repair" below); it must be `0` with
-`onchip_selfrepair: true`, whose analyzer is row-only.
+on the **tester-driven** path (see "Column repair" below) or on the
+**autonomous** path with `onchip_col_repair: true` also set (see "On-chip
+column repair" below) — omitting `onchip_col_repair` with `onchip_selfrepair:
+true` and `num_spare_cols > 0` is rejected, since the default on-chip
+analyzer (`onchip_row_repair_analyzer`) is row-only.
 
 **Tester-driven** — the wrapper exposes repair-register pins a tester (or the
 Python `repair/bisr.py` encoder) drives directly:
@@ -217,6 +220,46 @@ redundancy:
   num_spare_cols: 0
   onchip_selfrepair: true
 ```
+
+### On-chip column repair
+
+Set `onchip_col_repair: true` alongside `onchip_selfrepair: true` and
+`num_spare_cols` non-zero, and the autonomous path repairs both rows and
+columns entirely on-chip — no tester, same `self_repair_start`/`_done`/
+`_fail`/`_busy` handshake as row-only repair. Swaps in
+`onchip_2d_repair_analyzer` (a single-pass heuristic, not a hardware
+implementation of `bira.py`'s exact backtracking search — it can report a
+repairable chip unrepairable in some cases, but never the reverse, since
+verify-by-re-execution is independent of the analyzer's own bookkeeping)
+driven by a per-bit `fail_bitmask` stream from the algorithm controller,
+plus a `repair_remap_col` instance on the data path. Same `--algo`
+restriction as row-only on-chip self-repair (the list above) — no
+narrower subset.
+
+```yaml
+ports:
+  clk: clk0
+  addr: addr0
+  din: din0
+  dout: dout0
+  we: web0
+  csb: csb0
+  spare_wen: spare_wen0        # required, same as the tester-driven path
+redundancy:
+  num_spare_rows: 1
+  num_spare_cols: 1
+  onchip_selfrepair: true
+  onchip_col_repair: true
+```
+
+`onchip_col_repair: true` requires `onchip_selfrepair: true` (there's no
+tester-driven-plus-on-chip-analyzer hybrid), and is itself required
+whenever `onchip_selfrepair: true` is paired with `num_spare_cols > 0` —
+omitting it there is rejected rather than silently falling back to the
+row-only analyzer. It's also mutually exclusive with
+`onchip_repair_persistence: true` (see below): the persisted-signature
+load path is row-only, and restoring it into the 2D analyzer would forget
+any previously-computed column claims on every reset.
 
 ### Column repair
 

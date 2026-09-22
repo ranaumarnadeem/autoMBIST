@@ -16,8 +16,9 @@ autoMBIST is:
 
 - **Repair-aware** — an optional redundancy layer wraps a spare-augmented
   OpenRAM macro with a 2D BIRA solver and an autonomous on-chip self-repair FSM
-  (row-only today) that runs analyze → decide → verify with no tester
-  involved.
+  — row-only or full row+column — that runs analyze → decide → verify with no
+  tester involved. A shared-bus variant time-multiplexes one such controller
+  (self-repair included) across multiple physical memories.
 
 - **Proven to physical closure** — a realistic three-memory sky130 subsystem,
   self-repair included, hardens clean in LibreLane 3.0.5: zero detailed-routing
