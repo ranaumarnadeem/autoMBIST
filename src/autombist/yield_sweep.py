@@ -24,17 +24,33 @@ without regenerating anything.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from .bira_input import fail_cells
 from .generator import generate_from_config, load_config
 from .repair.bira import analyze
-from .repair.types import RepairSolution, SpareGeometry
+from .repair.types import RepairSolution, SpareGeometry, Unrepairable
 from .runner import run_simulation
 
-__all__ = ["TrialResult", "DensityPoint", "run_trial", "sweep"]
+__all__ = [
+    "SCHEMA_VERSION",
+    "TrialResult",
+    "DensityPoint",
+    "run_trial",
+    "sweep",
+    "build_sweep_report",
+    "write_sweep_report",
+]
+
+# Independent of reporting.py's own per-simulation-run schema_version -- this
+# is a sibling artifact (docs/diagnosis-yield-analysis-plan.md's own framing:
+# "sibling to, not a mutation of, results.json/latest.json"), not a variant
+# of it. Bump only on an incompatible change to build_sweep_report's shape.
+SCHEMA_VERSION = "1.0"
 
 
 @dataclass(slots=True, frozen=True)
@@ -157,3 +173,77 @@ def sweep(
             )
         points.append(DensityPoint(faults=faults, trials=tuple(trials)))
     return points
+
+
+def _outcome_to_dict(outcome: RepairSolution | Unrepairable) -> dict[str, Any]:
+    if isinstance(outcome, RepairSolution):
+        return {"repaired": True, "row_map": outcome.row_map, "col_map": outcome.col_map}
+    return {
+        "repaired": False,
+        "reason": outcome.reason,
+        "faulty_rows": list(outcome.faulty_rows),
+        "faulty_cols": list(outcome.faulty_cols),
+    }
+
+
+def build_sweep_report(
+    points: Sequence[DensityPoint],
+    config_path: Path,
+    *,
+    tool_version: str,
+    num_spare_rows: int,
+    num_spare_cols: int,
+    algo: str,
+    fault_type: str,
+    trials_per_point: int,
+    base_seed: int,
+) -> dict[str, Any]:
+    """The JSON-serializable sweep summary: per-point repair rate plus
+    per-trial detail (seed, observed fail-cell count, repaired verdict).
+    Does not include each trial's raw fail_cells set -- a sweep is exactly
+    reproducible from (config, faults, seed), so the full set is always
+    recoverable by re-running that one trial rather than duplicating it into
+    every report.
+    """
+    config = load_config(config_path)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "tool_version": tool_version,
+        "config": {
+            "memory_name": config["memory_name"],
+            "addr_width": config["addr_width"],
+            "data_width": config["data_width"],
+            "algo": algo,
+            "fault_type": fault_type,
+        },
+        "spare_budget": {"num_spare_rows": num_spare_rows, "num_spare_cols": num_spare_cols},
+        "trials_per_point": trials_per_point,
+        "base_seed": base_seed,
+        "points": [
+            {
+                "faults": point.faults,
+                "repair_rate": point.repair_rate,
+                "trials": [
+                    {
+                        "seed": trial.seed,
+                        "fail_cell_count": len(trial.fail_cells),
+                        **_outcome_to_dict(trial.outcome),
+                    }
+                    for trial in point.trials
+                ],
+            }
+            for point in points
+        ],
+    }
+
+
+def write_sweep_report(report: dict[str, Any], report_dir: Path) -> Path:
+    """Write the sweep summary to ``report_dir/yield_sweep.json`` -- a sibling
+    filename to (never a collision with) any per-trial ``results.json``/
+    ``latest.json``, which each live under that trial's OWN outdir, not
+    ``report_dir``."""
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / "yield_sweep.json"
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    return report_path

@@ -20,6 +20,7 @@ if __package__ in {None, ""}:
         run_openram_synthesis,
     )
     from autombist.runner import SimulationError, run_simulation
+    from autombist.yield_sweep import build_sweep_report, sweep, write_sweep_report
     from autombist.signoff import (
         LIBRELANE_FLAKE_REF,
         SignoffConfigError,
@@ -40,6 +41,7 @@ else:
         run_openram_synthesis,
     )
     from .runner import SimulationError, run_simulation
+    from .yield_sweep import build_sweep_report, sweep, write_sweep_report
     from .signoff import (
         LIBRELANE_FLAKE_REF,
         SignoffConfigError,
@@ -530,6 +532,81 @@ def grade_controller(
 
     opts = _build_faultflow_options(faultflow_repo, cell_lib, scan_chains, threshold, max_rounds)
     _grade_controller(module_outdir, opts, run)
+
+
+@app.command("yield-sweep")
+def yield_sweep_cmd(
+    config: Path | None = typer.Option(None, "--config", help="YAML config file with memory parameters (defaults to ./config.yml if it exists)"),
+    out: Path = typer.Option("out", "--out", help="Output directory for sweep trial artifacts and the summary report"),
+    faults: list[int] = typer.Option(..., "--faults", help="Fault count to sweep (repeatable, e.g. --faults 1 --faults 4 --faults 8)"),
+    trials: int = typer.Option(10, "--trials", help="Number of randomized trials per fault count"),
+    spare_rows: int = typer.Option(..., "--spare-rows", help="Spare-row budget to evaluate repairability against"),
+    spare_cols: int = typer.Option(0, "--spare-cols", help="Spare-column budget to evaluate repairability against"),
+    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm used to observe failures"),
+    fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at, transition-up, or transition-down"),
+    seed: int = typer.Option(0, "--seed", help="Base seed; every trial's own seed is derived deterministically from it"),
+    json_output: bool = typer.Option(False, "--json", help="Print the sweep summary as JSON to stdout instead of a human table"),
+) -> None:
+    """Monte Carlo repair-yield sweep: run randomized fault-injection trials
+    at each of several defect densities and report the fraction repairable
+    against a given spare-row/-column budget.
+
+    Offline, simulation-only analysis: the spare budget evaluated
+    (--spare-rows/--spare-cols) is independent of --config's own (if any)
+    redundancy: block, and every reported number comes from randomized fault
+    injection -- never calibrated against real silicon defect density. See
+    docs/diagnosis-yield-analysis-plan.md for the full scoping.
+
+    Requirements: Icarus Verilog and Cocotb must be installed. Each trial is
+    a real simulation, so a sweep's runtime scales with
+    len(--faults) * --trials.
+
+    Examples:
+      autombist yield-sweep --config config.yml --faults 1 --faults 4 --faults 8 --trials 20 --spare-rows 2
+      autombist yield-sweep --config config.yml --faults 2 --trials 50 --spare-rows 2 --spare-cols 1 --json
+    """
+    config_path = _resolve_config_path(config)
+    out = out.resolve()
+
+    try:
+        points = sweep(
+            config_path,
+            out / "yield_sweep_trials",
+            fault_counts=faults,
+            trials_per_point=trials,
+            num_spare_rows=spare_rows,
+            num_spare_cols=spare_cols,
+            algo=algo,
+            fault_type=fault_type,
+            base_seed=seed,
+        )
+    except (ConfigError, FileNotFoundError, NotADirectoryError, OSError, ValueError, yaml.YAMLError, SimulationError) as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    report = build_sweep_report(
+        points,
+        config_path,
+        tool_version=__version__,
+        num_spare_rows=spare_rows,
+        num_spare_cols=spare_cols,
+        algo=algo,
+        fault_type=fault_type,
+        trials_per_point=trials,
+        base_seed=seed,
+    )
+    report_path = write_sweep_report(report, out)
+
+    if json_output:
+        import json as _json
+
+        typer.echo(_json.dumps(report, indent=2, sort_keys=True))
+        return
+
+    if not _is_quiet():
+        rows = [[str(p.faults), str(len(p.trials)), f"{p.repair_rate * 100:.1f}%"] for p in points]
+        print_status_table("Repair-yield sweep", ["Faults", "Trials", "Repair rate"], rows, status_col=2)
+        typer.echo(f"Report: {report_path}")
 
 
 def _wrap_test_access(
