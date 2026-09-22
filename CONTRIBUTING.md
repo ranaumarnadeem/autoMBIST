@@ -90,7 +90,11 @@ Tests are split by how much of the toolchain they need:
 - **`tests/software/`** — pure Python, no EDA tools required. Fast; this is what
   you'll run on every iteration.
 - **`tests/integration/`** — mostly tool-gated (Icarus/Verilator/Yosys) but written
-  to skip cleanly when a tool is missing rather than hard-fail.
+  to skip cleanly when a tool is missing rather than hard-fail. Most of this tier
+  runs in seconds, but `test_shared_bus_*` and `test_yield_sweep_*` are a real
+  exception: each scenario is a freshly-compiled, real Icarus run (no build
+  caching across scenarios), so a handful of them can take minutes rather than
+  seconds — don't assume a hang if the suite pauses there.
 - **`tests/hardware/`** — cocotb testbenches driven through the `tests/hardware/Makefile`
   (Icarus Verilog via `cocotb-tools`' `Makefile.sim`). These need the full WSL EDA
   toolchain and are the slowest tier. 10 of the 18 `test_*.py` modules here are
