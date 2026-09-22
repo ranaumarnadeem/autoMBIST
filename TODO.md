@@ -78,9 +78,9 @@ assuming either is done or not done.
   `flow/multimem/mbist/README.md#honest-signoff-caveats`; tracked here so
   it doesn't get lost.
 - **MAINTAINERS.md does not exist yet.**
-- **GitHub repo description/topics** could use a refresh to reflect
-  multi-memory/shared-bus scope — discussed 2026-09-22, not yet decided
-  or acted on.
+- ~~GitHub repo description/topics refresh~~ — done 2026-09-22 (description
+  now mentions shared-bus/multi-memory + row/column repair; added
+  `openram`/`sky130`/`jtag` topics).
 - **`CONTRIBUTING.md`'s test-tier guidance doesn't warn that the newest
   `tests/integration/test_yield_sweep_*` and
   `tests/integration/test_shared_bus_*` files are meaningfully slower**
