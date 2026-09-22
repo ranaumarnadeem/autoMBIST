@@ -68,6 +68,67 @@ config.yml ──► generator.py ──► wrapper_template.j2 ──► <mem>_
                                                           reporting.py ──► results.json / report.txt
 ```
 
+### Shared-bus topology: one controller, N memories
+
+`topology: shared-bus` (see {doc}`configuration`) is a variant of the
+classic path's wrapper: instead of one `u_algo_top` wired straight to one
+memory, a sequencer time-multiplexes that **same, unmodified** algorithm
+controller across N physical memory instances, one at a time. The
+controller itself needs zero awareness of which memory it's currently
+driving — the sequencer and a `mem_sel_q`-indexed csb/dout mux sit strictly
+between it and the memory instantiations, and the controller's own
+address/data/write-enable path is untouched.
+
+```systemverilog
+typedef enum logic [1:0] {SHB_IDLE, SHB_RUN, SHB_ADVANCE, SHB_DONE} shb_state_t;
+```
+
+`SHB_RUN` holds `algo_bist_start` high while one memory's pass runs; on
+`algo_bist_done`, `SHB_ADVANCE` drops `algo_bist_start` for exactly one
+cycle — forcing the algorithm's own FSM back to idle via its existing
+bist-start-drop restart path, no new reset signal needed — before `SHB_RUN`
+re-raises it for `mem_sel_q + 1`. `SHB_DONE` holds the aggregate result
+once every memory has had its pass.
+
+**Combined with on-chip self-repair** (`redundancy: {onchip_selfrepair:
+true, ...}`), the sequencer gains a second orchestration mode,
+`shb_selfrepair_mode_q`, latched at whichever `SHB_IDLE` trigger fires
+(`self_repair_start` vs. ordinary `bist_start`). Rather than one plain
+algorithm pass per memory, mode `1` runs one full analyze-decide-verify
+repair sequence per memory — reusing the *same* four states, since both
+shapes are "wait for a trigger / run one pass and wait for its own done /
+advance to the next memory / hold the aggregate result"; only what counts
+as "this pass is done" and what drives the algorithm controller differ.
+Underneath that, a `generate` loop instantiates one independent
+`onchip_row_repair_analyzer` (or `onchip_2d_repair_analyzer`, when
+`onchip_col_repair: true` is also set) + `onchip_selfrepair_ctrl` +
+`repair_remap_row` (+ `repair_remap_col`) per memory — each reading the
+algorithm controller's own per-pass `algo_bist_done`/`algo_bist_fail`
+directly, not the wrapper's aggregate `bist_done`/`bist_fail` (which only
+fires once *every* memory has finished). Each memory's own defect state is
+therefore genuinely partitioned, not shared — proven, not just asserted,
+with real Icarus scenarios seeding *distinct* defects in different memory
+banks (including distinct faulty *bits*, for the column-repair case) and
+confirming each memory repairs independently with zero cross-memory
+interference.
+
+This combination was scoped and built as its own follow-up after the flat
+v1 shared-bus case (see {doc}`roadmap`) — a real, confirmed bug surfaced
+during that work worth remembering if extending this further: an earlier,
+non-shared-bus self-repair instantiation block was never gated against
+`topology: shared-bus`, so for one build it rendered *alongside* the new
+per-memory `generate` loop rather than being replaced by it, producing
+duplicate RTL. Found by actually rendering the combination and grepping
+the output for instance names, not by code review alone — the same
+discipline every fault/coupling addition in this project follows (measure,
+don't assume).
+
+Not yet supported under `topology: shared-bus`: the saboteur
+fault-injection path, multi-port memories, tester-driven redundancy,
+persisted-repair-signature load, or the on-chip diagnosis log — see
+{doc}`configuration`'s shared-bus section for the exact, currently-enforced
+list, and {doc}`roadmap` for what's still open.
+
 ### The algo-shell (fault-model DSL, Verilator)
 
 The algo-shell's job is orthogonal: given *no* real memory macro, develop and
