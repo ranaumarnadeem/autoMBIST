@@ -43,10 +43,17 @@ other logic and needs no special macro views.
   - **On-chip, autonomous**: `rtl/onchip_row_repair_analyzer.sv` +
     `rtl/onchip_selfrepair_ctrl.sv` run analyze → decide → verify entirely in
     silicon by asserting `self_repair_start` and holding it until
-    `self_repair_done` reads back, no tester involved. Row-only for now — a 2D
-    on-chip analyzer additionally needs a per-bit fail dimension the controller
-    RTL does not yet emit, so column repair is rejected here rather than
-    silently no-opped.
+    `self_repair_done` reads back, no tester involved. Row-only by default;
+    `onchip_col_repair: true` swaps in `onchip_2d_repair_analyzer` (driven by
+    a per-bit `fail_bitmask` stream from the algorithm controller) for full
+    row **and** column repair, entirely on-chip — a disclosed single-pass
+    heuristic, not a hardware implementation of `bira.py`'s exact
+    backtracking search, but never a false pass: verify-by-re-execution is
+    independent of the analyzer's own bookkeeping.
+  - **Shared-bus (multi-memory)**: `topology: shared-bus` time-multiplexes
+    one algorithm controller — self-repair included, row-only or row+column
+    — across N physical memories, one independent analyzer/controller/remap
+    per memory. See {doc}`architecture` for how the sequencer works.
 
 ## Proven under a real CPU
 
