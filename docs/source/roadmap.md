@@ -61,8 +61,8 @@ progress, and what's further out.
   independent of (and typically sized larger than) the physical spare budget
   `onchip_row_repair_analyzer` is bounded to — verified end-to-end that it
   sees defects the repair analyzer itself can't fit. Usable via direct
-  `diag_valid`/`diag_addr`/`diag_overflow` pins today; JTAG/IJTAG wrapping is
-  still pending (see Further out)
+  `diag_valid`/`diag_addr`/`diag_overflow` pins, or through JTAG/IJTAG (see
+  `wrap-test-access` below, which wraps the wide diagnosis-readback ports too)
 - A march-test synthesizer that constructs a test directly from the fault
   model rather than only grading a hand-written one — 27n at 16 elements,
   verified 38/38 against real Verilator at both memory init values
@@ -119,23 +119,30 @@ progress, and what's further out.
   mux (generation-shell) -- one algorithm controller sequenced across N
   separate physical memories, real industry precedent (Siemens Tessent
   "shared bus architecture," Cadence Modus "shared test access bus"). v1
-  scope: the flat "one controller, N memories" case only, not yet combined
-  with on-chip redundancy/self-repair, the saboteur fault-injection path,
-  or multi-port memories, and not yet a hierarchical controller-of-
-  controllers orchestrator -- see engine/README.md's own "Shared-controller
-  (multi-memory)" section for the real measured numbers and exact scope
-  cuts, and `docs/shared-hierarchical-mbist-plan.md` (gitignored) for the
-  full design.
+  shipped the flat "one controller, N memories" case; a follow-up combined
+  it with on-chip self-repair -- both row-only and full 2D (row + column)
+  redundancy, one independent analyzer/controller/remap per memory inside
+  a second orchestration mode of the same sequencer, proven with real
+  cross-memory-isolation scenarios (distinct defects in different memory
+  banks repaired independently, with zero interference between them). Not
+  yet combined with the saboteur fault-injection path or multi-port
+  memories, and not yet a hierarchical controller-of-controllers
+  orchestrator -- see engine/README.md's own "Shared-controller
+  (multi-memory)" section for the v1 measured numbers and scope cuts, and
+  `docs/shared-hierarchical-mbist-plan.md` (gitignored) for the full
+  design, including the redundancy follow-up (§9b).
 
 ## Further out
 
 - Real fuse/NVM device physics behind repair persistence (today's persistence
   is register-level: the load path exists, the storage element is out of scope)
 - A broader march-algorithm library: `checkerboard` is done, on both paths
-  (see above) -- galloping/GALPAT and similar patterns beyond the current
-  built-ins remain open
-- Combining the shared-controller feature above with on-chip redundancy/
-  self-repair, the saboteur path, or multi-port memories; a hierarchical
+  (see above). GALPAT was investigated and deliberately not pursued --
+  measured against this project's own fault registry, it detected zero
+  additional faults beyond what the existing built-ins already cover, so
+  there's currently no known algorithm gap worth closing
+- Combining the shared-controller feature above with the saboteur
+  fault-injection path or multi-port memories; a hierarchical
   controller-of-controllers orchestrator built on top of it
 
 ## How to help
