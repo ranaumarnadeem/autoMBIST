@@ -543,20 +543,33 @@ algorithm) op, not after `compare_algo`.
 ### 6.3 Worked example
 
 Against the same `faults.example.txt`-shaped registry (one instance of every
-built-in type, via `generate_all_types_faults`) on an 8×8 memory:
+built-in type, via `generate_all_types_faults` — now including the ten
+two-cell coupling primitives and the twelve dynamic types) on an 8×8 memory:
 
 - **`march_c`**: `SA1`/`TF1`/`RDF0`/`IRF0`/`AF_ALIAS`/`CFIN`/`CFID` all land at
   the identical `(elem=1, op=0)` — a 7-way ambiguous group. `SA0`/`TF0`/
   `RDF1`/`IRF1`/`AF_NOACC`/`CFST`/`CFDS` are similarly ambiguous at
-  `(elem=2, op=0)`. `WDF0`/`WDF1`/`DRDF0`/`DRDF1`/`SOF` all escape together —
-  a third ambiguous (escaped) group.
+  `(elem=2, op=0)`. `WDF0`/`WDF1`/`DRDF0`/`DRDF1`/`SOF` escape together, and
+  so do all twelve `DYN_*` types (March C- detects none of them — see
+  [§2.3](#23-worked-example)) — a third, 17-way ambiguous (escaped) group.
 - **`march_ss`**: the same two detected ambiguous groups persist unchanged
-  (March SS's added elements don't target them) — but `WDF0`, `WDF1`,
-  `DRDF0`, `DRDF1` each get pulled into their own distinct, unambiguous
-  `(elem, op)` group, since March SS specifically adds detection elements for
-  exactly those fault classes. Only `SOF` remains in the escaped bucket, alone
-  — so March SS resolves the WDF/DRDF ambiguity but not the
-  SAF/TF/RDF/IRF/coupling-class one.
+  (March SS's added elements don't target them). March SS's WDF/DRDF
+  detection elements do split `WDF0`/`WDF1`/`DRDF0`/`DRDF1` out of the
+  SAF/TF/RDF/IRF/coupling-class group and from each other — but not into
+  singleton groups: `WDF0` still shares its `(elem, op)` with its coupling
+  twin `CFWD0`, and, since the dynamic fault family exists, with
+  `DYN_RDF00`/`DYN_IRF00` (the same non-transition `w0`-then-`r0` pair that
+  catches `WDF0` also sensitizes and detects those same-polarity dynamic
+  types); `WDF1` likewise shares with `CFWD1`/`DYN_RDF11`/`DYN_IRF11`.
+  `DRDF0`/`DRDF1` each stay 2-way, sharing only with their own coupling twin
+  (`CFDRD0`/`CFDRD1`). The escaped bucket is no longer `SOF` alone either: it
+  now also holds the eight dynamic types March SS doesn't catch
+  (`DYN_RDF01`, `DYN_RDF10`, `DYN_DRDF00`, `DYN_DRDF01`, `DYN_DRDF10`,
+  `DYN_DRDF11`, `DYN_IRF01`, `DYN_IRF10`) — a 9-way ambiguous escaped group.
+  March SS still separates the WDF/DRDF classes from the
+  SAF/TF/RDF/IRF/coupling-class ambiguity, but "resolves" here means
+  "narrows to a smaller group that now also picks up dynamic-fault
+  ambiguity," not "makes unambiguous."
 
 (Verified via real Verilator runs against both algorithms; see
 `tests/integration/test_syndrome_diagnosis_e2e.py`.)
