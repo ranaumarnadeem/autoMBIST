@@ -44,11 +44,23 @@ Debian/Ubuntu run `apt install python3-tk`. Nix users get this for free;
 ## Physical/signoff toolchain (optional)
 
 Only needed for the `harden` / `fix-lef-units` / `macro-signoff` commands and
-OpenRAM macro generation — not for the classic generate/simulate/`test`/`algo`
-workflow. Provisioned via nix (LibreLane, magic, netgen, klayout, OpenSTA are
-all reachable through
-`nix run github:librelane/librelane`) and [ciel](https://github.com/fossi-foundation/ciel)
-for the sky130 PDK. See {doc}`librelane` for the full recipe.
+OpenRAM macro generation (`ram-synth`) — not for the classic
+generate/simulate/`test`/`algo` workflow.
+
+The LibreLane side (LibreLane, magic, netgen, klayout, OpenSTA) is
+provisioned via nix — all reachable through
+`nix run github:librelane/librelane` — plus
+[ciel](https://github.com/fossi-foundation/ciel) for the sky130 PDK;
+`harden --run` pins a tested LibreLane release by default (`--librelane-ref`,
+currently `3.0.5`) rather than floating on `main`. See {doc}`librelane` for
+the full recipe.
+
+`ram-synth` is separate, and nix/ciel don't provision it: it drives a
+locally-checked-out [OpenRAM](https://github.com/VLSIDA/OpenRAM) compiler
+(`--openram-dir`, default `./OpenRAM`) that brings its own embedded Python
+environment and its own sky130 PDK bootstrap (`make sky130-pdk` / `make
+sky130-install` inside that checkout) — clone OpenRAM yourself before
+running `ram-synth`.
 
 ## Verify the install
 

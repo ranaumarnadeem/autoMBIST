@@ -165,6 +165,8 @@ algos:
   march_x  (6n, 4 elements)
   march_y  (8n, 4 elements)
   mats_plus  (5n, 3 elements)
+  cfid_wom, cfdst_wom  (word-oriented front, no AlgSpec -- always available, run-only)
+  shared_matsp, shared_marchcm, shared_marchss  (shared-controller front, no AlgSpec -- needs set_shared_memory first, run-only)
 fsms:
   (none registered; use add_fsm)
 faults: 0 loaded
@@ -231,12 +233,31 @@ mine: 33/40 detected (82.50%)  build=5.1s run=0.4s
 Every command below is documented from its actual `do_*` docstring (i.e.
 `help <command>` inside the shell prints the same text).
 
-**`set_memory <addr_width> <data_width> [--wmasks N] [--init 0|1] [--ports 1|2]`**
+**`set_memory <addr_width> <data_width> [--wmasks N] [--init 0|1] [--ports 1|2] [--words-per-row N]`**
 Configure the memory under test. `--ports` selects how many physical ports
 the fault engine models (default 1); `2` enables genuine cross-port coupling
 faults (see `add_fault`'s `VPORT`/`APORT` args) via `march_engine_mp.sv`.
-Must be called before most other commands (`run`, `gen_faults`, etc. raise
-an error otherwise).
+`--words-per-row` (default 1) sets the physical-row width HSD's
+row-membership check uses (`row(addr) = addr / words_per_row`); 1 (no
+column muxing) makes HSD provably inert — see `engine/README.md`. Must be
+called before most other commands (`run`, `gen_faults`, etc. raise an error
+otherwise).
+
+**`set_shared_memory <addr_width> <data_width> <num_memories> [--init 0|1]`**
+Configure N identical memories behind one shared controller
+(`shared_engine.sv`, `docs/shared-hierarchical-mbist-plan.md`) — separate
+session state from `set_memory`, feeding the `shared_matsp`/`shared_marchcm`/
+`shared_marchss` targets of `run` below, not ordinary algorithms/FSMs. Every
+memory gets the same `addr_width`/`data_width`/`init` — one shared
+address/data mux bus needs uniform geometry.
+
+**`add_shared_fault TYPE VADDR VBIT MI [AADDR ABIT P0 P1]`**
+Append one fault to the shared-controller fault list (separate from
+`add_fault`'s list). `MI` (required, no default) selects which of
+`set_shared_memory`'s memories (`0..num_memories-1`) this fault targets —
+unlike `add_fault`'s optional `VPORT`/`APORT`, which physical memory a
+shared-bus fault hits is never safe to default. `AADDR`/`ABIT`/`P0`/`P1`
+default to `0 0 0 0` when omitted, matching `add_fault`'s own convention.
 
 **`add_algo <path.alg> [--name NAME]`**
 Register a march algorithm spec from a `.alg` file (format in §5). `--name`
@@ -282,21 +303,30 @@ places coupling-class faults *inter-word* — see `engine/README.md`'s
 "Semantics notes"), or `N` random faults with `--n`/`--seed` for
 reproducibility. This *replaces* the session's current fault list.
 
-**`run <algo_name|fsm_name> [--verbose] [--check ALGO] [--backgrounds]`**
-Run a fault campaign for one registered algorithm or FSM against the
-current fault list. FSM runs report detect/escape only — `--verbose` has no
-effect for them (no elem/op step counter on a black-box controller). Stores
-the result as "last op" for `write_report`/`write_diagnosis`/
-`write_syndrome`. `--check ALGO` (FSM targets only; `ALGO` is a built-in
-name or a `.alg` path) additionally verifies the controller drives the
-exact march sequence of `ALGO` — address order, ops, write data, port —
-independent of fault detection; the result prints a `sequence: OK`/
-`MISMATCH` line alongside the usual detect/escape summary. `--backgrounds`
-(algorithm targets only) also runs the standard intra-word data-background
-set (solid + column-stripe patterns) and merges results — a fault counts as
-detected if *any* background caught it; the merged result's
-`backgrounds_run` field lists which ran. FSM targets reject this flag
-(`openram_shim.sv` has no `+BACKGROUND` path).
+**`run <algo_name|fsm_name|cfid_wom|cfdst_wom|shared_matsp|shared_marchcm|shared_marchss> [--verbose] [--check ALGO] [--backgrounds]`**
+Run a fault campaign for one registered algorithm, a registered FSM, the
+word-oriented intra-word coupling front (the two reserved names
+`cfid_wom`/`cfdst_wom` — no `AlgSpec`, no FSM; see `run_word_oriented_campaign`
+in `algo_engine.py` and `engine/README.md`'s "Word-oriented intra-word
+coverage" section), or the shared-controller front (the three reserved names
+`shared_matsp`/`shared_marchcm`/`shared_marchss` — no `AlgSpec` either;
+needs `set_shared_memory`/`add_shared_fault` first, not `set_memory`/
+`add_fault`; see `run_shared_campaign` in `algo_engine.py` and
+`docs/shared-hierarchical-mbist-plan.md`). FSM runs report detect/escape
+only — `--verbose` has no effect for them (no elem/op step counter on a
+black-box controller). Stores the result as "last op" for
+`write_report`/`write_diagnosis`/`write_syndrome`. `--check ALGO` (FSM
+targets only; `ALGO` is a built-in name or a `.alg` path) additionally
+verifies the controller drives the exact march sequence of `ALGO` — address
+order, ops, write data, port — independent of fault detection; the result
+prints a `sequence: OK`/`MISMATCH` line alongside the usual detect/escape
+summary. `--backgrounds` (algorithm targets only) also runs the standard
+intra-word data-background set (solid + column-stripe patterns) and merges
+results — a fault counts as detected if *any* background caught it; the
+merged result's `backgrounds_run` field lists which ran. FSM targets reject
+this flag (`openram_shim.sv` has no `+BACKGROUND` path); the word-oriented
+and shared-controller fronts reject both `--check` and `--backgrounds`
+(their own dedicated engines, no `AlgSpec`/`openram_shim` involved).
 
 **`compare_algo <name> -march NAME1,NAME2,... [--backgrounds]`**
 Run `<name>` plus each comma-separated named algorithm (aliases like `C`,
@@ -304,6 +334,23 @@ Run `<name>` plus each comma-separated named algorithm (aliases like `C`,
 print a fault-by-fault detect/escape matrix. Stores the result set as "last
 op" (a matrix, not a single run). `--backgrounds` also runs the standard
 intra-word data-background set per algorithm (see `run --backgrounds`).
+
+**`synth <name> [--elements N] [--max-ops N] [--verify] [--write PATH]`**
+Synthesize a new march test from the current fault-type registry (built-ins
+plus any `add_fault_type` additions) via the Pattern-Graph greedy-walk
+algorithm (Benso et al., ETS 2005 / DATE 2006). Registers the result under
+`<name>`, immediately usable by `run`/`compare_algo` — same contract as
+`add_algo`. `--elements`/`--max-ops` cap the search (default
+`alg_spec.MAX_ELEMENTS`/`MAX_OPS`, §5's 16-element/8-op limits).
+`--verify` runs the synthesized test through a real Verilator campaign
+against the targeted primitives and prints detected/total (also becomes
+the "last run" result, usable by `write_report`/`write_diagnosis`).
+`--write PATH` also writes the human-readable `.alg` text form. Never
+targets `SOF`/`AF_NOACC`/`AF_ALIAS`/`CFDS`/`DRF`/`HSD` (structurally fixed
+types, not expressible in the `Sensitize`/`Effect` DSL — see §4) or a
+`raw_sv` custom primitive (no DSL description to synthesize against) — the
+printed summary always states "targets M/N" so the exclusion is visible,
+never implied.
 
 **`write_report <path> [--fmt md|csv|json]`**
 Persist the most recent `run` or `compare_algo` result (whichever ran last)
@@ -331,9 +378,14 @@ so any custom types from `add_fault_type` are included), every registered
 runnable via the bundle's `run_campaign.sh` without autoMBIST installed.
 
 **`list [algos|fsms|faults|types]`**
-Inspect session state; defaults to printing everything. `list types` shows
-the 41 unconditional built-in fault-type names usable in `add_fault`/
-`load_faults`/`gen_faults`, plus any custom types registered via
+Inspect session state; defaults to printing everything. `list algos` (and
+`list`/`list all`) always appends two extra lines after the registered
+algorithms, naming the reserved run-only targets that have no `AlgSpec`:
+`cfid_wom`/`cfdst_wom` (the word-oriented front, always available) and
+`shared_matsp`/`shared_marchcm`/`shared_marchss` (the shared-controller
+front, needs `set_shared_memory` first) — see `run`'s own entry above.
+`list types` shows the 41 unconditional built-in fault-type names usable in
+`add_fault`/`load_faults`/`gen_faults`, plus any custom types registered via
 `add_fault_type` in a separate "custom types" line. The model has 43: `DRF`
 and `HSD` are absent from this list because they depend on the memory's
 configuration, and `gen_faults` adds each only when it applies (see
@@ -491,7 +543,7 @@ algo> add_fault_type {"name": "MYCLAMP", "category": "static_clamp", "effect": {
 fault type 'MYCLAMP' registered (static_clamp); takes effect on the next run
 
 algo> list types
-fault types (usable in add_fault/load_faults/gen_faults): SA0, SA1, TF0, TF1, WDF0, WDF1, RDF0, RDF1, DRDF0, DRDF1, IRF0, IRF1, SOF, AF_NOACC, AF_ALIAS, CFIN, CFID, CFST, CFDS
+fault types (usable in add_fault/load_faults/gen_faults): SA0, SA1, TF0, TF1, WDF0, WDF1, RDF0, RDF1, DRDF0, DRDF1, IRF0, IRF1, SOF, AF_NOACC, AF_ALIAS, CFIN, CFID, CFST, CFDS, CFTR0, CFTR1, CFWD0, CFWD1, CFRD0, CFRD1, CFIR0, CFIR1, CFDRD0, CFDRD1, DYN_RDF00, DYN_RDF01, DYN_RDF10, DYN_RDF11, DYN_DRDF00, DYN_DRDF01, DYN_DRDF10, DYN_DRDF11, DYN_IRF00, DYN_IRF01, DYN_IRF10, DYN_IRF11
 custom types (added via add_fault_type): MYCLAMP
 ```
 
