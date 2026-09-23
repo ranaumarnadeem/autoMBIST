@@ -43,8 +43,11 @@ project — see "What isn't proven yet" below.
 
 Five fixes were needed to get an OpenRAM macro cleanly through LibreLane's
 macro-integration path — none of them exotic once known, but each one silently
-breaks the harden if missed. The `autombist harden` command bakes all five in
-by default:
+breaks the harden if missed. Four of the five are LibreLane config the
+`autombist harden` command bakes in by default (#2–#5 below); the LEF-units
+fix (#1) rewrites the macro's own LEF file rather than anything in the
+LibreLane config, so it's a separate, one-time preprocessing step you run
+before `harden`, not something `harden` itself does:
 
 1. **LEF units.** OpenRAM's LEF declares `DATABASE MICRONS 2000`, but its
    coordinates — and the GDS — are already on the 1 nm grid LibreLane's sky130A

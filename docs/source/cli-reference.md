@@ -126,7 +126,13 @@ them after:
   `<algo>_fsm.sv` and `<algo>_top.sv`
 - `sram_model.sv` plus the shared repair/self-repair RTL — `repair_remap_row.sv`,
   `repair_remap_col.sv`, `sram_model_spares.sv`, `onchip_row_repair_analyzer.sv`,
-  `onchip_selfrepair_ctrl.sv` and the multi-port models — copied on every run
+  `onchip_2d_repair_analyzer.sv`, `onchip_selfrepair_ctrl.sv`,
+  `onchip_diagnosis_log.sv`, and the multi-port models — copied on every run
+  regardless of your `redundancy:` config. `copy_mbist_rtl` copies everything
+  under `rtl/` except non-selected `--algo` families and the `input_demo_*`
+  macros, so the 2D-repair analyzer and diagnosis logger land even on a
+  plain row-only or no-redundancy config; the wrapper just leaves them
+  uninstantiated unless `onchip_col_repair`/`onchip_diagnosis` are set
 - `config.yml` — a snapshot of the resolved config (also used by `simulate`/`run` to
   locate the module directory when you pass a parent `--out`)
 - With `--test`:
