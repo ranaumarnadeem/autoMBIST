@@ -87,16 +87,21 @@ The original approved plan (see memory / `docs/` history) had three parts:
   already covers it). `yield-sweep`/milestone 4 deliberately still excluded.
 - **Per-macro OpenRAM signoff (DRC/LVS on the macros' own GDS) is
   unresolved** — a stale vendored OpenRAM checkout, not a defect in this
-  project's own RTL. Already documented honestly in
+  project's own RTL. Re-confirmed 2026-09-23 during the docs full-audit
+  pass: vendored `OpenRAM/` HEAD is still `449781d2` (2026-04-08); the two
+  upstream fixes (`5077282`/`8c4f4ef`, dated 2026-04-28/2026-05-14) are
+  still not ancestors of it. Already documented honestly in
   `flow/multimem/mbist/README.md#honest-signoff-caveats`; tracked here so
   it doesn't get lost.
-- **MAINTAINERS.md does not exist yet.**
+- ~~MAINTAINERS.md does not exist yet~~ — done 2026-09-22.
 - ~~GitHub repo description/topics refresh~~ — done 2026-09-22 (description
   now mentions shared-bus/multi-memory + row/column repair; added
   `openram`/`sky130`/`jtag` topics).
-- **`CONTRIBUTING.md`'s test-tier guidance doesn't warn that the newest
-  `tests/integration/test_yield_sweep_*` and
-  `tests/integration/test_shared_bus_*` files are meaningfully slower**
-  than the rest of the integration tier (each trial/scenario is a real,
-  freshly-compiled Icarus run) — worth a one-line note so a contributor
-  running the full suite isn't surprised by the wall-clock jump.
+- ~~`CONTRIBUTING.md`'s test-tier guidance doesn't warn about the slow
+  shared-bus/yield-sweep integration tests~~ — done 2026-09-22.
+- ~~`docs/source/*.md` full audit~~ — done 2026-09-23: all 17 pages read in
+  full (8 previously, 8 more in a parallel pass, `roadmap.md` separately).
+  12 real findings fixed (biggest: `multi-port-guide.md` flatly claimed
+  march-2rw does not and will not support on-chip self-repair — it does,
+  row and column both). `quickstart.md` verified clean by reproducing its
+  commands against a live install, not just reading it.
