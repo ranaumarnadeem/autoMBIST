@@ -195,24 +195,38 @@ autombist generate --config config.yml --out out --test --faults 20 \
 autombist simulate --out out/sram_2rw_64x32
 ```
 
-### 2c. march-1r1w is the only multi-port algo with on-chip self-repair
+### 2c. On-chip self-repair for multi-port memories
 
-`march-1r1w` is currently the sole multi-port algorithm that supports
-on-chip self-repair (`redundancy.onchip_selfrepair: true` — the autonomous
-BIRA analyzer + BISR sequencer + row remap, see the
-[README's BIRA/BISR section](https://github.com/ranaumarnadeem/autoMBIST/blob/main/README.md#redundancy-repair-birabisr-and-physical-closure)).
-Config validation carves out exactly one exception to the "redundancy is
-single-port only" rule: the 1R1W `r`+`w` shape is accepted when
-`onchip_selfrepair: true` is set, and rejected otherwise. `march-2rw` gets
-no such exception — its two ports' concurrent same-cycle compare breaks
-the on-chip analyzer's single-fail-per-cycle assumption, so it's not (and
-won't become) self-repair-capable without new arbitration RTL.
+Both multi-port algorithms support on-chip self-repair
+(`redundancy.onchip_selfrepair: true` — the autonomous BIRA analyzer +
+BISR sequencer + remap, see the
+[README's BIRA/BISR section](https://github.com/ranaumarnadeem/autoMBIST/blob/main/README.md#redundancy-repair-birabisr-and-physical-closure)),
+including on-chip **column** repair (`onchip_col_repair: true` alongside
+`onchip_selfrepair: true` — see {doc}`configuration`'s "On-chip column
+repair" section), not just row repair. Config validation carves out two
+exceptions to the "redundancy is single-port only" rule, one per
+multi-port shape: the 1R1W `r`+`w` shape and the 2RW `rw`+`rw` shape are
+both accepted when `onchip_selfrepair: true` is set, and rejected
+otherwise. march-2rw's concurrent same-cycle dual compare turned out not
+to need arbiter RTL: its march table has exactly one phase where both
+ports compare concurrently, and that phase never targets a different
+address on the two ports, so a same-cycle OR of both compares is correct
+— hardened as a regression assertion (`tests/hardware/test_march_2rw.py`),
+not just assumed.
 
-The mechanism works because both ports share the FSM's single `addr_q`
-register (`rtl/march_1r1w/march_1r1w_fsm.sv`): the read port and write
-port always access the same address on the same cycle, so one
-`fail_valid`/`fail_addr` stream and one `repair_remap_row` instance can
-steer both ports together.
+march-1r1w's mechanism works because both ports share the FSM's single
+`addr_q` register (`rtl/march_1r1w/march_1r1w_fsm.sv`): the read port and
+write port always access the same address on the same cycle, so one
+`fail_valid`/`fail_addr` stream and one shared `repair_remap_row` (plus,
+under `onchip_col_repair: true`, one shared `repair_remap_col`) steer both
+ports together. march-2rw's row repair OR-combines `fail_bitmask` across
+both ports on that same same-address-when-concurrent invariant
+(`rtl/march_2rw/march_2rw_fsm.sv`), but its column repair needs **two**
+independent `repair_remap_col` instances — one per port, each with its
+own `spare_wen` — because march-2rw's two ports can write *different*
+addresses the same cycle, so there's no single reader/writer to cross-wire
+one instance onto the way march-1r1w's asymmetric ports allow (see
+`rtl/onchip_2d_repair_analyzer.sv`).
 
 ```yaml
 redundancy:
@@ -229,7 +243,8 @@ stages, LVS and Antenna both pass. DRC does not — the dominant violation
 traces to a documented, currently-unresolved OpenROAD/sky130 tapcell
 limitation, not to anything in this project's RTL or config. See
 [`flow/newalgo/README.md`, "march-1r1w: real, genuinely-dual-port macro"](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flow/newalgo/README.md#march-1r1w-real-genuinely-dual-port-macro-hardened-drc-not-clean)
-for the full breakdown.
+for the full breakdown. march-2rw self-repair hasn't been carried through
+this LibreLane hardening pass yet — see {doc}`roadmap` for status.
 
 ## 3. Algo-shell: 2-port sessions and cross-port faults
 

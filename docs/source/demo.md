@@ -14,7 +14,7 @@ simulators/PDK toolchain are not visible to a Windows-native Python).
 ```bash
 nix develop              # from the repo root; puts autombist on PATH
 autombist doctor         # toolchain check: make/iverilog/verilator/yosys/nix/magic/... on PATH?
-autombist --help         # 14 commands
+autombist --help         # full command list
 autombist smoke          # generation + OpenRAM config parse + small fault sims
 ```
 
@@ -33,7 +33,7 @@ autombist run --config config.yml --out out
 autombist generate --config config.yml --out out --test --faults 50 --seed 1234 \
     --algo march-c --fault-type stuck-at
 autombist simulate --out out/<memory_name>
-# -> out/<memory_name>/results.json  (coverage_percent, detected/total, fail-bitmap)
+# -> out/<memory_name>/reports/results.json  (coverage_percent, detected_faults, fail_bitmap; mirrored to reports/latest.json)
 ```
 
 ## 2. Research path — grade a march algorithm against the 43-primitive fault model
@@ -48,7 +48,7 @@ autombist test -aw 10 -dw 32     --algo march_ss --faults faults.txt --report co
 autombist algo
 ```
 
-See [Fault coverage](https://github.com/ranaumarnadeem/autoMBIST/blob/main/README.md#fault-coverage) for the measured MATS+ / March C- / March SS
+See [Fault coverage](https://github.com/ranaumarnadeem/autoMBIST/blob/main/README.md#fault-coverage) for the measured MATS+ / March Y / March C- / March C+ / March B / March SS
 detection matrix this path produces.
 
 ## 3. Redundancy repair + RTL-to-GDS closure (sky130)
