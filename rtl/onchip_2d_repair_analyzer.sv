@@ -207,6 +207,11 @@ module onchip_2d_repair_analyzer #(
         wants_row       = '0;
         col_claim_valid = '0;
         col_claim_slot  = '0;
+        // Per-bit scratch, re-initialized before every read below; defaulted
+        // here too so no path leaves them unassigned (Yosys infers a latch
+        // otherwise and rejects the always_comb).
+        already_col_covered = 1'b0;
+        claimed             = 1'b0;
 
         for (int b = 0; b < DATA_WIDTH; b++) begin
             if (enable && fail_valid && !already_row_registered && fail_bitmask[b]) begin
