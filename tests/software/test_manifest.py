@@ -9,199 +9,201 @@ from autombist.manifest import (
     MANIFEST_FORMAT,
     ManifestError,
     build_instance_manifest,
+    render_memory_stub,
+    synthesis_sources,
     update_manifest_with_test_access,
     write_instance_manifest,
 )
 
-COL_PORTS = {
-    "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0",
-    "we": "web0", "csb": "csb0", "spare_wen": "spare_wen0",
+SP = {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "we": "web0", "csb": "csb0"}
+P2RW = {
+    "porta": {**SP},
+    "portb": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "we": "web1", "csb": "csb1"},
+}
+P1R1W = {
+    "rport": {"type": "r", "clk": "clk0", "addr": "addr0", "dout": "dout0", "csb": "csb0"},
+    "wport": {"type": "w", "clk": "clk1", "addr": "addr1", "din": "din1", "csb": "csb1", "we": "web1"},
 }
 
 
-def _dedicated_config(**redundancy_overrides) -> dict:
+def _config(**redundancy) -> dict:
     cfg = {
         "memory_name": "sram_1rw",
         "wrapper_module_name": "sram_1rw_mbist",
         "addr_width": 4,
         "data_width": 8,
+        "read_latency": 1,
         "we_active_low": True,
         "algo": "march-c",
         "algo_dir": "march_c",
-        "normalized_ports": {
-            "port0": {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "we": "web0", "csb": "csb0"},
-        },
+        "algo_top_module": "march_c_top",
+        "normalized_ports": {"port0": dict(SP)},
     }
-    if redundancy_overrides:
-        cfg["redundancy"] = redundancy_overrides
+    if redundancy:
+        cfg["redundancy"] = {"mem_addr_width": 5, "mem_data_width": 8 + redundancy.get("num_spare_cols", 0), **redundancy}
     return cfg
 
 
-def _instances_by_path(manifest: dict) -> dict:
+def _shared_bus(cfg: dict, *names: str) -> dict:
+    cfg = dict(cfg)
+    cfg.update(topology="shared-bus", memory_name="sram_shared", wrapper_module_name="shared_ctrl",
+               memories=[{"name": n} for n in names])
+    return cfg
+
+
+def _by_path(manifest: dict) -> dict:
     return {i["hierarchical_path"]: i for i in manifest["instances"]}
 
 
-def test_bare_dedicated_config_has_only_the_memory_instance(tmp_path: Path) -> None:
-    manifest = build_instance_manifest(_dedicated_config(), tmp_path, tool_version="0.0.0")
+def _manifest(cfg: dict, tmp_path: Path) -> dict:
+    return build_instance_manifest(cfg, tmp_path, tool_version="0.0.0")
+
+
+def test_bare_config_has_memory_and_controller(tmp_path: Path) -> None:
+    manifest = _manifest(_config(), tmp_path)
     assert manifest["format"] == MANIFEST_FORMAT
-    assert manifest["generator"]["topology"] == "dedicated"
     assert manifest["top_module"] == "sram_1rw_mbist"
-    paths = _instances_by_path(manifest)
-    assert set(paths) == {"u_sram"}
-    assert paths["u_sram"]["hierarchy_hint"] == "blackbox"
-    assert paths["u_sram"]["stub_source"] == "sram_1rw_bbox.v"
-    assert manifest["sources"]["wrapper"] == "sram_1rw_mbist.v"
-    assert manifest["sources"]["algo"] == [
-        "march_c/march_c_algo.sv", "march_c/march_c_fsm.sv", "march_c/march_c_top.sv",
-    ]
+    assert manifest["sources"] == {"wrapper": "sram_1rw_mbist.v", "blackbox_stub": "sram_1rw_bbox.v"}
+    paths = _by_path(manifest)
+    assert set(paths) == {"u_sram", "u_algo_top"}
+    mem = paths["u_sram"]
+    assert mem["hierarchy_hint"] == "blackbox"
+    assert mem["sources"] == ["sram_1rw_bbox.v"]
+    ctrl = paths["u_algo_top"]
+    assert ctrl["category"] == "mbist_controller"
+    assert ctrl["hierarchy_hint"] == "separate"
+    assert ctrl["module_type"] == "march_c_top"
+    assert ctrl["parameters"] == {"ADDR_WIDTH": 4, "DATA_WIDTH": 8, "READ_LATENCY": 1}
+    assert ctrl["sources"] == ["march_c/march_c_algo.sv", "march_c/march_c_fsm.sv", "march_c/march_c_top.sv"]
     assert manifest["test_access"] is None
 
 
-def test_onchip_row_repair_only(tmp_path: Path) -> None:
-    cfg = _dedicated_config(num_spare_rows=1, num_spare_cols=0, onchip_selfrepair=True)
-    manifest = build_instance_manifest(cfg, tmp_path, tool_version="0.0.0")
-    paths = _instances_by_path(manifest)
-    assert set(paths) == {"u_sram", "u_onchip_analyzer", "u_onchip_selfrepair_ctrl", "u_repair_remap"}
+def test_onchip_row_repair_instruments_carry_their_parameters(tmp_path: Path) -> None:
+    paths = _by_path(_manifest(_config(num_spare_rows=2, num_spare_cols=0, onchip_selfrepair=True), tmp_path))
+    assert set(paths) == {"u_sram", "u_algo_top", "u_onchip_analyzer", "u_onchip_selfrepair_ctrl", "u_repair_remap"}
     assert paths["u_onchip_analyzer"]["module_type"] == "onchip_row_repair_analyzer"
-    assert paths["u_onchip_analyzer"]["category"] == "self_repair"
-    assert paths["u_repair_remap"]["module_type"] == "repair_remap_row"
-    for name in ("u_onchip_analyzer", "u_onchip_selfrepair_ctrl", "u_repair_remap"):
-        assert paths[name]["hierarchy_hint"] == "keep_hierarchy"
+    assert paths["u_onchip_analyzer"]["parameters"] == {"ADDR_WIDTH": 4, "NUM_SPARE_ROWS": 2}
+    assert paths["u_onchip_selfrepair_ctrl"]["parameters"] == {}
+    assert paths["u_repair_remap"]["parameters"] == {"ADDR_WIDTH": 4, "NUM_SPARE_ROWS": 2}
+    assert paths["u_repair_remap"]["sources"] == ["repair_remap_row.sv"]
+    for inst in paths.values():
+        assert inst["hierarchy_hint"] == ("blackbox" if inst["category"] == "memory" else "separate")
 
 
 def test_onchip_row_and_col_repair_plus_diagnosis(tmp_path: Path) -> None:
-    cfg = _dedicated_config(
-        num_spare_rows=1, num_spare_cols=1,
-        onchip_selfrepair=True, onchip_col_repair=True,
-        onchip_diagnosis=True, num_diagnosis_entries=4,
-    )
-    manifest = build_instance_manifest(cfg, tmp_path, tool_version="0.0.0")
-    paths = _instances_by_path(manifest)
-    assert set(paths) == {
-        "u_sram", "u_onchip_analyzer", "u_onchip_selfrepair_ctrl",
-        "u_onchip_diagnosis", "u_repair_remap", "u_repair_remap_col",
-    }
+    cfg = _config(num_spare_rows=1, num_spare_cols=1, onchip_selfrepair=True, onchip_col_repair=True,
+                  onchip_diagnosis=True, num_diagnosis_entries=4)
+    paths = _by_path(_manifest(cfg, tmp_path))
+    assert set(paths) == {"u_sram", "u_algo_top", "u_onchip_analyzer", "u_onchip_selfrepair_ctrl",
+                          "u_onchip_diagnosis", "u_repair_remap", "u_repair_remap_col"}
     assert paths["u_onchip_analyzer"]["module_type"] == "onchip_2d_repair_analyzer"
+    assert paths["u_onchip_analyzer"]["parameters"] == {
+        "ADDR_WIDTH": 4, "DATA_WIDTH": 8, "NUM_SPARE_ROWS": 1, "NUM_SPARE_COLS": 1}
     assert paths["u_onchip_diagnosis"]["category"] == "diagnosis"
-    assert paths["u_onchip_diagnosis"]["module_type"] == "onchip_diagnosis_log"
-    assert paths["u_repair_remap_col"]["module_type"] == "repair_remap_col"
+    assert paths["u_onchip_diagnosis"]["parameters"] == {"ADDR_WIDTH": 4, "NUM_DIAGNOSIS_ENTRIES": 4}
+    assert paths["u_repair_remap_col"]["parameters"] == {"DATA_WIDTH": 8, "NUM_SPARE_COLS": 1}
 
 
-def test_tester_driven_redundancy_without_onchip_selfrepair(tmp_path: Path) -> None:
-    # repair_ports:-driven (tester) redundancy -- no analyzer/ctrl instances,
-    # just the remap(s), since nothing on-chip is computing the repair.
-    cfg = _dedicated_config(num_spare_rows=1, num_spare_cols=1)
-    manifest = build_instance_manifest(cfg, tmp_path, tool_version="0.0.0")
-    paths = _instances_by_path(manifest)
-    assert set(paths) == {"u_sram", "u_repair_remap", "u_repair_remap_col"}
-    assert "u_onchip_analyzer" not in paths
-    assert "u_onchip_selfrepair_ctrl" not in paths
+def test_tester_driven_redundancy_has_remaps_but_no_onchip_logic(tmp_path: Path) -> None:
+    paths = _by_path(_manifest(_config(num_spare_rows=1, num_spare_cols=1), tmp_path))
+    assert set(paths) == {"u_sram", "u_algo_top", "u_repair_remap", "u_repair_remap_col"}
 
 
 def test_multi_port_dual_rw_col_repair_gets_per_port_col_remap(tmp_path: Path) -> None:
-    cfg = _dedicated_config(num_spare_rows=1, num_spare_cols=1, onchip_selfrepair=True, onchip_col_repair=True)
-    cfg["algo"] = "march-2rw"
-    cfg["normalized_ports"] = {
-        "porta": {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "we": "web0", "csb": "csb0"},
-        "portb": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "we": "web1", "csb": "csb1"},
-    }
-    manifest = build_instance_manifest(cfg, tmp_path, tool_version="0.0.0")
-    paths = _instances_by_path(manifest)
-    assert set(paths) == {
-        "u_sram", "u_onchip_analyzer", "u_onchip_selfrepair_ctrl",
-        "u_repair_remap0", "u_repair_remap1", "u_repair_remap_col0", "u_repair_remap_col1",
-    }
+    cfg = _config(num_spare_rows=1, num_spare_cols=1, onchip_selfrepair=True, onchip_col_repair=True)
+    cfg.update(algo="march-2rw", algo_dir="march_2rw", algo_top_module="march_2rw_top", normalized_ports=P2RW)
+    assert set(_by_path(_manifest(cfg, tmp_path))) == {
+        "u_sram", "u_algo_top", "u_onchip_analyzer", "u_onchip_selfrepair_ctrl",
+        "u_repair_remap0", "u_repair_remap1", "u_repair_remap_col0", "u_repair_remap_col1"}
 
 
 def test_multi_port_non_dual_rw_col_repair_gets_single_col_remap(tmp_path: Path) -> None:
-    cfg = _dedicated_config(num_spare_rows=1, num_spare_cols=1, onchip_selfrepair=True, onchip_col_repair=True)
-    cfg["algo"] = "march-1r1w"
-    cfg["normalized_ports"] = {
-        "rport": {"type": "r", "clk": "clk0", "addr": "addr0", "dout": "dout0", "csb": "csb0"},
-        "wport": {"type": "w", "clk": "clk1", "addr": "addr1", "din": "din1", "csb": "csb1", "we": "web1"},
-    }
-    manifest = build_instance_manifest(cfg, tmp_path, tool_version="0.0.0")
-    paths = _instances_by_path(manifest)
-    assert set(paths) == {
-        "u_sram", "u_onchip_analyzer", "u_onchip_selfrepair_ctrl",
-        "u_repair_remap0", "u_repair_remap1", "u_repair_remap_col",
-    }
+    cfg = _config(num_spare_rows=1, num_spare_cols=1, onchip_selfrepair=True, onchip_col_repair=True)
+    cfg.update(algo="march-1r1w", algo_dir="march_1r1w", algo_top_module="march_1r1w_top", normalized_ports=P1R1W)
+    assert set(_by_path(_manifest(cfg, tmp_path))) == {
+        "u_sram", "u_algo_top", "u_onchip_analyzer", "u_onchip_selfrepair_ctrl",
+        "u_repair_remap0", "u_repair_remap1", "u_repair_remap_col"}
 
 
 def test_multi_port_tester_driven_redundancy_is_left_unenumerated(tmp_path: Path) -> None:
-    # No template branch exists for this combination (wrapper_template.j2's
-    # multi-port repair_remap_row loop only fires inside has_onchip_selfrepair) --
-    # only the memory instance should be reported, not a guess.
-    cfg = _dedicated_config(num_spare_rows=1, num_spare_cols=0)
-    cfg["algo"] = "march-2rw"
-    cfg["normalized_ports"] = {
-        "porta": {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "we": "web0", "csb": "csb0"},
-        "portb": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "we": "web1", "csb": "csb1"},
-    }
-    manifest = build_instance_manifest(cfg, tmp_path, tool_version="0.0.0")
-    paths = _instances_by_path(manifest)
-    assert set(paths) == {"u_sram"}
+    # No template branch exists for this combination -- report no remap rather than guess.
+    cfg = _config(num_spare_rows=1, num_spare_cols=0)
+    cfg.update(algo="march-2rw", algo_dir="march_2rw", algo_top_module="march_2rw_top", normalized_ports=P2RW)
+    assert set(_by_path(_manifest(cfg, tmp_path))) == {"u_sram", "u_algo_top"}
 
 
 def test_shared_bus_generate_loop_instances_per_memory(tmp_path: Path) -> None:
-    cfg = _dedicated_config(num_spare_rows=1, num_spare_cols=1, onchip_selfrepair=True, onchip_col_repair=True)
-    cfg["topology"] = "shared-bus"
-    cfg["memory_name"] = "sram_shared"
-    cfg["wrapper_module_name"] = "shared_ctrl"
-    cfg["memories"] = [{"name": "bank0"}, {"name": "bank1"}]
-    manifest = build_instance_manifest(cfg, tmp_path, tool_version="0.0.0")
+    cfg = _shared_bus(_config(num_spare_rows=1, num_spare_cols=1, onchip_selfrepair=True, onchip_col_repair=True),
+                      "bank0", "bank1")
+    manifest = _manifest(cfg, tmp_path)
     assert manifest["generator"]["topology"] == "shared-bus"
-    paths = _instances_by_path(manifest)
-    assert set(paths) == {
-        "u_mem_bank0", "u_mem_bank1",
-        "selfrepair_inst[0].u_onchip_analyzer", "selfrepair_inst[0].u_onchip_selfrepair_ctrl",
-        "selfrepair_inst[0].u_repair_remap", "selfrepair_inst[0].u_repair_remap_col",
-        "selfrepair_inst[1].u_onchip_analyzer", "selfrepair_inst[1].u_onchip_selfrepair_ctrl",
-        "selfrepair_inst[1].u_repair_remap", "selfrepair_inst[1].u_repair_remap_col",
-    }
-    assert paths["u_mem_bank0"]["module_type"] == "sram_shared"
-    assert paths["u_mem_bank1"]["stub_source"] == "sram_shared_bbox.v"
-    # The real bug controller_sources() used to have (faultflow_flow.py):
-    # under shared-bus the wrapper file is named after wrapper_module_name,
-    # not memory_name.
+    paths = _by_path(manifest)
+    per_mem = {"u_onchip_analyzer", "u_onchip_selfrepair_ctrl", "u_repair_remap", "u_repair_remap_col"}
+    assert set(paths) == {"u_mem_bank0", "u_mem_bank1", "u_algo_top"} | {
+        f"selfrepair_inst[{i}].{name}" for i in (0, 1) for name in per_mem}
+    assert paths["u_mem_bank1"]["module_type"] == "sram_shared"
+    assert paths["u_mem_bank1"]["sources"] == ["sram_shared_bbox.v"]
+    assert paths["selfrepair_inst[1].u_onchip_analyzer"]["instance_name"] == "u_onchip_analyzer"
+    # Under shared-bus the wrapper file is named after wrapper_module_name, not memory_name.
     assert manifest["sources"]["wrapper"] == "shared_ctrl_mbist.v"
 
 
-def test_shared_bus_without_onchip_selfrepair_has_only_memory_instances(tmp_path: Path) -> None:
-    cfg = _dedicated_config()
-    cfg["topology"] = "shared-bus"
-    cfg["memory_name"] = "sram_shared"
-    cfg["wrapper_module_name"] = "shared_ctrl"
-    cfg["memories"] = [{"name": "bank0"}]
-    manifest = build_instance_manifest(cfg, tmp_path, tool_version="0.0.0")
-    paths = _instances_by_path(manifest)
-    assert set(paths) == {"u_mem_bank0"}
+def test_shared_bus_without_onchip_selfrepair(tmp_path: Path) -> None:
+    paths = _by_path(_manifest(_shared_bus(_config(), "bank0"), tmp_path))
+    assert set(paths) == {"u_mem_bank0", "u_algo_top"}
+
+
+def test_saboteur_output_dir_is_rejected(tmp_path: Path) -> None:
+    cfg = _config()
+    cfg["use_saboteur"] = True
+    with pytest.raises(ManifestError, match="--test"):
+        _manifest(cfg, tmp_path)
+
+
+def test_synthesis_sources_are_wrapper_plus_instrument_rtl_without_memory(tmp_path: Path) -> None:
+    cfg = _config(num_spare_rows=1, num_spare_cols=0, onchip_selfrepair=True)
+    names = [p.relative_to(tmp_path).as_posix() for p in synthesis_sources(cfg, tmp_path)]
+    assert names == [
+        "sram_1rw_mbist.v",
+        "march_c/march_c_algo.sv", "march_c/march_c_fsm.sv", "march_c/march_c_top.sv",
+        "onchip_row_repair_analyzer.sv", "onchip_selfrepair_ctrl.sv", "repair_remap_row.sv",
+    ]
+
+
+def test_memory_stub_declares_all_overridable_parameters_and_widened_ports() -> None:
+    cfg = _config(num_spare_rows=1, num_spare_cols=1, onchip_selfrepair=True, onchip_col_repair=True)
+    cfg["normalized_ports"] = {"port0": {**SP, "spare_wen": "spare_wen0"}}
+    stub = render_memory_stub(cfg)
+    assert "(* blackbox *)" in stub and "module sram_1rw #(" in stub
+    for param in ("ADDR_WIDTH = 4", "DATA_WIDTH = 8", "NUM_SPARE_ROWS = 1", "NUM_SPARE_COLS = 1"):
+        assert f"parameter integer {param}" in stub
+    assert "input  wire [4:0] addr0" in stub      # mem_addr_width (spare row)
+    assert "input  wire [8:0] din0" in stub       # mem_data_width (spare col)
+    assert "output wire [8:0] dout0" in stub
+    assert "input  wire [0:0] spare_wen0" in stub
+
+
+def test_memory_stub_dedupes_a_shared_clock_pin() -> None:
+    cfg = _config()
+    shared_clk = {**P2RW["portb"], "clk": "clk0"}
+    cfg["normalized_ports"] = {"porta": P2RW["porta"], "portb": shared_clk}
+    stub = render_memory_stub(cfg)
+    assert stub.count(" clk0") == 1
+    assert "output wire [7:0] dout1" in stub
 
 
 def test_write_instance_manifest_roundtrips(tmp_path: Path) -> None:
-    manifest = build_instance_manifest(_dedicated_config(), tmp_path, tool_version="0.0.0")
-    path = write_instance_manifest(manifest, tmp_path)
+    path = write_instance_manifest(_manifest(_config(), tmp_path), tmp_path)
     assert path == tmp_path / "manifest.json"
-    loaded = json.loads(path.read_text(encoding="utf-8"))
-    assert loaded["format"] == MANIFEST_FORMAT
-    assert loaded["instances"][0]["instance_name"] == "u_sram"
+    assert json.loads(path.read_text(encoding="utf-8"))["format"] == MANIFEST_FORMAT
 
 
 def test_update_manifest_with_test_access_patches_in_place(tmp_path: Path) -> None:
-    manifest = build_instance_manifest(_dedicated_config(), tmp_path, tool_version="0.0.0")
-    write_instance_manifest(manifest, tmp_path)
-
-    block = {
-        "wrapped": True,
-        "output_verilog": str(tmp_path / "out" / "sram_1rw_mbist_test_access.v"),
-        "internal_instances": "not_enumerated",
-        "hierarchy_hint": "opaque_shell",
-    }
-    path = update_manifest_with_test_access(tmp_path, block)
-    loaded = json.loads(path.read_text(encoding="utf-8"))
+    write_instance_manifest(_manifest(_config(), tmp_path), tmp_path)
+    block = {"wrapped": True, "hierarchy_hint": "opaque_shell"}
+    loaded = json.loads(update_manifest_with_test_access(tmp_path, block).read_text(encoding="utf-8"))
     assert loaded["test_access"] == block
-    # Everything else must survive untouched.
-    assert loaded["instances"][0]["instance_name"] == "u_sram"
+    assert {i["hierarchical_path"] for i in loaded["instances"]} == {"u_sram", "u_algo_top"}
 
 
 def test_update_manifest_with_test_access_requires_existing_manifest(tmp_path: Path) -> None:

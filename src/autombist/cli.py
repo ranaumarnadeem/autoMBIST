@@ -402,7 +402,7 @@ def generate(
     fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at (SA0/SA1), transition-up, transition-down, or port-coupling (march-1r1w only; march-2rw supports stuck-at/transition only)"),
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
     algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, march-2rw, march-x, mats-plus, or checkerboard"),
-    emit_manifest: bool = typer.Option(False, "--emit-manifest/--no-emit-manifest", help="Also write manifest.json: memory/controller instance names for external synthesis tooling (e.g. FaultFlow) to blackbox/keep-hierarchy correctly"),
+    emit_manifest: bool = typer.Option(False, "--emit-manifest/--no-emit-manifest", help="Also write manifest.json: memory instances to blackbox and MBIST logic instances to grade, for external synthesis tooling (e.g. FaultFlow)"),
 ) -> None:
     r"""Generate MBIST wrapper, RTL, and optionally fault masks.
 
@@ -424,7 +424,7 @@ def generate(
       - \[with --test] faults/*.hex (fault masks)
       - \[with --test] Makefile (for running simulation)
       - \[with --emit-manifest] manifest.json (machine-readable instance list:
-        which instances to blackbox vs. keep-hierarchy, for external
+        which instances to blackbox vs. flatten and grade, for external
         synthesis-aware tooling such as FaultFlow)
 
     Examples:
@@ -503,7 +503,7 @@ def run(
     scan_chains: int = typer.Option(1, "--scan-chains", help="Scan chains for controller grading"),
     min_coverage: float | None = typer.Option(None, "--min-coverage", help="Fail (exit 1) if array fault coverage is below this percent"),
     json_output: bool = typer.Option(False, "--json", help="Print the structured report as JSON to stdout instead of the human summary"),
-    emit_manifest: bool = typer.Option(False, "--emit-manifest/--no-emit-manifest", help="Also write manifest.json: memory/controller instance names for external synthesis tooling (e.g. FaultFlow) to blackbox/keep-hierarchy correctly"),
+    emit_manifest: bool = typer.Option(False, "--emit-manifest/--no-emit-manifest", help="Also write manifest.json: memory instances to blackbox and MBIST logic instances to grade, for external synthesis tooling (e.g. FaultFlow)"),
 ) -> None:
     """Generate wrapper AND run simulation in one command (convenience mode).
 
@@ -738,10 +738,10 @@ def _wrap_test_access(
             "boundary_ports": ["tck", "tms", "tdi", "tdo", "trst_n"],
             "wrapped_ports": [{"name": p.name, "role": p.role, "width": p.width} for p in ports],
             "icl_path": str(icl_path.resolve()) if icl_path is not None else None,
-            # wrap_test_access's own return value (testaccess.py) only ever
-            # yields an architecture-level ICL register description, never a
-            # gate-level TAP/SIB instance list -- there is no warptap API
-            # today that would make this anything but an honest placeholder.
+            # warptap splices in deterministically named module instances
+            # (tap_core, sib_cell "warptap_<sib>", bc1_shift_only /
+            # instrument_write "<prefix>_inst_<k>", scan_mux_cell) that could
+            # be listed from output_verilog, but nothing enumerates them yet.
             "internal_instances": "not_enumerated",
             "hierarchy_hint": "opaque_shell",
         }
