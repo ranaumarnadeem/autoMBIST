@@ -181,15 +181,10 @@ def test_generated_shared_bus_col_repair_wrapper_elaborates_cleanly_with_real_ve
             "verilator", "--lint-only", "--timing",
             "-Wno-WIDTHTRUNC", "-Wno-WIDTHEXPAND", "-Wno-UNUSED", "-Wno-DECLFILENAME",
             "-Wno-PINMISSING", "-Wno-PINCONNECTEMPTY", "-Wno-BLKSEQ",
-            # onchip_2d_repair_analyzer.sv's already_col_covered/claimed are
-            # loop-scoped combinational temporaries, always assigned before
-            # being read within the SAME iteration -- Verilator's local,
-            # per-always-block reachability check can't see that and infers
-            # a (non-existent) latch. Pre-existing in already-shipped,
-            # already Icarus-functionally-proven RTL (test_onchip_col_repair_e2e.py
-            # et al.); this is simply the first time this file has been run
-            # through Verilator lint at all. Unrelated to this feature.
-            "-Wno-LATCH",
+            # No -Wno-LATCH: onchip_2d_repair_analyzer.sv's per-bit scratch
+            # (already_col_covered/claimed) is now defaulted at the top of its
+            # always_comb, so a latch warning here is a real regression (Yosys
+            # rejects the module outright when one is inferred).
             *[str(s) for s in sources],
         ],
         capture_output=True, text=True, cwd=module_outdir,
