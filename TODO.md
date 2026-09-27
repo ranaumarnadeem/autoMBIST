@@ -113,19 +113,26 @@ manifest's `parameters`.
     now packed. `test_synthesized_bist_e2e.py` covers it at gate level with a
     defect only in port 1's read path, so port 1's own compare is proven to
     survive synthesis.
-- **Open, JTAG/IJTAG**: warptap splices in deterministically named module
-  instances (`tap_core`, `sib_cell` `warptap_<sib>`, `bc1_shift_only`/
-  `instrument_write` `<prefix>_inst_<k>`, `scan_mux_cell`) and never flattens
-  (its ingest is `hierarchy; proc; memory_collect` only), so they can be
-  listed from the inserted Verilog into the manifest's `test_access` block —
-  not done yet (`internal_instances` is still `"not_enumerated"`). Untested
-  idea for reconciling the collar and JTAG-wrapped netlists: pass the
-  `<memory_name>_bbox.v` stub to `wrap-test-access` instead of the memory
-  model, so the JTAG-wrapped output keeps the memory blackboxed.
+- ~~JTAG/IJTAG instances not enumerated~~ — **done 2026-09-27**.
+  `wrap-test-access --manifest DIR` alone derives its sources from the manifest
+  with the memory's stub in place of the model, so the JTAG-wrapped netlist
+  keeps the memory blackboxed (this reconciles the collar and JTAG-wrapped
+  netlists, previously two unrelated outputs), writes into `DIR/test-access/`,
+  and records a `test_access` synthesis plan: every instance of the wrapped
+  top (TAP, one SIB per port, one TDR bit per port bit, MBIST blocks under
+  their parameter-specialized module names, the memory) plus each
+  instrument's SIB and ordered TDR bits, enumerated by re-reading the output
+  through warptap's own ingest (not predicted). Proven sufficient with Yosys
+  alone by `tests/integration/test_testaccess_manifest_e2e.py` (every block
+  standalone from the wrapped file; glue with them blackboxed leaves exactly
+  the listed instances). BSR (boundary-scan register) insertion is a
+  separate warptap step `wrap-test-access` does not do.
 - **Not started (FaultFlow repo, separate PR)**: consuming the manifest —
-  subprocess-invoke `autombist generate --emit-manifest`, load and validate
-  `manifest.json`, generate per-block/glue synth scripts, splice, then
-  `sim`/`scan` — plus `autombist-generate` CLI and Tcl commands.
+  subprocess-invoke `autombist generate --emit-manifest` (and optionally
+  `autombist wrap-test-access --manifest DIR`), load and validate
+  `manifest.json`, generate per-block/glue synth scripts for the collar or
+  the JTAG-wrapped netlist, splice, then `sim`/`scan` — plus
+  `autombist-generate` CLI and Tcl commands.
 
 ## Housekeeping
 

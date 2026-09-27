@@ -9,6 +9,7 @@ from autombist.manifest import (
     MANIFEST_FORMAT,
     ManifestError,
     build_instance_manifest,
+    build_test_access_block,
     render_memory_stub,
     synthesis_sources,
     update_manifest_with_test_access,
@@ -209,3 +210,81 @@ def test_update_manifest_with_test_access_patches_in_place(tmp_path: Path) -> No
 def test_update_manifest_with_test_access_requires_existing_manifest(tmp_path: Path) -> None:
     with pytest.raises(ManifestError):
         update_manifest_with_test_access(tmp_path, {"wrapped": True})
+
+
+def _enumerated(*, memory_blackbox: bool = True, tdr_type: str = "instrument_write", bits=(0,)) -> list[dict]:
+    def e(instance, module_type, **kw):
+        return {"instance": instance, "module_type": module_type, "is_blackbox": False,
+                "sib_name": None, "instrument_name": None, "instrument_bit": None, "mux_name": None, **kw}
+    return [
+        e("u_sram", "sram_1rw", is_blackbox=memory_blackbox),
+        e("u_algo_top", r"\$paramod$abc\march_c_top"),
+        e("warptap_tap_core", "tap_core"),
+        e("warptap_sib_bist_start", "sib_cell", sib_name="sib_bist_start", instrument_name="bist_start"),
+        *[e(f"warptap_sib_bist_start_inst_{k}", tdr_type, sib_name="sib_bist_start", instrument_bit=k)
+          for k in bits],
+    ]
+
+
+def _block(tmp_path: Path, enumerated: list[dict], width: int = 1, role: str = "control") -> dict:
+    manifest = _manifest(_config(), tmp_path)
+    return build_test_access_block(
+        manifest, enumerated, [{"name": "bist_start", "role": role, "width": width}],
+        output_verilog=tmp_path / "x_test_access.v", output_dir=tmp_path, icl_path=None,
+    )
+
+
+def test_test_access_block_lists_every_wrapped_instance(tmp_path: Path) -> None:
+    block = _block(tmp_path, _enumerated())
+    paths = {i["hierarchical_path"]: i for i in block["instances"]}
+    assert paths["warptap_tap_core"]["category"] == "jtag_tap"
+    assert paths["warptap_sib_bist_start"]["category"] == "ijtag_sib"
+    assert paths["warptap_sib_bist_start"]["instrument"] == "bist_start"
+    assert paths["warptap_sib_bist_start_inst_0"]["category"] == "ijtag_tdr"
+    assert paths["warptap_sib_bist_start_inst_0"]["bit"] == 0
+    # MBIST blocks keep their base-manifest category but carry the module name as
+    # it appears in the wrapped netlist (parameter-specialized, no parameters).
+    assert paths["u_algo_top"]["category"] == "mbist_controller"
+    assert paths["u_algo_top"]["module_type"] == r"\$paramod$abc\march_c_top"
+    assert "parameters" not in paths["u_algo_top"]
+    assert paths["u_sram"]["hierarchy_hint"] == "blackbox"
+    assert paths["u_sram"]["sources"] == ["sram_1rw_bbox.v"]
+    assert all(i["hierarchy_hint"] == "separate" for p, i in paths.items() if p != "u_sram")
+    assert block["memory_blackboxed"] is True
+    assert block["boundary_ports"] == ["tck", "tms", "tdi", "tdo", "trst_n"]
+    assert block["instruments"] == [{
+        "name": "bist_start", "role": "control", "width": 1,
+        "sib": "warptap_sib_bist_start", "tdr_bits": ["warptap_sib_bist_start_inst_0"],
+    }]
+
+
+def test_test_access_block_orders_wide_tdr_bits(tmp_path: Path) -> None:
+    block = _block(tmp_path, _enumerated(bits=(2, 0, 1)), width=3)
+    assert block["instruments"][0]["tdr_bits"] == [f"warptap_sib_bist_start_inst_{k}" for k in range(3)]
+
+
+def test_test_access_block_reports_a_synthesized_memory(tmp_path: Path) -> None:
+    assert _block(tmp_path, _enumerated(memory_blackbox=False))["memory_blackboxed"] is False
+
+
+@pytest.mark.parametrize("enumerated, width, role", [
+    (_enumerated(bits=(0,)), 2, "control"),                    # a TDR bit missing
+    (_enumerated(tdr_type="bc1_shift_only"), 1, "control"),    # wrong TDR cell for the role
+])
+def test_test_access_block_rejects_tdr_cells_that_do_not_match_the_port(
+    tmp_path: Path, enumerated: list[dict], width: int, role: str,
+) -> None:
+    with pytest.raises(ManifestError, match="does not match its TDR cells"):
+        _block(tmp_path, enumerated, width=width, role=role)
+
+
+def test_test_access_block_rejects_a_port_without_a_sib(tmp_path: Path) -> None:
+    enumerated = [e for e in _enumerated() if e["module_type"] != "sib_cell"]
+    with pytest.raises(ManifestError, match="no SIB"):
+        _block(tmp_path, enumerated)
+
+
+def test_test_access_block_rejects_a_missing_memory(tmp_path: Path) -> None:
+    enumerated = [e for e in _enumerated() if e["instance"] != "u_sram"]
+    with pytest.raises(ManifestError, match="memory instance"):
+        _block(tmp_path, enumerated)
