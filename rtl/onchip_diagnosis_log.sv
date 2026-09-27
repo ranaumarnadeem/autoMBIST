@@ -48,7 +48,6 @@
 //     edge in S_ANALYZE_KICK. Not independently interlocked in this module,
 //     the same category of caveat as onchip_row_repair_analyzer's
 //     repair_load hazards -- see that module's header.
-(* keep_hierarchy *)
 module onchip_diagnosis_log #(
     parameter integer ADDR_WIDTH            = 10,
     parameter integer NUM_DIAGNOSIS_ENTRIES = 8

@@ -15,7 +15,6 @@
 // the spare rows live (mirroring OpenRAM's addressable spares). No clock/reset:
 // a future BISR load block registers the config UPSTREAM of these inputs without
 // touching this module.
-(* keep_hierarchy *)
 module repair_remap_row #(
     parameter integer ADDR_WIDTH     = 10,   // logical (pre-repair) address width
     parameter integer NUM_SPARE_ROWS = 1,
