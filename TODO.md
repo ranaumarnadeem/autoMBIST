@@ -63,7 +63,7 @@ scoped follow-up:
   blackboxed a hardcoded `u_sram` even under shared-bus. All four are fixed;
   the collar now synthesizes clean (no unknown cells, every memory instance
   kept) for plain, tester-driven row+col, on-chip row+diagnosis, on-chip
-  row+col, and march-1r1w configs. Still unverified: an actual `ff.py sim`
+  row+col, march-1r1w, and shared-bus (plain, row, row+col) configs. Still unverified: an actual `ff.py sim`
   run on that netlist (writes into the faultflow repo's output/, so left to
   the FaultFlow side).
 - Part B (autoMBIST bug fixes) — **confirmed fixed** (2026-09-22): sim-time
@@ -85,8 +85,8 @@ advice to synthesize test instruments apart from the core). Proven
 sufficient with Yosys alone (no FaultFlow code): driven only by the
 manifest, every block synthesizes standalone to pure sky130 cells and the
 glue synthesizes with every block as a `-lib` stub, with the manifest's
-instance paths matching the glue's cell names exactly — for 5 of 7
-configurations (see below). FaultFlow's existing `assemble.py`
+instance paths matching the glue's cell names exactly — for every
+configuration tried except march-2rw (see below). FaultFlow's existing `assemble.py`
 (`block_stub_verilog`/`compose_soc`) already implements the stub-and-splice
 step for SoC blocks, but its stubs declare no parameters, which Yosys
 rejects for a parameterized instrument — its stubs must carry the
@@ -97,14 +97,15 @@ manifest's `parameters`.
   top module's cells and hard-fails on unknown types, so it broke grading.
 - **Open, autoMBIST RTL — not Yosys-synthesizable today** (Icarus/Verilator
   simulate them fine; nothing had ever run them through Yosys):
-  - `topology: shared-bus`: the wrapper reads `sram_dout_arr[mem_sel_q]`
-    (unpacked array, variable index), which Yosys turns into a never-written
-    `$mem`; the memories' `dout` ends up driving only that memory's read
-    port, so `opt_clean` **silently deletes every memory instance** (and the
-    per-memory analyzers/remaps with them). Any Yosys-based flow, LibreLane
-    hardening included, gets a shared-bus netlist with its memories gone.
-    Needs packed arrays or an explicit mux in `wrapper_template.j2`, then the
-    shared-bus sim suites re-run.
+  - ~~`topology: shared-bus` loses its memories in synthesis~~ — **fixed
+    2026-09-27**. The wrapper's per-memory arrays were unpacked, and Yosys
+    lowered the variable-index read `sram_dout_arr[mem_sel_q]` to a
+    never-written `$mem`, so `opt_clean` deleted every memory instance; with
+    the read data undefined it also optimized the compare path, so the
+    synthesized BIST passed a DEFECTIVE memory too (RTL simulation was always
+    fine). Now packed arrays; proven at gate level by
+    `tests/integration/test_synthesized_bist_e2e.py` (synthesized collar,
+    real cocotb run: passes a good memory, fails `sram_1rw_stuck_bit.v`).
   - march-2rw: `march_2rw_algo.sv` uses unpacked-array ports
     (`output logic do_read [0:1]`), which Yosys's built-in SV frontend
     rejects outright.

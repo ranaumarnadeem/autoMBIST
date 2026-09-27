@@ -132,18 +132,19 @@ module {{ wrapper_module_name }} #(
     logic                  algo_fail_valid;
     logic [ADDR_WIDTH-1:0] algo_fail_addr;
     logic                  effective_test_mode;
-    logic                  self_repair_start_arr [{{ num_memories }}];
-    logic                  self_repair_done_arr  [{{ num_memories }}];
-    logic                  self_repair_fail_arr  [{{ num_memories }}];
-    logic                  self_repair_busy_arr  [{{ num_memories }}];
-    logic                  ctrl_test_mode_override_arr [{{ num_memories }}];
-    logic                  ctrl_bist_start_arr   [{{ num_memories }}];
-    logic                  registrar_enable_arr  [{{ num_memories }}];
-    logic                  latch_result_arr      [{{ num_memories }}];
-    logic                  unrepairable_arr       [{{ num_memories }}];
-    logic [{{ redundancy.num_spare_rows }}-1:0]            row_repair_en_arr   [{{ num_memories }}];
-    logic [{{ redundancy.num_spare_rows }}*ADDR_WIDTH-1:0] faulty_row_addr_arr [{{ num_memories }}];
-    logic [{{ redundancy.mem_addr_width }}-1:0]            sram_addr_phys_arr  [{{ num_memories }}];
+    // Packed per-memory arrays -- see the note at sram_csb_arr below.
+    logic [{{ num_memories }}-1:0] self_repair_start_arr;
+    logic [{{ num_memories }}-1:0] self_repair_done_arr;
+    logic [{{ num_memories }}-1:0] self_repair_fail_arr;
+    logic [{{ num_memories }}-1:0] self_repair_busy_arr;
+    logic [{{ num_memories }}-1:0] ctrl_test_mode_override_arr;
+    logic [{{ num_memories }}-1:0] ctrl_bist_start_arr;
+    logic [{{ num_memories }}-1:0] registrar_enable_arr;
+    logic [{{ num_memories }}-1:0] latch_result_arr;
+    logic [{{ num_memories }}-1:0] unrepairable_arr;
+    logic [{{ num_memories }}-1:0][{{ redundancy.num_spare_rows }}-1:0]            row_repair_en_arr;
+    logic [{{ num_memories }}-1:0][{{ redundancy.num_spare_rows }}*ADDR_WIDTH-1:0] faulty_row_addr_arr;
+    logic [{{ num_memories }}-1:0][{{ redundancy.mem_addr_width }}-1:0]            sram_addr_phys_arr;
 {% if has_onchip_col_repair %}
     // On-chip 2D (row+column) self-repair, shared-bus: same per-memory
     // partitioning as the row-only arrays above, extended for the column
@@ -151,11 +152,11 @@ module {{ wrapper_module_name }} #(
     // algo_fail_valid/algo_fail_addr are (see comment above) -- u_algo_top
     // itself has no per-memory concept.
     logic [DATA_WIDTH-1:0]                                  algo_fail_bitmask;
-    logic [{{ redundancy.num_spare_cols }}-1:0]                            col_repair_en_arr  [{{ num_memories }}];
-    logic [{{ redundancy.num_spare_cols }}*{{ redundancy.bit_index_width }}-1:0] faulty_bit_arr [{{ num_memories }}];
-    logic [{{ redundancy.mem_data_width }}-1:0]                            sram_din_phys_arr  [{{ num_memories }}];
-    logic [{{ redundancy.mem_data_width }}-1:0]                            sram_dout_phys_arr [{{ num_memories }}];
-    logic [{{ redundancy.num_spare_cols }}-1:0]                            spare_wen_arr      [{{ num_memories }}];
+    logic [{{ num_memories }}-1:0][{{ redundancy.num_spare_cols }}-1:0]                            col_repair_en_arr;
+    logic [{{ num_memories }}-1:0][{{ redundancy.num_spare_cols }}*{{ redundancy.bit_index_width }}-1:0] faulty_bit_arr;
+    logic [{{ num_memories }}-1:0][{{ redundancy.mem_data_width }}-1:0]                            sram_din_phys_arr;
+    logic [{{ num_memories }}-1:0][{{ redundancy.mem_data_width }}-1:0]                            sram_dout_phys_arr;
+    logic [{{ num_memories }}-1:0][{{ redundancy.num_spare_cols }}-1:0]                            spare_wen_arr;
 {% endif %}
 {% endif %}
 {% if is_shared_bus %}
@@ -183,8 +184,13 @@ module {{ wrapper_module_name }} #(
     logic                    algo_bist_done;
     logic                    algo_bist_fail;
     logic                    shb_fail_q;
-    logic                    sram_csb_arr [{{ num_memories }}];
-    logic [DATA_WIDTH-1:0]   sram_dout_arr [{{ num_memories }}];
+    // Every per-memory *_arr in this wrapper is a PACKED array: Yosys lowers
+    // an unpacked array read with a variable index (sram_dout_arr[mem_sel_q])
+    // to a $mem whose write side never sees the instance-port connections, so
+    // the memories' outputs drive nothing and opt_clean deletes the memories.
+    // Indexing semantics are identical either way.
+    logic [{{ num_memories }}-1:0]                 sram_csb_arr;
+    logic [{{ num_memories }}-1:0][DATA_WIDTH-1:0] sram_dout_arr;
 {% if has_onchip_selfrepair %}
     // Second orchestration mode, docs/shared-hierarchical-mbist-plan.md §9b:
     // shb_selfrepair_mode_q, latched only at the SHB_IDLE exit that fires,
