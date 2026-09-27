@@ -49,6 +49,7 @@
 //     silently erase a previously-correct repair, re-exposing a real,
 //     already-fixed defect. Since a hard defect never "un-happens," only a
 //     genuine reset (not just a re-trigger) is the correct point to forget one.
+(* keep_hierarchy *)
 module onchip_row_repair_analyzer #(
     parameter integer ADDR_WIDTH     = 10,
     parameter integer NUM_SPARE_ROWS = 1
