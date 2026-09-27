@@ -86,7 +86,8 @@ sufficient with Yosys alone (no FaultFlow code): driven only by the
 manifest, every block synthesizes standalone to pure sky130 cells and the
 glue synthesizes with every block as a `-lib` stub, with the manifest's
 instance paths matching the glue's cell names exactly — for every
-configuration tried except march-2rw (see below). FaultFlow's existing `assemble.py`
+configuration tried (dedicated single-/multi-port incl. march-2rw and
+march-1r1w, tester-driven and on-chip repair, shared-bus). FaultFlow's existing `assemble.py`
 (`block_stub_verilog`/`compose_soc`) already implements the stub-and-splice
 step for SoC blocks, but its stubs declare no parameters, which Yosys
 rejects for a parameterized instrument — its stubs must carry the
@@ -95,8 +96,8 @@ manifest's `parameters`.
 - **Reverted** (2026-09-27): baking `(* keep_hierarchy *)` into the repair
   RTL. Yosys keeps the hierarchy, but FaultFlow's loader only simulates the
   top module's cells and hard-fails on unknown types, so it broke grading.
-- **Open, autoMBIST RTL — not Yosys-synthesizable today** (Icarus/Verilator
-  simulate them fine; nothing had ever run them through Yosys):
+- **Fixed, autoMBIST RTL that was not Yosys-synthesizable** (Icarus/Verilator
+  always simulated them fine; nothing had ever run them through Yosys):
   - ~~`topology: shared-bus` loses its memories in synthesis~~ — **fixed
     2026-09-27**. The wrapper's per-memory arrays were unpacked, and Yosys
     lowered the variable-index read `sram_dout_arr[mem_sel_q]` to a
@@ -106,9 +107,12 @@ manifest's `parameters`.
     fine). Now packed arrays; proven at gate level by
     `tests/integration/test_synthesized_bist_e2e.py` (synthesized collar,
     real cocotb run: passes a good memory, fails `sram_1rw_stuck_bit.v`).
-  - march-2rw: `march_2rw_algo.sv` uses unpacked-array ports
-    (`output logic do_read [0:1]`), which Yosys's built-in SV frontend
-    rejects outright.
+  - ~~march-2rw not synthesizable~~ — **fixed 2026-09-27**:
+    `march_2rw_algo.sv`'s per-port outputs (and `march_2rw_fsm.sv`'s matching
+    wires) were unpacked arrays, which Yosys's SV frontend rejects outright;
+    now packed. `test_synthesized_bist_e2e.py` covers it at gate level with a
+    defect only in port 1's read path, so port 1's own compare is proven to
+    survive synthesis.
 - **Open, JTAG/IJTAG**: warptap splices in deterministically named module
   instances (`tap_core`, `sib_cell` `warptap_<sib>`, `bc1_shift_only`/
   `instrument_write` `<prefix>_inst_<k>`, `scan_mux_cell`) and never flattens
