@@ -65,6 +65,7 @@ autombist generate [OPTIONS]
 | `--fault-type TEXT` | `stuck-at` | Fault model: `stuck-at` (SA0/SA1), `transition-up`, `transition-down`, or `port-coupling` (march-1r1w only; march-2rw supports stuck-at/transition only) |
 | `--pulse-width-ns INTEGER` | `2` | Pulse width in clock cycles for transition faults |
 | `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, `mats-plus`, or `checkerboard` |
+| `--emit-manifest` / `--no-emit-manifest` | `--no-emit-manifest` | Also write `manifest.json`: memory/controller instance names for external synthesis tooling (e.g. FaultFlow) to blackbox/keep-hierarchy correctly |
 | `--help` | | Show this message and exit |
 
 If `--config` is omitted, autombist looks for `config.yml` in the current working
@@ -135,11 +136,25 @@ them after:
   uninstantiated unless `onchip_col_repair`/`onchip_diagnosis` are set
 - `config.yml` — a snapshot of the resolved config (also used by `simulate`/`run` to
   locate the module directory when you pass a parent `--out`)
+- `<memory_name>_bbox.v` — a port-only `(* blackbox *)` SRAM stub, always emitted
+  (cheap, side-effect-free) so any downstream synthesis tooling that needs to
+  treat the memory as a boundary rather than flatten/optimize through it has
+  one available without re-deriving it. The same file `grade-controller`'s
+  bundle already writes internally (see below) — this is a copy at the
+  top-level module directory.
 - With `--test`:
   - `<memory_name>_saboteur.v` — fault-injection wrapper
   - `faults/*.hex` — fault masks (e.g. `sa0_faults.hex`, `sa1_faults.hex`,
     `tf_up_faults.hex`, `tf_down_faults.hex` depending on `--fault-type`)
   - `Makefile` — local simulation Makefile consumed by `autombist simulate`
+- With `--emit-manifest`:
+  - `manifest.json` — a machine-readable list of the wrapper's memory/
+    controller/self-repair/diagnosis instances, each tagged `"blackbox"` or
+    `"keep_hierarchy"`, for external synthesis-aware tooling (FaultFlow) to
+    consume so its own Yosys synthesis doesn't fully flatten/optimize through
+    the memory boundary or the MBIST controller hierarchy. See the
+    `wrap-test-access` section below for how `--manifest` there later patches
+    in the `test_access` block once JTAG/IJTAG wrapping has run.
 
 ---
 
@@ -229,6 +244,7 @@ autombist run [OPTIONS]
 | `--scan-chains INTEGER` | `1` | Scan chains for controller grading |
 | `--min-coverage FLOAT` | none | Fail (exit 1) if array fault coverage is below this percent |
 | `--json` | off | Print the structured report as JSON to stdout instead of the human summary |
+| `--emit-manifest` / `--no-emit-manifest` | `--no-emit-manifest` | Also write `manifest.json` (see `generate`'s own flag above) |
 
 `--json` behaves the same as on `simulate`: the structured report goes to
 stdout as one JSON document, and verbose/status output is redirected to
@@ -259,6 +275,7 @@ autombist run --config config.yml --json | jq .fault_metrics
 - `out/<memory_name>/simulate.log` — simulator output
 - If `--faultflow` is set: a `faultflow/` bundle under the module directory, and
   `controller_grading` merged into `reports/latest.json` (see schema below)
+- If `--emit-manifest` is set: `manifest.json` (same as `generate`'s own flag)
 
 ---
 
@@ -337,6 +354,7 @@ autombist wrap-test-access [OPTIONS]
 | `--onchip-diagnosis` | off | Also wrap `diag_overflow`. Omit when passing `--config` |
 | `--config PATH` | none | Path to the `config.yml` snapshot `generate` wrote alongside these sources — derives the three flags above PLUS the wide-port geometry needed to also wrap `diag_valid`/`diag_addr`/`fuse_row_repair_en`/`fuse_faulty_row_addr`/any `repair_ports:`. Without it, only the always-1-bit ports are wrapped. Errors if combined with any of the three flags above (ambiguous — pick one source) |
 | `--emit-icl` | off | Also emit an ICL description of the inserted network |
+| `--manifest PATH` | none | Output directory containing a `manifest.json` (written by `generate --emit-manifest`) — patches its `test_access` block with what was just wrapped |
 
 Without `--config`: wraps exactly the always-1-bit control/status ports a
 generated wrapper exposes — `test_mode`, `bist_start`, `bist_done`,
@@ -437,6 +455,15 @@ autombist wrap-test-access \
   description
 - A terminal listing of every wrapped port, in scan-chain order, with its role
   (`control` or `status`)
+- With `--manifest`: the target directory's `manifest.json` gets its
+  `test_access` key patched in place (`wrapped`, `output_verilog`,
+  `wrapped_ports`, `icl_path` when `--emit-icl` was also set). Its
+  `internal_instances` field is always the literal string `"not_enumerated"`
+  — this command's own underlying library call
+  (`autombist.testaccess.wrap_test_access`) only ever gets back an
+  architecture-level ICL register description from warptap, never a
+  gate-level TAP/SIB instance list, so the manifest says so honestly rather
+  than guessing
 
 ### What this does not do
 
