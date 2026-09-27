@@ -65,7 +65,7 @@ autombist generate [OPTIONS]
 | `--fault-type TEXT` | `stuck-at` | Fault model: `stuck-at` (SA0/SA1), `transition-up`, `transition-down`, or `port-coupling` (march-1r1w only; march-2rw supports stuck-at/transition only) |
 | `--pulse-width-ns INTEGER` | `2` | Pulse width in clock cycles for transition faults |
 | `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, `mats-plus`, or `checkerboard` |
-| `--emit-manifest` / `--no-emit-manifest` | `--no-emit-manifest` | Also write `manifest.json`: memory/controller instance names for external synthesis tooling (e.g. FaultFlow) to blackbox/keep-hierarchy correctly |
+| `--emit-manifest` / `--no-emit-manifest` | `--no-emit-manifest` | Also write `manifest.json`: memory instances to blackbox and MBIST logic instances to grade, for external synthesis tooling (e.g. FaultFlow) |
 | `--help` | | Show this message and exit |
 
 If `--config` is omitted, autombist looks for `config.yml` in the current working
@@ -136,23 +136,32 @@ them after:
   uninstantiated unless `onchip_col_repair`/`onchip_diagnosis` are set
 - `config.yml` — a snapshot of the resolved config (also used by `simulate`/`run` to
   locate the module directory when you pass a parent `--out`)
-- `<memory_name>_bbox.v` — a port-only `(* blackbox *)` SRAM stub, always emitted
-  (cheap, side-effect-free) so any downstream synthesis tooling that needs to
-  treat the memory as a boundary rather than flatten/optimize through it has
-  one available without re-deriving it. The same file `grade-controller`'s
-  bundle already writes internally (see below) — this is a copy at the
-  top-level module directory.
+- `<memory_name>_bbox.v` — a port-only `(* blackbox *)` memory stub for
+  synthesis (not written under `--test`, where the instance is the saboteur).
+  It declares every parameter the wrapper may override (`ADDR_WIDTH`,
+  `DATA_WIDTH`, `NUM_SPARE_ROWS`, `NUM_SPARE_COLS`) and uses the literal port
+  widths the wrapper actually connects (spare-row address and spare-column
+  data widths included, one declaration per physical pin across ports), so
+  any downstream synthesis tooling can treat the memory as a boundary without
+  re-deriving it. `grade-controller`'s bundle uses the same stub.
 - With `--test`:
   - `<memory_name>_saboteur.v` — fault-injection wrapper
   - `faults/*.hex` — fault masks (e.g. `sa0_faults.hex`, `sa1_faults.hex`,
     `tf_up_faults.hex`, `tf_down_faults.hex` depending on `--fault-type`)
   - `Makefile` — local simulation Makefile consumed by `autombist simulate`
 - With `--emit-manifest`:
-  - `manifest.json` — a machine-readable list of the wrapper's memory/
-    controller/self-repair/diagnosis instances, each tagged `"blackbox"` or
-    `"keep_hierarchy"`, for external synthesis-aware tooling (FaultFlow) to
-    consume so its own Yosys synthesis doesn't fully flatten/optimize through
-    the memory boundary or the MBIST controller hierarchy. See the
+  - `manifest.json` — a synthesis plan for external synthesis-aware tooling
+    (FaultFlow), complete enough to generate its own Yosys scripts from. Every
+    instance is listed with its `hierarchical_path`, `module_type`, the
+    `parameters` the wrapper instantiates it with, and its `sources`.
+    Memory instances are `"hierarchy_hint": "blackbox"` — read the
+    `<memory_name>_bbox.v` stub with `read_verilog -lib`, never synthesize a
+    memory model. Test instruments (the MBIST controller `u_algo_top`, on-chip
+    self-repair, diagnosis, repair remaps) are `"separate"` — synthesize each
+    standalone (`chparam` with its `parameters`), read it back as a blackbox
+    stub while synthesizing the wrapper glue, then splice the block netlists
+    in, so optimization never crosses an instrument boundary. Instances sharing
+    `module_type` + `parameters` are one synthesized block. See the
     `wrap-test-access` section below for how `--manifest` there later patches
     in the `test_access` block once JTAG/IJTAG wrapping has run.
 
@@ -458,12 +467,11 @@ autombist wrap-test-access \
 - With `--manifest`: the target directory's `manifest.json` gets its
   `test_access` key patched in place (`wrapped`, `output_verilog`,
   `wrapped_ports`, `icl_path` when `--emit-icl` was also set). Its
-  `internal_instances` field is always the literal string `"not_enumerated"`
-  — this command's own underlying library call
-  (`autombist.testaccess.wrap_test_access`) only ever gets back an
-  architecture-level ICL register description from warptap, never a
-  gate-level TAP/SIB instance list, so the manifest says so honestly rather
-  than guessing
+  `internal_instances` field is currently the literal string
+  `"not_enumerated"`: warptap splices in deterministically named module
+  instances (`tap_core`, `sib_cell`, `bc1_shift_only`/`instrument_write`,
+  `scan_mux_cell`) that could be listed from the inserted Verilog, but this
+  command does not list them yet
 
 ### What this does not do
 
