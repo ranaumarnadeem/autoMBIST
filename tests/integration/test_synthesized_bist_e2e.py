@@ -8,8 +8,11 @@ model.
 A clean pass alone is vacuous here: before shared-bus's per-memory arrays
 were made packed, Yosys deleted every shared-bus memory instance and, with
 the read data undefined, optimized the compare path so the synthesized BIST
-passed a good memory AND a broken one. So every topology is also run against
-sram_1rw_stuck_bit.v and must FAIL there.
+passed a good memory AND a broken one. So every case is also run against a
+stuck-bit memory and must FAIL there. The march-2rw case also proves the
+controller synthesizes at all (its per-port ports used to be unpacked
+arrays, which Yosys rejects) and, since its defect sits only in port 1's
+read path, that port 1's own compare survives synthesis.
 """
 from __future__ import annotations
 
@@ -40,14 +43,25 @@ DEDICATED = {"wrapper_module_name": "ded_ctrl", "addr_width": 6, "data_width": 8
              "we_active_low": True, "ports": PORTS}
 SHARED_BUS = {**DEDICATED, "wrapper_module_name": "shared_bus_ctrl", "topology": "shared-bus",
               "memories": [{"name": "mem_bank0"}, {"name": "mem_bank1"}]}
-TOPOLOGIES = {"dedicated": DEDICATED, "shared-bus": SHARED_BUS}
+TWO_RW = {**DEDICATED, "wrapper_module_name": "two_rw_ctrl", "ports": {
+    "porta": {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "csb": "csb0", "we": "web0"},
+    "portb": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "csb": "csb1", "we": "web1"},
+}}
+# case -> (config, algo, good memory, stuck-bit memory)
+CASES = {
+    "dedicated": (DEDICATED, "march-c", "sram_1rw", "sram_1rw_stuck_bit"),
+    "shared-bus": (SHARED_BUS, "march-c", "sram_1rw", "sram_1rw_stuck_bit"),
+    "march-2rw": (TWO_RW, "march-2rw", "sram_2rw_dut", "sram_2rw_dut_stuck_bit"),
+}
 
 
-def _generate_and_synthesize(tmp_path: Path, base: dict, memory_name: str) -> Path:
+def _generate_and_synthesize(tmp_path: Path, case: str, *, defective: bool) -> Path:
+    base, algo, good, bad = CASES[case]
+    memory_name = bad if defective else good
     config = {**base, "memory_name": memory_name}
     config_path = tmp_path / "config.yml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    wrapper = generate_from_config(config_path, tmp_path / "out")
+    wrapper = generate_from_config(config_path, tmp_path / "out", algo=algo)
     module_outdir = wrapper.parent
     snapshot = yaml.safe_load((module_outdir / "config.yml").read_text(encoding="utf-8"))
 
@@ -70,16 +84,16 @@ def _generate_and_synthesize(tmp_path: Path, base: dict, memory_name: str) -> Pa
     return module_outdir
 
 
-@pytest.mark.parametrize("topology", TOPOLOGIES)
-def test_synthesized_bist_passes_a_good_memory(tmp_path: Path, topology: str) -> None:
-    module_outdir = _generate_and_synthesize(tmp_path, TOPOLOGIES[topology], "sram_1rw")
+@pytest.mark.parametrize("case", CASES)
+def test_synthesized_bist_passes_a_good_memory(tmp_path: Path, case: str) -> None:
+    module_outdir = _generate_and_synthesize(tmp_path, case, defective=False)
     result = run_simulation(module_outdir)
     assert "test_mbist.test_clean passed" in result.stdout
 
 
-@pytest.mark.parametrize("topology", TOPOLOGIES)
-def test_synthesized_bist_detects_a_stuck_bit(tmp_path: Path, topology: str) -> None:
-    module_outdir = _generate_and_synthesize(tmp_path, TOPOLOGIES[topology], "sram_1rw_stuck_bit")
+@pytest.mark.parametrize("case", CASES)
+def test_synthesized_bist_detects_a_stuck_bit(tmp_path: Path, case: str) -> None:
+    module_outdir = _generate_and_synthesize(tmp_path, case, defective=True)
     with pytest.raises(SimulationError):
         run_simulation(module_outdir)
     log = (module_outdir / "simulate.log").read_text(encoding="utf-8")

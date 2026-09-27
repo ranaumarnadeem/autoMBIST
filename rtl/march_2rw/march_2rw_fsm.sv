@@ -96,10 +96,11 @@ module march_2rw_fsm #(
     logic [WAIT_CNT_W-1:0] wait_cnt_q;
 
     logic                  phase_dir_up;
-    logic                  do_read  [0:1];
-    logic                  do_write [0:1];
-    logic [DATA_WIDTH-1:0] expected_data [0:1];
-    logic [DATA_WIDTH-1:0] write_data    [0:1];
+    // Packed per-port arrays, matching march_2rw_algo's ports (see its header).
+    logic [1:0]                 do_read;
+    logic [1:0]                 do_write;
+    logic [1:0][DATA_WIDTH-1:0] expected_data;
+    logic [1:0][DATA_WIDTH-1:0] write_data;
     logic                  use_partner_addr1;
     logic                  last_substep;
 
