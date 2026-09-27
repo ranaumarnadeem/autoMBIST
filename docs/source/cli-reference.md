@@ -355,15 +355,15 @@ autombist wrap-test-access [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--source PATH` | none (repeatable, required) | A source file the design needs — generated wrapper(s), shared algorithm/repair RTL, macro models |
-| `--top TEXT` | none (required) | Top module name to insert the test-access network into |
-| `--out PATH` | `out/test-access` | Output directory for the inserted Verilog (and `--emit-icl`'s ICL file) |
+| `--source PATH` | none (repeatable; required unless `--manifest`) | A source file the design needs — generated wrapper(s), shared algorithm/repair RTL, macro models or blackbox stubs |
+| `--top TEXT` | none (required unless `--manifest`) | Top module name to insert the test-access network into |
+| `--out PATH` | `<manifest dir>/test-access` with `--manifest`, else `out/test-access` | Output directory for the inserted Verilog (and `--emit-icl`'s ICL file) |
 | `--onchip-selfrepair` | off | Also wrap `self_repair_start`/`done`/`fail`/`busy`. Omit when passing `--config` |
 | `--onchip-repair-persistence` | off | Also wrap `repair_load`/`repair_load_done`. Omit when passing `--config` |
 | `--onchip-diagnosis` | off | Also wrap `diag_overflow`. Omit when passing `--config` |
 | `--config PATH` | none | Path to the `config.yml` snapshot `generate` wrote alongside these sources — derives the three flags above PLUS the wide-port geometry needed to also wrap `diag_valid`/`diag_addr`/`fuse_row_repair_en`/`fuse_faulty_row_addr`/any `repair_ports:`. Without it, only the always-1-bit ports are wrapped. Errors if combined with any of the three flags above (ambiguous — pick one source) |
 | `--emit-icl` | off | Also emit an ICL description of the inserted network |
-| `--manifest PATH` | none | Output directory containing a `manifest.json` (written by `generate --emit-manifest`) — patches its `test_access` block with what was just wrapped |
+| `--manifest PATH` | none | A `generate --emit-manifest` output directory. Records every instance of the wrapped netlist in its `manifest.json`'s `test_access` block, and on its own supplies `--source` (wrapper + instrument RTL, with the memory's `<memory_name>_bbox.v` stub in place of a model), `--top`, `--config` and `--out` |
 
 Without `--config`: wraps exactly the always-1-bit control/status ports a
 generated wrapper exposes — `test_mode`, `bist_start`, `bist_done`,
@@ -457,6 +457,15 @@ autombist wrap-test-access \
     --top sram_1rw_mbist --config out/sram_1rw/config.yml --emit-icl
 ```
 
+From a `generate --emit-manifest` output directory alone — sources, top,
+config and output location all come from it, the memory stays blackboxed, and
+the wrapped netlist's instances are recorded in `manifest.json`:
+
+```bash
+autombist generate --config config.yml --emit-manifest
+autombist wrap-test-access --manifest out/sram_1rw --emit-icl
+```
+
 ### Output
 
 - `<out>/<top>_test_access.v` — the inserted, synthesizable Verilog
@@ -464,14 +473,29 @@ autombist wrap-test-access \
   description
 - A terminal listing of every wrapped port, in scan-chain order, with its role
   (`control` or `status`)
-- With `--manifest`: the target directory's `manifest.json` gets its
-  `test_access` key patched in place (`wrapped`, `output_verilog`,
-  `wrapped_ports`, `icl_path` when `--emit-icl` was also set). Its
-  `internal_instances` field is currently the literal string
-  `"not_enumerated"`: warptap splices in deterministically named module
-  instances (`tap_core`, `sib_cell`, `bc1_shift_only`/`instrument_write`,
-  `scan_mux_cell`) that could be listed from the inserted Verilog, but this
-  command does not list them yet
+- With `--manifest`: that directory's `manifest.json` gets a `test_access`
+  block — a synthesis plan for the wrapped netlist, built by re-reading the
+  inserted Verilog through warptap's own Yosys ingest:
+  - `output_verilog` — defines every module the wrapped netlist uses,
+    already parameter-specialized (e.g. `\$paramod$<hash>\march_c_top`),
+    except a blackboxed memory
+  - `memory_blackboxed` — true when the memory's stub stood in for its model
+    (the default with `--manifest` alone), so the wrapped netlist keeps it a
+    test boundary
+  - `instances` — every instance in the wrapped top: the TAP
+    (`warptap_tap_core`, `jtag_tap`), one SIB per wrapped port
+    (`warptap_sib_<port>`, `ijtag_sib`), one TDR bit per port bit
+    (`warptap_sib_<port>_inst_<k>`: `instrument_write` for a control port,
+    `bc1_shift_only` for a status port; `ijtag_tdr`), the MBIST blocks (under
+    the module names that file uses, no `parameters` — they're baked in) and
+    the memory. `"separate"` instances synthesize standalone with
+    `hierarchy -top <module_type>` straight from `output_verilog`; pass
+    module names beginning with `\` to Yosys verbatim
+  - `instruments` — each wrapped port with its role, width, SIB and ordered
+    TDR bits
+
+  The command refuses to write the block if any port's SIB or TDR cells don't
+  line up with its role and width.
 
 ### What this does not do
 

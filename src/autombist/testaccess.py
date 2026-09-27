@@ -54,6 +54,7 @@ try:
     from warptap.icl_model import InstrumentDirection, SignalBinding
     from warptap.pipeline import insert_test_access as _warptap_insert_test_access
     from warptap.sib_plan import InstrumentSpec
+    from warptap.yosys_io import ingest as _warptap_ingest
 
     _WARPTAP_IMPORT_ERROR: Exception | None = None
 except ImportError as _exc:  # pragma: no cover - depends on optional install
@@ -62,6 +63,7 @@ except ImportError as _exc:  # pragma: no cover - depends on optional install
     SignalBinding = None  # type: ignore[assignment]
     InstrumentSpec = None  # type: ignore[assignment]
     _warptap_insert_test_access = None  # type: ignore[assignment]
+    _warptap_ingest = None  # type: ignore[assignment]
     _WARPTAP_IMPORT_ERROR = _exc
 
 
@@ -243,6 +245,60 @@ def wrap_test_access(
             "netlist (a stale/mismatched --config snapshot, or --source files from a "
             "different generate run)"
         ) from exc
+
+
+def _attr_int(value: Any) -> int | None:
+    # Yosys JSON writes integer attributes as binary strings ("000...0101").
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value)
+    return int(text, 2) if text and set(text) <= {"0", "1"} else None
+
+
+def enumerate_test_access_instances(
+    verilog_path: Path | str,
+    top_module: str,
+    *,
+    extra_sources: Sequence[Path | str] = (),
+    yosys_command: str | None = None,
+) -> list[dict[str, Any]]:
+    """Every module instance in ``top_module`` of a wrap_test_access output, read back
+    through warptap's own ingest (the same Yosys front end its insertion used), with the
+    warptap_* attributes it tags each inserted cell with: warptap_sib_name /
+    warptap_instrument_name on a SIB, warptap_sib_name / warptap_instrument_bit on each
+    TDR bit. Yosys primitive cells ($and, $dff, ...) are skipped.
+
+    ``extra_sources`` must include any blackbox stub that stood in for a module during
+    insertion -- warptap's output omits blackbox module definitions, so the re-read
+    needs the stub again to resolve the hierarchy.
+    """
+    _require_warptap()
+    try:
+        raw = _warptap_ingest(
+            [verilog_path, *extra_sources], top_module, yosys_command=yosys_command, use_sv=True,
+        )
+    except WarptapError as exc:
+        raise ValueError(f"could not re-read {verilog_path} to enumerate its instances: {exc}") from exc
+    modules = raw["modules"]
+    instances = []
+    for name, cell in modules[top_module]["cells"].items():
+        module_type = cell["type"]
+        if module_type.startswith("$"):
+            continue
+        attrs = cell.get("attributes", {})
+        module_attrs = modules.get(module_type, {}).get("attributes", {})
+        instances.append({
+            "instance": name,
+            "module_type": module_type,
+            "is_blackbox": bool(_attr_int(module_attrs.get("blackbox"))),
+            "sib_name": attrs.get("warptap_sib_name"),
+            "instrument_name": attrs.get("warptap_instrument_name"),
+            "instrument_bit": _attr_int(attrs.get("warptap_instrument_bit")),
+            "mux_name": attrs.get("warptap_mux_name"),
+        })
+    return instances
 
 
 def test_access_kwargs_from_config(config: Mapping[str, Any]) -> dict[str, Any]:

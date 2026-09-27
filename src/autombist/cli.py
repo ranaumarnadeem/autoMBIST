@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 from pathlib import Path
+from typing import NoReturn
 
 import typer
 import yaml
@@ -652,17 +653,57 @@ def yield_sweep_cmd(
         typer.echo(f"Report: {report_path}")
 
 
+def _fail(message: str) -> NoReturn:
+    typer.secho(f"autombist: {message}", err=True, fg=typer.colors.RED)
+    raise typer.Exit(code=1)
+
+
+def _is_blackbox_source(path: Path) -> bool:
+    try:
+        return "(* blackbox *)" in path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+
+
 def _wrap_test_access(
-    sources: list[Path], top: str, out: Path, *,
+    sources: list[Path] | None, top: str | None, out: Path | None, *,
     onchip_selfrepair: bool, onchip_repair_persistence: bool, onchip_diagnosis: bool,
     config: Path | None, emit_icl: bool, manifest: Path | None = None,
 ) -> None:
+    import json
+
     from autombist.testaccess import (
         TestAccessUnavailable,
         classify_test_access_ports,
         test_access_kwargs_from_config,
         wrap_test_access,
     )
+
+    legacy_flags = onchip_selfrepair or onchip_repair_persistence or onchip_diagnosis
+    base_manifest = None
+    if manifest is not None:
+        # --manifest alone is enough: everything else defaults from the generate
+        # output directory it names, with the memory's blackbox stub standing in
+        # for the memory model so the wrapped netlist keeps it a test boundary.
+        from autombist.manifest import MANIFEST_FILENAME, synthesis_sources
+
+        try:
+            base_manifest = json.loads((manifest / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+            snapshot = yaml.safe_load((manifest / "config.yml").read_text(encoding="utf-8"))
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            _fail(f"{exc} -- run `generate --emit-manifest` for {manifest} first")
+        top = top or base_manifest["top_module"]
+        out = out or manifest / "test-access"
+        if config is None and not legacy_flags:
+            config = manifest / "config.yml"
+        if not sources:
+            sources = [
+                *synthesis_sources(snapshot, manifest),
+                manifest / base_manifest["sources"]["blackbox_stub"],
+            ]
+    if not sources or top is None:
+        _fail("--source and --top are required unless --manifest is given")
+    out = out or Path("out/test-access")
 
     if config is not None:
         if onchip_selfrepair or onchip_repair_persistence or onchip_diagnosis:
@@ -729,44 +770,53 @@ def _wrap_test_access(
         typer.echo(f"ICL:              {icl_path}")
 
     if manifest is not None:
-        from autombist.manifest import ManifestError, update_manifest_with_test_access
+        from autombist.manifest import (
+            ManifestError,
+            build_test_access_block,
+            update_manifest_with_test_access,
+        )
+        from autombist.testaccess import enumerate_test_access_instances
 
-        test_access_block = {
-            "wrapped": True,
-            "output_verilog": str(verilog_path.resolve()),
-            "output_dir": str(out.resolve()),
-            "boundary_ports": ["tck", "tms", "tdi", "tdo", "trst_n"],
-            "wrapped_ports": [{"name": p.name, "role": p.role, "width": p.width} for p in ports],
-            "icl_path": str(icl_path.resolve()) if icl_path is not None else None,
-            # warptap splices in deterministically named module instances
-            # (tap_core, sib_cell "warptap_<sib>", bc1_shift_only /
-            # instrument_write "<prefix>_inst_<k>", scan_mux_cell) that could
-            # be listed from output_verilog, but nothing enumerates them yet.
-            "internal_instances": "not_enumerated",
-            "hierarchy_hint": "opaque_shell",
-        }
         try:
-            manifest_path = update_manifest_with_test_access(manifest, test_access_block)
-        except ManifestError as exc:
-            typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
-            raise typer.Exit(code=1)
-        typer.echo(f"Updated manifest:  {manifest_path}")
+            enumerated = enumerate_test_access_instances(
+                verilog_path, top, extra_sources=[s for s in sources if _is_blackbox_source(s)],
+            )
+            block = build_test_access_block(
+                base_manifest, enumerated,
+                [{"name": p.name, "role": p.role, "width": p.width} for p in ports],
+                output_verilog=verilog_path, output_dir=out, icl_path=icl_path,
+            )
+            manifest_path = update_manifest_with_test_access(manifest, block)
+        except (ManifestError, ValueError, OSError) as exc:
+            _fail(str(exc))
+        jtag = sum(1 for i in block["instances"] if i["category"].startswith(("jtag_", "ijtag_")))
+        typer.echo(
+            f"Updated manifest:  {manifest_path} ({jtag} JTAG/IJTAG instances, "
+            f"memory {'blackboxed' if block['memory_blackboxed'] else 'synthesized from its model'})"
+        )
 
 
 @app.command("wrap-test-access")
 def wrap_test_access_cmd(
-    source: list[Path] = typer.Option(..., "--source", help="A source file the design needs (repeatable) -- generated wrapper(s), shared algorithm/repair RTL, macro models"),
-    top: str = typer.Option(..., "--top", help="Top module name to insert the test-access network into"),
-    out: Path = typer.Option("out/test-access", "--out", help="Output directory for the inserted Verilog (and --emit-icl's ICL file)"),
+    source: list[Path] | None = typer.Option(None, "--source", help="A source file the design needs (repeatable) -- generated wrapper(s), shared algorithm/repair RTL, macro models or blackbox stubs. Required unless --manifest is given"),
+    top: str | None = typer.Option(None, "--top", help="Top module name to insert the test-access network into. Required unless --manifest is given"),
+    out: Path | None = typer.Option(None, "--out", help="Output directory for the inserted Verilog (and --emit-icl's ICL file). Default: <manifest dir>/test-access with --manifest, else out/test-access"),
     onchip_selfrepair: bool = typer.Option(False, "--onchip-selfrepair", help="Also wrap self_repair_start/done/fail/busy -- must match the redundancy config the sources were generated with. Omit when passing --config"),
     onchip_repair_persistence: bool = typer.Option(False, "--onchip-repair-persistence", help="Also wrap repair_load/repair_load_done -- must match the redundancy config the sources were generated with. Omit when passing --config"),
     onchip_diagnosis: bool = typer.Option(False, "--onchip-diagnosis", help="Also wrap diag_overflow -- must match the redundancy config the sources were generated with. Omit when passing --config"),
     config: Path | None = typer.Option(None, "--config", help="Path to the config.yml snapshot `generate` wrote alongside these sources -- derives the flags above PLUS the wide-port geometry (diag_valid/diag_addr/fuse_row_repair_en/fuse_faulty_row_addr/repair_ports) needed to wrap them. Without it, only the always-1-bit ports are wrapped, exactly as before wide-port support"),
     emit_icl: bool = typer.Option(False, "--emit-icl", help="Also emit an ICL description of the inserted network"),
-    manifest: Path | None = typer.Option(None, "--manifest", help="Output directory containing a manifest.json (written by `generate --emit-manifest`) -- patches its test_access block with what was just wrapped"),
+    manifest: Path | None = typer.Option(None, "--manifest", help="A `generate --emit-manifest` output directory. Records every inserted TAP/SIB/TDR instance in its manifest.json's test_access block, and on its own supplies --source (with the memory's blackbox stub in place of a model), --top, --config and --out"),
 ) -> None:
     """Wrap a generated design's control/status ports with a JTAG/IJTAG test-access
     network, via the external warptap package.
+
+    With --manifest DIR alone, everything comes from that generate output directory:
+    the wrapper and instrument RTL, the memory's blackbox stub (so the wrapped netlist
+    keeps the memory a test boundary), the top module and config.yml; output goes to
+    DIR/test-access, and manifest.json's test_access block lists every instance of the
+    wrapped netlist (TAP, one SIB per port, one TDR bit per port bit, the MBIST blocks
+    as parameter-specialized modules, the blackboxed memory).
 
     Wraps every control/status port a generated wrapper can expose: the always-1-bit
     ones -- test_mode, bist_start, bist_done, bist_fail, and (with the matching flags)
@@ -792,6 +842,9 @@ def wrap_test_access_cmd(
 
       autombist wrap-test-access --source out/sram_1rw/sram_1rw_mbist.v ... \\
           --top sram_1rw_mbist --config out/sram_1rw/config.yml --emit-icl
+
+      autombist generate --config config.yml --emit-manifest
+      autombist wrap-test-access --manifest out/sram_1rw --emit-icl
     """
     _wrap_test_access(
         source, top, out,

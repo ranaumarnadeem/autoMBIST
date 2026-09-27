@@ -390,6 +390,111 @@ def write_instance_manifest(manifest: dict[str, Any], module_outdir: Path) -> Pa
     return path
 
 
+# warptap's own primitive modules (its rtl/*.v) -> manifest category. A scan mux
+# is a per-instance specialized copy of scan_mux_cell, so it is recognized by its
+# warptap_mux_name attribute instead of a fixed module name.
+_WARPTAP_CATEGORIES = {
+    "tap_core": "jtag_tap",
+    "sib_cell": "ijtag_sib",
+    "instrument_write": "ijtag_tdr",
+    "bc1_shift_only": "ijtag_tdr",
+}
+_TDR_MODULE_BY_ROLE = {"control": "instrument_write", "status": "bc1_shift_only"}
+JTAG_BOUNDARY_PORTS = ["tck", "tms", "tdi", "tdo", "trst_n"]
+
+
+def build_test_access_block(
+    manifest: dict[str, Any],
+    enumerated: list[dict[str, Any]],
+    wrapped_ports: list[dict[str, Any]],
+    *,
+    output_verilog: Path,
+    output_dir: Path,
+    icl_path: Path | None = None,
+) -> dict[str, Any]:
+    """The manifest's "test_access" block: a synthesis plan for the JTAG/IJTAG-wrapped
+    netlist wrap-test-access wrote, built from ``enumerated``
+    (testaccess.enumerate_test_access_instances on that netlist) and ``wrapped_ports``
+    ({name, role, width} per wrapped control/status port).
+
+    Every module the wrapped netlist uses is defined in ``output_verilog`` itself,
+    already parameter-specialized by warptap's Yosys ingest (e.g.
+    ``$paramod$<hash>\\march_c_top``), except blackboxed memories, which still need
+    the base manifest's stub. So instances here carry the module name as it appears
+    in that file and no parameters -- synthesize a "separate" block with
+    ``hierarchy -top <module_type>`` straight from ``output_verilog``.
+    """
+    base = {i["hierarchical_path"]: i for i in manifest["instances"]}
+    found = {e["instance"]: e for e in enumerated}
+
+    instances = []
+    for e in enumerated:
+        entry: dict[str, Any] = {
+            "hierarchical_path": e["instance"],
+            "instance_name": e["instance"],
+            "module_type": e["module_type"],
+        }
+        if e["module_type"] in _WARPTAP_CATEGORIES or e["mux_name"]:
+            entry["category"] = _WARPTAP_CATEGORIES.get(e["module_type"], "ijtag_scan_mux")
+            entry["hierarchy_hint"] = "separate"
+            for key, field in (("sib_name", "sib_name"), ("instrument", "instrument_name"),
+                               ("bit", "instrument_bit"), ("mux_name", "mux_name")):
+                if e[field] is not None:
+                    entry[key] = e[field]
+        elif e["instance"] in base:
+            entry["category"] = base[e["instance"]]["category"]
+            entry["hierarchy_hint"] = base[e["instance"]]["hierarchy_hint"]
+            if entry["hierarchy_hint"] == "blackbox":
+                entry["sources"] = base[e["instance"]]["sources"]
+        else:
+            entry["category"] = "unknown"
+            entry["hierarchy_hint"] = "separate"
+        instances.append(entry)
+
+    memories = [p for p, i in base.items() if i["category"] == "memory"]
+    missing = [m for m in memories if m not in found]
+    if missing:
+        raise ManifestError(f"memory instance(s) {missing} not found in the wrapped netlist")
+    memory_blackboxed = all(found[m]["is_blackbox"] for m in memories)
+
+    sibs = {e["instrument_name"]: e for e in enumerated
+            if e["module_type"] == "sib_cell" and e["instrument_name"]}
+    instruments = []
+    for port in wrapped_ports:
+        sib = sibs.get(port["name"])
+        if sib is None:
+            raise ManifestError(f"no SIB found for wrapped port {port['name']!r}")
+        bits = sorted(
+            (e["instrument_bit"], e["instance"], e["module_type"]) for e in enumerated
+            if e["sib_name"] == sib["sib_name"] and e["module_type"] in _TDR_MODULE_BY_ROLE.values()
+        )
+        expected = _TDR_MODULE_BY_ROLE[port["role"]]
+        if [b for b, _, _ in bits] != list(range(port["width"])) or any(t != expected for _, _, t in bits):
+            raise ManifestError(
+                f"wrapped port {port['name']!r} ({port['role']}, width {port['width']}) does not "
+                f"match its TDR cells in the netlist: {bits}"
+            )
+        instruments.append({
+            "name": port["name"],
+            "role": port["role"],
+            "width": port["width"],
+            "sib": sib["instance"],
+            "tdr_bits": [inst for _, inst, _ in bits],
+        })
+
+    return {
+        "wrapped": True,
+        "top_module": manifest["top_module"],
+        "output_verilog": str(Path(output_verilog).resolve()),
+        "output_dir": str(Path(output_dir).resolve()),
+        "icl_path": str(Path(icl_path).resolve()) if icl_path is not None else None,
+        "boundary_ports": list(JTAG_BOUNDARY_PORTS),
+        "memory_blackboxed": memory_blackboxed,
+        "instances": instances,
+        "instruments": instruments,
+    }
+
+
 def update_manifest_with_test_access(module_outdir: Path, test_access_block: dict[str, Any]) -> Path:
     """Patches an existing manifest.json's "test_access" key in place -- called
     after wrap-test-access actually runs. Raises ManifestError if generate

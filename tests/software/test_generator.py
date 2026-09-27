@@ -732,6 +732,18 @@ def test_wrap_test_access_config_top_mismatch_errors(tmp_path: Path) -> None:
     assert "other_module" in _plain(result.output)
 
 
+def test_wrap_test_access_needs_sources_or_a_manifest() -> None:
+    result = runner.invoke(app, ["wrap-test-access"])
+    assert result.exit_code == 1
+    assert "--source and --top are required unless --manifest is given" in _plain(result.output)
+
+
+def test_wrap_test_access_manifest_dir_without_a_manifest_errors(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["wrap-test-access", "--manifest", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "generate --emit-manifest" in _plain(result.output)
+
+
 def test_cli_init_refuses_overwrite_without_force(tmp_path: Path) -> None:
     outdir = tmp_path / "starter"
     outdir.mkdir(parents=True)
