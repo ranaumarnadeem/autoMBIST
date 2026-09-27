@@ -91,7 +91,6 @@
 //     still-valid repair. self_repair_done/self_repair_fail (THIS module's own
 //     per-run outputs) are still freshly cleared at S_ANALYZE_KICK below --
 //     only the analyzer's cross-run defect knowledge persists.
-(* keep_hierarchy *)
 module onchip_selfrepair_ctrl (
     input  logic clk,
     input  logic rst_n,

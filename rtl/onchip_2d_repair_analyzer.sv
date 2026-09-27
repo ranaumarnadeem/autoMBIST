@@ -116,7 +116,6 @@
 //     never by a re-trigger, for the identical reason (a hard defect never
 //     un-happens; see that module's header for the full argument, which
 //     applies unchanged here).
-(* keep_hierarchy *)
 module onchip_2d_repair_analyzer #(
     parameter integer ADDR_WIDTH     = 10,
     parameter integer DATA_WIDTH     = 32,
