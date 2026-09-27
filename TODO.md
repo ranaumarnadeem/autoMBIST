@@ -74,6 +74,55 @@ The original approved plan (see memory / `docs/` history) had three parts:
   intest mode from `grade-controller`) is still unbuilt, not just
   "pending in FaultFlow." Scoping that wiring is real, undone work.
 
+### Instance manifest for FaultFlow-driven synthesis — autoMBIST side shipped 2026-09-23
+
+New cross-tool integration, scoped from a design + adversarial-critique
+workflow before implementation (both independently re-verified against real
+source in both repos; one claim -- Yosys's `keep_hierarchy` attribute
+surviving FaultFlow's real, unmodified synthesis template with zero
+FaultFlow-side code -- was proven with a real `yosys` run, not just reasoned
+about). Goal: autoMBIST emits a machine-readable description of its own
+memory/controller/self-repair instances so FaultFlow's own Yosys synthesis
+can blackbox the memory and keep the MBIST controller hierarchy visible,
+instead of fully flattening/optimizing through both. **autoMBIST-side work
+is done and tested; the FaultFlow-side consumer is NOT started** (CONTRIBUTING.md's
+repo-boundary rule -- this repo doesn't modify FaultFlow):
+
+- `(* keep_hierarchy *)` added to the 6 self-repair/diagnosis/remap RTL
+  modules (`onchip_row_repair_analyzer.sv`, `onchip_2d_repair_analyzer.sv`,
+  `onchip_selfrepair_ctrl.sv`, `repair_remap_row.sv`, `repair_remap_col.sv`,
+  `onchip_diagnosis_log.sv`) — a free lever, zero FaultFlow code needed.
+- Fixed a real pre-existing bug: `controller_sources()`
+  (`faultflow_flow.py`) hardcoded the wrapper filename from `memory_name`,
+  which is wrong under `topology: shared-bus` (named from
+  `wrapper_module_name` instead) — `grade-controller`/`run --faultflow`
+  would have silently pointed FaultFlow at a nonexistent source file on any
+  shared-bus config. Regression-tested at both the unit level and via a real
+  `grade-controller` bundle.
+- New `src/autombist/manifest.py` (`build_instance_manifest`/
+  `write_instance_manifest`/`update_manifest_with_test_access`) + `generate
+  --emit-manifest`/`run --emit-manifest`/`wrap-test-access --manifest`.
+  Covers dedicated (single- and multi-port) and shared-bus topologies;
+  deliberately does NOT enumerate the tester-driven (`repair_ports:`)
+  multi-port case (no per-port remap branch exists in
+  `wrapper_template.j2` for it) or JTAG/TAP/SIB-internal instance names
+  (`"internal_instances": "not_enumerated"` — architecturally unobtainable
+  from `warptap` today, not just unexported). Every predicted instance name
+  cross-checked against real generated Verilog across 5 topology/port
+  combinations, not just against the template source.
+- **Not started**: the FaultFlow-side consumer — a `[blackbox] stubs=`
+  `.ofs` key + new `-lib`-prepending code path in `Runner._rendered_yosys_script`
+  (real new engineering, no existing extension point: `blackbox_instances`
+  is read only post-synthesis today, never by `_run_yosys`), plus
+  `faultflow/integrations/autombist.py` (manifest loader,
+  `invoke_autombist_generate` subprocess wrapper) and a new
+  `autombist-generate` CLI/Tcl command. Also unresolved: `grade-controller`'s
+  collar-only netlist and `wrap-test-access`'s JTAG-wrapped netlist are two
+  never-reconciled outputs today — the first FaultFlow consumer should
+  target the collar-only lane (matching what `grade-controller` already
+  proves works), not assume a combined blackboxed+JTAG-wrapped netlist
+  exists.
+
 ## Housekeeping
 
 - ~~`main` significantly behind `dev`~~ / ~~no tagged release since the

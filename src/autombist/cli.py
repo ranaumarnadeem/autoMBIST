@@ -313,6 +313,36 @@ def _grade_controller(
         typer.echo(f"Controller grading complete. Bundle: {bundle}")
 
 
+def _emit_manifest(module_outdir: Path, config_path: Path) -> None:
+    from autombist.manifest import ManifestError, build_instance_manifest, write_instance_manifest
+
+    # Re-loads the config.yml snapshot generate_from_config already wrote,
+    # rather than threading the in-memory render_config through -- _generate()
+    # returns only the wrapper Path, matching the existing precedent
+    # _wrap_test_access's own --config handling already uses.
+    snapshot_path = module_outdir / "config.yml"
+    try:
+        loaded = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if not isinstance(loaded, dict):
+        typer.secho(f"autombist: {snapshot_path} must be a YAML mapping", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    try:
+        manifest = build_instance_manifest(
+            loaded, module_outdir, tool_version=__version__, config_path=config_path,
+        )
+        manifest_path = write_instance_manifest(manifest, module_outdir)
+    except (ManifestError, KeyError, ValueError, OSError) as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    if not _is_quiet():
+        typer.echo(f"Emitted instance manifest: {manifest_path}")
+
+
 _CLI_STATE: dict[str, bool] = {"verbose": False, "quiet": False}
 
 
@@ -372,6 +402,7 @@ def generate(
     fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at (SA0/SA1), transition-up, transition-down, or port-coupling (march-1r1w only; march-2rw supports stuck-at/transition only)"),
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
     algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, march-2rw, march-x, mats-plus, or checkerboard"),
+    emit_manifest: bool = typer.Option(False, "--emit-manifest/--no-emit-manifest", help="Also write manifest.json: memory/controller instance names for external synthesis tooling (e.g. FaultFlow) to blackbox/keep-hierarchy correctly"),
 ) -> None:
     r"""Generate MBIST wrapper, RTL, and optionally fault masks.
 
@@ -386,14 +417,21 @@ def generate(
       - sram_model.sv and the shared repair/self-repair RTL
         (repair_remap_row.sv, repair_remap_col.sv, sram_model_spares.sv,
         onchip_row_repair_analyzer.sv, onchip_selfrepair_ctrl.sv, ...)
+      - <memory_name>_bbox.v (port-only (* blackbox *) SRAM stub -- always
+        emitted, for any downstream synthesis tooling that needs to treat the
+        memory as a boundary rather than flatten/optimize through it)
       - \[with --test] <memory_name>_saboteur.v (fault injection wrapper)
       - \[with --test] faults/*.hex (fault masks)
       - \[with --test] Makefile (for running simulation)
+      - \[with --emit-manifest] manifest.json (machine-readable instance list:
+        which instances to blackbox vs. keep-hierarchy, for external
+        synthesis-aware tooling such as FaultFlow)
 
     Examples:
       autombist generate --config config.yml
       autombist generate --config my_sram.yml --out results --algo march-raw
       autombist generate --config config.yml --test --faults 100 --seed 42
+      autombist generate --config config.yml --emit-manifest
       autombist generate  # uses ./config.yml when present
     """
 
@@ -404,6 +442,8 @@ def generate(
         if test:
             typer.echo(f"Generated fault masks in: {wrapper_path.parent / 'faults'}")
             typer.echo(f"Generated fault-sim Makefile: {wrapper_path.parent / 'Makefile'}")
+    if emit_manifest:
+        _emit_manifest(wrapper_path.parent, config)
 
 
 @app.command()
@@ -463,6 +503,7 @@ def run(
     scan_chains: int = typer.Option(1, "--scan-chains", help="Scan chains for controller grading"),
     min_coverage: float | None = typer.Option(None, "--min-coverage", help="Fail (exit 1) if array fault coverage is below this percent"),
     json_output: bool = typer.Option(False, "--json", help="Print the structured report as JSON to stdout instead of the human summary"),
+    emit_manifest: bool = typer.Option(False, "--emit-manifest/--no-emit-manifest", help="Also write manifest.json: memory/controller instance names for external synthesis tooling (e.g. FaultFlow) to blackbox/keep-hierarchy correctly"),
 ) -> None:
     """Generate wrapper AND run simulation in one command (convenience mode).
 
@@ -497,6 +538,8 @@ def run(
     if faultflow:
         opts = _build_faultflow_options(faultflow_repo, cell_lib, scan_chains, 90.0, 20)
         _grade_controller(wrapper_path.parent, opts, run=True, quiet=_is_quiet(), json_output=json_output)
+    if emit_manifest:
+        _emit_manifest(wrapper_path.parent, config)
 
 
 @app.command("grade-controller")
@@ -612,7 +655,7 @@ def yield_sweep_cmd(
 def _wrap_test_access(
     sources: list[Path], top: str, out: Path, *,
     onchip_selfrepair: bool, onchip_repair_persistence: bool, onchip_diagnosis: bool,
-    config: Path | None, emit_icl: bool,
+    config: Path | None, emit_icl: bool, manifest: Path | None = None,
 ) -> None:
     from autombist.testaccess import (
         TestAccessUnavailable,
@@ -677,12 +720,37 @@ def _wrap_test_access(
         typer.echo(f"  chain[{i}] {p.name} ({p.role}, width={p.width})")
     typer.echo(f"Inserted Verilog: {verilog_path}")
 
+    icl_path: Path | None = None
     if emit_icl:
         from warptap.icl_emit import to_icl
 
         icl_path = out / f"{top}_test_access.icl"
         icl_path.write_text(to_icl(graph, root, include_access_link=False), encoding="utf-8")
         typer.echo(f"ICL:              {icl_path}")
+
+    if manifest is not None:
+        from autombist.manifest import ManifestError, update_manifest_with_test_access
+
+        test_access_block = {
+            "wrapped": True,
+            "output_verilog": str(verilog_path.resolve()),
+            "output_dir": str(out.resolve()),
+            "boundary_ports": ["tck", "tms", "tdi", "tdo", "trst_n"],
+            "wrapped_ports": [{"name": p.name, "role": p.role, "width": p.width} for p in ports],
+            "icl_path": str(icl_path.resolve()) if icl_path is not None else None,
+            # wrap_test_access's own return value (testaccess.py) only ever
+            # yields an architecture-level ICL register description, never a
+            # gate-level TAP/SIB instance list -- there is no warptap API
+            # today that would make this anything but an honest placeholder.
+            "internal_instances": "not_enumerated",
+            "hierarchy_hint": "opaque_shell",
+        }
+        try:
+            manifest_path = update_manifest_with_test_access(manifest, test_access_block)
+        except ManifestError as exc:
+            typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        typer.echo(f"Updated manifest:  {manifest_path}")
 
 
 @app.command("wrap-test-access")
@@ -695,6 +763,7 @@ def wrap_test_access_cmd(
     onchip_diagnosis: bool = typer.Option(False, "--onchip-diagnosis", help="Also wrap diag_overflow -- must match the redundancy config the sources were generated with. Omit when passing --config"),
     config: Path | None = typer.Option(None, "--config", help="Path to the config.yml snapshot `generate` wrote alongside these sources -- derives the flags above PLUS the wide-port geometry (diag_valid/diag_addr/fuse_row_repair_en/fuse_faulty_row_addr/repair_ports) needed to wrap them. Without it, only the always-1-bit ports are wrapped, exactly as before wide-port support"),
     emit_icl: bool = typer.Option(False, "--emit-icl", help="Also emit an ICL description of the inserted network"),
+    manifest: Path | None = typer.Option(None, "--manifest", help="Output directory containing a manifest.json (written by `generate --emit-manifest`) -- patches its test_access block with what was just wrapped"),
 ) -> None:
     """Wrap a generated design's control/status ports with a JTAG/IJTAG test-access
     network, via the external warptap package.
@@ -731,6 +800,7 @@ def wrap_test_access_cmd(
         onchip_diagnosis=onchip_diagnosis,
         config=config,
         emit_icl=emit_icl,
+        manifest=manifest,
     )
 
 

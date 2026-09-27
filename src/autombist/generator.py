@@ -1350,4 +1350,14 @@ def generate_from_config(
     wrapper_path.write_text(wrapper_text, encoding="utf-8")
 
     copy_mbist_rtl(module_outdir, algo_dir)
+
+    # Unconditional, cheap, side-effect-free until written: a port-only
+    # (* blackbox *) SRAM stub, the same one faultflow_flow.py's emit_bundle
+    # renders (render_blackbox_stub there just wraps _render_template the
+    # same way), so any downstream consumer of module_outdir (not only
+    # grade-controller's own bundle) has it available without re-deriving it.
+    stub_text = _render_template(render_config, "sram_blackbox_template.j2")
+    stub_path = module_outdir / f"{render_config['memory_name']}_bbox.v"
+    stub_path.write_text(stub_text, encoding="utf-8")
+
     return wrapper_path
