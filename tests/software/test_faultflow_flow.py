@@ -13,6 +13,7 @@ from autombist.faultflow_flow import (
     build_synth_script,
     controller_sources,
     emit_bundle,
+    memory_instances,
     read_coverage,
     render_blackbox_stub,
 )
@@ -54,7 +55,7 @@ def test_render_blackbox_stub_has_blackbox_and_ports() -> None:
     assert "module input_demo_8x16_scn4m " in text
     for port in ("clk0", "csb0", "addr0", "din0", "web0", "dout0"):
         assert port in text
-    assert "output wire [DATA_WIDTH-1:0] dout0" in text
+    assert "output wire [7:0] dout0" in text
 
 
 def test_controller_sources_excludes_macro_and_saboteur(tmp_path: Path) -> None:
@@ -77,6 +78,7 @@ def test_controller_sources_shared_bus_uses_wrapper_module_name(tmp_path: Path) 
     cfg["topology"] = "shared-bus"
     cfg["memory_name"] = "sram_8x16"
     cfg["wrapper_module_name"] = "shared_ctrl"
+    cfg["memories"] = [{"name": "bank0"}, {"name": "bank1"}]
     names = [p.name for p in controller_sources(tmp_path, cfg)]
     assert "shared_ctrl_mbist.v" in names
     assert "sram_8x16_mbist.v" not in names
@@ -95,7 +97,27 @@ def test_build_synth_script_keeps_blackbox_lib(tmp_path: Path) -> None:
     assert "read_verilog -lib" in script
     assert "flatten" in script
     assert "synth -top input_demo_8x16_scn4m_mbist" in script
-    assert "write_json" in script
+    # FaultFlow hard-fails on the $scopeinfo markers flatten leaves behind.
+    assert script.index("delete t:$scopeinfo") < script.index("write_json")
+
+
+def test_memory_instances_follow_topology() -> None:
+    assert memory_instances(_config()) == ["u_sram"]
+    cfg = _config()
+    cfg.update(topology="shared-bus", wrapper_module_name="shared_ctrl",
+               memories=[{"name": "bank0"}, {"name": "bank1"}])
+    assert memory_instances(cfg) == ["u_mem_bank0", "u_mem_bank1"]
+
+
+def test_build_ofs_lists_every_shared_bus_memory(tmp_path: Path) -> None:
+    text = build_ofs(
+        netlist=tmp_path / "top.json", top="shared_ctrl", cell_json=tmp_path / "c.json",
+        liberty=tmp_path / "x.lib", verilog_models=tmp_path / "x.v",
+        blackbox_instances=["u_mem_bank0", "u_mem_bank1"], opts=FaultFlowOptions(repo=tmp_path),
+    )
+    cp = configparser.ConfigParser()
+    cp.read_string(text)
+    assert cp["blackbox"]["instances"] == "u_mem_bank0, u_mem_bank1"
 
 
 def test_build_ofs_roundtrips_through_configparser(tmp_path: Path) -> None:
@@ -105,6 +127,7 @@ def test_build_ofs_roundtrips_through_configparser(tmp_path: Path) -> None:
         cell_json=tmp_path / "cells.json",
         liberty=tmp_path / "x.lib",
         verilog_models=tmp_path / "x.v",
+        blackbox_instances=["u_sram"],
         opts=FaultFlowOptions(repo=tmp_path),
     )
     cp = configparser.ConfigParser()

@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .generator import _normalize_algo, _render_template, load_config
+from .generator import _render_template, load_config
+from .manifest import ManifestError, build_instances, render_memory_stub, synthesis_sources
 
 
 class FaultFlowError(RuntimeError):
@@ -49,7 +50,6 @@ class FaultFlowOptions:
 
     repo: Path | None = None          # FaultFlow checkout; falls back to $FAULTFLOW_HOME
     cell_lib: str = "sky130"
-    sram_instance: str = "u_sram"     # instance label hard-coded in wrapper_template.j2
     scan_chains: int = 1
     threshold: float = 90.0
     max_rounds: int = 20
@@ -84,40 +84,36 @@ class FaultFlowOptions:
         return repo / rel_json, repo / rel_lib, repo / rel_v
 
 
-def _algo_dir(config: dict[str, Any]) -> str:
-    algo_dir = config.get("algo_dir")
-    if algo_dir:
-        return str(algo_dir)
-    return _normalize_algo(str(config.get("algo", "march-c")))[0]
-
-
 def _sh_quote(value: str) -> str:
     return '"' + value.replace('"', '\\"') + '"'
 
 
 def render_blackbox_stub(config: dict[str, Any]) -> str:
-    """Render the port-only ``(* blackbox *)`` SRAM stub from the memory config."""
-    return _render_template(config, "sram_blackbox_template.j2")
+    """Render the port-only ``(* blackbox *)`` memory stub from the memory config."""
+    return render_memory_stub(config)
 
 
 def controller_sources(module_outdir: Path, config: dict[str, Any]) -> list[Path]:
-    """Verilog sources that make up the controller (collar + algo RTL).
+    """Verilog sources that make up the controller: the wrapper plus every test
+    instrument's RTL (algo top/fsm/algo, and any on-chip repair/diagnosis
+    modules the config instantiates).
 
     Excludes the saboteur, the simulation SRAM model, and the real macro — those
     are not part of the synthesizable controller netlist FaultFlow grades.
     """
-    # Mirrors generate_from_config's own output_stem derivation exactly
-    # (generator.py) — under topology: shared-bus the wrapper is named after
-    # wrapper_module_name, not memory_name (memory_name there names the
-    # shared macro TYPE, not the generated wrapper file).
-    is_shared_bus = config.get("topology", "dedicated") == "shared-bus"
-    output_stem = str(config["wrapper_module_name"]) if is_shared_bus else str(config["memory_name"])
-    algo_dir = _algo_dir(config)
-    algo_path = module_outdir / algo_dir
-    sources = [module_outdir / f"{output_stem}_mbist.v"]
-    for suffix in ("algo", "fsm", "top"):
-        sources.append(algo_path / f"{algo_dir}_{suffix}.sv")
-    return sources
+    try:
+        return synthesis_sources(config, module_outdir)
+    except ManifestError as exc:
+        raise FaultFlowError(str(exc)) from exc
+
+
+def memory_instances(config: dict[str, Any]) -> list[str]:
+    """Instance names of the blackboxed memory (``u_sram``, or one
+    ``u_mem_<name>`` per memory under topology: shared-bus)."""
+    try:
+        return [i["instance_name"] for i in build_instances(config) if i["category"] == "memory"]
+    except ManifestError as exc:
+        raise FaultFlowError(str(exc)) from exc
 
 
 def build_synth_script(
@@ -143,6 +139,9 @@ def build_synth_script(
             f"synth -top {top}",
             f"dfflibmap -liberty {_sh_quote(str(liberty))}",
             f"abc -liberty {_sh_quote(str(liberty))}",
+            # flatten leaves zero-connection $scopeinfo marker cells behind;
+            # FaultFlow hard-fails on any cell type outside its cell library.
+            "delete t:$scopeinfo",
             "clean",
             f"write_json {_sh_quote(str(json_out))}",
             f"write_verilog {_sh_quote(str(gate_out))}",
@@ -158,6 +157,7 @@ def build_ofs(
     cell_json: Path,
     liberty: Path,
     verilog_models: Path,
+    blackbox_instances: list[str],
     opts: FaultFlowOptions,
 ) -> str:
     """Render the FaultFlow ``.ofs`` config (INI, configparser-compatible)."""
@@ -169,7 +169,7 @@ def build_ofs(
         "liberty": str(liberty),
         "verilog_models": str(verilog_models),
     }
-    cp["blackbox"] = {"instances": opts.sram_instance}
+    cp["blackbox"] = {"instances": ", ".join(blackbox_instances)}
     cp["fault_model"] = {"model": opts.fault_model, "collapsing": "false"}
     cp["atpg"] = {"tool": "native", "mode": "comb", "max_rounds": str(opts.max_rounds)}
     cp["scan"] = {
@@ -195,7 +195,7 @@ def build_run_script(
     synth: Path,
     json_out: Path,
     ofs: Path,
-    sram_instance: str,
+    memory_instances: list[str],
     memory_name: str,
 ) -> str:
     context = {
@@ -206,26 +206,26 @@ def build_run_script(
         "synth": str(synth),
         "json_out": str(json_out),
         "ofs": str(ofs),
-        "sram_instance": sram_instance,
+        "memory_instances": " ".join(memory_instances),
         "memory_name": memory_name,
     }
     return _render_template(context, "run_faultflow_template.sh.j2")
 
 
-def _readme(top: str) -> str:
+def _readme(top: str, memory_name: str, memory_instances: list[str]) -> str:
     return (
         "FaultFlow controller-grading bundle (auto-generated by autombist)\n"
         "================================================================\n\n"
-        "Grades the MBIST controller logic for module '%s' with the SRAM macro\n"
+        "Grades the MBIST controller logic for module '%s' with the memory\n"
         "blackboxed. Run on a Linux/WSL host that has Yosys and a built FaultFlow:\n\n"
         "    FAULTFLOW_HOME=/path/to/faultflow bash run_faultflow.sh\n\n"
         "Optional overrides: FF_PYTHON=<faultflow venv python> YOSYS=<yosys path>\n\n"
         "Files:\n"
-        "  %s_bbox.v        port-only (* blackbox *) SRAM stub\n"
-        "  synth_collar.ys  Yosys script (collar+algo -> <top>.json, u_sram kept)\n"
-        "  %s.ofs           FaultFlow config ([blackbox] instances=u_sram)\n"
-        "  run_faultflow.sh synth + u_sram-survival assertion + scan stuck-at ATPG\n"
-        % (top, top.removesuffix("_mbist"), top)
+        "  %s_bbox.v        port-only (* blackbox *) memory stub\n"
+        "  synth_collar.ys  Yosys script (collar + instruments -> <top>.json, memory kept)\n"
+        "  %s.ofs           FaultFlow config ([blackbox] instances = %s)\n"
+        "  run_faultflow.sh synth + memory-survival assertion + scan stuck-at ATPG\n"
+        % (top, memory_name, top, ", ".join(memory_instances))
     )
 
 
@@ -240,6 +240,7 @@ def emit_bundle(module_outdir: Path, config: dict[str, Any], opts: FaultFlowOpti
 
     memory_name = str(config["memory_name"])
     top = str(config["wrapper_module_name"])
+    mem_instances = memory_instances(config)
 
     bundle = module_outdir / "faultflow"
     bundle.mkdir(parents=True, exist_ok=True)
@@ -270,6 +271,7 @@ def emit_bundle(module_outdir: Path, config: dict[str, Any], opts: FaultFlowOpti
             cell_json=cell_json,
             liberty=liberty,
             verilog_models=vmodels,
+            blackbox_instances=mem_instances,
             opts=opts,
         ),
         encoding="utf-8",
@@ -285,7 +287,7 @@ def emit_bundle(module_outdir: Path, config: dict[str, Any], opts: FaultFlowOpti
             synth=synth,
             json_out=json_out,
             ofs=ofs,
-            sram_instance=opts.sram_instance,
+            memory_instances=mem_instances,
             memory_name=memory_name,
         ),
         encoding="utf-8",
@@ -295,7 +297,7 @@ def emit_bundle(module_outdir: Path, config: dict[str, Any], opts: FaultFlowOpti
     except OSError:
         pass
 
-    (bundle / "README.txt").write_text(_readme(top), encoding="utf-8")
+    (bundle / "README.txt").write_text(_readme(top, memory_name, mem_instances), encoding="utf-8")
     return bundle
 
 

@@ -13,18 +13,19 @@ TOP="{{ top }}"
 OFS="{{ ofs }}"
 JSON="{{ json_out }}"
 
-echo "[autombist] (1/4) synthesizing collar (memory '{{ sram_instance }}' blackboxed)..."
+echo "[autombist] (1/4) synthesizing collar (memory {{ memory_instances }} blackboxed)..."
 "$YOSYS" -q -s "{{ synth }}"
 
-echo "[autombist] (2/4) verifying '{{ sram_instance }}' survived flatten..."
-"$FF_PY" - "$JSON" "$TOP" "{{ sram_instance }}" "{{ memory_name }}" <<'PYEOF'
+echo "[autombist] (2/4) verifying the memory instance(s) survived flatten..."
+"$FF_PY" - "$JSON" "$TOP" "{{ memory_name }}" {{ memory_instances }} <<'PYEOF'
 import json, sys
 mods = json.load(open(sys.argv[1]))["modules"]
 cells = mods.get(sys.argv[2], {}).get("cells", {})
-ok = sys.argv[3] in cells or any(c.get("type") == sys.argv[4] for c in cells.values())
-if not ok:
-    sys.exit("ERROR: blackbox '%s' was flattened away -- controller grading would be meaningless" % sys.argv[3])
-print("[autombist]   OK: blackbox cell present in netlist")
+missing = [inst for inst in sys.argv[4:]
+           if not (inst in cells and cells[inst].get("type") == sys.argv[3])]
+if missing:
+    sys.exit("ERROR: blackbox instance(s) %s were flattened away -- controller grading would be meaningless" % missing)
+print("[autombist]   OK: all blackbox memory cells present in netlist")
 PYEOF
 
 echo "[autombist] (3/4) running FaultFlow scan stuck-at ATPG..."
