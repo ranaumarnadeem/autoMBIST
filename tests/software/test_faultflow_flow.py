@@ -66,6 +66,22 @@ def test_controller_sources_excludes_macro_and_saboteur(tmp_path: Path) -> None:
     assert not any("saboteur" in n or "sram_model" in n for n in names)
 
 
+def test_controller_sources_shared_bus_uses_wrapper_module_name(tmp_path: Path) -> None:
+    # Under topology: shared-bus, generate_from_config names the wrapper file
+    # after wrapper_module_name, not memory_name (memory_name there names the
+    # shared macro TYPE, e.g. "sram_8x16" reused by every u_mem_<name>
+    # instance — it was never the generated wrapper's filename). Regression
+    # for the real bug: this used to look for "{memory_name}_mbist.v", which
+    # doesn't exist under shared-bus whenever the two names differ.
+    cfg = _config()
+    cfg["topology"] = "shared-bus"
+    cfg["memory_name"] = "sram_8x16"
+    cfg["wrapper_module_name"] = "shared_ctrl"
+    names = [p.name for p in controller_sources(tmp_path, cfg)]
+    assert "shared_ctrl_mbist.v" in names
+    assert "sram_8x16_mbist.v" not in names
+
+
 def test_build_synth_script_keeps_blackbox_lib(tmp_path: Path) -> None:
     cfg = _config()
     script = build_synth_script(
