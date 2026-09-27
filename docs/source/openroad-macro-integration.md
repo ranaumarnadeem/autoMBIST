@@ -36,7 +36,7 @@ object (§4).
 
 | View | Consumed by (stage) | Role | `Macro` key | In this repo |
 |---|---|---|---|---|
-| **Blackbox `.v` / `.vh`** | Synthesis (Yosys) | Port names + I/O widths only — **no timing**. Macro is *referenced, not flattened*. | `vh` | ✅ `src/autombist/templates/sram_blackbox_template.j2` (`(* blackbox *)`) |
+| **Blackbox `.v` / `.vh`** | Synthesis (Yosys) | Port names + I/O widths only — **no timing**. Macro is *referenced, not flattened*. | `vh` | ✅ `<memory_name>_bbox.v`, written by `generate` except under `--test` (`(* blackbox *)`; built by `autombist.manifest.render_memory_stub`) |
 | **LEF** (abstract) | Place & route | **Required.** Cell outline, pin locations, routing blockages; only metal + connection layers, not full layout. | `lef` | ⛔ only via OpenRAM |
 | **Liberty `.lib`** | Synthesis + STA | Timing/power model (corner-keyed). | `lib` | ⛔ only via OpenRAM |
 | **GDS** | Tapeout / signoff | **Required.** Full layout; superset of the LEF. | `gds` | ⛔ only via OpenRAM |
@@ -73,7 +73,7 @@ the macro is kept as an opaque cell.
   blackbox Verilog "tells the synthesis tool the purpose and width of the input and
   output but does not carry information regarding the timings." *(verified 3-0,
   [synth.tcl], [digital_guide])* — this is exactly what our
-  `sram_blackbox_template.j2` produces (`(* blackbox *)` port-only module).
+  `<memory_name>_bbox.v` stub is (`(* blackbox *)` port-only module).
 
 > **Correction (refuted claim).** A draft claim that Liberty is the *sole* carrier
 > of a macro into synthesis was **refuted 1-2**. Accurate: a **port-only view**
@@ -274,7 +274,7 @@ The `repair_ports:` config (validated by `_validate_repair_ports` in
 binds them to the macro instance — pin names are arbitrary, declared per-entry
 as `{name, width, dir}`, not fixed names like `repair_valid`/`repair_addr`
 (those are just the docstring's illustrative example). The redundant
-**macro's own** view set (the blackbox stub `sram_blackbox_template.j2`, and
+**macro's own** view set (the blackbox stub `<memory_name>_bbox.v`, and
 its real LEF/Liberty/GDS) never needs the same pins — it stays exactly the
 stock macro contract from §1–§5, which is what let Tier 2 close without any
 macro-side work.
