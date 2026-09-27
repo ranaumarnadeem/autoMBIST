@@ -106,10 +106,15 @@ def controller_sources(module_outdir: Path, config: dict[str, Any]) -> list[Path
     Excludes the saboteur, the simulation SRAM model, and the real macro — those
     are not part of the synthesizable controller netlist FaultFlow grades.
     """
-    memory_name = str(config["memory_name"])
+    # Mirrors generate_from_config's own output_stem derivation exactly
+    # (generator.py) — under topology: shared-bus the wrapper is named after
+    # wrapper_module_name, not memory_name (memory_name there names the
+    # shared macro TYPE, not the generated wrapper file).
+    is_shared_bus = config.get("topology", "dedicated") == "shared-bus"
+    output_stem = str(config["wrapper_module_name"]) if is_shared_bus else str(config["memory_name"])
     algo_dir = _algo_dir(config)
     algo_path = module_outdir / algo_dir
-    sources = [module_outdir / f"{memory_name}_mbist.v"]
+    sources = [module_outdir / f"{output_stem}_mbist.v"]
     for suffix in ("algo", "fsm", "top"):
         sources.append(algo_path / f"{algo_dir}_{suffix}.sv")
     return sources
