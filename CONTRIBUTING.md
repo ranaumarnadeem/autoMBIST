@@ -117,13 +117,14 @@ If you only want the fast, tool-independent slice while iterating:
 PYTHONPATH=src ~/cocotb/bin/python -m pytest tests/software -q
 ```
 
-One custom pytest marker (registered in `pyproject.toml`) labels the single test
-that needs a full FaultFlow checkout:
+One custom pytest marker (registered in `pyproject.toml`) labels the tests that
+need a full FaultFlow checkout:
 
-- `faultflow` — needs a built FaultFlow repo + Yosys on `PATH`
-  (`test_grade_controller_full_flow`; skip it explicitly with
-  `pytest tests/integration -m "not faultflow"`, or select just it with
-  `-m faultflow`)
+- `faultflow` — needs `$FAULTFLOW_HOME` pointing at a built FaultFlow with its
+  autoMBIST integration, plus Yosys on `PATH` (the live tests in
+  `tests/integration/test_grade_controller.py`; they skip when either is
+  missing, or skip them explicitly with `pytest tests/integration -m "not
+  faultflow"`, or select just them with `-m faultflow`)
 
 Every other tool-gated test uses a per-test
 `skipif(shutil.which("iverilog"/"verilator"/"yosys") is None, ...)` instead of a

@@ -50,22 +50,25 @@ scoped follow-up:
   shared/hierarchical scoping doc — deliberately not started before the
   flat case was proven, which it now is).
 
-## FaultFlow integration — status re-verified 2026-09-27
+## FaultFlow integration — status re-verified 2026-09-28
 
 - FaultFlow controller-grading (`grade-controller`, `run --faultflow`) —
-  **bundle emission works; a real FaultFlow run has never been verified.**
-  The earlier "shipped" was overstated: its full-flow test has always been
-  skipped, and a 2026-09-27 audit with Yosys 0.61 found the synth script it
-  emits could not have produced a netlist FaultFlow accepts — it never
-  deleted `$scopeinfo` cells (FaultFlow hard-fails on unknown cell types),
-  omitted the repair/self-repair RTL for any `redundancy:` config, used a
-  memory stub valid only for single-port/no-redundancy memories, and
-  blackboxed a hardcoded `u_sram` even under shared-bus. All four are fixed;
-  the collar now synthesizes clean (no unknown cells, every memory instance
-  kept) for plain, tester-driven row+col, on-chip row+diagnosis, on-chip
-  row+col, march-1r1w, and shared-bus (plain, row, row+col) configs. Still unverified: an actual `ff.py sim`
-  run on that netlist (writes into the faultflow repo's output/, so left to
-  the FaultFlow side).
+  **works end to end against a real FaultFlow, verified 2026-09-28.** The
+  bundle now hands synthesis to FaultFlow's autoMBIST integration (driven by
+  the manifest below: every instrument standalone, memory blackboxed), then
+  runs scan insertion, `scan-check` (the old bundle skipped it, so it could
+  never reach ATPG) and scan stuck-at ATPG with the memory's outputs treated
+  as unknown. Everything a run writes stays in the bundle; it used to run
+  from inside the FaultFlow checkout and write its output there. A `--test`
+  build is graded as its clean collar, so `run --test --faultflow` reports
+  array and controller coverage together. The live tests
+  (`tests/integration/test_grade_controller.py`, marker `faultflow`) run
+  whenever `$FAULTFLOW_HOME` and Yosys are available. Example, 16x4
+  `sram_1rw` with march-c: controller 554/680 (81.47%), 126 faults
+  testable only through the memory.
+- JTAG/IJTAG-wrapped designs (`wrap-test-access --manifest`'s `test_access`
+  block) — **not graded yet.** FaultFlow reads the block but doesn't
+  interpret it; that is FaultFlow-side work.
 - Part B (autoMBIST bug fixes) — **confirmed fixed** (2026-09-22): sim-time
   fault-mask re-randomization, the `REPO_ROOT`/`--out` path-resolution bug,
   and the hardcoded `READ_LATENCY`. The "O(depth)/clock transition saboteur"
@@ -73,7 +76,7 @@ scoped follow-up:
 - v3 (IEEE-1500 intest on the blackboxed memory boundary) — FaultFlow ships
   `intest`/`extest`, but autoMBIST never uses them; that wiring is undone.
 
-### Instance manifest (synthesis plan) — autoMBIST side done, FaultFlow side not started
+### Instance manifest (synthesis plan) — done on both sides
 
 `generate --emit-manifest` writes `manifest.json`: every instance with its
 `hierarchical_path`, `module_type`, instantiation `parameters`, `sources`,
@@ -87,11 +90,11 @@ manifest, every block synthesizes standalone to pure sky130 cells and the
 glue synthesizes with every block as a `-lib` stub, with the manifest's
 instance paths matching the glue's cell names exactly — for every
 configuration tried (dedicated single-/multi-port incl. march-2rw and
-march-1r1w, tester-driven and on-chip repair, shared-bus). FaultFlow's existing `assemble.py`
-(`block_stub_verilog`/`compose_soc`) already implements the stub-and-splice
-step for SoC blocks, but its stubs declare no parameters, which Yosys
-rejects for a parameterized instrument — its stubs must carry the
-manifest's `parameters`.
+march-1r1w, tester-driven and on-chip repair, shared-bus). FaultFlow now
+consumes it (`faultflow/integrations/autombist.py`, `ff.py
+autombist-generate`): per-block synthesis with parameter-carrying stubs, then
+`compose_soc` splices the blocks into one netlist, checked driver-clean by
+Yosys and at gate level (BIST passes a good memory, fails a stuck-bit one).
 
 - **Reverted** (2026-09-27): baking `(* keep_hierarchy *)` into the repair
   RTL. Yosys keeps the hierarchy, but FaultFlow's loader only simulates the

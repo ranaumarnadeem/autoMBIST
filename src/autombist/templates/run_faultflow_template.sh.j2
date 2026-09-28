@@ -4,40 +4,76 @@
 # Runs standalone (re-runnable / CI-friendly):
 #   FAULTFLOW_HOME=/path/to/faultflow bash run_faultflow.sh
 # Optional overrides: FF_PYTHON=... YOSYS=...
+#
+# Everything a run writes stays in this bundle; nothing lands in $FAULTFLOW_HOME.
 set -euo pipefail
 
 FAULTFLOW_HOME="${FAULTFLOW_HOME:-{{ repo }}}"
 FF_PY="${FF_PYTHON:-{{ ff_python }}}"
 YOSYS="${YOSYS:-{{ yosys }}}"
 TOP="{{ top }}"
-OFS="{{ ofs }}"
-JSON="{{ json_out }}"
+BUNDLE="{{ bundle }}"
+LIBERTY="{{ liberty }}"
+CELL_LIB="{{ cell_json }}"
+OFS="$BUNDLE/$TOP.ofs"
+RUN="$BUNDLE/{{ run_dirname }}"
 
-echo "[autombist] (1/4) synthesizing collar (memory {{ memory_instances }} blackboxed)..."
-"$YOSYS" -q -s "{{ synth }}"
+# FaultFlow's synthesis finds Yosys on PATH.
+case "$YOSYS" in */*) PATH="$(dirname "$YOSYS"):$PATH" ;; esac
+export PATH
+export PYTHONPATH="$FAULTFLOW_HOME${PYTHONPATH:+:$PYTHONPATH}"
 
-echo "[autombist] (2/4) verifying the memory instance(s) survived flatten..."
-"$FF_PY" - "$JSON" "$TOP" "{{ memory_name }}" {{ memory_instances }} <<'PYEOF'
+echo "[autombist] (1/4) synthesizing with FaultFlow's autoMBIST integration (each instrument standalone, memory {{ memory_instances }} blackboxed)..."
+"$FF_PY" - "$BUNDLE" "$LIBERTY" "$CELL_LIB" "$OFS" <<'PYEOF'
+import configparser, sys
+from pathlib import Path
+try:
+    from faultflow.integrations.autombist import load_autombist_manifest, synthesize_from_manifest
+except ImportError as exc:
+    sys.exit("ERROR: this FaultFlow checkout has no autoMBIST integration (%s) -- update FaultFlow" % exc)
+bundle, liberty, cell_lib, ofs_out = (Path(a) for a in sys.argv[1:5])
+manifest = load_autombist_manifest(bundle / "manifest.json")
+result = synthesize_from_manifest(manifest, out=bundle / "synth", liberty=liberty, cell_lib=cell_lib)
+# FaultFlow's .ofs owns [design] and [blackbox]; the grading options add the rest.
+ofs = configparser.ConfigParser(interpolation=None)
+ofs.read(result.ofs_path)
+options = configparser.ConfigParser(interpolation=None)
+options.read(bundle / "options.ofs")
+for section in options.sections():
+    if not ofs.has_section(section):
+        ofs.add_section(section)
+    for key, value in options[section].items():
+        ofs[section][key] = value
+with open(ofs_out, "w") as fh:
+    ofs.write(fh)
+print("[autombist]   composed netlist: %s" % result.composed_json_path)
+PYEOF
+
+echo "[autombist] (2/4) verifying the memory instance(s) survived synthesis..."
+"$FF_PY" - "$BUNDLE/synth/${TOP}_composed.json" "$TOP" "{{ memory_name }}" {{ memory_instances }} <<'PYEOF'
 import json, sys
 mods = json.load(open(sys.argv[1]))["modules"]
 cells = mods.get(sys.argv[2], {}).get("cells", {})
 missing = [inst for inst in sys.argv[4:]
            if not (inst in cells and cells[inst].get("type") == sys.argv[3])]
 if missing:
-    sys.exit("ERROR: blackbox instance(s) %s were flattened away -- controller grading would be meaningless" % missing)
+    sys.exit("ERROR: blackbox instance(s) %s are missing from the netlist -- controller grading would be meaningless" % missing)
 print("[autombist]   OK: all blackbox memory cells present in netlist")
 PYEOF
 
-echo "[autombist] (3/4) running FaultFlow scan stuck-at ATPG..."
-cd "$FAULTFLOW_HOME"
-"$FF_PY" ff.py init --top "$TOP" -c "$OFS"
-"$FF_PY" ff.py scan --top "$TOP" -c "$OFS"
-"$FF_PY" ff.py sim  --top "$TOP" -c "$OFS" --scan
+echo "[autombist] (3/4) running FaultFlow scan insertion, scan-check and scan stuck-at ATPG..."
+rm -rf "$RUN"
+mkdir -p "$RUN"
+cd "$RUN"
+"$FF_PY" "$FAULTFLOW_HOME/ff.py" init       --top "$TOP" -c "$OFS"
+"$FF_PY" "$FAULTFLOW_HOME/ff.py" scan       --top "$TOP" -c "$OFS"
+"$FF_PY" "$FAULTFLOW_HOME/ff.py" scan-check --top "$TOP" -c "$OFS"
+"$FF_PY" "$FAULTFLOW_HOME/ff.py" sim        --top "$TOP" -c "$OFS" --scan
 
 echo "[autombist] (4/4) controller structural coverage:"
-"$FF_PY" - "$FAULTFLOW_HOME/output/$TOP/.faultflow/intermediate/coverage_report.json" <<'PYEOF'
+"$FF_PY" - "$RUN/output/$TOP/.faultflow/intermediate/coverage_report.json" <<'PYEOF'
 import json, sys
 s = json.load(open(sys.argv[1]))["summary"]
-print("  coverage=%.2f%%  detected=%s  denom=%s  excluded_blackbox=%s"
-      % (s.get("coverage_percent", 0.0), s.get("detected"), s.get("denominator"), s.get("excluded_blackbox")))
+print("  coverage=%.2f%%  detected=%s  denom=%s  blackbox_unresolved=%s"
+      % (s.get("coverage_percent", 0.0), s.get("detected"), s.get("denominator"), s.get("blackbox_unresolved")))
 PYEOF

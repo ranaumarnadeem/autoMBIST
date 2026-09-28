@@ -1,14 +1,17 @@
 """Drive FaultFlow to grade the generated MBIST controller logic.
 
 autoMBIST tests the memory *array* (March, cocotb). FaultFlow grades the MBIST
-*controller logic*: we synthesize the clean collar with the SRAM macro replaced by
-a port-only ``(* blackbox *)`` stub (so the ``u_sram`` instance survives Yosys
-``flatten``), then point FaultFlow at the netlist with ``[blackbox] instances =
-u_sram``. FaultFlow turns that boundary into pseudo-PI/PO and runs scan stuck-at
-ATPG over the controller, excluding the (blackboxed) memory from the denominator.
+*controller logic*: its autoMBIST integration synthesizes the design from a
+manifest (see manifest.py) -- each test instrument on its own, so Yosys can't
+optimize it into the glue, and the memory a blackbox -- then scan stuck-at ATPG
+runs over the result. FaultFlow treats the blackboxed memory's outputs as
+unknown during the scan test, so a fault testable only through the memory is
+reported as blackbox_unresolved and still counts against coverage.
 
-This module only *emits* a self-contained, re-runnable bundle and (optionally) runs
-it. FaultFlow is Unix-only and is invoked from its own venv.
+This module only *emits* a self-contained, re-runnable bundle and (optionally)
+runs it. FaultFlow is Unix-only and is invoked from its own venv. Everything a
+run writes -- FaultFlow's synthesis, its campaign database and reports -- stays
+inside the bundle; nothing is written into the FaultFlow checkout.
 """
 from __future__ import annotations
 
@@ -16,13 +19,22 @@ import configparser
 import io
 import json
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .generator import _render_template, load_config
-from .manifest import ManifestError, build_instances, render_memory_stub, synthesis_sources
+from . import __version__
+from .generator import _render_template, generate_from_config, load_config
+from .manifest import (
+    MANIFEST_FILENAME,
+    ManifestError,
+    build_instance_manifest,
+    build_instances,
+    render_memory_stub,
+    synthesis_sources,
+)
 
 
 class FaultFlowError(RuntimeError):
@@ -42,6 +54,11 @@ _CELL_LIBS: dict[str, tuple[str, str, str]] = {
         "cells/osu/osu035_stdcells.v",
     ),
 }
+
+# The bundle's FaultFlow working directory: ff.py writes output/<top>/ under it.
+RUN_DIRNAME = "run"
+# Where a --test build's clean collar is regenerated, inside the bundle.
+CLEAN_DIRNAME = "clean"
 
 
 @dataclass(slots=True)
@@ -84,10 +101,6 @@ class FaultFlowOptions:
         return repo / rel_json, repo / rel_lib, repo / rel_v
 
 
-def _sh_quote(value: str) -> str:
-    return '"' + value.replace('"', '\\"') + '"'
-
-
 def render_blackbox_stub(config: dict[str, Any]) -> str:
     """Render the port-only ``(* blackbox *)`` memory stub from the memory config."""
     return render_memory_stub(config)
@@ -116,60 +129,34 @@ def memory_instances(config: dict[str, Any]) -> list[str]:
         raise FaultFlowError(str(exc)) from exc
 
 
-def build_synth_script(
-    *,
-    sources: list[Path],
-    stub: Path,
-    top: str,
-    liberty: Path,
-    json_out: Path,
-    gate_out: Path,
-) -> str:
-    """A Yosys script mirroring FaultFlow's own recipe, plus a `-lib` blackbox stub."""
-    src_tokens = " ".join(_sh_quote(str(s)) for s in sources)
-    return "\n".join(
-        [
-            f"read_verilog -sv {src_tokens}",
-            f"read_verilog -lib {_sh_quote(str(stub))}",
-            f"hierarchy -check -top {top}",
-            "proc",
-            "flatten",
-            "opt_expr",
-            "opt_clean",
-            f"synth -top {top}",
-            f"dfflibmap -liberty {_sh_quote(str(liberty))}",
-            f"abc -liberty {_sh_quote(str(liberty))}",
-            # flatten leaves zero-connection $scopeinfo marker cells behind;
-            # FaultFlow hard-fails on any cell type outside its cell library.
-            "delete t:$scopeinfo",
-            "clean",
-            f"write_json {_sh_quote(str(json_out))}",
-            f"write_verilog {_sh_quote(str(gate_out))}",
-            "",
-        ]
-    )
+def grading_manifest(config: dict[str, Any], module_outdir: Path) -> dict[str, Any]:
+    """The instance manifest FaultFlow synthesizes the bundle's design from.
+
+    The same manifest `generate --emit-manifest` writes, rebuilt from the
+    current config snapshot so it can never be stale, but with every source
+    path absolute: the bundle keeps its own copy and leaves the output
+    directory's manifest.json (owned by generate and wrap-test-access) alone.
+    FaultFlow resolves a relative source against the manifest's directory and
+    takes an absolute one as is.
+    """
+    root = Path(module_outdir).resolve()
+    try:
+        manifest = build_instance_manifest(
+            config, root, tool_version=__version__, command="grade-controller",
+        )
+    except ManifestError as exc:
+        raise FaultFlowError(str(exc)) from exc
+    manifest["sources"] = {key: str(root / rel) for key, rel in manifest["sources"].items()}
+    for inst in manifest["instances"]:
+        inst["sources"] = [str(root / rel) for rel in inst["sources"]]
+    return manifest
 
 
-def build_ofs(
-    *,
-    netlist: Path,
-    top: str,
-    cell_json: Path,
-    liberty: Path,
-    verilog_models: Path,
-    blackbox_instances: list[str],
-    opts: FaultFlowOptions,
-) -> str:
-    """Render the FaultFlow ``.ofs`` config (INI, configparser-compatible)."""
+def build_grading_options(opts: FaultFlowOptions) -> str:
+    """The grading knobs, as FaultFlow ``.ofs`` sections (INI,
+    configparser-compatible). At run time they are merged over the .ofs
+    FaultFlow's synthesis writes, which owns [design] and [blackbox]."""
     cp = configparser.ConfigParser()
-    cp["design"] = {
-        "netlist": str(netlist),
-        "top": top,
-        "cell_lib": str(cell_json),
-        "liberty": str(liberty),
-        "verilog_models": str(verilog_models),
-    }
-    cp["blackbox"] = {"instances": ", ".join(blackbox_instances)}
     cp["fault_model"] = {"model": opts.fault_model, "collapsing": "false"}
     cp["atpg"] = {"tool": "native", "mode": "comb", "max_rounds": str(opts.max_rounds)}
     cp["scan"] = {
@@ -192,9 +179,9 @@ def build_run_script(
     ff_python: str,
     yosys_bin: str,
     top: str,
-    synth: Path,
-    json_out: Path,
-    ofs: Path,
+    bundle: Path,
+    liberty: Path,
+    cell_json: Path,
     memory_instances: list[str],
     memory_name: str,
 ) -> str:
@@ -203,79 +190,83 @@ def build_run_script(
         "ff_python": ff_python,
         "yosys": yosys_bin,
         "top": top,
-        "synth": str(synth),
-        "json_out": str(json_out),
-        "ofs": str(ofs),
+        "bundle": str(bundle),
+        "liberty": str(liberty),
+        "cell_json": str(cell_json),
+        "run_dirname": RUN_DIRNAME,
         "memory_instances": " ".join(memory_instances),
         "memory_name": memory_name,
     }
     return _render_template(context, "run_faultflow_template.sh.j2")
 
 
-def _readme(top: str, memory_name: str, memory_instances: list[str]) -> str:
+def _readme(top: str, memory_instances: list[str]) -> str:
     return (
         "FaultFlow controller-grading bundle (auto-generated by autombist)\n"
         "================================================================\n\n"
         "Grades the MBIST controller logic for module '%s' with the memory\n"
-        "blackboxed. Run on a Linux/WSL host that has Yosys and a built FaultFlow:\n\n"
+        "blackboxed. Run on a Linux/WSL host that has Yosys and a built FaultFlow\n"
+        "with its autoMBIST integration (faultflow.integrations.autombist):\n\n"
         "    FAULTFLOW_HOME=/path/to/faultflow bash run_faultflow.sh\n\n"
         "Optional overrides: FF_PYTHON=<faultflow venv python> YOSYS=<yosys path>\n\n"
         "Files:\n"
-        "  %s_bbox.v        port-only (* blackbox *) memory stub\n"
-        "  synth_collar.ys  Yosys script (collar + instruments -> <top>.json, memory kept)\n"
-        "  %s.ofs           FaultFlow config ([blackbox] instances = %s)\n"
-        "  run_faultflow.sh synth + memory-survival assertion + scan stuck-at ATPG\n"
-        % (top, memory_name, top, ", ".join(memory_instances))
+        "  manifest.json    what to synthesize: every instrument standalone, the\n"
+        "                   memory (%s) a blackbox; sources are absolute paths\n"
+        "  options.ofs      grading options, merged into FaultFlow's .ofs at run time\n"
+        "  run_faultflow.sh FaultFlow synthesis + memory-survival check + scan\n"
+        "                   insertion, scan-check and scan stuck-at ATPG\n\n"
+        "  %s/            only for a --test build: the clean collar (real memory\n"
+        "                   stub, no saboteur) regenerated from its config snapshot\n\n"
+        "Written by a run:\n"
+        "  synth/           FaultFlow's synthesis (composed netlist, its .ofs)\n"
+        "  %s.ofs           the .ofs the run uses\n"
+        "  %s/              FaultFlow's working directory (output/%s/ coverage reports)\n"
+        % (top, ", ".join(memory_instances), CLEAN_DIRNAME, top, RUN_DIRNAME, top)
     )
+
+
+def _clean_collar(
+    module_outdir: Path, config: dict[str, Any], bundle: Path,
+) -> tuple[Path, dict[str, Any]]:
+    """The output directory and config of the clean collar a ``--test`` build
+    stands for, regenerated inside the bundle.
+
+    A --test build's memory instance is the fault-injection saboteur, and it
+    has no memory stub. The controller RTL is the same either way, so the clean
+    collar -- the one that goes on silicon -- is regenerated from the build's
+    own config snapshot with the same algorithm and graded instead. This is
+    what lets ``run --test --faultflow`` report array and controller coverage
+    together.
+    """
+    clean_root = bundle / CLEAN_DIRNAME
+    shutil.rmtree(clean_root, ignore_errors=True)
+    wrapper = generate_from_config(
+        module_outdir / "config.yml", clean_root, algo=str(config.get("algo", "march-c")),
+    )
+    return wrapper.parent, load_config(wrapper.parent / "config.yml")
 
 
 def emit_bundle(module_outdir: Path, config: dict[str, Any], opts: FaultFlowOptions) -> Path:
     """Write the self-contained, re-runnable FaultFlow bundle. No tools required."""
-    # Absolute paths throughout: run_faultflow.sh cd's into $FAULTFLOW_HOME before
-    # invoking ff.py, so every path it references (ofs, netlist, synth script) must
-    # be absolute, not relative to the autombist working directory.
+    # Absolute paths throughout, so the bundle runs from any working directory.
     module_outdir = Path(module_outdir).resolve()
     repo = opts.resolved_repo()
-    cell_json, liberty, vmodels = opts.cell_lib_paths(repo)
+    cell_json, liberty, _vmodels = opts.cell_lib_paths(repo)
+
+    bundle = module_outdir / "faultflow"
+    bundle.mkdir(parents=True, exist_ok=True)
+    if config.get("use_saboteur"):
+        module_outdir, config = _clean_collar(module_outdir, config, bundle)
 
     memory_name = str(config["memory_name"])
     top = str(config["wrapper_module_name"])
     mem_instances = memory_instances(config)
 
-    bundle = module_outdir / "faultflow"
-    bundle.mkdir(parents=True, exist_ok=True)
-
-    stub = bundle / f"{memory_name}_bbox.v"
-    stub.write_text(render_blackbox_stub(config), encoding="utf-8")
-
-    json_out = bundle / f"{top}.json"
-    gate_out = bundle / f"{top}_gate.v"
-    synth = bundle / "synth_collar.ys"
-    synth.write_text(
-        build_synth_script(
-            sources=controller_sources(module_outdir, config),
-            stub=stub,
-            top=top,
-            liberty=liberty,
-            json_out=json_out,
-            gate_out=gate_out,
-        ),
+    (bundle / MANIFEST_FILENAME).write_text(
+        json.dumps(grading_manifest(config, module_outdir), indent=2, sort_keys=True),
         encoding="utf-8",
     )
-
-    ofs = bundle / f"{top}.ofs"
-    ofs.write_text(
-        build_ofs(
-            netlist=json_out,
-            top=top,
-            cell_json=cell_json,
-            liberty=liberty,
-            verilog_models=vmodels,
-            blackbox_instances=mem_instances,
-            opts=opts,
-        ),
-        encoding="utf-8",
-    )
+    (bundle / "options.ofs").write_text(build_grading_options(opts), encoding="utf-8")
 
     run_sh = bundle / "run_faultflow.sh"
     run_sh.write_text(
@@ -284,9 +275,9 @@ def emit_bundle(module_outdir: Path, config: dict[str, Any], opts: FaultFlowOpti
             ff_python=opts.resolved_ff_python(repo),
             yosys_bin=opts.yosys_bin,
             top=top,
-            synth=synth,
-            json_out=json_out,
-            ofs=ofs,
+            bundle=bundle,
+            liberty=liberty,
+            cell_json=cell_json,
             memory_instances=mem_instances,
             memory_name=memory_name,
         ),
@@ -297,15 +288,15 @@ def emit_bundle(module_outdir: Path, config: dict[str, Any], opts: FaultFlowOpti
     except OSError:
         pass
 
-    (bundle / "README.txt").write_text(_readme(top, memory_name, mem_instances), encoding="utf-8")
+    (bundle / "README.txt").write_text(_readme(top, mem_instances), encoding="utf-8")
     return bundle
 
 
-def read_coverage(repo: Path, top: str) -> dict[str, Any]:
-    """Parse FaultFlow's machine-readable coverage report into a normalized block."""
-    report_path = (
-        repo / "output" / top / ".faultflow" / "intermediate" / "coverage_report.json"
-    )
+def read_coverage(workdir: Path, top: str) -> dict[str, Any]:
+    """Parse FaultFlow's machine-readable coverage report, written under its
+    working directory ``workdir``, into a normalized block."""
+    output = Path(workdir) / "output" / top
+    report_path = output / ".faultflow" / "intermediate" / "coverage_report.json"
     if not report_path.exists():
         raise FaultFlowError(f"FaultFlow coverage report not found: {report_path}")
     data = json.loads(report_path.read_text(encoding="utf-8"))
@@ -319,10 +310,13 @@ def read_coverage(repo: Path, top: str) -> dict[str, Any]:
         "detected": summary.get("detected"),
         "undetected": summary.get("undetected"),
         "denominator": summary.get("denominator"),
+        "redundant": summary.get("redundant"),
+        "blackbox_unresolved": summary.get("blackbox_unresolved"),
         "excluded_blackbox": summary.get("excluded_blackbox"),
         "blackbox_instances": policy.get("blackbox_instances"),
+        "blackbox_output_values": policy.get("blackbox_output_values"),
         "coverage_json": str(report_path),
-        "coverage_rpt": str(repo / "output" / top / "coverage.rpt"),
+        "coverage_rpt": str(output / "coverage.rpt"),
     }
 
 
@@ -355,5 +349,4 @@ def grade_controller(
             f"FaultFlow grading failed (exit {completed.returncode}). See {bundle / 'run.log'}."
         )
 
-    repo = opts.resolved_repo()
-    return read_coverage(repo, str(config["wrapper_module_name"]))
+    return read_coverage(bundle / RUN_DIRNAME, str(config["wrapper_module_name"]))

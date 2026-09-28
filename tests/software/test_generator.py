@@ -954,7 +954,7 @@ def test_cli_grade_controller_reports_coverage_and_merges_report(
         "coverage_percent": 85.5,
         "detected": 17,
         "denominator": 20,
-        "excluded_blackbox": 3,
+        "blackbox_unresolved": 3,
     }
 
     def fake_run_controller_grading(module_outdir: Path, opts, *, run: bool = True):
@@ -968,7 +968,7 @@ def test_cli_grade_controller_reports_coverage_and_merges_report(
     assert "Controller structural coverage (FaultFlow)" in result.output
     assert "17/20" in result.output
     assert "85.50%" in result.output
-    assert "excluded-blackbox=3" in result.output
+    assert "blackbox-unresolved=3" in result.output
 
     merged = _json.loads((reports_dir / "latest.json").read_text(encoding="utf-8"))
     assert merged.get("controller_grading") == fake_coverage
@@ -1396,13 +1396,9 @@ def test_cli_smoke_faultflow_emit_only(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "faultflow bundle emit (emit-only): PASS" in result.output
 
-    memory_name = "sram_1rw"
-    top = "sram_1rw_mbist"
-    bundle = outdir / "out" / memory_name / "faultflow"
-    assert (bundle / f"{memory_name}_bbox.v").exists()
-    assert (bundle / "synth_collar.ys").exists()
-    assert (bundle / f"{top}.ofs").exists()
-    assert (bundle / "run_faultflow.sh").exists()
+    bundle = outdir / "out" / "sram_1rw" / "faultflow"
+    for name in ("manifest.json", "options.ofs", "run_faultflow.sh", "README.txt"):
+        assert (bundle / name).exists(), f"missing {name}"
 
 
 def test_cli_smoke_march_raw_wrapper_missing_marker_fails(
