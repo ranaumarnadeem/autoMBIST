@@ -603,14 +603,12 @@ class TclShell:
             except (OSError, ValueError):
                 pass
 
-        coverage_percent = coverage.get("coverage_percent") if coverage else None
-        if isinstance(coverage_percent, (int, float)):
-            self._puts(
-                "Controller structural coverage (FaultFlow): "
-                f"{coverage.get('detected')}/{coverage.get('denominator')} ({coverage_percent:.2f}%), "
-                f"excluded-blackbox={coverage.get('excluded_blackbox')}"
-            )
-        return _none_to_empty(coverage_percent)
+        from .reporting import format_controller_coverage
+
+        line = format_controller_coverage(coverage)
+        if line:
+            self._puts(f"Controller structural coverage (FaultFlow): {line}")
+        return _none_to_empty(coverage.get("coverage_percent") if coverage else None)
 
     def _cmd_grade_controller(self, *args: str) -> Any:
         from .faultflow_flow import FaultFlowOptions

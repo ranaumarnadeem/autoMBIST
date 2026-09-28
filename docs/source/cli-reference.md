@@ -143,7 +143,7 @@ them after:
   widths the wrapper actually connects (spare-row address and spare-column
   data widths included, one declaration per physical pin across ports), so
   any downstream synthesis tooling can treat the memory as a boundary without
-  re-deriving it. `grade-controller`'s bundle uses the same stub.
+  re-deriving it. `grade-controller`'s bundle synthesizes with the same stub.
 - With `--test`:
   - `<memory_name>_saboteur.v` — fault-injection wrapper
   - `faults/*.hex` — fault masks (e.g. `sa0_faults.hex`, `sa1_faults.hex`,
@@ -264,7 +264,10 @@ won't include `controller_grading` — that block is merged into
 `grade-controller`/`autombist shell`, if you need it in the same JSON blob).
 
 When `--faultflow` is set, `run` internally calls the same controller-grading flow
-as `grade-controller`, fixed at `--threshold 90.0` and `--max-rounds 20`.
+as `grade-controller`, fixed at `--threshold 90.0` and `--max-rounds 20`. With
+`--test --faultflow`, the report carries both numbers: the array coverage from
+fault injection and the controller coverage, graded on the clean collar (see
+`grade-controller`).
 
 ### Examples
 
@@ -301,7 +304,7 @@ autombist grade-controller [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--out PATH` | `out` | Output directory containing a generated (clean) MBIST wrapper |
+| `--out PATH` | `out` | Output directory containing a generated MBIST wrapper (a `--test` build is graded as its clean collar, see below) |
 | `--faultflow-repo PATH` | none (env var `FAULTFLOW_HOME`) | FaultFlow repo path (or set `FAULTFLOW_HOME`) |
 | `--cell-lib TEXT` | `sky130` | FaultFlow standard-cell library: `sky130` or `osu035` |
 | `--scan-chains INTEGER` | `1` | Number of scan chains for controller grading |
@@ -313,12 +316,35 @@ Like `simulate`, `--out` accepts either a module directory directly or a parent
 directory to auto-resolve.
 
 This command always emits a self-contained, re-runnable bundle under
-`out/<memory_name>/faultflow/` (blackbox stub, Yosys script, FaultFlow `.ofs`,
-`run_faultflow.sh`). Unless `--no-run` is given, it additionally synthesizes the
-collar and runs scan stuck-at ATPG, then reports controller structural coverage
-and merges it into the module's latest simulation report.
+`out/<memory_name>/faultflow/`: a `manifest.json` (the same synthesis plan
+`generate --emit-manifest` writes, with absolute source paths), `options.ofs`
+(the grading options above) and `run_faultflow.sh`. Unless `--no-run` is given,
+it then runs the bundle:
 
-Requires (Linux/WSL only): Yosys, and a built FaultFlow at `--faultflow-repo` (or
+1. FaultFlow's autoMBIST integration synthesizes the design from the manifest:
+   every test instrument on its own, so Yosys can't optimize it into the glue,
+   with the memory kept a blackbox, then splices the blocks into one netlist.
+2. The script checks every memory instance survived synthesis.
+3. FaultFlow inserts scan, runs `scan-check`, and runs scan stuck-at ATPG. The
+   memory's outputs are unknown (X) during a scan test, so a fault testable only
+   by driving or observing the memory is reported as *blackbox-unresolved* and
+   still counts against coverage.
+4. Controller structural coverage is reported and merged into the module's
+   latest simulation report.
+
+Everything a run writes stays inside the bundle (`synth/`, `run/`); nothing is
+written into the FaultFlow checkout. The module directory's own `manifest.json`
+is never touched.
+
+A `--test` build has the fault-injection saboteur in place of the memory. The
+bundle then regenerates the clean collar from the build's config snapshot (same
+algorithm, real memory stub) into `faultflow/clean/` and grades that: the
+controller RTL is identical, and the clean collar is what goes on silicon. That
+is what makes `run --test --faultflow` report array coverage and controller
+coverage side by side.
+
+Requires (Linux/WSL only): Yosys, and a built FaultFlow with its autoMBIST
+integration (`faultflow/integrations/autombist.py`) at `--faultflow-repo` (or
 `$FAULTFLOW_HOME`). FaultFlow is invoked from its own venv.
 
 ### Examples
@@ -330,11 +356,15 @@ autombist grade-controller --out out --no-run     # just emit the bundle
 
 ### Output
 
-- `out/<memory_name>/faultflow/` — the re-runnable bundle (blackbox stub, Yosys
-  script, FaultFlow `.ofs`, `run_faultflow.sh`)
-- With `--run` (default): `controller_grading` merged into
-  `out/<memory_name>/reports/latest.json`, and a terminal line reporting
-  `detected/denominator (coverage%)` plus `excluded_blackbox` count
+- `out/<memory_name>/faultflow/` — the re-runnable bundle (`manifest.json`,
+  `options.ofs`, `run_faultflow.sh`, `README.txt`; plus `clean/` for a `--test`
+  build)
+- With `--run` (default): FaultFlow's synthesis under `faultflow/synth/`, its
+  working directory (campaign database, `output/<top>/coverage.rpt`) under
+  `faultflow/run/`, a `run.log`; `controller_grading` merged into
+  `out/<memory_name>/reports/latest.json` and a CONTROLLER LOGIC section in
+  `report.txt`; and a terminal line reporting
+  `detected/denominator (coverage%), blackbox-unresolved=N`
 - With `--no-run`: only the bundle is emitted; the terminal prints the bundle path
   and the exact command to run it manually on Linux/WSL
   (`FAULTFLOW_HOME=<path> bash <bundle>/run_faultflow.sh`)
@@ -637,8 +667,8 @@ with code 1) line for each stage:
    stuck-at/march-c, transition-up/march-raw, and transition-down/march-raw,
    confirming each `simulate` run completes
 8. If `--faultflow`: emits (but does not run) a FaultFlow controller-grading
-   bundle against a fake repo stub, and checks the blackbox stub, Yosys script,
-   `.ofs`, and `run_faultflow.sh` all exist under `faultflow/`
+   bundle against a fake repo stub, and checks `manifest.json`, `options.ofs`,
+   and `run_faultflow.sh` all exist under `faultflow/`
 
 At the end it prints the workspace path and `[smoke] All checks passed`.
 
@@ -852,7 +882,7 @@ Both `simulate` and `run` write the same structured report via
 | `fail_bitmap` | list[object] | **Opt-in, present only after a functional fail scan** (`run_simulation(fail_scan=True)`): the observation-derived set of failing cells, each `{"addr": int, "bit": int}`, parsed from `FAIL_CELL {json}` lines. Reports every cell that read wrong through the functional port, independent of any injected fault list — the input a redundancy-analysis (BIRA) step consumes. Absent (not `[]`) on ordinary runs, so those reports stay byte-identical. |
 | `junit` | object | Parsed JUnit XML: `path`, `exists`, `summary` (`tests`/`failures`/`errors`/`skipped`/`time_seconds`), `tests` (list), `system_out` (list) |
 | `summary` | string | Rendered human-readable multi-line summary (same text printed to the terminal) |
-| `controller_grading` | object | Only present after `grade-controller`/`run --faultflow` merges it in: FaultFlow's `detected`, `denominator`, `coverage_percent`, `excluded_blackbox` |
+| `controller_grading` | object | Only present after `grade-controller`/`run --faultflow` merges it in: FaultFlow's `detected`, `denominator`, `coverage_percent` (test coverage), `fault_coverage_percent`, `redundant`, `blackbox_unresolved` (testable only through the memory, counted against coverage), `blackbox_instances`, `blackbox_output_values`, and paths to FaultFlow's `coverage_json`/`coverage_rpt` |
 
 `reports/report.txt` is a plain-text rendering of the same report (`render_text_report()`),
 intended for humans rather than tooling.

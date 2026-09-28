@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
+import os
+import shutil
 from pathlib import Path
 
 import pytest
 import yaml
 
-from autombist.faultflow_flow import FaultFlowOptions, grade_controller
+from autombist.faultflow_flow import RUN_DIRNAME, FaultFlowOptions, grade_controller
+from autombist.generator import generate_from_config
 
 
 def _write_module(tmp_path: Path) -> Path:
@@ -42,7 +46,7 @@ def _write_shared_bus_module(tmp_path: Path) -> Path:
     # NOT memory_name (memory_name there names the shared macro TYPE) --
     # regression coverage for controller_sources()'s real pre-existing bug
     # (faultflow_flow.py), which looked for the wrong filename here and would
-    # have made this bundle's synth_collar.ys reference a nonexistent source.
+    # have pointed the bundle's synthesis at a nonexistent source.
     mem_type = "sram_shared"
     wrapper_name = "shared_ctrl"
     module_outdir = tmp_path / "out" / wrapper_name
@@ -83,12 +87,13 @@ def test_grade_controller_emit_only_shared_bus(tmp_path: Path) -> None:
     module_outdir = _write_shared_bus_module(tmp_path)
     result = grade_controller(module_outdir, FaultFlowOptions(repo=_fake_repo(tmp_path)), run=False)
     assert result is None
-    bundle = module_outdir / "faultflow"
-    synth_script = (bundle / "synth_collar.ys").read_text(encoding="utf-8")
+    manifest = json.loads((module_outdir / "faultflow" / "manifest.json").read_text(encoding="utf-8"))
     # Must reference the file generate_from_config actually writes
     # (shared_ctrl_mbist.v), not the pre-fix "sram_shared_mbist.v" guess.
-    assert "shared_ctrl_mbist.v" in synth_script
-    assert "sram_shared_mbist.v" not in synth_script
+    assert manifest["sources"]["wrapper"].endswith("shared_ctrl_mbist.v")
+    assert not any("sram_shared_mbist.v" in json.dumps(i) for i in manifest["instances"])
+    blackboxed = [i["hierarchical_path"] for i in manifest["instances"] if i["hierarchy_hint"] == "blackbox"]
+    assert blackboxed == ["u_mem_bank0", "u_mem_bank1"]
 
 
 def test_grade_controller_emit_only(tmp_path: Path) -> None:
@@ -97,25 +102,88 @@ def test_grade_controller_emit_only(tmp_path: Path) -> None:
     result = grade_controller(module_outdir, FaultFlowOptions(repo=_fake_repo(tmp_path)), run=False)
     assert result is None
     bundle = module_outdir / "faultflow"
-    for name in (
-        "input_demo_8x16_scn4m_bbox.v",
-        "synth_collar.ys",
-        "input_demo_8x16_scn4m_mbist.ofs",
-        "run_faultflow.sh",
-        "README.txt",
-    ):
+    for name in ("manifest.json", "options.ofs", "run_faultflow.sh", "README.txt"):
         assert (bundle / name).exists(), f"missing {name}"
 
 
+# --- the real thing: live Yosys + FaultFlow -----------------------------------
+
+_FAULTFLOW_HOME = os.environ.get("FAULTFLOW_HOME")
+_PORTS = {"clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "we": "we0", "csb": "csb0"}
+_DEDICATED = {"memory_name": "sram_1rw", "wrapper_module_name": "gc_ded_ctrl",
+              "addr_width": 4, "data_width": 4, "we_active_low": True, "ports": _PORTS}
+_CASES = {
+    "dedicated": _DEDICATED,
+    "shared-bus": {**_DEDICATED, "wrapper_module_name": "gc_shb_ctrl", "topology": "shared-bus",
+                   "memories": [{"name": "bank0"}, {"name": "bank1"}]},
+}
+
+
 @pytest.mark.faultflow
-@pytest.mark.skip(
-    reason="not yet implemented -- see test_grade_controller_emit_only for the "
-    "cross-platform coverage this bundle gets today; a real synth + ATPG run needs "
-    "a live FaultFlow checkout with MBIST support, which doesn't exist yet (see "
-    "the faultflow-tool project memory). Was previously a skipif gated on Yosys + "
-    "$FAULTFLOW_HOME whose body was an unconditional pytest.skip() regardless of "
-    "whether that gate passed -- so it never ran in any environment. Track real "
-    "FaultFlow MBIST integration before reviving this."
+@pytest.mark.skipif(
+    not _FAULTFLOW_HOME
+    or not (Path(_FAULTFLOW_HOME) / "faultflow" / "integrations" / "autombist.py").is_file()
+    or shutil.which("yosys") is None,
+    reason="needs $FAULTFLOW_HOME pointing at a built FaultFlow with its autoMBIST "
+    "integration (faultflow/integrations/autombist.py), plus yosys on PATH",
 )
-def test_grade_controller_full_flow() -> None:
-    pass
+@pytest.mark.parametrize("case", _CASES)
+def test_grade_controller_full_flow(tmp_path: Path, case: str) -> None:
+    """Generate a real design, then run the bundle end to end: FaultFlow's
+    manifest synthesis, scan insertion, scan-check and scan stuck-at ATPG."""
+    config = _CASES[case]
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    module_outdir = generate_from_config(config_path, tmp_path / "out").parent
+    repo = Path(_FAULTFLOW_HOME).resolve()
+    top = config["wrapper_module_name"]
+    assert not (repo / "output" / top).exists(), "stale FaultFlow output from an old bundle run"
+
+    coverage = grade_controller(module_outdir, FaultFlowOptions(repo=repo), run=True)
+
+    assert coverage is not None
+    assert 0 < coverage["detected"] <= coverage["denominator"]
+    assert 0 < coverage["coverage_percent"] <= 100
+    # the memory's outputs are unknown in a scan test: some controller faults
+    # are testable only through it, and they stay in the denominator
+    assert coverage["blackbox_unresolved"] > 0
+    memories = ["u_mem_bank0", "u_mem_bank1"] if case == "shared-bus" else ["u_sram"]
+    assert coverage["blackbox_instances"] == memories
+    assert set(coverage["blackbox_output_values"].values()) == {"x"}
+
+    bundle = module_outdir / "faultflow"
+    assert Path(coverage["coverage_json"]).is_relative_to(bundle / RUN_DIRNAME)
+    assert (bundle / "synth" / f"{top}_composed.json").is_file()
+    log = (bundle / "run.log").read_text(encoding="utf-8")
+    assert "scan-check PASS" in log
+    # everything stayed in the bundle
+    assert not (repo / "output" / top).exists()
+
+
+@pytest.mark.faultflow
+@pytest.mark.skipif(
+    not _FAULTFLOW_HOME
+    or not (Path(_FAULTFLOW_HOME) / "faultflow" / "integrations" / "autombist.py").is_file()
+    or shutil.which("yosys") is None,
+    reason="needs $FAULTFLOW_HOME pointing at a built FaultFlow with its autoMBIST "
+    "integration (faultflow/integrations/autombist.py), plus yosys on PATH",
+)
+def test_grade_controller_grades_a_test_build_as_its_clean_collar(tmp_path: Path) -> None:
+    """`run --test --faultflow`: a --test build (saboteur in place of the memory)
+    grades exactly like the clean build of the same design -- same controller,
+    same fault universe, same result."""
+    repo = Path(_FAULTFLOW_HOME).resolve()
+    config = {**_DEDICATED, "wrapper_module_name": "gc_sab_ctrl"}
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    clean_dir = generate_from_config(config_path, tmp_path / "clean").parent
+    test_dir = generate_from_config(
+        config_path, tmp_path / "test", use_saboteur=True, faults=4, fault_seed=1,
+    ).parent
+
+    clean = grade_controller(clean_dir, FaultFlowOptions(repo=repo), run=True)
+    graded = grade_controller(test_dir, FaultFlowOptions(repo=repo), run=True)
+
+    keys = ("detected", "denominator", "redundant", "blackbox_unresolved", "coverage_percent")
+    assert {k: graded[k] for k in keys} == {k: clean[k] for k in keys}

@@ -592,12 +592,34 @@ def test_format_simulation_summary_controller_grading_with_coverage(tmp_path: Pa
         "coverage_percent": 87.5,
         "detected": 35,
         "denominator": 40,
-        "excluded_blackbox": 2,
+        "blackbox_unresolved": 2,
     }
 
     summary = format_simulation_summary(report)
 
-    assert "controller (FaultFlow scan SA): 35/40 (87.50%), excluded-blackbox=2" in summary
+    assert "controller (FaultFlow scan SA): 35/40 (87.50%), blackbox-unresolved=2" in summary
+
+
+def test_render_text_report_shows_controller_grading_next_to_array_coverage(tmp_path: Path) -> None:
+    report = _build_report(tmp_path, fault_type="stuck-at")
+    assert "CONTROLLER LOGIC" not in render_text_report(report, "")
+
+    report["controller_grading"] = {
+        "coverage_percent": 81.47,
+        "detected": 554,
+        "denominator": 680,
+        "redundant": 22,
+        "blackbox_unresolved": 126,
+        "blackbox_instances": ["u_sram"],
+        "coverage_rpt": "/x/faultflow/run/output/top/coverage.rpt",
+    }
+    rendered = render_text_report(report, "")
+
+    assert "CONTROLLER LOGIC (FaultFlow scan stuck-at ATPG, memory blackboxed)" in rendered
+    assert "554/680 (81.47%), blackbox-unresolved=126" in rendered
+    assert "Memory instances:      u_sram" in rendered
+    # the array-test summary still comes first
+    assert rendered.index("SUMMARY") < rendered.index("CONTROLLER LOGIC")
 
 
 def test_format_simulation_summary_controller_grading_none_coverage_not_reported(

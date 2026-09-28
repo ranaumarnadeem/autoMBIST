@@ -270,7 +270,11 @@ def _grade_controller(
     import json
 
     from autombist.faultflow_flow import FaultFlowError
-    from autombist.reporting import merge_faultflow_coverage, write_simulation_report
+    from autombist.reporting import (
+        format_controller_coverage,
+        merge_faultflow_coverage,
+        write_simulation_report,
+    )
     from autombist.runner import run_controller_grading
 
     bundle = module_outdir / "faultflow"
@@ -303,13 +307,9 @@ def _grade_controller(
     if silent:
         return
 
-    coverage_percent = coverage.get("coverage_percent") if coverage else None
-    if isinstance(coverage_percent, (int, float)):
-        typer.echo(
-            "Controller structural coverage (FaultFlow): "
-            f"{coverage.get('detected')}/{coverage.get('denominator')} ({coverage_percent:.2f}%), "
-            f"excluded-blackbox={coverage.get('excluded_blackbox')}"
-        )
+    line = format_controller_coverage(coverage)
+    if line:
+        typer.echo(f"Controller structural coverage (FaultFlow): {line}")
     else:
         typer.echo(f"Controller grading complete. Bundle: {bundle}")
 
@@ -556,12 +556,16 @@ def grade_controller(
     """Grade the MBIST controller logic with FaultFlow (memory macro blackboxed).
 
     Emits a self-contained, re-runnable bundle under out/<memory>/faultflow/
-    (blackbox stub, Yosys script, FaultFlow .ofs, run_faultflow.sh) and, unless
-    --no-run is given, synthesizes the collar and runs scan stuck-at ATPG, then
-    reports controller structural coverage and merges it into the latest report.
+    (manifest.json, options.ofs, run_faultflow.sh) and, unless --no-run is given,
+    runs it: FaultFlow's autoMBIST integration synthesizes every test instrument
+    standalone with the memory blackboxed, then scan insertion, scan-check and
+    scan stuck-at ATPG run with the memory's outputs treated as unknown. Reports
+    controller structural coverage and merges it into the latest report. Every
+    file a run writes stays inside the bundle.
 
-    Requirements (Linux/WSL): Yosys, and a built FaultFlow at --faultflow-repo
-    (or $FAULTFLOW_HOME). FaultFlow is invoked from its own venv.
+    Requirements (Linux/WSL): Yosys, and a built FaultFlow with its autoMBIST
+    integration at --faultflow-repo (or $FAULTFLOW_HOME). FaultFlow is invoked
+    from its own venv.
 
     Examples:
       autombist grade-controller --out out --faultflow-repo ~/faultflow
@@ -1483,10 +1487,8 @@ def smoke(
                 typer.secho(f"[smoke] FAIL: FaultFlow bundle emit failed: {exc}", err=True, fg=typer.colors.RED)
                 raise typer.Exit(code=1)
             bundle = ff_module_outdir / "faultflow"
-            top = str(_default_mbist_config()["wrapper_module_name"])
-            _assert_smoke_file(bundle / f"{memory_name}_bbox.v", "faultflow blackbox stub")
-            _assert_smoke_file(bundle / "synth_collar.ys", "faultflow synth script")
-            _assert_smoke_file(bundle / f"{top}.ofs", "faultflow .ofs")
+            _assert_smoke_file(bundle / "manifest.json", "faultflow synthesis manifest")
+            _assert_smoke_file(bundle / "options.ofs", "faultflow grading options")
             _assert_smoke_file(bundle / "run_faultflow.sh", "faultflow run script")
             typer.echo("[smoke] faultflow bundle emit (emit-only): PASS")
 

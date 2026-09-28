@@ -590,7 +590,7 @@ def test_grade_controller_command_calls_run_controller_grading(
         captured["outdir"] = outdir
         captured["run"] = run
         captured["opts"] = opts
-        return {"coverage_percent": 91.0, "detected": 9, "denominator": 10, "excluded_blackbox": 2}
+        return {"coverage_percent": 91.0, "detected": 9, "denominator": 10, "blackbox_unresolved": 2}
 
     monkeypatch.setattr(tcl_shell_mod, "run_controller_grading", fake_run_controller_grading)
 

@@ -7,16 +7,18 @@ from pathlib import Path
 import pytest
 
 from autombist.faultflow_flow import (
+    RUN_DIRNAME,
     FaultFlowError,
     FaultFlowOptions,
-    build_ofs,
-    build_synth_script,
+    build_grading_options,
     controller_sources,
     emit_bundle,
+    grading_manifest,
     memory_instances,
     read_coverage,
     render_blackbox_stub,
 )
+from autombist.generator import load_config
 from autombist.reporting import merge_faultflow_coverage
 
 
@@ -84,23 +86,6 @@ def test_controller_sources_shared_bus_uses_wrapper_module_name(tmp_path: Path) 
     assert "sram_8x16_mbist.v" not in names
 
 
-def test_build_synth_script_keeps_blackbox_lib(tmp_path: Path) -> None:
-    cfg = _config()
-    script = build_synth_script(
-        sources=controller_sources(tmp_path, cfg),
-        stub=tmp_path / "input_demo_8x16_scn4m_bbox.v",
-        top=cfg["wrapper_module_name"],
-        liberty=tmp_path / "x.lib",
-        json_out=tmp_path / "x.json",
-        gate_out=tmp_path / "x_gate.v",
-    )
-    assert "read_verilog -lib" in script
-    assert "flatten" in script
-    assert "synth -top input_demo_8x16_scn4m_mbist" in script
-    # FaultFlow hard-fails on the $scopeinfo markers flatten leaves behind.
-    assert script.index("delete t:$scopeinfo") < script.index("write_json")
-
-
 def test_memory_instances_follow_topology() -> None:
     assert memory_instances(_config()) == ["u_sram"]
     cfg = _config()
@@ -109,35 +94,49 @@ def test_memory_instances_follow_topology() -> None:
     assert memory_instances(cfg) == ["u_mem_bank0", "u_mem_bank1"]
 
 
-def test_build_ofs_lists_every_shared_bus_memory(tmp_path: Path) -> None:
-    text = build_ofs(
-        netlist=tmp_path / "top.json", top="shared_ctrl", cell_json=tmp_path / "c.json",
-        liberty=tmp_path / "x.lib", verilog_models=tmp_path / "x.v",
-        blackbox_instances=["u_mem_bank0", "u_mem_bank1"], opts=FaultFlowOptions(repo=tmp_path),
-    )
-    cp = configparser.ConfigParser()
-    cp.read_string(text)
-    assert cp["blackbox"]["instances"] == "u_mem_bank0, u_mem_bank1"
+def test_grading_manifest_has_absolute_sources(tmp_path: Path) -> None:
+    # The bundle keeps its own manifest; FaultFlow resolves relative sources
+    # against the manifest's directory, so every path must be absolute.
+    manifest = grading_manifest(_config(), tmp_path)
+    assert manifest["generator"]["command"] == "grade-controller"
+    for path in manifest["sources"].values():
+        assert Path(path).is_absolute()
+    assert Path(manifest["sources"]["wrapper"]) == tmp_path.resolve() / "input_demo_8x16_scn4m_mbist.v"
+    for inst in manifest["instances"]:
+        for src in inst["sources"]:
+            assert Path(src).is_absolute() and Path(src).parent.is_relative_to(tmp_path.resolve())
+    memories = [i for i in manifest["instances"] if i["hierarchy_hint"] == "blackbox"]
+    assert [Path(m["sources"][0]).name for m in memories] == ["input_demo_8x16_scn4m_bbox.v"]
 
 
-def test_build_ofs_roundtrips_through_configparser(tmp_path: Path) -> None:
-    text = build_ofs(
-        netlist=tmp_path / "top.json",
-        top="input_demo_8x16_scn4m_mbist",
-        cell_json=tmp_path / "cells.json",
-        liberty=tmp_path / "x.lib",
-        verilog_models=tmp_path / "x.v",
-        blackbox_instances=["u_sram"],
-        opts=FaultFlowOptions(repo=tmp_path),
-    )
+def test_grading_manifest_lists_every_shared_bus_memory(tmp_path: Path) -> None:
+    cfg = _config()
+    cfg.update(topology="shared-bus", memory_name="sram_8x16", wrapper_module_name="shared_ctrl",
+               memories=[{"name": "bank0"}, {"name": "bank1"}])
+    manifest = grading_manifest(cfg, tmp_path)
+    blackboxed = [i["hierarchical_path"] for i in manifest["instances"] if i["hierarchy_hint"] == "blackbox"]
+    assert blackboxed == ["u_mem_bank0", "u_mem_bank1"]
+    assert manifest["sources"]["wrapper"].endswith("shared_ctrl_mbist.v")
+
+
+def test_grading_manifest_rejects_a_saboteur_build(tmp_path: Path) -> None:
+    cfg = _config()
+    cfg["use_saboteur"] = True
+    with pytest.raises(FaultFlowError, match="--test"):
+        grading_manifest(cfg, tmp_path)
+
+
+def test_build_grading_options_roundtrips_through_configparser() -> None:
     cp = configparser.ConfigParser()
-    cp.read_string(text)  # must parse with FaultFlow's own parser (configparser)
-    assert cp["design"]["top"] == "input_demo_8x16_scn4m_mbist"
-    assert cp["blackbox"]["instances"] == "u_sram"
+    cp.read_string(build_grading_options(FaultFlowOptions(scan_chains=2, threshold=95.0, max_rounds=7)))
+    # [design] and [blackbox] belong to the .ofs FaultFlow's synthesis writes.
+    assert "design" not in cp and "blackbox" not in cp
     assert cp["fault_model"]["model"] == "stuck_at"
     assert cp["fault_model"]["collapsing"] == "false"
     assert cp["atpg"]["tool"] == "native"
-    assert cp["scan"]["chains"] == "1"
+    assert cp["atpg"]["max_rounds"] == "7"
+    assert cp["scan"]["chains"] == "2"
+    assert cp["report"]["threshold"] == "95.0"
     assert cp["simulation"]["unsupported_cells"] == "fail"
 
 
@@ -159,59 +158,109 @@ def test_emit_bundle_writes_all_files(tmp_path: Path) -> None:
     module_outdir = tmp_path / "out" / "input_demo_8x16_scn4m"
     module_outdir.mkdir(parents=True)
     bundle = emit_bundle(module_outdir, _config(), FaultFlowOptions(repo=repo))
-    for name in (
-        "input_demo_8x16_scn4m_bbox.v",
-        "synth_collar.ys",
-        "input_demo_8x16_scn4m_mbist.ofs",
-        "run_faultflow.sh",
-        "README.txt",
-    ):
+    for name in ("manifest.json", "options.ofs", "run_faultflow.sh", "README.txt"):
         assert (bundle / name).exists(), f"missing {name}"
+    # the output directory's own manifest.json (generate --emit-manifest,
+    # wrap-test-access) is never touched
+    assert not (module_outdir / "manifest.json").exists()
     run = (bundle / "run_faultflow.sh").read_text(encoding="utf-8")
-    assert "ff.py sim" in run and "--scan" in run
-    assert "flatten" in run.lower()
+    assert "synthesize_from_manifest" in run
+    steps = ["ff.py\" init", "ff.py\" scan ", "ff.py\" scan-check", "ff.py\" sim "]
+    positions = [run.index(step) for step in steps]
+    assert positions == sorted(positions), "scan-check must run between scan and sim --scan"
+    assert "--scan" in run[positions[-1]:]
+
+
+def test_emit_bundle_grades_the_clean_collar_of_a_test_build(tmp_path: Path) -> None:
+    # A --test build's memory is the fault-injection saboteur (and it has no
+    # memory stub); the bundle regenerates the clean collar from the build's
+    # own config snapshot and grades that, so `run --test --faultflow` works.
+    from autombist.faultflow_flow import CLEAN_DIRNAME
+    from autombist.generator import generate_from_config
+
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(json.dumps(_config()), encoding="utf-8")  # JSON is valid YAML
+    wrapper = generate_from_config(
+        config_path, tmp_path / "out", use_saboteur=True, faults=2, fault_seed=1, algo="march-c",
+    )
+    module_outdir = wrapper.parent
+    assert "saboteur" in wrapper.read_text(encoding="utf-8")
+
+    bundle = emit_bundle(module_outdir, load_config(module_outdir / "config.yml"),
+                         FaultFlowOptions(repo=_fake_repo(tmp_path)))
+
+    clean = bundle / CLEAN_DIRNAME / "input_demo_8x16_scn4m"
+    assert (clean / "input_demo_8x16_scn4m_bbox.v").is_file()
+    assert "saboteur" not in (clean / "input_demo_8x16_scn4m_mbist.v").read_text(encoding="utf-8")
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert Path(manifest["sources"]["wrapper"]) == clean.resolve() / "input_demo_8x16_scn4m_mbist.v"
+    memory = next(i for i in manifest["instances"] if i["hierarchy_hint"] == "blackbox")
+    assert Path(memory["sources"][0]) == clean.resolve() / "input_demo_8x16_scn4m_bbox.v"
+    # the build under test itself is untouched
+    assert "saboteur" in wrapper.read_text(encoding="utf-8")
+
+
+def test_run_script_keeps_faultflow_output_in_the_bundle(tmp_path: Path) -> None:
+    # FaultFlow writes output/<top>/ under its working directory; the run
+    # script must cd into the bundle, never into the FaultFlow checkout.
+    repo = _fake_repo(tmp_path)
+    module_outdir = tmp_path / "out" / "input_demo_8x16_scn4m"
+    module_outdir.mkdir(parents=True)
+    bundle = emit_bundle(module_outdir, _config(), FaultFlowOptions(repo=repo))
+    run = (bundle / "run_faultflow.sh").read_text(encoding="utf-8")
+    assert f'BUNDLE="{bundle}"' in run
+    assert f'RUN="$BUNDLE/{RUN_DIRNAME}"' in run
+    assert 'cd "$RUN"' in run
+    assert 'cd "$FAULTFLOW_HOME"' not in run
+    assert '"$FAULTFLOW_HOME/ff.py"' in run
 
 
 def test_emit_bundle_resolves_to_absolute_paths(tmp_path: Path, monkeypatch) -> None:
-    # run_faultflow.sh cd's into $FAULTFLOW_HOME before invoking ff.py, so the
-    # bundle paths (.ofs, netlist) must be absolute even if --out was relative.
+    # The bundle runs from any working directory, so its paths must be
+    # absolute even if --out was relative.
     repo = _fake_repo(tmp_path)
     monkeypatch.chdir(tmp_path)
     rel_module = Path("out") / "input_demo_8x16_scn4m"
     rel_module.mkdir(parents=True)
     bundle = emit_bundle(rel_module, _config(), FaultFlowOptions(repo=repo))
     assert bundle.is_absolute()
-    cp = configparser.ConfigParser()
-    cp.read_string((bundle / "input_demo_8x16_scn4m_mbist.ofs").read_text())
-    assert Path(cp["design"]["netlist"]).is_absolute()
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert Path(manifest["sources"]["wrapper"]).is_absolute()
+    assert f'BUNDLE="{bundle}"' in (bundle / "run_faultflow.sh").read_text(encoding="utf-8")
 
 
 def test_read_coverage_and_merge(tmp_path: Path) -> None:
-    repo = _fake_repo(tmp_path)
+    workdir = tmp_path / "faultflow" / RUN_DIRNAME
     top = "input_demo_8x16_scn4m_mbist"
-    inter = repo / "output" / top / ".faultflow" / "intermediate"
+    inter = workdir / "output" / top / ".faultflow" / "intermediate"
     inter.mkdir(parents=True)
     (inter / "coverage_report.json").write_text(
         json.dumps(
             {
                 "summary": {
-                    "coverage_percent": 92.5,
-                    "detected": 37,
-                    "denominator": 40,
-                    "excluded_blackbox": 6,
-                    "test_coverage_percent": 92.5,
-                    "fault_coverage_percent": 90.0,
+                    "coverage_percent": 80.29,
+                    "detected": 444,
+                    "denominator": 553,
+                    "redundant": 22,
+                    "blackbox_unresolved": 109,
+                    "excluded_blackbox": 0,
+                    "test_coverage_percent": 80.29,
+                    "fault_coverage_percent": 77.2,
                 },
-                "policy": {"blackbox_instances": ["u_sram"]},
+                "policy": {"blackbox_instances": ["u_sram"], "blackbox_output_values": {"u_sram": "x"}},
             }
         ),
         encoding="utf-8",
     )
-    block = read_coverage(repo, top)
-    assert block["coverage_percent"] == 92.5
-    assert block["detected"] == 37 and block["denominator"] == 40
-    assert block["excluded_blackbox"] == 6
+    block = read_coverage(workdir, top)
+    assert block["coverage_percent"] == 80.29
+    assert block["detected"] == 444 and block["denominator"] == 553
+    assert block["blackbox_unresolved"] == 109 and block["redundant"] == 22
     assert block["blackbox_instances"] == ["u_sram"]
+    assert block["blackbox_output_values"] == {"u_sram": "x"}
+    assert Path(block["coverage_rpt"]) == workdir / "output" / top / "coverage.rpt"
+    with pytest.raises(FaultFlowError, match="not found"):
+        read_coverage(tmp_path / "elsewhere", top)
 
     report = {
         "config": {"memory_name": "m"},
@@ -220,5 +269,5 @@ def test_read_coverage_and_merge(tmp_path: Path) -> None:
         "junit": {"summary": {}},
     }
     merge_faultflow_coverage(report, block)
-    assert report["controller_grading"]["coverage_percent"] == 92.5
-    assert "controller (FaultFlow" in report["summary"]
+    assert report["controller_grading"]["coverage_percent"] == 80.29
+    assert "444/553 (80.29%), blackbox-unresolved=109" in report["summary"]
