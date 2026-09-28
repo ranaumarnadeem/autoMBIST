@@ -1362,4 +1362,11 @@ def generate_from_config(
         stub_path = module_outdir / f"{render_config['memory_name']}_bbox.v"
         stub_path.write_text(render_memory_stub(render_config), encoding="utf-8")
 
+    # A standalone, self-checking testbench (tb/) that runs the BIST from the
+    # wrapper's pins against the memory's own simulation model. Imported here
+    # for the same reason as the stub above.
+    from .testbench import write_bist_testbench
+
+    write_bist_testbench(module_outdir, render_config, wrapper_text)
+
     return wrapper_path

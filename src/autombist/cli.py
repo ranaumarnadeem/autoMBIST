@@ -421,6 +421,9 @@ def generate(
       - <memory_name>_bbox.v (port-only (* blackbox *) SRAM stub -- always
         emitted, for any downstream synthesis tooling that needs to treat the
         memory as a boundary rather than flatten/optimize through it)
+      - tb/tb_<wrapper>.sv + tb/run_tb.sh (a self-checking testbench running
+        the BIST from the wrapper's pins; run it with Icarus Verilog:
+        bash tb/run_tb.sh <memory model .v>)
       - \[with --test] <memory_name>_saboteur.v (fault injection wrapper)
       - \[with --test] faults/*.hex (fault masks)
       - \[with --test] Makefile (for running simulation)
@@ -673,6 +676,7 @@ def _wrap_test_access(
     sources: list[Path] | None, top: str | None, out: Path | None, *,
     onchip_selfrepair: bool, onchip_repair_persistence: bool, onchip_diagnosis: bool,
     config: Path | None, emit_icl: bool, manifest: Path | None = None,
+    bist_cycles: int | None = None,
 ) -> None:
     import json
 
@@ -685,6 +689,7 @@ def _wrap_test_access(
 
     legacy_flags = onchip_selfrepair or onchip_repair_persistence or onchip_diagnosis
     base_manifest = None
+    bist_config: dict | None = None
     if manifest is not None:
         # --manifest alone is enough: everything else defaults from the generate
         # output directory it names, with the memory's blackbox stub standing in
@@ -739,6 +744,7 @@ def _wrap_test_access(
         except ValueError as exc:
             typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
             raise typer.Exit(code=1)
+        bist_config = loaded
     else:
         ta_kwargs = {
             "onchip_selfrepair": onchip_selfrepair,
@@ -772,6 +778,38 @@ def _wrap_test_access(
         icl_path = out / f"{top}_test_access.icl"
         icl_path.write_text(to_icl(graph, root, include_access_link=False), encoding="utf-8")
         typer.echo(f"ICL:              {icl_path}")
+
+    # Running the BIST over JTAG: the PDL procedure, its retargeted vectors and
+    # a self-checking testbench. The run loop's length comes from the config
+    # (the BIST's length for its algorithm and size), or --bist-cycles.
+    from autombist.testbench import TestbenchError, bist_cycle_bound, bist_cycles as bist_length
+
+    try:
+        exact = bist_length(bist_config) if bist_config is not None else None
+        run_cycles = bist_cycles or (bist_cycle_bound(bist_config) if bist_config is not None else None)
+    except (TestbenchError, KeyError, ValueError) as exc:
+        _fail(str(exc))
+    if run_cycles is None:
+        typer.echo(
+            "PDL/JTAG testbench: skipped -- pass --config or --manifest (or --bist-cycles) "
+            "so the BIST's run length is known"
+        )
+    else:
+        from autombist.jtag_bist import write_jtag_bist
+
+        try:
+            files = write_jtag_bist(
+                out, top=top, graph=graph, root=root,
+                wrapped_verilog=inserted_verilog, wrapped_file=verilog_path.name,
+                memory_name=str(bist_config["memory_name"]) if bist_config is not None else None,
+                run_cycles=run_cycles, bist_cycles=exact,
+                icl_file=icl_path.name if icl_path is not None else None,
+            )
+        except (TestbenchError, OSError) as exc:
+            _fail(str(exc))
+        typer.echo(f"PDL (run_mbist):  {files.pdl}")
+        typer.echo(f"JTAG vectors:     {files.vectors}")
+        typer.echo(f"JTAG testbench:   {files.testbench} (run: bash {files.run_script} <memory model .v>)")
 
     if manifest is not None:
         from autombist.manifest import (
@@ -811,6 +849,7 @@ def wrap_test_access_cmd(
     config: Path | None = typer.Option(None, "--config", help="Path to the config.yml snapshot `generate` wrote alongside these sources -- derives the flags above PLUS the wide-port geometry (diag_valid/diag_addr/fuse_row_repair_en/fuse_faulty_row_addr/repair_ports) needed to wrap them. Without it, only the always-1-bit ports are wrapped, exactly as before wide-port support"),
     emit_icl: bool = typer.Option(False, "--emit-icl", help="Also emit an ICL description of the inserted network"),
     manifest: Path | None = typer.Option(None, "--manifest", help="A `generate --emit-manifest` output directory. Records every inserted TAP/SIB/TDR instance in its manifest.json's test_access block, and on its own supplies --source (with the memory's blackbox stub in place of a model), --top, --config and --out"),
+    bist_cycles: int | None = typer.Option(None, "--bist-cycles", min=1, help="Length, in clk cycles, of the BIST run loop in the emitted PDL and JTAG testbench. Default: autoMBIST's bound on the BIST's length for the config's algorithm and size (needs --config or --manifest)"),
 ) -> None:
     """Wrap a generated design's control/status ports with a JTAG/IJTAG test-access
     network, via the external warptap package.
@@ -821,6 +860,14 @@ def wrap_test_access_cmd(
     DIR/test-access, and manifest.json's test_access block lists every instance of the
     wrapped netlist (TAP, one SIB per port, one TDR bit per port bit, the MBIST blocks
     as parameter-specialized modules, the blackboxed memory).
+
+    Alongside the wrapped netlist it writes what runs the BIST over JTAG: an IEEE 1687
+    PDL procedure (<top>_run_mbist.pdl: enter test mode, start the BIST, run clk for
+    its length, read bist_done/bist_fail back, return to idle), that procedure
+    retargeted to TCK-level vectors with the expected TDO (<top>_run_mbist.vec), and a
+    self-checking testbench playing them (tb_<top>_jtag.sv; run with
+    run_tb_jtag.sh <memory model .v>). The run loop's length needs --config or
+    --manifest, or --bist-cycles.
 
     Wraps every control/status port a generated wrapper can expose: the always-1-bit
     ones -- test_mode, bist_start, bist_done, bist_fail, and (with the matching flags)
@@ -858,6 +905,7 @@ def wrap_test_access_cmd(
         config=config,
         emit_icl=emit_icl,
         manifest=manifest,
+        bist_cycles=bist_cycles,
     )
 
 
