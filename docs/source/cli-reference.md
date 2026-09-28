@@ -144,6 +144,9 @@ them after:
   data widths included, one declaration per physical pin across ports), so
   any downstream synthesis tooling can treat the memory as a boundary without
   re-deriving it. `grade-controller`'s bundle synthesizes with the same stub.
+- `tb/tb_<wrapper>.sv` and `tb/run_tb.sh` — a standalone, self-checking
+  testbench that runs the BIST from the wrapper's own pins (see *Running the
+  BIST testbench* below)
 - With `--test`:
   - `<memory_name>_saboteur.v` — fault-injection wrapper
   - `faults/*.hex` — fault masks (e.g. `sa0_faults.hex`, `sa1_faults.hex`,
@@ -164,6 +167,41 @@ them after:
     `module_type` + `parameters` are one synthesized block. See the
     `wrap-test-access` section below for how `--manifest` there later patches
     in the `test_access` block once JTAG/IJTAG wrapping has run.
+
+### Running the BIST testbench
+
+`tb/run_tb.sh` compiles `tb/tb_<wrapper>.sv` with the generated RTL and the
+memory's own simulation model — the one file the output directory can't
+contain, since it ships with the macro (e.g. the Verilog model OpenRAM writes)
+— and runs it with Icarus Verilog. No Python or cocotb is involved:
+
+```bash
+bash out/sram_1rw/tb/run_tb.sh path/to/sram_1rw.v
+# MBIST RESULT: PASS -- 401 clk cycles
+```
+
+The testbench resets the design with `test_mode=1`, sets `bist_start=1` and
+holds it (the controller keeps its result only while start stays high, just
+as a JTAG data-register write holds it), waits for `bist_done`, then checks
+`bist_fail`. Every other input is held idle. It prints one `MBIST RESULT:`
+line — `PASS` with the BIST's length in clk cycles, or `FAIL`/`TIMEOUT` —
+and exits non-zero on anything but a pass. Sources are found relative to the
+script, so the output directory can be moved. `IVERILOG`, `VVP` and `BUILD`
+override the tools and build directory; `MBIST_MAX_CYCLES` overrides the
+timeout.
+
+The timeout is autoMBIST's bound on the BIST's length: per address, a fixed
+number of cycles plus one `read_latency` per read, for every address of every
+memory a shared controller tests (spare rows aren't in the BIST's address
+space), plus a 25% margin. The per-algorithm figures are measured against
+the generated RTL rather than taken from the algorithms' textbook lengths; the
+model runs at most two cycles long and never short, which
+`tests/integration/test_testbench_e2e.py` keeps checking for every algorithm.
+`wrap-test-access` uses the same bound for its PDL's run loop.
+
+For a `--test` build the script also compiles the fault-injection saboteur,
+which wraps the memory model rather than replacing it, so a `FAIL` there is
+the BIST catching the injected faults.
 
 ---
 
@@ -394,6 +432,7 @@ autombist wrap-test-access [OPTIONS]
 | `--config PATH` | none | Path to the `config.yml` snapshot `generate` wrote alongside these sources — derives the three flags above PLUS the wide-port geometry needed to also wrap `diag_valid`/`diag_addr`/`fuse_row_repair_en`/`fuse_faulty_row_addr`/any `repair_ports:`. Without it, only the always-1-bit ports are wrapped. Errors if combined with any of the three flags above (ambiguous — pick one source) |
 | `--emit-icl` | off | Also emit an ICL description of the inserted network |
 | `--manifest PATH` | none | A `generate --emit-manifest` output directory. Records every instance of the wrapped netlist in its `manifest.json`'s `test_access` block, and on its own supplies `--source` (wrapper + instrument RTL, with the memory's `<memory_name>_bbox.v` stub in place of a model), `--top`, `--config` and `--out` |
+| `--bist-cycles INTEGER` | the BIST-length bound for the config | Length, in clk cycles, of the BIST run loop in the emitted PDL and JTAG testbench. Without `--config`/`--manifest` there is no config to compute it from, so the PDL and testbench are skipped unless this is given |
 
 Without `--config`: wraps exactly the always-1-bit control/status ports a
 generated wrapper exposes — `test_mode`, `bist_start`, `bist_done`,
@@ -501,6 +540,12 @@ autombist wrap-test-access --manifest out/sram_1rw --emit-icl
 - `<out>/<top>_test_access.v` — the inserted, synthesizable Verilog
 - `<out>/<top>_test_access.icl` — with `--emit-icl`, the network's IEEE 1687 ICL
   description
+- What runs the BIST over JTAG (see *Running the BIST over JTAG* below):
+  - `<out>/<top>_run_mbist.pdl` — the `run_mbist` IEEE 1687 PDL procedure
+  - `<out>/<top>_run_mbist.vec` — that procedure retargeted to TCK-level
+    vectors, with the expected TDO
+  - `<out>/tb_<top>_jtag.sv` and `<out>/run_tb_jtag.sh` — a self-checking
+    testbench playing the vectors against the wrapped netlist
 - A terminal listing of every wrapped port, in scan-chain order, with its role
   (`control` or `status`)
 - With `--manifest`: that directory's `manifest.json` gets a `test_access`
@@ -527,14 +572,62 @@ autombist wrap-test-access --manifest out/sram_1rw --emit-icl
   The command refuses to write the block if any port's SIB or TDR cells don't
   line up with its role and width.
 
-### What this does not do
+### Running the BIST over JTAG
 
-This command inserts the test-access network and (optionally) describes it in
-ICL. It does not drive it: writing a PDL scenario (which port to write, what
-value, what to read back and when) or emitting SVF/STAPL/STIL patterns from one
-is a separate step, using warptap's own `PDLInterpreter`/`to_svf`/`to_stapl`/
-`to_stil` directly against the `(graph, root)` this command's underlying library
-function (`autombist.testaccess.wrap_test_access`) returns.
+`<top>_run_mbist.pdl` is the procedure a test flow retargets through the ICL
+for a tester:
+
+```
+iProcsForModule sram_1rw_mbist
+
+iProc run_mbist {} {
+    iWrite warptap_instr_test_mode.DR 0b1
+    iApply
+    iWrite warptap_instr_bist_start.DR 0b1
+    iApply
+    iRunLoop 520 -sck clk
+    iRead warptap_instr_bist_done.DR 0b1
+    iApply
+    iRead warptap_instr_bist_fail.DR 0b0
+    iApply
+    iWrite warptap_instr_bist_start.DR 0b0
+    iApply
+    iWrite warptap_instr_test_mode.DR 0b0
+    iApply
+}
+```
+
+It enters test mode, starts the BIST and holds the start, runs the MBIST's
+functional clock `clk` for the BIST's length (`iRunLoop -sck`), reads
+`bist_done=1` and `bist_fail=0` back, and returns the controller to idle. Each
+instrument is addressed by its ICL register (`warptap_instr_<port>.DR`). The
+network sits behind the TAP's data-register path, so EXTEST (`IR 4'b0000` on
+warptap's 4-bit IR) is loaded first; the ICL is emitted without an access
+link, so the PDL's header comment states this rather than the ICL.
+
+`<top>_run_mbist.vec` is that procedure retargeted here, through warptap's own
+PDL interpreter over the inserted network, driven by the same steps the PDL is
+rendered from so the two can't disagree. Each line is one TCK cycle
+(`0 tms tdi tdo read`: `tdo` is checked when `read` is nonzero, the read it
+belongs to) or a run of the functional clock with TCK stopped in
+Run-Test/Idle (`1 n 0 0 0`).
+
+`run_tb_jtag.sh <memory model .v>` plays the vectors against the wrapped
+netlist and checks the result only at TDO, as a tester would; the wrapper's
+pins aren't looked at and its JTAG-only control pins are tied off:
+
+```bash
+bash out/sram_1rw/test-access/run_tb_jtag.sh path/to/sram_1rw.v
+# MBIST RESULT: PASS -- read back through TDO: bist_done = 1, bist_fail = 0 (130 vectors)
+```
+
+A failing read names itself, e.g. `FAIL -- TDO did not read back bist_fail = 0`
+for a defective memory, or `bist_done = 1` for a run loop shorter than the
+BIST. When the wrapped netlist was built from sources that include the memory
+model, the model argument is optional.
+
+Not emitted yet: SVF/STAPL, which can't express the functional-clock run loop,
+and STIL (roadmap milestone), for which warptap's `to_stil` already carries it.
 
 ---
 
