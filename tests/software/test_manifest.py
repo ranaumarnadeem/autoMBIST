@@ -258,6 +258,29 @@ def test_test_access_block_lists_every_wrapped_instance(tmp_path: Path) -> None:
     }]
 
 
+def test_test_access_block_records_the_bsdl_and_the_tap(tmp_path: Path) -> None:
+    tap = {"idcode": "0x5CA1AB1F", "idcode_is_placeholder": False, "instruction_length": 4,
+           "network_access_instruction": "EXTEST", "network_access_opcode": "0000",
+           "bsdl_entity": "x_ctrl", "tck_max_freq_hz": 25e6}
+    manifest = _manifest(_config(), tmp_path)
+
+    block = build_test_access_block(
+        manifest, _enumerated(), [{"name": "bist_start", "role": "control", "width": 1}],
+        output_verilog=tmp_path / "x_test_access.v", output_dir=tmp_path,
+        icl_path=tmp_path / "x.icl", bsdl_path=tmp_path / "x.bsd", tap=tap,
+    )
+
+    assert block["bsdl_path"] == str((tmp_path / "x.bsd").resolve())
+    assert block["icl_path"] == str((tmp_path / "x.icl").resolve())
+    assert block["tap"] == tap
+
+
+def test_test_access_block_without_a_bsdl_or_tap_says_so(tmp_path: Path) -> None:
+    block = _block(tmp_path, _enumerated())
+
+    assert block["bsdl_path"] is None and block["tap"] is None
+
+
 def test_test_access_block_orders_wide_tdr_bits(tmp_path: Path) -> None:
     block = _block(tmp_path, _enumerated(bits=(2, 0, 1)), width=3)
     assert block["instruments"][0]["tdr_bits"] == [f"warptap_sib_bist_start_inst_{k}" for k in range(3)]

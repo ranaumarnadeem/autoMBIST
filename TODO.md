@@ -137,6 +137,21 @@ Yosys and at gate level (BIST passes a good memory, fails a stuck-bit one).
   the JTAG-wrapped netlist, splice, then `sim`/`scan` — plus
   `autombist-generate` CLI and Tcl commands.
 
+### Network access description (BSDL) — autoMBIST side done, three things open
+
+`wrap-test-access --emit-icl` now writes the BSDL its ICL `AccessLink` names, plus
+`--tck-max-freq-mhz`, `--idcode`, and `bsdl_path`/`tap` in the manifest.
+
+- **Raise the `warptap` floor in `pyproject.toml`** once the warptap release that has
+  `bsdl_emit` and `idcode_value` (and the EXTEST-only network select) is tagged. Until
+  then the floor stays 0.0.2 and those options refuse with an upgrade message.
+- **The `AccessLink` lists only the first SIB** in its `ScanInterface`. warptap records
+  it as an open question no readable source settles; nothing here can check it without
+  a real retargeting tool. Our networks have many top-level SIBs.
+- **The BSDL has no independent parser check** (TAP-only, so a strict tool rejects it).
+  Its claims are checked against the real TAP RTL, and the IDCODE is read back from the
+  wrapped netlist (`tests/integration/test_bsdl_e2e.py`).
+
 ## Housekeeping
 
 - ~~`main` significantly behind `dev`~~ / ~~no tagged release since the

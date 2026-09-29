@@ -45,6 +45,8 @@ not a special case of these specific names.
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -206,6 +208,7 @@ def wrap_test_access(
     num_diagnosis_entries: int = 0,
     addr_width: int = 0,
     repair_ports: Sequence[Mapping[str, Any]] = (),
+    idcode_value: int | None = None,
     yosys_command: str | None = None,
 ) -> tuple[str, Any, Any]:
     """Ingest ``sources``, wrap ``top_module``'s real control/status ports
@@ -221,8 +224,15 @@ def wrap_test_access(
     algorithm RTL, repair RTL, the wrapper(s), macro blackboxes/models) -- this
     function does no source discovery of its own, matching
     warptap.pipeline.insert_test_access's own scope.
+
+    ``idcode_value`` is the inserted TAP's IDCODE; ``None`` keeps warptap's own
+    placeholder default. It is validated with warptap's own rule (32 bits, bit 0 set,
+    as IEEE 1149.1 requires) before anything is ingested, and raises ValueError when
+    it fails; it needs a warptap that can set one, else TestAccessUnavailable.
     """
     _require_warptap()
+    if idcode_value is not None:
+        _check_idcode(idcode_value)
     ports = classify_test_access_ports(
         onchip_selfrepair=onchip_selfrepair,
         onchip_repair_persistence=onchip_repair_persistence,
@@ -233,10 +243,15 @@ def wrap_test_access(
         repair_ports=repair_ports,
     )
     specs = build_instrument_specs(ports)
+    extra = {} if idcode_value is None else {"idcode_value": idcode_value}
     try:
         return _warptap_insert_test_access(
-            sources, top_module, specs, yosys_command=yosys_command, use_sv=True,
+            sources, top_module, specs, yosys_command=yosys_command, use_sv=True, **extra,
         )
+    except TypeError as exc:
+        if idcode_value is None or "idcode_value" not in str(exc):
+            raise
+        raise TestAccessUnavailable(_NO_IDCODE_SUPPORT) from exc
     except (IndexError, KeyError, WarptapError) as exc:
         raise ValueError(
             f"warptap insertion failed ({type(exc).__name__}: {exc}) while wrapping "
@@ -245,6 +260,132 @@ def wrap_test_access(
             "netlist (a stale/mismatched --config snapshot, or --source files from a "
             "different generate run)"
         ) from exc
+
+
+DEFAULT_TCK_MAX_FREQ_HZ = 10e6
+"""The maximum TCK frequency the BSDL states when the caller gives none. BSDL requires the
+attribute and nothing in the RTL says what it is, so this is an assumption; the CLI says so
+whenever it applies it."""
+
+_NO_IDCODE_SUPPORT = (
+    "the installed warptap cannot set a TAP IDCODE (no idcode_value support) -- upgrade "
+    "warptap, or omit --idcode to keep its placeholder"
+)
+_NO_BSDL_SUPPORT = (
+    "the installed warptap cannot emit a BSDL whose ICL AccessLink names the network's "
+    "instruction (it has no warptap.bsdl_emit) -- upgrade warptap"
+)
+
+
+def _check_idcode(value: int) -> None:
+    """Raise ValueError unless ``value`` can be a TAP's IDCODE, by warptap's own rule (so
+    autoMBIST doesn't restate it)."""
+    try:
+        from warptap.tap_model import idcode_value_error
+    except ImportError as exc:
+        raise TestAccessUnavailable(_NO_IDCODE_SUPPORT) from exc
+    problem = idcode_value_error(value)
+    if problem is not None:
+        raise ValueError(problem)
+
+
+def bsdl_entity_candidates(top: str) -> list[str]:
+    """The BSDL entity names to try for module ``top``, best first: the module's own name,
+    then that name made a VHDL identifier (letters, digits and single underscores, starting
+    with a letter), then the same with ``_tap`` appended (for a VHDL reserved word). A legal
+    Verilog module name such as ``a__b`` is not a legal BSDL entity name, and the BSDL's
+    entity is only the name of the device the TAP belongs to, so it need not equal the RTL
+    module's."""
+    clean = re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9]", "_", top)).strip("_")
+    if not clean or not clean[0].isalpha():
+        clean = f"tap_{clean}".strip("_")
+    candidates: list[str] = []
+    for name in (top, clean, f"{clean}_tap"):
+        if name not in candidates:
+            candidates.append(name)
+    return candidates
+
+
+@dataclass(frozen=True)
+class TapDescription:
+    """What a tester or retargeting tool needs to reach the network: the ICL (its
+    AccessLink names the TAP instruction that selects the network) and the BSDL that
+    instruction is declared in, both naming ``entity``."""
+
+    icl: str
+    bsdl: str
+    entity: str
+    tck_max_freq_hz: float
+
+
+def describe_test_access_tap(
+    graph: Any,
+    root: Any,
+    *,
+    tck_max_freq_hz: float = DEFAULT_TCK_MAX_FREQ_HZ,
+    idcode_value: int | None = None,
+) -> TapDescription:
+    """Render the ICL (with its AccessLink) and BSDL for the network ``wrap_test_access``
+    inserted. Pass the same ``idcode_value`` given to ``wrap_test_access``: the BSDL states
+    what the hardware was built with. Raises ValueError for an unusable frequency, IDCODE
+    or entity name, and TestAccessUnavailable for a warptap without BSDL support."""
+    _require_warptap()
+    if (
+        isinstance(tck_max_freq_hz, bool)
+        or not isinstance(tck_max_freq_hz, (int, float))
+        or not math.isfinite(tck_max_freq_hz)
+        or tck_max_freq_hz <= 0
+    ):
+        raise ValueError(f"the TCK's maximum frequency must be a finite number > 0 Hz, got {tck_max_freq_hz!r}")
+    if idcode_value is not None:
+        _check_idcode(idcode_value)
+    try:
+        from warptap.bsdl_emit import BsdlEmitError, to_bsdl
+        from warptap.icl_emit import to_icl
+    except ImportError as exc:
+        raise TestAccessUnavailable(_NO_BSDL_SUPPORT) from exc
+
+    extra = {} if idcode_value is None else {"idcode_value": idcode_value}
+    failure: Exception | None = None
+    for entity in bsdl_entity_candidates(root.name):
+        try:
+            bsdl = to_bsdl(entity, tck_max_freq_hz=float(tck_max_freq_hz), **extra)
+        except BsdlEmitError as exc:  # frequency and IDCODE are already checked: the name
+            failure = exc
+            continue
+        except TypeError as exc:
+            raise TestAccessUnavailable(_NO_IDCODE_SUPPORT if extra else _NO_BSDL_SUPPORT) from exc
+        try:
+            icl = to_icl(graph, root, include_access_link=True, bsdl_entity_name=entity)
+        except TypeError as exc:
+            raise TestAccessUnavailable(_NO_BSDL_SUPPORT) from exc
+        return TapDescription(icl=icl, bsdl=bsdl, entity=entity, tck_max_freq_hz=float(tck_max_freq_hz))
+    raise ValueError(f"no BSDL entity name works for module {root.name!r}: {failure}")
+
+
+def tap_facts(
+    *, idcode_value: int | None = None, description: TapDescription | None = None
+) -> dict[str, Any]:
+    """The TAP facts a consumer of the manifest needs, from warptap's own constants: the
+    IDCODE the hardware holds after reset, the instruction register's length and the
+    instruction that selects the IJTAG network. ``description`` adds the BSDL's entity and
+    TCK limit. The network's instruction is EXTEST because that is the opcode the vectors
+    load (``OPCODE_EXTEST``)."""
+    _require_warptap()
+    from warptap.tap_model import DEFAULT_IR_WIDTH, IDCODE_VALUE, OPCODE_EXTEST
+
+    idcode = IDCODE_VALUE if idcode_value is None else idcode_value
+    facts: dict[str, Any] = {
+        "idcode": f"0x{idcode:08X}",
+        "idcode_is_placeholder": idcode == IDCODE_VALUE,
+        "instruction_length": DEFAULT_IR_WIDTH,
+        "network_access_instruction": "EXTEST",
+        "network_access_opcode": format(OPCODE_EXTEST, f"0{DEFAULT_IR_WIDTH}b"),
+    }
+    if description is not None:
+        facts["bsdl_entity"] = description.entity
+        facts["tck_max_freq_hz"] = description.tck_max_freq_hz
+    return facts
 
 
 def _attr_int(value: Any) -> int | None:

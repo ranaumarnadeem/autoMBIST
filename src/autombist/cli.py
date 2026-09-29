@@ -672,13 +672,22 @@ def _is_blackbox_source(path: Path) -> bool:
         return False
 
 
+def _parse_idcode(text: str) -> int:
+    try:
+        return int(text, 0)
+    except ValueError:
+        _fail(f"--idcode {text!r} is not a number -- write it in hex, e.g. 0x5CA1AB1F")
+
+
 def _wrap_test_access(
     sources: list[Path] | None, top: str | None, out: Path | None, *,
     onchip_selfrepair: bool, onchip_repair_persistence: bool, onchip_diagnosis: bool,
     config: Path | None, emit_icl: bool, manifest: Path | None = None,
-    bist_cycles: int | None = None,
+    bist_cycles: int | None = None, tck_max_freq_mhz: float | None = None,
+    idcode: int | None = None,
 ) -> None:
     import json
+    import math
 
     from autombist.testaccess import (
         TestAccessUnavailable,
@@ -686,6 +695,12 @@ def _wrap_test_access(
         test_access_kwargs_from_config,
         wrap_test_access,
     )
+
+    if tck_max_freq_mhz is not None:
+        if not emit_icl:
+            _fail("--tck-max-freq-mhz sets the BSDL's TCK limit and needs --emit-icl, which writes the BSDL")
+        if not math.isfinite(tck_max_freq_mhz) or tck_max_freq_mhz <= 0:
+            _fail(f"--tck-max-freq-mhz must be a finite number > 0, got {tck_max_freq_mhz}")
 
     legacy_flags = onchip_selfrepair or onchip_repair_persistence or onchip_diagnosis
     base_manifest = None
@@ -753,13 +768,26 @@ def _wrap_test_access(
         }
 
     try:
-        inserted_verilog, graph, root = wrap_test_access(sources, top, **ta_kwargs)
+        inserted_verilog, graph, root = wrap_test_access(sources, top, idcode_value=idcode, **ta_kwargs)
     except TestAccessUnavailable as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
     except (FileNotFoundError, OSError, ValueError) as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
+
+    # The ICL and the BSDL its AccessLink points at. Rendered before anything is
+    # written, so a failure leaves no half-written output directory.
+    from autombist.testaccess import DEFAULT_TCK_MAX_FREQ_HZ, describe_test_access_tap, tap_facts
+
+    tck_hz = DEFAULT_TCK_MAX_FREQ_HZ if tck_max_freq_mhz is None else tck_max_freq_mhz * 1e6
+    description = None
+    if emit_icl:
+        try:
+            description = describe_test_access_tap(graph, root, tck_max_freq_hz=tck_hz, idcode_value=idcode)
+        except (TestAccessUnavailable, ValueError) as exc:
+            _fail(str(exc))
+    tap = tap_facts(idcode_value=idcode, description=description)
 
     out.mkdir(parents=True, exist_ok=True)
     verilog_path = out / f"{top}_test_access.v"
@@ -770,14 +798,21 @@ def _wrap_test_access(
     for i, p in enumerate(ports):
         typer.echo(f"  chain[{i}] {p.name} ({p.role}, width={p.width})")
     typer.echo(f"Inserted Verilog: {verilog_path}")
+    typer.echo(
+        f"TAP IDCODE:       {tap['idcode']} "
+        f"({'warptap placeholder -- --idcode sets your own' if tap['idcode_is_placeholder'] else 'set by --idcode'})"
+    )
 
     icl_path: Path | None = None
-    if emit_icl:
-        from warptap.icl_emit import to_icl
-
+    bsdl_path: Path | None = None
+    if description is not None:
         icl_path = out / f"{top}_test_access.icl"
-        icl_path.write_text(to_icl(graph, root, include_access_link=False), encoding="utf-8")
+        icl_path.write_text(description.icl, encoding="utf-8")
+        bsdl_path = out / f"{top}_test_access.bsd"
+        bsdl_path.write_text(description.bsdl, encoding="utf-8")
         typer.echo(f"ICL:              {icl_path}")
+        assumed = " -- assumed, set --tck-max-freq-mhz" if tck_max_freq_mhz is None else ""
+        typer.echo(f"BSDL:             {bsdl_path} (TAP only; TCK max {tck_hz / 1e6:g} MHz{assumed})")
 
     # Running the BIST over JTAG: the PDL procedure, its retargeted vectors and
     # a self-checking testbench. The run loop's length comes from the config
@@ -804,6 +839,7 @@ def _wrap_test_access(
                 memory_name=str(bist_config["memory_name"]) if bist_config is not None else None,
                 run_cycles=run_cycles, bist_cycles=exact,
                 icl_file=icl_path.name if icl_path is not None else None,
+                bsdl_file=bsdl_path.name if bsdl_path is not None else None,
             )
         except (TestbenchError, OSError) as exc:
             _fail(str(exc))
@@ -827,6 +863,7 @@ def _wrap_test_access(
                 base_manifest, enumerated,
                 [{"name": p.name, "role": p.role, "width": p.width} for p in ports],
                 output_verilog=verilog_path, output_dir=out, icl_path=icl_path,
+                bsdl_path=bsdl_path, tap=tap,
             )
             manifest_path = update_manifest_with_test_access(manifest, block)
         except (ManifestError, ValueError, OSError) as exc:
@@ -847,9 +884,11 @@ def wrap_test_access_cmd(
     onchip_repair_persistence: bool = typer.Option(False, "--onchip-repair-persistence", help="Also wrap repair_load/repair_load_done -- must match the redundancy config the sources were generated with. Omit when passing --config"),
     onchip_diagnosis: bool = typer.Option(False, "--onchip-diagnosis", help="Also wrap diag_overflow -- must match the redundancy config the sources were generated with. Omit when passing --config"),
     config: Path | None = typer.Option(None, "--config", help="Path to the config.yml snapshot `generate` wrote alongside these sources -- derives the flags above PLUS the wide-port geometry (diag_valid/diag_addr/fuse_row_repair_en/fuse_faulty_row_addr/repair_ports) needed to wrap them. Without it, only the always-1-bit ports are wrapped, exactly as before wide-port support"),
-    emit_icl: bool = typer.Option(False, "--emit-icl", help="Also emit an ICL description of the inserted network"),
+    emit_icl: bool = typer.Option(False, "--emit-icl", help="Also emit an ICL description of the inserted network, and the BSDL its AccessLink points at (the TAP's instruction set: which instruction selects the network)"),
     manifest: Path | None = typer.Option(None, "--manifest", help="A `generate --emit-manifest` output directory. Records every inserted TAP/SIB/TDR instance in its manifest.json's test_access block, and on its own supplies --source (with the memory's blackbox stub in place of a model), --top, --config and --out"),
     bist_cycles: int | None = typer.Option(None, "--bist-cycles", min=1, help="Length, in clk cycles, of the BIST run loop in the emitted PDL and JTAG testbench. Default: autoMBIST's bound on the BIST's length for the config's algorithm and size (needs --config or --manifest)"),
+    tck_max_freq_mhz: float | None = typer.Option(None, "--tck-max-freq-mhz", help="The TAP's maximum TCK frequency in MHz, stated in the BSDL (needs --emit-icl). Nothing in the RTL says what it is; default 10 MHz is an assumption -- set the real limit"),
+    idcode: str | None = typer.Option(None, "--idcode", help="The TAP's 32-bit IDCODE, e.g. 0x5CA1AB1F (bit 0 must be 1, per IEEE 1149.1). Default: warptap's placeholder, which is not a registered manufacturer ID -- ship your own"),
 ) -> None:
     """Wrap a generated design's control/status ports with a JTAG/IJTAG test-access
     network, via the external warptap package.
@@ -869,6 +908,16 @@ def wrap_test_access_cmd(
     run_tb_jtag.sh <memory model .v>). The run loop's length needs --config or
     --manifest, or --bist-cycles.
 
+    With --emit-icl it also writes the ICL (<top>_test_access.icl) and the BSDL
+    (<top>_test_access.bsd) its AccessLink points at. The AccessLink names the TAP
+    instruction that selects the network (EXTEST), which the BSDL declares, so a
+    retargeting tool needs no out-of-band knowledge to reach it. The BSDL describes the
+    TAP only -- no boundary register -- so a tool that requires one will reject it.
+    --tck-max-freq-mhz and --idcode set the two values it states that the RTL cannot:
+    the TCK limit (default 10 MHz, an assumption) and the IDCODE (default warptap's
+    placeholder). manifest.json's test_access block records both, the ICL and BSDL
+    paths, and the instruction that selects the network.
+
     Wraps every control/status port a generated wrapper can expose: the always-1-bit
     ones -- test_mode, bist_start, bist_done, bist_fail, and (with the matching flags)
     self_repair_start/done/fail/busy, repair_load/repair_load_done, diag_overflow --
@@ -880,8 +929,9 @@ def wrap_test_access_cmd(
     src/autombist/testaccess.py's own module docstring.
 
     Requirements (Linux/WSL): `pip install warptap` (>=0.0.2 -- earlier versions have a
-    real bug on any width>1 port), plus Yosys and Icarus Verilog on PATH (warptap shells
-    out to both; neither is bundled).
+    real bug on any width>1 port; the BSDL and --idcode need a release that has
+    warptap.bsdl_emit and idcode_value support), plus Yosys and Icarus Verilog on PATH
+    (warptap shells out to both; neither is bundled).
 
     Examples:
       autombist wrap-test-access --source out/sram_1rw/sram_1rw_mbist.v \\
@@ -906,6 +956,8 @@ def wrap_test_access_cmd(
         emit_icl=emit_icl,
         manifest=manifest,
         bist_cycles=bist_cycles,
+        tck_max_freq_mhz=tck_max_freq_mhz,
+        idcode=_parse_idcode(idcode) if idcode is not None else None,
     )
 
 

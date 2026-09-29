@@ -425,12 +425,14 @@ autombist wrap-test-access [OPTIONS]
 |---|---|---|
 | `--source PATH` | none (repeatable; required unless `--manifest`) | A source file the design needs — generated wrapper(s), shared algorithm/repair RTL, macro models or blackbox stubs |
 | `--top TEXT` | none (required unless `--manifest`) | Top module name to insert the test-access network into |
-| `--out PATH` | `<manifest dir>/test-access` with `--manifest`, else `out/test-access` | Output directory for the inserted Verilog (and `--emit-icl`'s ICL file) |
+| `--out PATH` | `<manifest dir>/test-access` with `--manifest`, else `out/test-access` | Output directory for the inserted Verilog (and `--emit-icl`'s ICL and BSDL files) |
 | `--onchip-selfrepair` | off | Also wrap `self_repair_start`/`done`/`fail`/`busy`. Omit when passing `--config` |
 | `--onchip-repair-persistence` | off | Also wrap `repair_load`/`repair_load_done`. Omit when passing `--config` |
 | `--onchip-diagnosis` | off | Also wrap `diag_overflow`. Omit when passing `--config` |
 | `--config PATH` | none | Path to the `config.yml` snapshot `generate` wrote alongside these sources — derives the three flags above PLUS the wide-port geometry needed to also wrap `diag_valid`/`diag_addr`/`fuse_row_repair_en`/`fuse_faulty_row_addr`/any `repair_ports:`. Without it, only the always-1-bit ports are wrapped. Errors if combined with any of the three flags above (ambiguous — pick one source) |
-| `--emit-icl` | off | Also emit an ICL description of the inserted network |
+| `--emit-icl` | off | Also emit an ICL description of the inserted network and the BSDL its `AccessLink` points at (see *The ICL, the BSDL and the TAP's IDCODE* below) |
+| `--tck-max-freq-mhz FLOAT` | 10 (an assumption) | The TAP's maximum TCK frequency in MHz, stated in the BSDL. Needs `--emit-icl`. Nothing in the RTL says what it is, so the default is a placeholder assumption the command prints when it applies it — set the real limit |
+| `--idcode TEXT` | warptap's placeholder `0x1A5A5003` | The TAP's 32-bit IDCODE, e.g. `0x5CA1AB1F`; bit 0 must be 1, as IEEE 1149.1 requires. The default is not a registered manufacturer ID (its manufacturer field falls in an assigned JEP106 slot), so ship your own |
 | `--manifest PATH` | none | A `generate --emit-manifest` output directory. Records every instance of the wrapped netlist in its `manifest.json`'s `test_access` block, and on its own supplies `--source` (wrapper + instrument RTL, with the memory's `<memory_name>_bbox.v` stub in place of a model), `--top`, `--config` and `--out` |
 | `--bist-cycles INTEGER` | the BIST-length bound for the config | Length, in clk cycles, of the BIST run loop in the emitted PDL and JTAG testbench. Without `--config`/`--manifest` there is no config to compute it from, so the PDL and testbench are skipped unless this is given |
 
@@ -497,6 +499,14 @@ on PATH. warptap shells out to both; neither is bundled. `>=0.0.2` matters: an
 earlier warptap has a real bug in its vendored ICL parser on any width>1
 instrument, which every wide port above needs.
 
+The BSDL (`--emit-icl`) and `--idcode` need a warptap release that has
+`warptap.bsdl_emit` and `idcode_value` support. With an older one the command
+still wraps, and refuses those two options with a message saying to upgrade.
+That release also fixes the network moving under **any** TAP instruction: before
+it, two all-ones DR scans under IDCODE or BYPASS (a board chain passing through)
+would have driven every control instrument (`test_mode`, `bist_start`, ...) to 1.
+Regenerate any wrapped netlist made with an earlier warptap.
+
 ### Examples
 
 ```bash
@@ -539,7 +549,10 @@ autombist wrap-test-access --manifest out/sram_1rw --emit-icl
 
 - `<out>/<top>_test_access.v` — the inserted, synthesizable Verilog
 - `<out>/<top>_test_access.icl` — with `--emit-icl`, the network's IEEE 1687 ICL
-  description
+  description, including the `AccessLink` that names the TAP instruction
+  selecting the network
+- `<out>/<top>_test_access.bsd` — with `--emit-icl`, the BSDL that instruction is
+  declared in (see below)
 - What runs the BIST over JTAG (see *Running the BIST over JTAG* below):
   - `<out>/<top>_run_mbist.pdl` — the `run_mbist` IEEE 1687 PDL procedure
   - `<out>/<top>_run_mbist.vec` — that procedure retargeted to TCK-level
@@ -569,8 +582,54 @@ autombist wrap-test-access --manifest out/sram_1rw --emit-icl
   - `instruments` — each wrapped port with its role, width, SIB and ordered
     TDR bits
 
+  - `icl_path`, `bsdl_path` — the ICL and BSDL, when `--emit-icl` wrote them
+  - `tap` — what a consumer needs to reach the network without reading the
+    ICL: `idcode` (and `idcode_is_placeholder`), `instruction_length`,
+    `network_access_instruction` (`EXTEST`) and its `network_access_opcode`;
+    with the BSDL, also `bsdl_entity` and `tck_max_freq_hz`. These fields are
+    additive: a reader that doesn't know them can ignore them
+
   The command refuses to write the block if any port's SIB or TDR cells don't
   line up with its role and width.
+
+### The ICL, the BSDL and the TAP's IDCODE
+
+`--emit-icl` writes two files that name each other. The ICL's `AccessLink`
+
+```
+AccessLink warptap_tap Of STD_1149_1_2001 {
+    BSDLEntity sram_1rw_mbist;
+    EXTEST { ScanInterface { warptap_sib_test_mode; } }
+}
+```
+
+binds the network to the TAP and names the instruction (`EXTEST`) that selects
+it; `<top>_test_access.bsd` declares that instruction, the TAP's pins and scan
+attributes, its instruction length, opcodes, capture pattern and IDCODE. A
+retargeting tool therefore needs no out-of-band knowledge of which instruction
+to load. The PDL and vectors still load EXTEST (`IR 4'b0000`) themselves. The
+BSDL's opcode, the instruction length and the IR load in the vectors are
+checked against each other by `tests/integration/test_bsdl_e2e.py`.
+
+What the BSDL is not, stated by the file itself in `DESIGN_WARNING`:
+
+- **TAP only.** No `BOUNDARY_LENGTH` or `BOUNDARY_REGISTER`, so a boundary-scan
+  tool that requires one will reject it. EXTEST here selects the IJTAG network,
+  not a boundary register (a SIB network and a boundary register never share a
+  design in warptap).
+- **Not validated by an independent BSDL parser.** None that accepts a TAP-only
+  file was usable. warptap cross-simulates every claim in it against the real
+  TAP RTL, and autoMBIST's test reads the IDCODE back from the wrapped netlist.
+- **The `AccessLink` names only the chain's first SIB** in its `ScanInterface`.
+  Whether it should name every top-level SIB is an open question in warptap that
+  no readable source settles; it is untested against a real retargeting tool.
+
+The two values the RTL cannot supply are set by option and always printed:
+`--tck-max-freq-mhz` (the BSDL's mandatory TCK limit; the default 10 MHz is an
+assumption, and the command says so) and `--idcode` (warptap's default is a
+placeholder, and the command says so). With `--idcode`, the value is baked into
+the inserted TAP, stated in the BSDL and recorded in the manifest; a value that
+isn't 32 bits or has bit 0 clear is refused before anything is ingested.
 
 ### Running the BIST over JTAG
 
@@ -602,8 +661,10 @@ functional clock `clk` for the BIST's length (`iRunLoop -sck`), reads
 `bist_done=1` and `bist_fail=0` back, and returns the controller to idle. Each
 instrument is addressed by its ICL register (`warptap_instr_<port>.DR`). The
 network sits behind the TAP's data-register path, so EXTEST (`IR 4'b0000` on
-warptap's 4-bit IR) is loaded first; the ICL is emitted without an access
-link, so the PDL's header comment states this rather than the ICL.
+warptap's 4-bit IR) is loaded first. With `--emit-icl` the ICL's `AccessLink`
+names that instruction and the PDL's header points at the ICL and BSDL; a
+tester playing the PDL without a retargeting tool loads EXTEST itself, as the
+header says.
 
 `<top>_run_mbist.vec` is that procedure retargeted here, through warptap's own
 PDL interpreter over the inserted network, driven by the same steps the PDL is
