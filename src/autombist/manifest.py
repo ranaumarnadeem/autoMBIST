@@ -411,6 +411,8 @@ def build_test_access_block(
     output_verilog: Path,
     output_dir: Path,
     icl_path: Path | None = None,
+    bsdl_path: Path | None = None,
+    tap: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The manifest's "test_access" block: a synthesis plan for the JTAG/IJTAG-wrapped
     netlist wrap-test-access wrote, built from ``enumerated``
@@ -488,6 +490,8 @@ def build_test_access_block(
         "output_verilog": str(Path(output_verilog).resolve()),
         "output_dir": str(Path(output_dir).resolve()),
         "icl_path": str(Path(icl_path).resolve()) if icl_path is not None else None,
+        "bsdl_path": str(Path(bsdl_path).resolve()) if bsdl_path is not None else None,
+        "tap": tap,
         "boundary_ports": list(JTAG_BOUNDARY_PORTS),
         "memory_blackboxed": memory_blackboxed,
         "instances": instances,

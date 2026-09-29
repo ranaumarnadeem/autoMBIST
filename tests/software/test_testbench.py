@@ -167,6 +167,23 @@ def test_pdl_addresses_the_icl_registers() -> None:
     assert "iTarget" not in text  # IEEE 1687 has no iTarget; paths are absolute
 
 
+def test_pdl_points_at_the_icl_and_the_bsdl_its_access_link_names() -> None:
+    names = ("test_mode", "bist_start", "bist_done", "bist_fail")
+    kwargs = dict(
+        widths={n: 1 for n in names},
+        register_path={n: f"warptap_instr_{n}.DR" for n in names},
+        ir_width=4, extest=0, bist_cycles=403,
+    )
+    with_bsdl = render_pdl("x_ctrl", run_mbist_steps(520), icl_file="x.icl", bsdl_file="x.bsd", **kwargs)
+    icl_only = render_pdl("x_ctrl", run_mbist_steps(520), icl_file="x.icl", **kwargs)
+
+    assert "# ICL: x.icl" in with_bsdl and "# BSDL: x.bsd" in with_bsdl
+    assert "AccessLink names the TAP instruction" in with_bsdl
+    # what a tester without a retargeting tool needs is still stated
+    assert "EXTEST (IR 4'b0000) loaded first" in with_bsdl
+    assert "BSDL" not in icl_only and "(IR 4'b0000)" in icl_only
+
+
 def test_vector_lines() -> None:
     assert Vector("tck", tms=1, tdi=0, tdo=1, read=2).line() == "0 1 0 1 2"
     assert Vector("sck", count=520).line() == "1 520 0 0 0"

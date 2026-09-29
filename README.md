@@ -175,7 +175,7 @@ above (March X; `checkerboard`, an address-parity test; `march_raw1`, the
 |---|---|
 | `init` | Scaffold a starter `config.yml` + `openram.yml` + `Makefile` |
 | `generate` | Emit MBIST wrapper RTL and a standalone self-checking BIST testbench (+ fault injection with `--test`) |
-| `wrap-test-access` | Wrap the control/status ports with a JTAG/IJTAG network; emits ICL, a `run_mbist` PDL procedure, and a testbench running the BIST over JTAG |
+| `wrap-test-access` | Wrap the control/status ports with a JTAG/IJTAG network; emits ICL and the BSDL its `AccessLink` names, a `run_mbist` PDL procedure, and a testbench running the BIST over JTAG |
 | `simulate` | Run cocotb + Icarus against a `generate`d output directory |
 | `run` | `generate` + `simulate` (+ optional `--faultflow`) in one shot |
 | `test` | Grade a march algorithm or controller FSM against the functional fault DSL |

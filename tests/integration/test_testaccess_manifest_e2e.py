@@ -73,6 +73,7 @@ def test_manifest_lists_every_jtag_instance_and_keeps_the_memory_blackboxed(tmp_
     assert block["memory_blackboxed"] is True
     assert Path(block["output_verilog"]) == module_outdir / "test-access" / f"{top}_test_access.v"
     assert Path(block["icl_path"]).exists()
+    assert Path(block["bsdl_path"]).exists() and block["tap"]["network_access_instruction"] == "EXTEST"
 
     snapshot = yaml.safe_load((module_outdir / "config.yml").read_text(encoding="utf-8"))
     ports = classify_test_access_ports(**test_access_kwargs_from_config(snapshot))
