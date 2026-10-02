@@ -15,7 +15,7 @@ authors:
 version: 0.1.0
 license: Apache-2.0
 repository-code: "https://github.com/ranaumarnadeem/autoMBIST"
-url: "https://github.com/ranaumarnadeem/autoMBIST"
+url: "https://ranaumarnadeem.github.io/autoMBIST/"
 keywords:
   - MBIST
   - memory built-in self-test
@@ -28,4 +28,9 @@ keywords:
   - sky130
   - LibreLane
   - open-source EDA
+  - design for test
+  - DFT
+  - memory testing
+  - SRAM
+  - Verilator
 # doi: 10.5281/zenodo.XXXXXXX   # add after minting a Zenodo DOI from a tagged GitHub release
