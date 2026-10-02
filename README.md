@@ -35,6 +35,8 @@ It generates synthesizable MBIST controllers and repair logic around OpenRAM mem
 - [Fault coverage](#fault-coverage)
 - [Command overview](#command-overview)
 - [Installation](#installation)
+- [Part of an open-source DFT toolchain](#part-of-an-open-source-dft-toolchain)
+- [Citing](#citing)
 - [Further Documentation](#further-documentation)
 
 ## Which subsystem do I want?
@@ -170,7 +172,7 @@ above (March X; `checkerboard`, an address-parity test; `march_raw1`, the
 | `run` | `generate` + `simulate` (+ optional `--faultflow`) in one shot |
 | `test` | Grade a march algorithm or controller FSM against the functional fault DSL |
 | `algo` | Interactive research shell — register algorithms/faults, run campaigns, export reports |
-| `grade-controller` | FaultFlow scan-ATPG structural grading of the controller logic |
+| `grade-controller` | [faultflow](https://github.com/ranaumarnadeem/faultflow) scan-ATPG structural grading of the controller logic |
 | `ram-synth` | Synthesize an SRAM macro through OpenRAM from a config |
 | `harden` | Drive LibreLane RTL-to-GDS hardening |
 | `fix-lef-units` / `macro-signoff` | LibreLane pre-flight and per-macro DRC/LVS signoff helpers |
@@ -207,6 +209,19 @@ python -m pip install -e .
 
 Full details, including the physical/signoff toolchain:
 [Installation](https://ranaumarnadeem.github.io/autoMBIST/installation.html).
+
+## Part of an open-source DFT toolchain
+
+| Tool | What it does |
+|---|---|
+| [faultflow](https://github.com/ranaumarnadeem/faultflow) | ATPG and fault simulation for Yosys gate-level netlists; grades autoMBIST controllers |
+| [OpenTestability](https://github.com/ranaumarnadeem/OpenTestability) | SCOAP/COP testability analysis and test point insertion |
+| **autoMBIST** | MBIST, BIRA and BISR generation for OpenRAM memories |
+| [warptap](https://github.com/ranaumarnadeem/warptap) | IEEE 1149.1 / 1687 test-access insertion, ICL and PDL |
+
+## Citing
+
+If you use autoMBIST in research, use the "Cite this repository" button on GitHub or the metadata in [CITATION.cff](CITATION.cff).
 
 ## Further Documentation
 
