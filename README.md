@@ -4,38 +4,28 @@
 [![Docs](https://github.com/ranaumarnadeem/autoMBIST/actions/workflows/docs.yml/badge.svg)](https://ranaumarnadeem.github.io/autoMBIST/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-**[📖 Full documentation](https://ranaumarnadeem.github.io/autoMBIST/)** — quickstart,
-installation, worked examples, architecture, the CLI reference, the LibreLane
-hardening recipe, and the roadmap. This README is a fast overview; the docs
-site has the detail.
+**autoMBIST is an open-source Memory Built-In Self-Test (MBIST) generator with built-in redundancy analysis (BIRA) and built-in self-repair (BISR) for OpenRAM SRAM macros, taken through full RTL-to-GDS on SkyWater sky130 with LibreLane.**
 
-> Development has been outpacing the docs site above — several features in
-> [CHANGELOG.md](CHANGELOG.md)'s `0.1.0` release (multi-memory/shared-bus
-> topology, JTAG/IJTAG test-access wrapping, FaultFlow controller grading,
-> and more) aren't reflected there yet. Check CHANGELOG.md for the most
-> current picture until the docs site catches up.
+It generates synthesizable MBIST controllers and repair logic around OpenRAM memories, verifies them in cocotb and Icarus Verilog simulation, and doubles as a Verilator-driven research platform for march algorithms and functional memory fault models. It is the open-source counterpart to the memory test and repair features in commercial tools such as Tessent MemoryBIST.
 
-**An open-source, OpenRAM-integrated MBIST + BIRA + BISR generator and
-march-algorithm research platform — proven through open RTL-to-GDS closure on
-sky130.**
+- Documentation: https://ranaumarnadeem.github.io/autoMBIST/
+- ORConf 2026 talk: [AutoMBIST: An Open-Source MBIST, BIRA, and BISR Generator for OpenRAM Memories](https://www.youtube.com/watch?v=QJLI4zm1mHA)
+- License: Apache-2.0
 
-autoMBIST tests memory macros for manufacturing defects, repairs them with
-built-in row/column redundancy, and lets you research the march algorithms
-that do it — all behind one CLI. It's really two independent subsystems:
+### At a glance
 
-1. **MBIST wrapper generation + array fault simulation** (`generate`,
-   `simulate`, `run`) — takes an OpenRAM-style SRAM macro and a config file
-   describing its pins, and emits synthesizable MBIST wrapper + march-controller
-   RTL around it, with stuck-at/transition/inter-port-coupling fault injection
-   through cocotb + Icarus Verilog.
-2. **Functional fault-primitive research platform** (`test`, `algo`) — an
-   independent, Verilator-driven toolchain built around a 43-primitive
-   functional fault-model DSL and a programmable march-algorithm engine, for
-   grading a march algorithm (or a real controller FSM) with no memory macro
-   required.
-
-They don't share RTL, a simulator, or a fault format — see
-[Which subsystem do I want?](#which-subsystem-do-i-want).
+| | |
+|---|---|
+| March algorithms built in | Research engine: MATS+, March X, March Y, March B, March C-, March C+, March SS, March RAW1 (13n diagnostic), checkerboard. RTL generator (`generate --algo`): march-c, march-raw, march-x, mats-plus, checkerboard, march-1r1w, march-2rw |
+| March test synthesizer | Generates a custom march test covering the selected fault primitives |
+| Functional fault primitives | 43 built-in fault types; the shipped fault list grades 41 (see [Fault coverage](#fault-coverage)) |
+| Repair | 2D row + column BIRA/BISR, tester-driven or fully autonomous on-chip; a saved repair signature can be reloaded after reset |
+| Memory ports | 1RW, 1R1W, 2RW |
+| Physical closure | OpenRAM sky130 macros hardened with LibreLane, including self-repair-wrapped macros |
+| System proof | Unmodified PicoRV32 boots and runs a program through self-repaired memory |
+| Test-access | JTAG/IJTAG wrapping via [warptap](https://github.com/ranaumarnadeem/warptap) |
+| Tests | 3,022 tests; CI fails below 90% line coverage |
+| Reproducible env | `nix develop` from a clone (the flake's devShell; CI runs the test suite inside it) |
 
 ## Table of Contents
 
@@ -239,3 +229,5 @@ published docs site:
   zero-to-result walkthrough covering both subsystems and the hardening flow.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development setup, test markers, and
   how to submit changes.
+
+Some features listed in [CHANGELOG.md](CHANGELOG.md) are not yet on the docs site.
