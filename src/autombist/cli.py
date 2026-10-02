@@ -421,9 +421,11 @@ def generate(
       - <memory_name>_bbox.v (port-only (* blackbox *) SRAM stub -- always
         emitted, for any downstream synthesis tooling that needs to treat the
         memory as a boundary rather than flatten/optimize through it)
-      - tb/tb_<wrapper>.sv + tb/run_tb.sh (a self-checking testbench running
-        the BIST from the wrapper's pins; run it with Icarus Verilog:
-        bash tb/run_tb.sh <memory model .v>)
+      - tb/tb_<wrapper>.sv + tb/<memory_name>_model.v + tb/run_tb.sh (a
+        self-checking testbench running the BIST from the wrapper's pins, with a
+        behavioral model of the memory generated from the config; run it with
+        Icarus Verilog: bash tb/run_tb.sh, or pass the macro's own model to
+        replace the generated one: bash tb/run_tb.sh <memory model .v>)
       - \[with --test] <memory_name>_saboteur.v (fault injection wrapper)
       - \[with --test] faults/*.hex (fault masks)
       - \[with --test] Makefile (for running simulation)
@@ -904,9 +906,10 @@ def wrap_test_access_cmd(
     PDL procedure (<top>_run_mbist.pdl: enter test mode, start the BIST, run clk for
     its length, read bist_done/bist_fail back, return to idle), that procedure
     retargeted to TCK-level vectors with the expected TDO (<top>_run_mbist.vec), and a
-    self-checking testbench playing them (tb_<top>_jtag.sv; run with
-    run_tb_jtag.sh <memory model .v>). The run loop's length needs --config or
-    --manifest, or --bist-cycles.
+    self-checking testbench playing them (tb_<top>_jtag.sv; run with run_tb_jtag.sh,
+    which uses the generated tb/<memory>_model.v when it sits next to the output
+    directory, or take the macro's own model as an argument). The run loop's length
+    needs --config or --manifest, or --bist-cycles.
 
     With --emit-icl it also writes the ICL (<top>_test_access.icl) and the BSDL
     (<top>_test_access.bsd) its AccessLink points at. The AccessLink names the TAP

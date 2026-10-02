@@ -63,7 +63,10 @@ def test_generate_writes_a_testbench_for_every_topology(tmp_path: Path, config: 
     # sources are relative to the output directory, so it stays relocatable
     assert '"$OUT/x_ctrl_mbist.v"' in run or '"$OUT/sram_x_mbist.v"' in run
     assert str(tmp_path) not in run
-    assert "usage: $0 <memory model .v>" in run
+    # with no argument the generated behavioral model is used; anything given replaces it
+    model = f"{config['memory_name']}_model.v"
+    assert (tb_dir / model).is_file()
+    assert f'set -- "$HERE/{model}"' in run and "usage:" not in run
 
 
 def test_wrapper_ports_come_from_the_rendered_header(tmp_path: Path) -> None:

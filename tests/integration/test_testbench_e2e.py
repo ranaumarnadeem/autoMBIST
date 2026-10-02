@@ -120,13 +120,13 @@ def test_testbench_times_out(tmp_path: Path) -> None:
     assert "MBIST RESULT: TIMEOUT -- bist_done not set after 10 clk cycles" in run.stdout + run.stderr
 
 
-def test_run_script_needs_the_memory_model(tmp_path: Path) -> None:
+def test_run_script_without_a_model_uses_the_generated_one_and_says_so(tmp_path: Path) -> None:
     module_outdir, _ = _generate(tmp_path, BASE, "march-c")
 
     run = _run_tb(module_outdir)
 
-    assert run.returncode == 2
-    assert "usage:" in run.stderr
+    assert run.returncode == 0 and "MBIST RESULT: PASS" in run.stdout, run.stdout + run.stderr
+    assert "using the generated behavioral model sram_1rw_model.v" in run.stderr
 
 
 def test_testbench_runs_from_a_moved_output_directory(tmp_path: Path) -> None:
