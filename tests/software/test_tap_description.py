@@ -66,10 +66,9 @@ def test_bsdl_entity_candidates_turn_a_module_name_into_vhdl_identifiers(top: st
 
 
 def test_the_access_link_names_the_instruction_the_bsdl_declares() -> None:
+    graph, root = _network("x_ctrl")  # skips here, before any warptap import, when it is absent
     from warptap.bsdl_emit import NETWORK_ACCESS_BSDL_INSTRUCTION
     from warptap.tap_model import DEFAULT_IR_WIDTH, OPCODE_EXTEST
-
-    graph, root = _network("x_ctrl")
 
     described = describe_test_access_tap(graph, root)
 
@@ -139,9 +138,9 @@ def test_a_bad_idcode_is_refused_before_anything_is_rendered_or_ingested(bad) ->
 
 
 def test_the_tap_facts_come_from_warptaps_own_constants() -> None:
+    graph, root = _network("x_ctrl")  # skips here, before any warptap import, when it is absent
     from warptap.tap_model import DEFAULT_IR_WIDTH, IDCODE_VALUE, OPCODE_EXTEST
 
-    graph, root = _network("x_ctrl")
     described = describe_test_access_tap(graph, root, tck_max_freq_hz=25e6)
 
     plain = tap_facts()
