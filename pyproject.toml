@@ -5,11 +5,16 @@ build-backend = "hatchling.build"
 [project]
 name = "autombist"
 version = "0.1.0"
-description = "MBIST wrapper and fault-flow generator"
+description = "Open-source MBIST, BIRA and BISR generator for OpenRAM memories, with a march-algorithm research platform"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+authors = [{ name = "Rana Umar Nadeem" }]
+keywords = [
+  "mbist", "memory-bist", "bist", "bira", "bisr", "march-test", "openram", "sky130",
+  "librelane", "dft", "design-for-test", "eda", "verilog", "open-source-hardware",
+]
 classifiers = [
   "License :: OSI Approved :: Apache Software License",
   "Operating System :: POSIX :: Linux",
@@ -63,6 +68,7 @@ packages = ["src/autombist"]
 [project.urls]
 Homepage = "https://github.com/ranaumarnadeem/autoMBIST"
 Repository = "https://github.com/ranaumarnadeem/autoMBIST"
+Documentation = "https://ranaumarnadeem.github.io/autoMBIST/"
 Issues = "https://github.com/ranaumarnadeem/autoMBIST/issues"
 
 [tool.pytest.ini_options]
