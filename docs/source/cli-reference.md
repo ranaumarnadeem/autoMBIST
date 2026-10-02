@@ -144,9 +144,10 @@ them after:
   data widths included, one declaration per physical pin across ports), so
   any downstream synthesis tooling can treat the memory as a boundary without
   re-deriving it. `grade-controller`'s bundle synthesizes with the same stub.
-- `tb/tb_<wrapper>.sv` and `tb/run_tb.sh` — a standalone, self-checking
-  testbench that runs the BIST from the wrapper's own pins (see *Running the
-  BIST testbench* below)
+- `tb/tb_<wrapper>.sv`, `tb/<memory_name>_model.v` and `tb/run_tb.sh`: a
+  standalone, self-checking testbench that runs the BIST from the wrapper's own
+  pins, with a behavioral model of the memory generated from the config (see
+  *Running the BIST testbench* below)
 - With `--test`:
   - `<memory_name>_saboteur.v` — fault-injection wrapper
   - `faults/*.hex` — fault masks (e.g. `sa0_faults.hex`, `sa1_faults.hex`,
@@ -170,15 +171,36 @@ them after:
 
 ### Running the BIST testbench
 
-`tb/run_tb.sh` compiles `tb/tb_<wrapper>.sv` with the generated RTL and the
-memory's own simulation model — the one file the output directory can't
-contain, since it ships with the macro (e.g. the Verilog model OpenRAM writes)
-— and runs it with Icarus Verilog. No Python or cocotb is involved:
+`tb/run_tb.sh` compiles `tb/tb_<wrapper>.sv` with the generated RTL and a
+model of the memory, and runs it with Icarus Verilog. No Python or cocotb is
+involved. With no arguments it uses the generated model:
+
+```bash
+bash out/sram_1rw/tb/run_tb.sh
+# note: no memory model given; using the generated behavioral model sram_1rw_model.v
+# MBIST RESULT: PASS -- 401 clk cycles
+```
+
+To test against the macro's own simulation model (e.g. the Verilog model
+OpenRAM writes with it), pass that instead; everything on the command line
+replaces the generated model:
 
 ```bash
 bash out/sram_1rw/tb/run_tb.sh path/to/sram_1rw.v
-# MBIST RESULT: PASS -- 401 clk cycles
 ```
+
+`tb/<memory_name>_model.v` is derived from the config, with the same ports,
+names and widths as the blackbox stub the wrapper is synthesized against
+(spare-row addresses, spare-column lanes gated by `spare_wen`, every port of a
+1R1W or 2RW memory, one instance per memory of a shared-bus controller). It is
+idealized: fault-free, no timing checks, contents power up unknown. It follows
+`read_latency`: `0` registers the inputs on the rising edge and does the write
+and read on the falling edge, as OpenRAM's own models do (a multi-port model
+also forwards a write to a concurrent read of the same address, which the
+two-port algorithms expect); `1` or more registers the address and presents
+`dout` one clock later and holds it. A passing run shows the generated RTL and
+a model built to its configuration agree; it says nothing about the macro,
+whose own model you should still run.
 
 The testbench resets the design with `test_mode=1`, sets `bist_start=1` and
 holds it (the controller keeps its result only while start stays high, just
@@ -673,19 +695,24 @@ rendered from so the two can't disagree. Each line is one TCK cycle
 belongs to) or a run of the functional clock with TCK stopped in
 Run-Test/Idle (`1 n 0 0 0`).
 
-`run_tb_jtag.sh <memory model .v>` plays the vectors against the wrapped
-netlist and checks the result only at TDO, as a tester would; the wrapper's
-pins aren't looked at and its JTAG-only control pins are tied off:
+`run_tb_jtag.sh` plays the vectors against the wrapped netlist and checks the
+result only at TDO, as a tester would; the wrapper's pins aren't looked at and
+its JTAG-only control pins are tied off. It needs a model of the memory, which
+it takes from the generated `tb/<memory_name>_model.v` next to the output
+directory (the `--manifest` layout), so it runs with no arguments:
 
 ```bash
-bash out/sram_1rw/test-access/run_tb_jtag.sh path/to/sram_1rw.v
+bash out/sram_1rw/test-access/run_tb_jtag.sh
 # MBIST RESULT: PASS -- read back through TDO: bist_done = 1, bist_fail = 0 (130 vectors)
 ```
 
+Pass the macro's own model to replace it (`run_tb_jtag.sh path/to/sram_1rw.v`).
 A failing read names itself, e.g. `FAIL -- TDO did not read back bist_fail = 0`
 for a defective memory, or `bist_done = 1` for a run loop shorter than the
 BIST. When the wrapped netlist was built from sources that include the memory
-model, the model argument is optional.
+model the argument is optional too; when there is neither that nor a generated
+model next to the output directory (a `--source`/`--top` run elsewhere), the
+script needs the model as its argument.
 
 Not emitted yet: SVF/STAPL, which can't express the functional-clock run loop,
 and STIL (roadmap milestone), for which warptap's `to_stil` already carries it.

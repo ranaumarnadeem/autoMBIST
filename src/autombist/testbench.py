@@ -1,10 +1,11 @@
 """Standalone, self-checking MBIST testbenches written next to the generated RTL.
 
 ``generate`` writes ``tb/``: a Verilog testbench that runs the built-in self-test
-from the wrapper's own pins, and ``run_tb.sh``, which compiles it with Icarus
-Verilog against the generated RTL and the memory's own simulation model -- the
-one file the output directory can't contain, since it ships with the memory
-macro. Running it needs no Python and no cocotb. ``wrap-test-access`` adds the
+from the wrapper's own pins, a behavioral model of the memory derived from the
+config (``<memory>_model.v``, see ``memory_model.py``), and ``run_tb.sh``, which
+compiles them with Icarus Verilog against the generated RTL. The generated model
+is idealized; passing the macro's own simulation model to ``run_tb.sh`` replaces
+it. Running it needs no Python and no cocotb. ``wrap-test-access`` adds the
 JTAG counterpart (``jtag_bist.py``), which runs the same test over the IJTAG
 network and checks the result at TDO, the way a tester does.
 """
@@ -151,6 +152,7 @@ def render_run_script(
     sources: list[str],
     timeout_define: bool = True,
     model_required: bool = True,
+    default_model: str | None = None,
     data_files: tuple[str, ...] = (),
 ) -> str:
     """A bash script compiling ``tb_file`` with ``sources`` (relative to the
@@ -158,6 +160,8 @@ def render_run_script(
     the memory model(s) given on the command line, then running it.
     ``timeout_define`` passes $MBIST_MAX_CYCLES on as the testbench's timeout;
     ``model_required`` makes the memory model a mandatory first argument;
+    ``default_model`` (a file next to the script) is compiled when no argument is
+    given, and everything given replaces it, so the model is no longer required;
     ``data_files`` (next to the script) are copied to where it runs."""
     return _render_template(
         {
@@ -171,6 +175,7 @@ def render_run_script(
             "sources": sources,
             "timeout_define": timeout_define,
             "model_required": model_required,
+            "default_model": default_model,
             "data_files": list(data_files),
         },
         "run_tb_template.sh.j2",
@@ -196,8 +201,11 @@ def _chmod_x(path: Path) -> None:
 
 
 def write_bist_testbench(module_outdir: Path, config: dict[str, Any], wrapper_text: str) -> Path:
-    """Write ``tb/tb_<top>.sv`` and ``tb/run_tb.sh`` into ``module_outdir``;
+    """Write ``tb/tb_<top>.sv``, the memory's behavioral model
+    ``tb/<memory>_model.v`` and ``tb/run_tb.sh`` into ``module_outdir``;
     returns the ``tb/`` directory."""
+    from .memory_model import MemoryModelError, render_memory_model
+
     module_outdir = Path(module_outdir)
     top = str(config["wrapper_module_name"])
     ports = parse_wrapper_ports(wrapper_text, top)
@@ -207,6 +215,11 @@ def write_bist_testbench(module_outdir: Path, config: dict[str, Any], wrapper_te
     (tb_dir / tb_file).write_text(
         render_bist_testbench(config, ports, bist_cycle_bound(config)), encoding="utf-8"
     )
+    model_file = f"{config['memory_name']}_model.v"
+    try:
+        (tb_dir / model_file).write_text(render_memory_model(config), encoding="utf-8")
+    except MemoryModelError as exc:
+        raise TestbenchError(str(exc)) from exc
     run_sh = tb_dir / "run_tb.sh"
     run_sh.write_text(
         render_run_script(
@@ -218,6 +231,7 @@ def write_bist_testbench(module_outdir: Path, config: dict[str, Any], wrapper_te
             tb_file=tb_file,
             out_rel="..",
             sources=rtl_sources(config, module_outdir),
+            default_model=model_file,
         ),
         encoding="utf-8",
     )

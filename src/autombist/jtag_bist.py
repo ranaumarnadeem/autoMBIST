@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .generator import _render_template
-from .testbench import _IDLE_HIGH, TestbenchError, _chmod_x, render_run_script
+from .testbench import _IDLE_HIGH, TB_DIRNAME, TestbenchError, _chmod_x, render_run_script
 
 # The clock the MBIST runs on, as the PDL's iRunLoop -sck names it.
 SYSTEM_CLOCK = "clk"
@@ -330,6 +330,14 @@ def write_jtag_bist(
     model_inside = memory_name is None or re.search(
         rf"^module\s+\\?{re.escape(memory_name)}\b", wrapped_verilog, re.MULTILINE
     ) is not None
+    # `generate` writes a behavioral model of the memory into tb/ next to the output
+    # directory this runs from (wrap-test-access --manifest); use it when no model is
+    # given, so this script runs bare like tb/run_tb.sh does.
+    default_model = None
+    if not model_inside and memory_name is not None:
+        generated = out.parent / TB_DIRNAME / f"{memory_name}_model.v"
+        if generated.is_file():
+            default_model = f"../{TB_DIRNAME}/{generated.name}"
     run_sh = out / "run_tb_jtag.sh"
     run_sh.write_text(
         render_run_script(
@@ -343,6 +351,7 @@ def write_jtag_bist(
             sources=[wrapped_file],
             timeout_define=False,
             model_required=not model_inside,
+            default_model=default_model,
             data_files=(vec.name,),
         ),
         encoding="utf-8",
