@@ -142,9 +142,15 @@ Yosys and at gate level (BIST passes a good memory, fails a stuck-bit one).
 `wrap-test-access --emit-icl` now writes the BSDL its ICL `AccessLink` names, plus
 `--tck-max-freq-mhz`, `--idcode`, and `bsdl_path`/`tap` in the manifest.
 
-- **Raise the `warptap` floor in `pyproject.toml`** once the warptap release that has
-  `bsdl_emit` and `idcode_value` (and the EXTEST-only network select) is tagged. Until
-  then the floor stays 0.0.2 and those options refuse with an upgrade message.
+- **Raise the `warptap` floor in `pyproject.toml` to 0.0.3** once 0.0.3 is published to
+  PyPI (it is tagged on GitHub and has `bsdl_emit`, `idcode_value` and the EXTEST-only
+  network select, but PyPI stops at 0.0.2). Until then the floor stays 0.0.2 so the pip
+  extra still installs, and `--emit-icl`/`--idcode` refuse with an upgrade message.
+- **warptap in CI** is done through the flake: `flake.nix` pins warptap `v0.0.3` as a
+  source input (`flake.lock` fixes the commit), so CI runs the wrap-test-access, BSDL and
+  IDCODE tests instead of skipping them. Move it with
+  `nix flake lock --update-input warptap`. `nix run` (the packaged CLI) still has no
+  warptap, so `wrap-test-access` there reports it is not installed.
 - **The `AccessLink` lists only the first SIB** in its `ScanInterface`. warptap records
   it as an open question no readable source settles; nothing here can check it without
   a real retargeting tool. Our networks have many top-level SIBs.
