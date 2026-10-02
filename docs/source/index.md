@@ -1,3 +1,10 @@
+---
+og:description: "autoMBIST is an open-source Memory Built-In Self-Test (MBIST) generator with built-in redundancy analysis (BIRA) and built-in self-repair (BISR) for OpenRAM SRAM macros, taken through full RTL-to-GDS on SkyWater sky130 with LibreLane."
+myst:
+  html_meta:
+    "description": "autoMBIST is an open-source Memory Built-In Self-Test (MBIST) generator with built-in redundancy analysis (BIRA) and built-in self-repair (BISR) for OpenRAM SRAM macros, taken through full RTL-to-GDS on SkyWater sky130 with LibreLane."
+---
+
 # The autoMBIST Documentation
 
 [autoMBIST](https://github.com/ranaumarnadeem/autoMBIST) is an open-source,
