@@ -37,6 +37,7 @@ It generates synthesizable MBIST controllers and repair logic around OpenRAM mem
 - [Installation](#installation)
 - [Part of an open-source DFT toolchain](#part-of-an-open-source-dft-toolchain)
 - [Citing](#citing)
+- [FAQ](#faq)
 - [Further Documentation](#further-documentation)
 
 ## Which subsystem do I want?
@@ -222,6 +223,23 @@ Full details, including the physical/signoff toolchain:
 ## Citing
 
 If you use autoMBIST in research, use the "Cite this repository" button on GitHub or the metadata in [CITATION.cff](CITATION.cff).
+
+## FAQ
+
+**Is there an open-source MBIST generator for OpenRAM?**
+Yes. autoMBIST takes an OpenRAM-style SRAM macro and a config file describing its pins, and generates the MBIST controller, wrapper and optional BIRA/BISR repair logic as synthesizable Verilog.
+
+**Which march algorithms does autoMBIST support?**
+The research engine has nine built in: MATS+, March X, March Y, March B, March C-, March C+, March SS, March RAW1 and a checkerboard test. The RTL generator (`autombist generate --algo`) emits controllers for march-c, march-raw, march-x, mats-plus, checkerboard, march-1r1w and march-2rw. The march synthesizer can also generate a custom test for a chosen set of fault primitives.
+
+**Can autoMBIST repair faulty memory cells?**
+Yes. It supports 2D row and column redundancy with built-in redundancy analysis and self-repair, either driven by a tester or fully autonomous on chip.
+
+**Does it work with sky130 and LibreLane?**
+Yes. Subsystems built from OpenRAM sky130 macros, including self-repair-wrapped ones, have been hardened through LibreLane. The macros are treated as hard IP at that level; see the signoff caveats above.
+
+**How do I access the MBIST controller from JTAG?**
+With `autombist wrap-test-access`, which uses warptap to wrap the MBIST control and status ports in an IEEE 1687 IJTAG network behind an IEEE 1149.1 TAP. It also writes a PDL procedure that runs the BIST and a testbench that plays it over JTAG.
 
 ## Further Documentation
 
