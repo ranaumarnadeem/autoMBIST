@@ -13,9 +13,19 @@
     # flake.lock pins the exact commit so CI and local dev get the identical closure.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
+
+    # warptap, the optional dependency behind `autombist wrap-test-access` (JTAG/IJTAG
+    # test-access insertion, ICL, BSDL, PDL). Only its source is wanted, not a flake
+    # output: pinned to a release tag, and flake.lock fixes the exact commit, so the
+    # devShell (and so CI) runs the wrap-test-access, BSDL and IDCODE code instead of
+    # skipping it. Move it with `nix flake lock --update-input warptap`.
+    warptap = {
+      url = "github:ranaumarnadeem/warptap/v0.0.3";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, warptap }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -128,14 +138,20 @@
           # own default ($XDG_CACHE_HOME/ccache, ~/.cache/ccache) rather than
           # pinned here, so CI's cache step (test.yml) and local dev share the
           # same convention with nothing to keep in sync.
+          #
+          # warptap is resolved the same way, from its pinned source (the `warptap`
+          # input above) rather than packaged: it has no dependencies of its own, and
+          # its RTL templates sit next to its modules in that tree. It needs yosys and
+          # iverilog on PATH, which this shell already provides.
           shellHook = ''
-            export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
+            export PYTHONPATH="$PWD/src:${warptap}/src''${PYTHONPATH:+:$PYTHONPATH}"
             export OBJCACHE=ccache
             echo "autombist toolchain:"
             echo "  verilator $(verilator --version 2>/dev/null | head -1)"
             echo "  $(iverilog -V 2>/dev/null | head -1)"
             echo "  yosys $(yosys --version 2>/dev/null | head -1)"
             echo "  cocotb $(python -c 'import cocotb; print(cocotb.__version__)' 2>/dev/null)"
+            echo "  warptap $(python -c 'import warptap; print(warptap.__version__)' 2>/dev/null)"
             echo "  ccache $(ccache --version 2>/dev/null | head -1)"
           '';
         };

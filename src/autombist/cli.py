@@ -932,9 +932,9 @@ def wrap_test_access_cmd(
     src/autombist/testaccess.py's own module docstring.
 
     Requirements (Linux/WSL): `pip install warptap` (>=0.0.2 -- earlier versions have a
-    real bug on any width>1 port; the BSDL and --idcode need a release that has
-    warptap.bsdl_emit and idcode_value support), plus Yosys and Icarus Verilog on PATH
-    (warptap shells out to both; neither is bundled).
+    real bug on any width>1 port; the BSDL and --idcode need warptap 0.0.3, which the
+    Nix dev shell pins and PyPI does not have yet), plus Yosys and Icarus Verilog on
+    PATH (warptap shells out to both; neither is bundled).
 
     Examples:
       autombist wrap-test-access --source out/sram_1rw/sram_1rw_mbist.v \\

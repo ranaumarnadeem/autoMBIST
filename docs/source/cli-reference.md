@@ -521,10 +521,11 @@ on PATH. warptap shells out to both; neither is bundled. `>=0.0.2` matters: an
 earlier warptap has a real bug in its vendored ICL parser on any width>1
 instrument, which every wide port above needs.
 
-The BSDL (`--emit-icl`) and `--idcode` need a warptap release that has
-`warptap.bsdl_emit` and `idcode_value` support. With an older one the command
-still wraps, and refuses those two options with a message saying to upgrade.
-That release also fixes the network moving under **any** TAP instruction: before
+The BSDL (`--emit-icl`) and `--idcode` need warptap 0.0.3 or later
+(`warptap.bsdl_emit` and `idcode_value`). The Nix dev shell (`nix develop`, and so
+CI) pins warptap `v0.0.3` in `flake.lock`; PyPI has only 0.0.2 so far. With an
+older warptap the command still wraps, and refuses those two options with a message
+saying to upgrade. 0.0.3 also fixes the network moving under **any** TAP instruction: before
 it, two all-ones DR scans under IDCODE or BYPASS (a board chain passing through)
 would have driven every control instrument (`test_mode`, `bist_start`, ...) to 1.
 Regenerate any wrapped netlist made with an earlier warptap.
