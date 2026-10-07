@@ -453,7 +453,9 @@ autombist wrap-test-access [OPTIONS]
 | `--onchip-diagnosis` | off | Also wrap `diag_overflow`. Omit when passing `--config` |
 | `--config PATH` | none | Path to the `config.yml` snapshot `generate` wrote alongside these sources — derives the three flags above PLUS the wide-port geometry needed to also wrap `diag_valid`/`diag_addr`/`fuse_row_repair_en`/`fuse_faulty_row_addr`/any `repair_ports:`. Without it, only the always-1-bit ports are wrapped. Errors if combined with any of the three flags above (ambiguous — pick one source) |
 | `--emit-icl` | off | Also emit an ICL description of the inserted network and the BSDL its `AccessLink` points at (see *The ICL, the BSDL and the TAP's IDCODE* below) |
-| `--tck-max-freq-mhz FLOAT` | 10 (an assumption) | The TAP's maximum TCK frequency in MHz, stated in the BSDL. Needs `--emit-icl`. Nothing in the RTL says what it is, so the default is a placeholder assumption the command prints when it applies it — set the real limit |
+| `--tck-max-freq-mhz FLOAT` | 10 (an assumption) | The TAP's maximum TCK frequency in MHz, stated in the BSDL; the STIL's TCK period is 1 / this limit. Needs `--emit-icl` or `--emit-stil`. Nothing in the RTL says what it is, so the default is a placeholder assumption the command prints when it applies it. Set the real limit |
+| `--emit-stil` | off | Also write the `run_mbist` pattern as IEEE 1450 STIL for a tester, `<out>/<top>_run_mbist.stil` (see *The run_mbist pattern as STIL* below). Needs the BIST's run length (`--config`, `--manifest` or `--bist-cycles`) and warptap 0.0.4 or later |
+| `--stil-clk-period-ns FLOAT` | 100 (an assumption) | The functional clock's period in the STIL, in ns. Needs `--emit-stil`. Nothing in the RTL says what it may be; the command prints that it applied the default. Set the real one |
 | `--idcode TEXT` | warptap's placeholder `0x1A5A5003` | The TAP's 32-bit IDCODE, e.g. `0x5CA1AB1F`; bit 0 must be 1, as IEEE 1149.1 requires. The default is not a registered manufacturer ID (its manufacturer field falls in an assigned JEP106 slot), so ship your own |
 | `--manifest PATH` | none | A `generate --emit-manifest` output directory. Records every instance of the wrapped netlist in its `manifest.json`'s `test_access` block, and on its own supplies `--source` (wrapper + instrument RTL, with the memory's `<memory_name>_bbox.v` stub in place of a model), `--top`, `--config` and `--out` |
 | `--bist-cycles INTEGER` | the BIST-length bound for the config | Length, in clk cycles, of the BIST run loop in the emitted PDL and JTAG testbench. Without `--config`/`--manifest` there is no config to compute it from, so the PDL and testbench are skipped unless this is given |
@@ -523,7 +525,7 @@ instrument, which every wide port above needs.
 
 The BSDL (`--emit-icl`) and `--idcode` need warptap 0.0.3 or later
 (`warptap.bsdl_emit` and `idcode_value`). The Nix dev shell (`nix develop`, and so
-CI) pins warptap `v0.0.3` in `flake.lock`; PyPI has only 0.0.2 so far. With an
+CI) pins warptap `v0.0.4` in `flake.lock`; PyPI has only 0.0.2 so far. With an
 older warptap the command still wraps, and refuses those two options with a message
 saying to upgrade. 0.0.3 also fixes the network moving under **any** TAP instruction: before
 it, two all-ones DR scans under IDCODE or BYPASS (a board chain passing through)
@@ -582,6 +584,8 @@ autombist wrap-test-access --manifest out/sram_1rw --emit-icl
     vectors, with the expected TDO
   - `<out>/tb_<top>_jtag.sv` and `<out>/run_tb_jtag.sh` — a self-checking
     testbench playing the vectors against the wrapped netlist
+  - `<out>/<top>_run_mbist.stil`: with `--emit-stil`, the same pattern as
+    IEEE 1450 STIL for a tester
 - A terminal listing of every wrapped port, in scan-chain order, with its role
   (`control` or `status`)
 - With `--manifest`: that directory's `manifest.json` gets a `test_access`
@@ -606,6 +610,7 @@ autombist wrap-test-access --manifest out/sram_1rw --emit-icl
     TDR bits
 
   - `icl_path`, `bsdl_path` — the ICL and BSDL, when `--emit-icl` wrote them
+  - `stil`: `{path, tck_period_ns, clk_period_ns}` when `--emit-stil` wrote it, else null
   - `tap` — what a consumer needs to reach the network without reading the
     ICL: `idcode` (and `idcode_is_placeholder`), `instruction_length`,
     `network_access_instruction` (`EXTEST`) and its `network_access_opcode`;
@@ -715,8 +720,51 @@ model the argument is optional too; when there is neither that nor a generated
 model next to the output directory (a `--source`/`--top` run elsewhere), the
 script needs the model as its argument.
 
-Not emitted yet: SVF/STAPL, which can't express the functional-clock run loop,
-and STIL (roadmap milestone), for which warptap's `to_stil` already carries it.
+Not emitted: SVF and STAPL, which can't express the functional-clock run loop.
+STIL can; see below.
+
+### The run_mbist pattern as STIL
+
+`--emit-stil` writes `<top>_run_mbist.stil`, the pattern a tester loads, through
+warptap's `to_stil`. It is built from the same op list as `<top>_run_mbist.vec`,
+behind a reset lead-in:
+
+1. `trst_n` and `rst_n` go low while TCK clocks five times with TMS=1 and `clk`
+   pulses twice. The TAP, its network and the MBIST controller reset on a clock
+   edge while their reset is low, so the lead-in works even where the reset pin is
+   low from the start and never falls.
+2. Both are released and TCK takes the TAP to Run-Test/Idle.
+3. EXTEST is loaded and the `run_mbist` writes, run loop and reads follow, with TDO
+   compared on the two read bits (`bist_done = 1`, `bist_fail = 0`).
+
+Every pin of the wrapped top is declared, one STIL signal per bit of a bus
+(`"func_addr[0]"`): the inputs held at the values the JTAG testbench ties them to
+(the resets and `func_csb` high, the rest low), the outputs other than TDO
+declared `Out` and not compared. The run loop is one `Loop N` statement. In each
+TCK cycle TMS and TDI change at 0, TDO is compared at a quarter period, and TCK
+rises at half and falls at three quarters; `clk` has the same shape in its own
+period. The TCK period is 1 / `--tck-max-freq-mhz` (100 ns by default), so the
+STIL never runs the TAP faster than the BSDL says it can go; `clk`'s is
+`--stil-clk-period-ns` (100 ns by default). Both defaults are assumptions, and the
+command says so when it uses them.
+
+How it is checked (`tests/integration/test_stil_e2e.py`):
+
+- **Replayed against the RTL.** A replay reads the STIL text itself, independently
+  of warptap, and applies every drive at its time and every compare at its strobe to
+  the wrapped netlist in Icarus, from the lead-in on. It passes on a good memory, on
+  a 2RW memory, at `read_latency: 0`, on a self-repair network and on a shared
+  controller.
+- **Its compares are the vectors' compares**, bit for bit and in order.
+- **Controls:** a stuck bit in the memory fails exactly the `bist_fail` compare, and
+  a run loop shorter than the BIST fails the `bist_done` compare.
+- **An independent parser,** Semi-ATE-STIL, accepts its syntax and semantics.
+
+It needs warptap 0.0.4 or later: up to 0.0.3, `to_stil` compared TDO after the rising
+TCK edge, so on warptap's TAP every compare checked the next bit (found by replaying
+such a file against the RTL). With an older warptap, `--emit-stil` refuses rather
+than write that file. The STIL has not been run on a real tester; the replay is a
+simulation of what one would apply.
 
 ---
 

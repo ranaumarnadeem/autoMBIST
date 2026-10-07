@@ -24,7 +24,6 @@ work it describes; don't let it silently go stale the way
 
 ## Not started (scoped as GitHub milestones, no work begun)
 
-- **STIL pattern export** — export MBIST test patterns in STIL format.
 - **ISO 26262 diagnostic-coverage mapping** — map fault-model coverage
   onto ISO 26262's diagnostic-coverage metrics for automotive use.
 - **IEEE 1450.6.2 memory modeling (CTL)** — describe a memory core's test
@@ -142,11 +141,12 @@ Yosys and at gate level (BIST passes a good memory, fails a stuck-bit one).
 `wrap-test-access --emit-icl` now writes the BSDL its ICL `AccessLink` names, plus
 `--tck-max-freq-mhz`, `--idcode`, and `bsdl_path`/`tap` in the manifest.
 
-- **Raise the `warptap` floor in `pyproject.toml` to 0.0.3** once 0.0.3 is published to
-  PyPI (it is tagged on GitHub and has `bsdl_emit`, `idcode_value` and the EXTEST-only
-  network select, but PyPI stops at 0.0.2). Until then the floor stays 0.0.2 so the pip
-  extra still installs, and `--emit-icl`/`--idcode` refuse with an upgrade message.
-- **warptap in CI** is done through the flake: `flake.nix` pins warptap `v0.0.3` as a
+- **Raise the `warptap` floor in `pyproject.toml` to 0.0.4** once 0.0.4 is published to
+  PyPI (it is tagged on GitHub and has `bsdl_emit`, `idcode_value`, the EXTEST-only
+  network select and the corrected STIL strobe, but PyPI stops at 0.0.2). Until then the
+  floor stays 0.0.2 so the pip extra still installs, and `--emit-icl`/`--idcode`/
+  `--emit-stil` refuse with an upgrade message.
+- **warptap in CI** is done through the flake: `flake.nix` pins warptap `v0.0.4` as a
   source input (`flake.lock` fixes the commit), so CI runs the wrap-test-access, BSDL and
   IDCODE tests instead of skipping them. Move it with
   `nix flake lock --update-input warptap`. `nix run` (the packaged CLI) still has no
@@ -157,6 +157,18 @@ Yosys and at gate level (BIST passes a good memory, fails a stuck-bit one).
 - **The BSDL has no independent parser check** (TAP-only, so a strict tool rejects it).
   Its claims are checked against the real TAP RTL, and the IDCODE is read back from the
   wrapped netlist (`tests/integration/test_bsdl_e2e.py`).
+
+### STIL pattern export (milestone 5): done, two things open
+
+`wrap-test-access --emit-stil` writes `<top>_run_mbist.stil` through warptap 0.0.4's
+`to_stil`: a TRST/reset lead-in, the run_mbist TCK cycles and clk run loop, every pin of
+the wrapped top declared. It is replayed against the wrapped RTL (good memory passes, a
+stuck bit fails exactly the bist_fail compare, a short run loop the bist_done one) and
+accepted by Semi-ATE-STIL (`tests/integration/test_stil_e2e.py`).
+
+- **Not run on a real tester.** The replay is a simulation of what one would apply.
+- **CI does not run the Semi-ATE-STIL check:** that parser is not in the Nix devShell, so
+  the test skips there; the replay tests do run in CI.
 
 ## Housekeeping
 
