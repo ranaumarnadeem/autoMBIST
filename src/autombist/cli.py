@@ -686,7 +686,7 @@ def _wrap_test_access(
     onchip_selfrepair: bool, onchip_repair_persistence: bool, onchip_diagnosis: bool,
     config: Path | None, emit_icl: bool, manifest: Path | None = None,
     bist_cycles: int | None = None, tck_max_freq_mhz: float | None = None,
-    idcode: int | None = None,
+    idcode: int | None = None, emit_stil: bool = False, stil_clk_period_ns: float | None = None,
 ) -> None:
     import json
     import math
@@ -699,10 +699,22 @@ def _wrap_test_access(
     )
 
     if tck_max_freq_mhz is not None:
-        if not emit_icl:
-            _fail("--tck-max-freq-mhz sets the BSDL's TCK limit and needs --emit-icl, which writes the BSDL")
+        if not (emit_icl or emit_stil):
+            _fail("--tck-max-freq-mhz sets the BSDL's TCK limit and the STIL's TCK period, and needs "
+                  "--emit-icl or --emit-stil")
         if not math.isfinite(tck_max_freq_mhz) or tck_max_freq_mhz <= 0:
             _fail(f"--tck-max-freq-mhz must be a finite number > 0, got {tck_max_freq_mhz}")
+    if stil_clk_period_ns is not None:
+        if not emit_stil:
+            _fail("--stil-clk-period-ns sets the STIL's clock period and needs --emit-stil")
+        if not math.isfinite(stil_clk_period_ns) or stil_clk_period_ns <= 0:
+            _fail(f"--stil-clk-period-ns must be a finite number > 0, got {stil_clk_period_ns}")
+    if emit_stil:
+        from autombist.jtag_bist import stil_support_problem
+
+        problem = stil_support_problem()
+        if problem is not None:
+            _fail(problem)
 
     legacy_flags = onchip_selfrepair or onchip_repair_persistence or onchip_diagnosis
     base_manifest = None
@@ -730,6 +742,8 @@ def _wrap_test_access(
     if not sources or top is None:
         _fail("--source and --top are required unless --manifest is given")
     out = out or Path("out/test-access")
+    if emit_stil and config is None and bist_cycles is None:
+        _fail("--emit-stil needs the BIST's run length: pass --config or --manifest, or --bist-cycles")
 
     if config is not None:
         if onchip_selfrepair or onchip_repair_persistence or onchip_diagnosis:
@@ -826,14 +840,21 @@ def _wrap_test_access(
         run_cycles = bist_cycles or (bist_cycle_bound(bist_config) if bist_config is not None else None)
     except (TestbenchError, KeyError, ValueError) as exc:
         _fail(str(exc))
+    stil_record: dict | None = None
     if run_cycles is None:
         typer.echo(
             "PDL/JTAG testbench: skipped -- pass --config or --manifest (or --bist-cycles) "
             "so the BIST's run length is known"
         )
     else:
-        from autombist.jtag_bist import write_jtag_bist
+        from autombist.jtag_bist import DEFAULT_STIL_CLK_PERIOD_NS, StilTiming, write_jtag_bist
 
+        # The STIL's TCK period is the BSDL's TCK limit, so the two can't disagree.
+        stil = (
+            StilTiming(tck_period_ns=1e9 / tck_hz,
+                       clk_period_ns=stil_clk_period_ns or DEFAULT_STIL_CLK_PERIOD_NS)
+            if emit_stil else None
+        )
         try:
             files = write_jtag_bist(
                 out, top=top, graph=graph, root=root,
@@ -842,12 +863,21 @@ def _wrap_test_access(
                 run_cycles=run_cycles, bist_cycles=exact,
                 icl_file=icl_path.name if icl_path is not None else None,
                 bsdl_file=bsdl_path.name if bsdl_path is not None else None,
+                stil=stil,
             )
         except (TestbenchError, OSError) as exc:
             _fail(str(exc))
         typer.echo(f"PDL (run_mbist):  {files.pdl}")
         typer.echo(f"JTAG vectors:     {files.vectors}")
-        typer.echo(f"JTAG testbench:   {files.testbench} (run: bash {files.run_script} <memory model .v>)")
+        typer.echo(f"JTAG testbench:   {files.testbench} (run: bash {files.run_script} [memory model .v])")
+        if files.stil is not None:
+            assumed = [flag for flag, given in (("--tck-max-freq-mhz", tck_max_freq_mhz),
+                                                ("--stil-clk-period-ns", stil_clk_period_ns)) if given is None]
+            note = f" -- assumed, set {' / '.join(assumed)}" if assumed else ""
+            typer.echo(f"STIL (run_mbist): {files.stil} (TCK {stil.tck_period_ns:g} ns, "
+                       f"clk {stil.clk_period_ns:g} ns{note})")
+            stil_record = {"path": str(files.stil.resolve()),
+                           "tck_period_ns": stil.tck_period_ns, "clk_period_ns": stil.clk_period_ns}
 
     if manifest is not None:
         from autombist.manifest import (
@@ -865,7 +895,7 @@ def _wrap_test_access(
                 base_manifest, enumerated,
                 [{"name": p.name, "role": p.role, "width": p.width} for p in ports],
                 output_verilog=verilog_path, output_dir=out, icl_path=icl_path,
-                bsdl_path=bsdl_path, tap=tap,
+                bsdl_path=bsdl_path, tap=tap, stil=stil_record,
             )
             manifest_path = update_manifest_with_test_access(manifest, block)
         except (ManifestError, ValueError, OSError) as exc:
@@ -889,8 +919,10 @@ def wrap_test_access_cmd(
     emit_icl: bool = typer.Option(False, "--emit-icl", help="Also emit an ICL description of the inserted network, and the BSDL its AccessLink points at (the TAP's instruction set: which instruction selects the network)"),
     manifest: Path | None = typer.Option(None, "--manifest", help="A `generate --emit-manifest` output directory. Records every inserted TAP/SIB/TDR instance in its manifest.json's test_access block, and on its own supplies --source (with the memory's blackbox stub in place of a model), --top, --config and --out"),
     bist_cycles: int | None = typer.Option(None, "--bist-cycles", min=1, help="Length, in clk cycles, of the BIST run loop in the emitted PDL and JTAG testbench. Default: autoMBIST's bound on the BIST's length for the config's algorithm and size (needs --config or --manifest)"),
-    tck_max_freq_mhz: float | None = typer.Option(None, "--tck-max-freq-mhz", help="The TAP's maximum TCK frequency in MHz, stated in the BSDL (needs --emit-icl). Nothing in the RTL says what it is; default 10 MHz is an assumption -- set the real limit"),
+    tck_max_freq_mhz: float | None = typer.Option(None, "--tck-max-freq-mhz", help="The TAP's maximum TCK frequency in MHz, stated in the BSDL and used as the STIL's TCK period (needs --emit-icl or --emit-stil). Nothing in the RTL says what it is; default 10 MHz is an assumption -- set the real limit"),
     idcode: str | None = typer.Option(None, "--idcode", help="The TAP's 32-bit IDCODE, e.g. 0x5CA1AB1F (bit 0 must be 1, per IEEE 1149.1). Default: warptap's placeholder, which is not a registered manufacturer ID -- ship your own"),
+    emit_stil: bool = typer.Option(False, "--emit-stil", help="Also write the run_mbist pattern as IEEE 1450 STIL for a tester (<top>_run_mbist.stil): a TRST/reset lead-in, then the same TCK cycles and clk run loop as the JTAG vectors, every pin of the wrapped top declared. Needs the BIST's run length (--config, --manifest or --bist-cycles) and warptap 0.0.4 or later"),
+    stil_clk_period_ns: float | None = typer.Option(None, "--stil-clk-period-ns", help="The functional clock's period in the STIL, in ns (needs --emit-stil). Nothing in the RTL says what it may be; default 100 ns is an assumption -- set the real one"),
 ) -> None:
     """Wrap a generated design's control/status ports with a JTAG/IJTAG test-access
     network, via the external warptap package.
@@ -921,6 +953,14 @@ def wrap_test_access_cmd(
     placeholder). manifest.json's test_access block records both, the ICL and BSDL
     paths, and the instruction that selects the network.
 
+    With --emit-stil it also writes the same pattern as IEEE 1450 STIL for a tester
+    (<top>_run_mbist.stil), through warptap's to_stil: TRST and rst_n asserted while TCK
+    and clk run, then released, then the TCK cycles and clk run loop of the vectors
+    above, with every pin of the wrapped top declared (inputs held at their idle
+    values, outputs other than TDO not compared). Its TCK period is 1 / the
+    --tck-max-freq-mhz limit (default 100 ns), and --stil-clk-period-ns sets clk's
+    (default 100 ns); both defaults are assumptions, and the command says so.
+
     Wraps every control/status port a generated wrapper can expose: the always-1-bit
     ones -- test_mode, bist_start, bist_done, bist_fail, and (with the matching flags)
     self_repair_start/done/fail/busy, repair_load/repair_load_done, diag_overflow --
@@ -932,8 +972,8 @@ def wrap_test_access_cmd(
     src/autombist/testaccess.py's own module docstring.
 
     Requirements (Linux/WSL): `pip install warptap` (>=0.0.2 -- earlier versions have a
-    real bug on any width>1 port; the BSDL and --idcode need warptap 0.0.3, which the
-    Nix dev shell pins and PyPI does not have yet), plus Yosys and Icarus Verilog on
+    real bug on any width>1 port; the BSDL and --idcode need warptap 0.0.3 and --emit-stil
+    0.0.4, which the Nix dev shell pins and PyPI does not have yet), plus Yosys and Icarus Verilog on
     PATH (warptap shells out to both; neither is bundled).
 
     Examples:
@@ -961,6 +1001,8 @@ def wrap_test_access_cmd(
         bist_cycles=bist_cycles,
         tck_max_freq_mhz=tck_max_freq_mhz,
         idcode=_parse_idcode(idcode) if idcode is not None else None,
+        emit_stil=emit_stil,
+        stil_clk_period_ns=stil_clk_period_ns,
     )
 
 

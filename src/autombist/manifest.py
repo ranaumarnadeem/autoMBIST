@@ -413,6 +413,7 @@ def build_test_access_block(
     icl_path: Path | None = None,
     bsdl_path: Path | None = None,
     tap: dict[str, Any] | None = None,
+    stil: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The manifest's "test_access" block: a synthesis plan for the JTAG/IJTAG-wrapped
     netlist wrap-test-access wrote, built from ``enumerated``
@@ -492,6 +493,8 @@ def build_test_access_block(
         "icl_path": str(Path(icl_path).resolve()) if icl_path is not None else None,
         "bsdl_path": str(Path(bsdl_path).resolve()) if bsdl_path is not None else None,
         "tap": tap,
+        # the run_mbist STIL ({path, tck_period_ns, clk_period_ns}) when --emit-stil wrote it
+        "stil": stil,
         "boundary_ports": list(JTAG_BOUNDARY_PORTS),
         "memory_blackboxed": memory_blackboxed,
         "instances": instances,

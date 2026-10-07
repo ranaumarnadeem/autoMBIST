@@ -1,11 +1,12 @@
 """Run the MBIST over JTAG on a design ``wrap-test-access`` wrapped: an IEEE 1687
-PDL procedure, its retargeting to TCK-level vectors, and a self-checking
-testbench that plays those vectors.
+PDL procedure, its retargeting to TCK-level vectors, a self-checking testbench
+that plays those vectors, and the same pattern as IEEE 1450 STIL for a tester.
 
 The procedure (:data:`RUN_MBIST`) is written once, as plain data. The PDL text
 is rendered from it -- the deliverable a test flow retargets through the ICL
 for a tester -- and the same steps drive warptap's own PDL interpreter over the
-inserted IJTAG network to produce the vectors, so the two can't disagree. Each
+inserted IJTAG network to produce one op list (:func:`run_mbist_ops`), from which
+both the vectors and the STIL are written, so none of them can disagree. Each
 vector is one TCK cycle (TMS, TDI, the expected TDO and whether it's checked)
 or a run of the functional clock (the PDL's ``iRunLoop -sck``). The testbench
 checks the MBIST's result only through TDO, as a tester would.
@@ -140,15 +141,13 @@ class Vector:
         return f"0 {self.tms} {self.tdi} {self.tdo} {self.read}"
 
 
-def retarget(graph: Any, root: Any, steps: list[PdlStep], *, ir_width: int, extest: int) -> list[Vector]:
-    """Retarget ``steps`` to vectors through the inserted network (warptap's
-    ``PDLInterpreter`` over ``graph``/``root``), starting and ending in
-    Run-Test/Idle with EXTEST loaded first. Read ``k`` (1-based, in step order)
-    marks the TDO bits it checks with ``read = k``."""
+def run_mbist_ops(graph: Any, root: Any, steps: list[PdlStep], *, ir_width: int, extest: int) -> list[Any]:
+    """``steps`` retargeted through the inserted network (warptap's ``PDLInterpreter``
+    over ``graph``/``root``) as warptap TAP ops, starting and ending in Run-Test/Idle
+    with EXTEST loaded first. The vectors and the STIL are both written from this."""
     from warptap.pdl_interpreter import PDLInterpreter
-    from warptap.tap_fsm import TapState, next_state
-    from warptap.tap_ir import GotoState, PulsePin, Runtest, ShiftDR, ShiftIR, bits_from_int
-    from warptap.tap_ir_play import navigation_tms, shift_tms
+    from warptap.tap_fsm import TapState
+    from warptap.tap_ir import GotoState, ShiftIR
 
     pdl = PDLInterpreter(graph, root)
     for step in steps:
@@ -162,12 +161,27 @@ def retarget(graph: Any, root: Any, steps: list[PdlStep], *, ir_width: int, exte
             pdl.iApply()
         elif step.kind == "runloop":
             pdl.iRunLoop(step.count, sck_port=SYSTEM_CLOCK)
-    ops = [
+    return [
         GotoState(TapState.SHIFT_IR),
         ShiftIR(ir_width, tdi=extest),
         GotoState(TapState.RUN_TEST_IDLE),
         *pdl.program,
     ]
+
+
+def retarget(graph: Any, root: Any, steps: list[PdlStep], *, ir_width: int, extest: int) -> list[Vector]:
+    """Retarget ``steps`` to vectors through the inserted network, starting and
+    ending in Run-Test/Idle with EXTEST loaded first. Read ``k`` (1-based, in step
+    order) marks the TDO bits it checks with ``read = k``."""
+    return vectors_from_ops(run_mbist_ops(graph, root, steps, ir_width=ir_width, extest=extest), steps)
+
+
+def vectors_from_ops(ops: list[Any], steps: list[PdlStep]) -> list[Vector]:
+    """One vector per TCK cycle of ``ops`` (from :func:`run_mbist_ops`), and one per
+    run of the functional clock."""
+    from warptap.tap_fsm import TapState, next_state
+    from warptap.tap_ir import GotoState, PulsePin, Runtest, ShiftDR, ShiftIR, bits_from_int
+    from warptap.tap_ir_play import navigation_tms, shift_tms
 
     vectors: list[Vector] = []
     state = TapState.RUN_TEST_IDLE
@@ -267,12 +281,122 @@ def render_jtag_testbench(
     return _render_template(context, "jtag_tb_template.sv.j2")
 
 
+# --- STIL (IEEE 1450) -----------------------------------------------------------
+
+#: warptap's ``to_stil`` up to 0.0.3 compared TDO after the rising TCK edge, so on
+#: warptap's own TAP every compare checked the next bit (shown by replaying such a
+#: file against the RTL); 0.0.4 fixed it and added the pin declarations and the
+#: ``SetPins`` reset lead-in used here.
+STIL_MIN_WARPTAP = (0, 0, 4)
+#: The functional clock's period when none is given. Nothing in the RTL says what it
+#: may be, so this is an assumption, and the CLI says so when it applies it.
+DEFAULT_STIL_CLK_PERIOD_NS = 100.0
+# Pins to_stil declares itself.
+_TAP_PINS = ("tck", "tms", "tdi", "tdo")
+# Inputs a STIL pattern holds high: the functional port's active-low chip select, and
+# the two active-low resets, which the lead-in pulls low and then releases.
+_STIL_HIGH = (*_IDLE_HIGH, "rst_n", "trst_n")
+
+
+@dataclass(frozen=True)
+class StilTiming:
+    """The two periods a STIL file states: TCK's, and the functional clock's."""
+
+    tck_period_ns: float
+    clk_period_ns: float
+
+
+def stil_support_problem() -> str | None:
+    """Why the installed warptap can't write the STIL, or ``None`` if it can (or if
+    warptap isn't installed at all, which ``wrap-test-access`` reports by itself)."""
+    try:
+        import warptap
+    except ImportError:
+        return None
+    version = tuple(int(n) for n in re.findall(r"\d+", warptap.__version__)[:3])
+    if version < STIL_MIN_WARPTAP:
+        return (
+            f"the STIL needs warptap 0.0.4 or later (installed: {warptap.__version__}): up to "
+            "0.0.3 its to_stil compares TDO after the rising TCK edge, so every compare checks "
+            "the next bit"
+        )
+    return None
+
+
+def _bit_names(port: NetlistPort) -> list[str]:
+    """One STIL signal per bit, ``name[i]``, for a bus; the name itself for a single bit."""
+    bounds = re.fullmatch(r"\[(\d+):(\d+)\]", port.range.strip())
+    if bounds is None:
+        return [port.name]
+    hi, lo = int(bounds.group(1)), int(bounds.group(2))
+    return [f"{port.name}[{i}]" for i in range(min(hi, lo), max(hi, lo) + 1)]
+
+
+def stil_pins(ports: list[NetlistPort]) -> tuple[dict[str, int], list[str]]:
+    """``(inputs, outputs)`` for ``to_stil``: every input of the wrapped top except the
+    TAP's own, with the value it holds (the same idle values the JTAG testbench ties
+    them to; the resets and the chip select high), and every output but TDO."""
+    inputs: dict[str, int] = {}
+    outputs: list[str] = []
+    for port in ports:
+        if port.name in _TAP_PINS:
+            continue
+        for bit in _bit_names(port):
+            if port.direction == "input":
+                inputs[bit] = 1 if port.name in _STIL_HIGH else 0
+            else:
+                outputs.append(bit)
+    return inputs, outputs
+
+
+def render_stil(top: str, ops: list[Any], ports: list[NetlistPort], timing: StilTiming) -> str:
+    """``ops`` (from :func:`run_mbist_ops`) as a STIL file for a tester, through warptap's
+    ``to_stil``, behind a reset lead-in: TRST and the MBIST's reset asserted while TCK
+    and the functional clock run (the TAP and its network reset on a TCK edge while
+    TRST is low, which a TRST that is low from the start needs), then released, then
+    Run-Test/Idle. Every pin of the wrapped top is declared."""
+    problem = stil_support_problem()
+    if problem is not None:
+        raise TestbenchError(problem)
+    import warptap
+    from warptap.tap_fsm import TapState
+    from warptap.tap_ir import GotoState, PulsePin, SetPins
+    from warptap.tap_ir_stil import to_stil
+
+    missing = [p for p in ("trst_n", "rst_n", SYSTEM_CLOCK) if p not in {port.name for port in ports}]
+    if missing:
+        raise TestbenchError(f"wrapped {top!r} has no {', '.join(missing)} port")
+    inputs, outputs = stil_pins(ports)
+    lead_in = [
+        SetPins((("trst_n", 0), ("rst_n", 0))),
+        GotoState(TapState.TEST_LOGIC_RESET),  # five TCK cycles with TMS=1, TRST low
+        PulsePin(SYSTEM_CLOCK, 2),  # the controller's reset, also with clock edges
+        SetPins((("trst_n", 1), ("rst_n", 1))),
+        GotoState(TapState.RUN_TEST_IDLE),
+    ]
+    stil = to_stil(
+        lead_in + ops,
+        jtag_period=f"{timing.tck_period_ns:g}ns",
+        pulse_periods={SYSTEM_CLOCK: f"{timing.clk_period_ns:g}ns"},
+        inputs=inputs,
+        outputs=outputs,
+    )
+    header = [
+        f"// IEEE 1450 STIL: run the memory BIST of {top} over JTAG and check its result at TDO.",
+        f"// Generated by autombist wrap-test-access, written by warptap {warptap.__version__}'s to_stil.",
+        f"// TCK period {timing.tck_period_ns:g} ns, {SYSTEM_CLOCK} period {timing.clk_period_ns:g} ns.",
+        "// Starts with TRST and rst_n low while TCK and the clock run, then releases both.",
+    ]
+    return "\n".join(header) + "\n" + stil
+
+
 @dataclass(frozen=True)
 class JtagBistFiles:
     pdl: Path
     vectors: Path
     testbench: Path
     run_script: Path
+    stil: Path | None = None
 
 
 def write_jtag_bist(
@@ -288,10 +412,11 @@ def write_jtag_bist(
     bist_cycles: int | None,
     icl_file: str | None,
     bsdl_file: str | None = None,
+    stil: StilTiming | None = None,
 ) -> JtagBistFiles:
     """Write ``<top>_run_mbist.pdl``, ``<top>_run_mbist.vec``,
     ``tb_<top>_jtag.sv`` and ``run_tb_jtag.sh`` into ``out`` (the directory
-    holding ``wrapped_file``)."""
+    holding ``wrapped_file``), and with ``stil`` also ``<top>_run_mbist.stil``."""
     from warptap.icl_emit import INSTRUMENT_MODULE_PREFIX
     from warptap.tap_model import DEFAULT_IR_WIDTH, OPCODE_EXTEST
 
@@ -311,16 +436,22 @@ def write_jtag_bist(
                    bsdl_file=bsdl_file),
         encoding="utf-8",
     )
-    vectors = retarget(graph, root, steps, ir_width=DEFAULT_IR_WIDTH, extest=OPCODE_EXTEST)
+    ops = run_mbist_ops(graph, root, steps, ir_width=DEFAULT_IR_WIDTH, extest=OPCODE_EXTEST)
+    vectors = vectors_from_ops(ops, steps)
     vec = out / f"{top}_run_mbist.vec"
     vec.write_text("".join(v.line() + "\n" for v in vectors), encoding="utf-8")
+
+    ports = parse_netlist_ports(wrapped_verilog, top)
+    stil_path = None
+    if stil is not None:
+        stil_path = out / f"{top}_run_mbist.stil"
+        stil_path.write_text(render_stil(top, ops, ports, stil), encoding="utf-8")
 
     labels = [f"{s.instrument} = {s.value}" for s in steps if s.kind == "read"]
     tb_file = f"tb_{top}_jtag.sv"
     tb = out / tb_file
     tb.write_text(
-        render_jtag_testbench(top, parse_netlist_ports(wrapped_verilog, top),
-                              vectors_file=vec.name, pdl_file=pdl.name, read_labels=labels),
+        render_jtag_testbench(top, ports, vectors_file=vec.name, pdl_file=pdl.name, read_labels=labels),
         encoding="utf-8",
     )
     # Wrapped from the memory's blackbox stub (wrap-test-access --manifest), the
@@ -357,4 +488,4 @@ def write_jtag_bist(
         encoding="utf-8",
     )
     _chmod_x(run_sh)
-    return JtagBistFiles(pdl, vec, tb, run_sh)
+    return JtagBistFiles(pdl, vec, tb, run_sh, stil_path)

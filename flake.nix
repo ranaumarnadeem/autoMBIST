@@ -16,11 +16,12 @@
 
     # warptap, the optional dependency behind `autombist wrap-test-access` (JTAG/IJTAG
     # test-access insertion, ICL, BSDL, PDL). Only its source is wanted, not a flake
-    # output: pinned to a release tag, and flake.lock fixes the exact commit, so the
+    # output: pinned to a release tag (0.0.4: STIL compares TDO before the rising TCK
+    # edge; 0.0.3 compared after it), and flake.lock fixes the exact commit, so the
     # devShell (and so CI) runs the wrap-test-access, BSDL and IDCODE code instead of
     # skipping it. Move it with `nix flake lock --update-input warptap`.
     warptap = {
-      url = "github:ranaumarnadeem/warptap/v0.0.3";
+      url = "github:ranaumarnadeem/warptap/v0.0.4";
       flake = false;
     };
   };
