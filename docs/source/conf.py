@@ -59,10 +59,14 @@ html_theme_options = {
 # indexing the page or a platform generating a link-preview card.
 # --------------------------------------------------------------------------
 _SITE_URL = "https://ranaumarnadeem.github.io/autoMBIST/"
+# The site description: the bold sentence at the top of the README. Sphinx has no global
+# description setting and sphinxext-opengraph otherwise describes each page by its first
+# paragraph, so docs/source/index.md carries this same sentence in its front matter
+# (description and og:description); keep the two in step.
 _DESCRIPTION = (
-    "autoMBIST: an open-source, OpenRAM-integrated MBIST + BIRA + BISR "
-    "generator and march-algorithm research platform, proven through open "
-    "RTL-to-GDS closure on sky130."
+    "autoMBIST is an open-source Memory Built-In Self-Test (MBIST) generator with "
+    "built-in redundancy analysis (BIRA) and built-in self-repair (BISR) for OpenRAM "
+    "SRAM macros, taken through full RTL-to-GDS on SkyWater sky130 with LibreLane."
 )
 
 # sphinx-sitemap: emits sitemap.xml at the site root; needs html_baseurl set.

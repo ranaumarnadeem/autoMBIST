@@ -2,8 +2,9 @@
 
 // Combinational phase/op_step decoder for a 6-element 2RW concurrent march
 // algorithm. Structured like march_1r1w_algo.sv, but generalized: every
-// output is still a 2-element unpacked array indexed by physical port
-// (index 0 / index 1), except NOW both do_read[k] and do_write[k] are
+// output is a 2-element PACKED array indexed by physical port (index 0 /
+// index 1) -- packed, not unpacked, because Yosys's SystemVerilog frontend
+// rejects unpacked-array ports outright. Both do_read[k] and do_write[k] are
 // legal for either k -- port 0 and port 1 are both fully read/write
 // capable, so all four (do_read/do_write) x (port0/port1) combinations are
 // physically meaningful, unlike march_1r1w_algo.sv where do_write[0] and
@@ -71,10 +72,10 @@ module march_2rw_algo #(
 ) (
     input  logic [2:0]            phase,
     output logic                  phase_dir_up,
-    output logic                  do_read  [0:1],
-    output logic                  do_write [0:1],
-    output logic [DATA_WIDTH-1:0] expected_data [0:1],
-    output logic [DATA_WIDTH-1:0] write_data    [0:1],
+    output logic [1:0]                 do_read,
+    output logic [1:0]                 do_write,
+    output logic [1:0][DATA_WIDTH-1:0] expected_data,
+    output logic [1:0][DATA_WIDTH-1:0] write_data,
     // When asserted, the FSM drives port 1's address from partner_addr
     // (addr_q ^ DEPTH/2) instead of addr_q, so this element's port-1
     // access targets a DIFFERENT address than port 0's on the same cycle.

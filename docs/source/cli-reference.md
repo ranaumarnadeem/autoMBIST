@@ -65,6 +65,7 @@ autombist generate [OPTIONS]
 | `--fault-type TEXT` | `stuck-at` | Fault model: `stuck-at` (SA0/SA1), `transition-up`, `transition-down`, or `port-coupling` (march-1r1w only; march-2rw supports stuck-at/transition only) |
 | `--pulse-width-ns INTEGER` | `2` | Pulse width in clock cycles for transition faults |
 | `--algo TEXT` | `march-c` | MBIST algorithm: `march-c`, `march-raw`, `march-1r1w`, `march-2rw`, `march-x`, `mats-plus`, or `checkerboard` |
+| `--emit-manifest` / `--no-emit-manifest` | `--no-emit-manifest` | Also write `manifest.json`: memory instances to blackbox and MBIST logic instances to grade, for external synthesis tooling (e.g. FaultFlow) |
 | `--help` | | Show this message and exit |
 
 If `--config` is omitted, autombist looks for `config.yml` in the current working
@@ -135,11 +136,94 @@ them after:
   uninstantiated unless `onchip_col_repair`/`onchip_diagnosis` are set
 - `config.yml` — a snapshot of the resolved config (also used by `simulate`/`run` to
   locate the module directory when you pass a parent `--out`)
+- `<memory_name>_bbox.v` — a port-only `(* blackbox *)` memory stub for
+  synthesis (not written under `--test`, where the instance is the saboteur).
+  It declares every parameter the wrapper may override (`ADDR_WIDTH`,
+  `DATA_WIDTH`, `NUM_SPARE_ROWS`, `NUM_SPARE_COLS`) and uses the literal port
+  widths the wrapper actually connects (spare-row address and spare-column
+  data widths included, one declaration per physical pin across ports), so
+  any downstream synthesis tooling can treat the memory as a boundary without
+  re-deriving it. `grade-controller`'s bundle synthesizes with the same stub.
+- `tb/tb_<wrapper>.sv`, `tb/<memory_name>_model.v` and `tb/run_tb.sh`: a
+  standalone, self-checking testbench that runs the BIST from the wrapper's own
+  pins, with a behavioral model of the memory generated from the config (see
+  *Running the BIST testbench* below)
 - With `--test`:
   - `<memory_name>_saboteur.v` — fault-injection wrapper
   - `faults/*.hex` — fault masks (e.g. `sa0_faults.hex`, `sa1_faults.hex`,
     `tf_up_faults.hex`, `tf_down_faults.hex` depending on `--fault-type`)
   - `Makefile` — local simulation Makefile consumed by `autombist simulate`
+- With `--emit-manifest`:
+  - `manifest.json` — a synthesis plan for external synthesis-aware tooling
+    (FaultFlow), complete enough to generate its own Yosys scripts from. Every
+    instance is listed with its `hierarchical_path`, `module_type`, the
+    `parameters` the wrapper instantiates it with, and its `sources`.
+    Memory instances are `"hierarchy_hint": "blackbox"` — read the
+    `<memory_name>_bbox.v` stub with `read_verilog -lib`, never synthesize a
+    memory model. Test instruments (the MBIST controller `u_algo_top`, on-chip
+    self-repair, diagnosis, repair remaps) are `"separate"` — synthesize each
+    standalone (`chparam` with its `parameters`), read it back as a blackbox
+    stub while synthesizing the wrapper glue, then splice the block netlists
+    in, so optimization never crosses an instrument boundary. Instances sharing
+    `module_type` + `parameters` are one synthesized block. See the
+    `wrap-test-access` section below for how `--manifest` there later patches
+    in the `test_access` block once JTAG/IJTAG wrapping has run.
+
+### Running the BIST testbench
+
+`tb/run_tb.sh` compiles `tb/tb_<wrapper>.sv` with the generated RTL and a
+model of the memory, and runs it with Icarus Verilog. No Python or cocotb is
+involved. With no arguments it uses the generated model:
+
+```bash
+bash out/sram_1rw/tb/run_tb.sh
+# note: no memory model given; using the generated behavioral model sram_1rw_model.v
+# MBIST RESULT: PASS -- 401 clk cycles
+```
+
+To test against the macro's own simulation model (e.g. the Verilog model
+OpenRAM writes with it), pass that instead; everything on the command line
+replaces the generated model:
+
+```bash
+bash out/sram_1rw/tb/run_tb.sh path/to/sram_1rw.v
+```
+
+`tb/<memory_name>_model.v` is derived from the config, with the same ports,
+names and widths as the blackbox stub the wrapper is synthesized against
+(spare-row addresses, spare-column lanes gated by `spare_wen`, every port of a
+1R1W or 2RW memory, one instance per memory of a shared-bus controller). It is
+idealized: fault-free, no timing checks, contents power up unknown. It follows
+`read_latency`: `0` registers the inputs on the rising edge and does the write
+and read on the falling edge, as OpenRAM's own models do (a multi-port model
+also forwards a write to a concurrent read of the same address, which the
+two-port algorithms expect); `1` or more registers the address and presents
+`dout` one clock later and holds it. A passing run shows the generated RTL and
+a model built to its configuration agree; it says nothing about the macro,
+whose own model you should still run.
+
+The testbench resets the design with `test_mode=1`, sets `bist_start=1` and
+holds it (the controller keeps its result only while start stays high, just
+as a JTAG data-register write holds it), waits for `bist_done`, then checks
+`bist_fail`. Every other input is held idle. It prints one `MBIST RESULT:`
+line — `PASS` with the BIST's length in clk cycles, or `FAIL`/`TIMEOUT` —
+and exits non-zero on anything but a pass. Sources are found relative to the
+script, so the output directory can be moved. `IVERILOG`, `VVP` and `BUILD`
+override the tools and build directory; `MBIST_MAX_CYCLES` overrides the
+timeout.
+
+The timeout is autoMBIST's bound on the BIST's length: per address, a fixed
+number of cycles plus one `read_latency` per read, for every address of every
+memory a shared controller tests (spare rows aren't in the BIST's address
+space), plus a 25% margin. The per-algorithm figures are measured against
+the generated RTL rather than taken from the algorithms' textbook lengths; the
+model runs at most two cycles long and never short, which
+`tests/integration/test_testbench_e2e.py` keeps checking for every algorithm.
+`wrap-test-access` uses the same bound for its PDL's run loop.
+
+For a `--test` build the script also compiles the fault-injection saboteur,
+which wraps the memory model rather than replacing it, so a `FAIL` there is
+the BIST catching the injected faults.
 
 ---
 
@@ -229,6 +313,7 @@ autombist run [OPTIONS]
 | `--scan-chains INTEGER` | `1` | Scan chains for controller grading |
 | `--min-coverage FLOAT` | none | Fail (exit 1) if array fault coverage is below this percent |
 | `--json` | off | Print the structured report as JSON to stdout instead of the human summary |
+| `--emit-manifest` / `--no-emit-manifest` | `--no-emit-manifest` | Also write `manifest.json` (see `generate`'s own flag above) |
 
 `--json` behaves the same as on `simulate`: the structured report goes to
 stdout as one JSON document, and verbose/status output is redirected to
@@ -239,7 +324,10 @@ won't include `controller_grading` — that block is merged into
 `grade-controller`/`autombist shell`, if you need it in the same JSON blob).
 
 When `--faultflow` is set, `run` internally calls the same controller-grading flow
-as `grade-controller`, fixed at `--threshold 90.0` and `--max-rounds 20`.
+as `grade-controller`, fixed at `--threshold 90.0` and `--max-rounds 20`. With
+`--test --faultflow`, the report carries both numbers: the array coverage from
+fault injection and the controller coverage, graded on the clean collar (see
+`grade-controller`).
 
 ### Examples
 
@@ -259,6 +347,7 @@ autombist run --config config.yml --json | jq .fault_metrics
 - `out/<memory_name>/simulate.log` — simulator output
 - If `--faultflow` is set: a `faultflow/` bundle under the module directory, and
   `controller_grading` merged into `reports/latest.json` (see schema below)
+- If `--emit-manifest` is set: `manifest.json` (same as `generate`'s own flag)
 
 ---
 
@@ -275,7 +364,7 @@ autombist grade-controller [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--out PATH` | `out` | Output directory containing a generated (clean) MBIST wrapper |
+| `--out PATH` | `out` | Output directory containing a generated MBIST wrapper (a `--test` build is graded as its clean collar, see below) |
 | `--faultflow-repo PATH` | none (env var `FAULTFLOW_HOME`) | FaultFlow repo path (or set `FAULTFLOW_HOME`) |
 | `--cell-lib TEXT` | `sky130` | FaultFlow standard-cell library: `sky130` or `osu035` |
 | `--scan-chains INTEGER` | `1` | Number of scan chains for controller grading |
@@ -287,12 +376,35 @@ Like `simulate`, `--out` accepts either a module directory directly or a parent
 directory to auto-resolve.
 
 This command always emits a self-contained, re-runnable bundle under
-`out/<memory_name>/faultflow/` (blackbox stub, Yosys script, FaultFlow `.ofs`,
-`run_faultflow.sh`). Unless `--no-run` is given, it additionally synthesizes the
-collar and runs scan stuck-at ATPG, then reports controller structural coverage
-and merges it into the module's latest simulation report.
+`out/<memory_name>/faultflow/`: a `manifest.json` (the same synthesis plan
+`generate --emit-manifest` writes, with absolute source paths), `options.ofs`
+(the grading options above) and `run_faultflow.sh`. Unless `--no-run` is given,
+it then runs the bundle:
 
-Requires (Linux/WSL only): Yosys, and a built FaultFlow at `--faultflow-repo` (or
+1. FaultFlow's autoMBIST integration synthesizes the design from the manifest:
+   every test instrument on its own, so Yosys can't optimize it into the glue,
+   with the memory kept a blackbox, then splices the blocks into one netlist.
+2. The script checks every memory instance survived synthesis.
+3. FaultFlow inserts scan, runs `scan-check`, and runs scan stuck-at ATPG. The
+   memory's outputs are unknown (X) during a scan test, so a fault testable only
+   by driving or observing the memory is reported as *blackbox-unresolved* and
+   still counts against coverage.
+4. Controller structural coverage is reported and merged into the module's
+   latest simulation report.
+
+Everything a run writes stays inside the bundle (`synth/`, `run/`); nothing is
+written into the FaultFlow checkout. The module directory's own `manifest.json`
+is never touched.
+
+A `--test` build has the fault-injection saboteur in place of the memory. The
+bundle then regenerates the clean collar from the build's config snapshot (same
+algorithm, real memory stub) into `faultflow/clean/` and grades that: the
+controller RTL is identical, and the clean collar is what goes on silicon. That
+is what makes `run --test --faultflow` report array coverage and controller
+coverage side by side.
+
+Requires (Linux/WSL only): Yosys, and a built FaultFlow with its autoMBIST
+integration (`faultflow/integrations/autombist.py`) at `--faultflow-repo` (or
 `$FAULTFLOW_HOME`). FaultFlow is invoked from its own venv.
 
 ### Examples
@@ -304,11 +416,15 @@ autombist grade-controller --out out --no-run     # just emit the bundle
 
 ### Output
 
-- `out/<memory_name>/faultflow/` — the re-runnable bundle (blackbox stub, Yosys
-  script, FaultFlow `.ofs`, `run_faultflow.sh`)
-- With `--run` (default): `controller_grading` merged into
-  `out/<memory_name>/reports/latest.json`, and a terminal line reporting
-  `detected/denominator (coverage%)` plus `excluded_blackbox` count
+- `out/<memory_name>/faultflow/` — the re-runnable bundle (`manifest.json`,
+  `options.ofs`, `run_faultflow.sh`, `README.txt`; plus `clean/` for a `--test`
+  build)
+- With `--run` (default): FaultFlow's synthesis under `faultflow/synth/`, its
+  working directory (campaign database, `output/<top>/coverage.rpt`) under
+  `faultflow/run/`, a `run.log`; `controller_grading` merged into
+  `out/<memory_name>/reports/latest.json` and a CONTROLLER LOGIC section in
+  `report.txt`; and a terminal line reporting
+  `detected/denominator (coverage%), blackbox-unresolved=N`
 - With `--no-run`: only the bundle is emitted; the terminal prints the bundle path
   and the exact command to run it manually on Linux/WSL
   (`FAULTFLOW_HOME=<path> bash <bundle>/run_faultflow.sh`)
@@ -329,14 +445,20 @@ autombist wrap-test-access [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--source PATH` | none (repeatable, required) | A source file the design needs — generated wrapper(s), shared algorithm/repair RTL, macro models |
-| `--top TEXT` | none (required) | Top module name to insert the test-access network into |
-| `--out PATH` | `out/test-access` | Output directory for the inserted Verilog (and `--emit-icl`'s ICL file) |
+| `--source PATH` | none (repeatable; required unless `--manifest`) | A source file the design needs — generated wrapper(s), shared algorithm/repair RTL, macro models or blackbox stubs |
+| `--top TEXT` | none (required unless `--manifest`) | Top module name to insert the test-access network into |
+| `--out PATH` | `<manifest dir>/test-access` with `--manifest`, else `out/test-access` | Output directory for the inserted Verilog (and `--emit-icl`'s ICL and BSDL files) |
 | `--onchip-selfrepair` | off | Also wrap `self_repair_start`/`done`/`fail`/`busy`. Omit when passing `--config` |
 | `--onchip-repair-persistence` | off | Also wrap `repair_load`/`repair_load_done`. Omit when passing `--config` |
 | `--onchip-diagnosis` | off | Also wrap `diag_overflow`. Omit when passing `--config` |
 | `--config PATH` | none | Path to the `config.yml` snapshot `generate` wrote alongside these sources — derives the three flags above PLUS the wide-port geometry needed to also wrap `diag_valid`/`diag_addr`/`fuse_row_repair_en`/`fuse_faulty_row_addr`/any `repair_ports:`. Without it, only the always-1-bit ports are wrapped. Errors if combined with any of the three flags above (ambiguous — pick one source) |
-| `--emit-icl` | off | Also emit an ICL description of the inserted network |
+| `--emit-icl` | off | Also emit an ICL description of the inserted network and the BSDL its `AccessLink` points at (see *The ICL, the BSDL and the TAP's IDCODE* below) |
+| `--tck-max-freq-mhz FLOAT` | 10 (an assumption) | The TAP's maximum TCK frequency in MHz, stated in the BSDL; the STIL's TCK period is 1 / this limit. Needs `--emit-icl` or `--emit-stil`. Nothing in the RTL says what it is, so the default is a placeholder assumption the command prints when it applies it. Set the real limit |
+| `--emit-stil` | off | Also write the `run_mbist` pattern as IEEE 1450 STIL for a tester, `<out>/<top>_run_mbist.stil` (see *The run_mbist pattern as STIL* below). Needs the BIST's run length (`--config`, `--manifest` or `--bist-cycles`) and warptap 0.0.4 or later |
+| `--stil-clk-period-ns FLOAT` | 100 (an assumption) | The functional clock's period in the STIL, in ns. Needs `--emit-stil`. Nothing in the RTL says what it may be; the command prints that it applied the default. Set the real one |
+| `--idcode TEXT` | warptap's placeholder `0x1A5A5003` | The TAP's 32-bit IDCODE, e.g. `0x5CA1AB1F`; bit 0 must be 1, as IEEE 1149.1 requires. The default is not a registered manufacturer ID (its manufacturer field falls in an assigned JEP106 slot), so ship your own |
+| `--manifest PATH` | none | A `generate --emit-manifest` output directory. Records every instance of the wrapped netlist in its `manifest.json`'s `test_access` block, and on its own supplies `--source` (wrapper + instrument RTL, with the memory's `<memory_name>_bbox.v` stub in place of a model), `--top`, `--config` and `--out` |
+| `--bist-cycles INTEGER` | the BIST-length bound for the config | Length, in clk cycles, of the BIST run loop in the emitted PDL and JTAG testbench. Without `--config`/`--manifest` there is no config to compute it from, so the PDL and testbench are skipped unless this is given |
 
 Without `--config`: wraps exactly the always-1-bit control/status ports a
 generated wrapper exposes — `test_mode`, `bist_start`, `bist_done`,
@@ -401,6 +523,15 @@ on PATH. warptap shells out to both; neither is bundled. `>=0.0.2` matters: an
 earlier warptap has a real bug in its vendored ICL parser on any width>1
 instrument, which every wide port above needs.
 
+The BSDL (`--emit-icl`) and `--idcode` need warptap 0.0.3 or later
+(`warptap.bsdl_emit` and `idcode_value`). The Nix dev shell (`nix develop`, and so
+CI) pins warptap `v0.0.4` in `flake.lock`; PyPI has only 0.0.2 so far. With an
+older warptap the command still wraps, and refuses those two options with a message
+saying to upgrade. 0.0.3 also fixes the network moving under **any** TAP instruction: before
+it, two all-ones DR scans under IDCODE or BYPASS (a board chain passing through)
+would have driven every control instrument (`test_mode`, `bist_start`, ...) to 1.
+Regenerate any wrapped netlist made with an earlier warptap.
+
 ### Examples
 
 ```bash
@@ -430,22 +561,210 @@ autombist wrap-test-access \
     --top sram_1rw_mbist --config out/sram_1rw/config.yml --emit-icl
 ```
 
+From a `generate --emit-manifest` output directory alone — sources, top,
+config and output location all come from it, the memory stays blackboxed, and
+the wrapped netlist's instances are recorded in `manifest.json`:
+
+```bash
+autombist generate --config config.yml --emit-manifest
+autombist wrap-test-access --manifest out/sram_1rw --emit-icl
+```
+
 ### Output
 
 - `<out>/<top>_test_access.v` — the inserted, synthesizable Verilog
 - `<out>/<top>_test_access.icl` — with `--emit-icl`, the network's IEEE 1687 ICL
-  description
+  description, including the `AccessLink` that names the TAP instruction
+  selecting the network
+- `<out>/<top>_test_access.bsd` — with `--emit-icl`, the BSDL that instruction is
+  declared in (see below)
+- What runs the BIST over JTAG (see *Running the BIST over JTAG* below):
+  - `<out>/<top>_run_mbist.pdl` — the `run_mbist` IEEE 1687 PDL procedure
+  - `<out>/<top>_run_mbist.vec` — that procedure retargeted to TCK-level
+    vectors, with the expected TDO
+  - `<out>/tb_<top>_jtag.sv` and `<out>/run_tb_jtag.sh` — a self-checking
+    testbench playing the vectors against the wrapped netlist
+  - `<out>/<top>_run_mbist.stil`: with `--emit-stil`, the same pattern as
+    IEEE 1450 STIL for a tester
 - A terminal listing of every wrapped port, in scan-chain order, with its role
   (`control` or `status`)
+- With `--manifest`: that directory's `manifest.json` gets a `test_access`
+  block — a synthesis plan for the wrapped netlist, built by re-reading the
+  inserted Verilog through warptap's own Yosys ingest:
+  - `output_verilog` — defines every module the wrapped netlist uses,
+    already parameter-specialized (e.g. `\$paramod$<hash>\march_c_top`),
+    except a blackboxed memory
+  - `memory_blackboxed` — true when the memory's stub stood in for its model
+    (the default with `--manifest` alone), so the wrapped netlist keeps it a
+    test boundary
+  - `instances` — every instance in the wrapped top: the TAP
+    (`warptap_tap_core`, `jtag_tap`), one SIB per wrapped port
+    (`warptap_sib_<port>`, `ijtag_sib`), one TDR bit per port bit
+    (`warptap_sib_<port>_inst_<k>`: `instrument_write` for a control port,
+    `bc1_shift_only` for a status port; `ijtag_tdr`), the MBIST blocks (under
+    the module names that file uses, no `parameters` — they're baked in) and
+    the memory. `"separate"` instances synthesize standalone with
+    `hierarchy -top <module_type>` straight from `output_verilog`; pass
+    module names beginning with `\` to Yosys verbatim
+  - `instruments` — each wrapped port with its role, width, SIB and ordered
+    TDR bits
 
-### What this does not do
+  - `icl_path`, `bsdl_path` — the ICL and BSDL, when `--emit-icl` wrote them
+  - `stil`: `{path, tck_period_ns, clk_period_ns}` when `--emit-stil` wrote it, else null
+  - `tap` — what a consumer needs to reach the network without reading the
+    ICL: `idcode` (and `idcode_is_placeholder`), `instruction_length`,
+    `network_access_instruction` (`EXTEST`) and its `network_access_opcode`;
+    with the BSDL, also `bsdl_entity` and `tck_max_freq_hz`. These fields are
+    additive: a reader that doesn't know them can ignore them
 
-This command inserts the test-access network and (optionally) describes it in
-ICL. It does not drive it: writing a PDL scenario (which port to write, what
-value, what to read back and when) or emitting SVF/STAPL/STIL patterns from one
-is a separate step, using warptap's own `PDLInterpreter`/`to_svf`/`to_stapl`/
-`to_stil` directly against the `(graph, root)` this command's underlying library
-function (`autombist.testaccess.wrap_test_access`) returns.
+  The command refuses to write the block if any port's SIB or TDR cells don't
+  line up with its role and width.
+
+### The ICL, the BSDL and the TAP's IDCODE
+
+`--emit-icl` writes two files that name each other. The ICL's `AccessLink`
+
+```
+AccessLink warptap_tap Of STD_1149_1_2001 {
+    BSDLEntity sram_1rw_mbist;
+    EXTEST { ScanInterface { warptap_sib_test_mode; } }
+}
+```
+
+binds the network to the TAP and names the instruction (`EXTEST`) that selects
+it; `<top>_test_access.bsd` declares that instruction, the TAP's pins and scan
+attributes, its instruction length, opcodes, capture pattern and IDCODE. A
+retargeting tool therefore needs no out-of-band knowledge of which instruction
+to load. The PDL and vectors still load EXTEST (`IR 4'b0000`) themselves. The
+BSDL's opcode, the instruction length and the IR load in the vectors are
+checked against each other by `tests/integration/test_bsdl_e2e.py`.
+
+What the BSDL is not, stated by the file itself in `DESIGN_WARNING`:
+
+- **TAP only.** No `BOUNDARY_LENGTH` or `BOUNDARY_REGISTER`, so a boundary-scan
+  tool that requires one will reject it. EXTEST here selects the IJTAG network,
+  not a boundary register (a SIB network and a boundary register never share a
+  design in warptap).
+- **Not validated by an independent BSDL parser.** None that accepts a TAP-only
+  file was usable. warptap cross-simulates every claim in it against the real
+  TAP RTL, and autoMBIST's test reads the IDCODE back from the wrapped netlist.
+- **The `AccessLink` names only the chain's first SIB** in its `ScanInterface`.
+  Whether it should name every top-level SIB is an open question in warptap that
+  no readable source settles; it is untested against a real retargeting tool.
+
+The two values the RTL cannot supply are set by option and always printed:
+`--tck-max-freq-mhz` (the BSDL's mandatory TCK limit; the default 10 MHz is an
+assumption, and the command says so) and `--idcode` (warptap's default is a
+placeholder, and the command says so). With `--idcode`, the value is baked into
+the inserted TAP, stated in the BSDL and recorded in the manifest; a value that
+isn't 32 bits or has bit 0 clear is refused before anything is ingested.
+
+### Running the BIST over JTAG
+
+`<top>_run_mbist.pdl` is the procedure a test flow retargets through the ICL
+for a tester:
+
+```
+iProcsForModule sram_1rw_mbist
+
+iProc run_mbist {} {
+    iWrite warptap_instr_test_mode.DR 0b1
+    iApply
+    iWrite warptap_instr_bist_start.DR 0b1
+    iApply
+    iRunLoop 520 -sck clk
+    iRead warptap_instr_bist_done.DR 0b1
+    iApply
+    iRead warptap_instr_bist_fail.DR 0b0
+    iApply
+    iWrite warptap_instr_bist_start.DR 0b0
+    iApply
+    iWrite warptap_instr_test_mode.DR 0b0
+    iApply
+}
+```
+
+It enters test mode, starts the BIST and holds the start, runs the MBIST's
+functional clock `clk` for the BIST's length (`iRunLoop -sck`), reads
+`bist_done=1` and `bist_fail=0` back, and returns the controller to idle. Each
+instrument is addressed by its ICL register (`warptap_instr_<port>.DR`). The
+network sits behind the TAP's data-register path, so EXTEST (`IR 4'b0000` on
+warptap's 4-bit IR) is loaded first. With `--emit-icl` the ICL's `AccessLink`
+names that instruction and the PDL's header points at the ICL and BSDL; a
+tester playing the PDL without a retargeting tool loads EXTEST itself, as the
+header says.
+
+`<top>_run_mbist.vec` is that procedure retargeted here, through warptap's own
+PDL interpreter over the inserted network, driven by the same steps the PDL is
+rendered from so the two can't disagree. Each line is one TCK cycle
+(`0 tms tdi tdo read`: `tdo` is checked when `read` is nonzero, the read it
+belongs to) or a run of the functional clock with TCK stopped in
+Run-Test/Idle (`1 n 0 0 0`).
+
+`run_tb_jtag.sh` plays the vectors against the wrapped netlist and checks the
+result only at TDO, as a tester would; the wrapper's pins aren't looked at and
+its JTAG-only control pins are tied off. It needs a model of the memory, which
+it takes from the generated `tb/<memory_name>_model.v` next to the output
+directory (the `--manifest` layout), so it runs with no arguments:
+
+```bash
+bash out/sram_1rw/test-access/run_tb_jtag.sh
+# MBIST RESULT: PASS -- read back through TDO: bist_done = 1, bist_fail = 0 (130 vectors)
+```
+
+Pass the macro's own model to replace it (`run_tb_jtag.sh path/to/sram_1rw.v`).
+A failing read names itself, e.g. `FAIL -- TDO did not read back bist_fail = 0`
+for a defective memory, or `bist_done = 1` for a run loop shorter than the
+BIST. When the wrapped netlist was built from sources that include the memory
+model the argument is optional too; when there is neither that nor a generated
+model next to the output directory (a `--source`/`--top` run elsewhere), the
+script needs the model as its argument.
+
+Not emitted: SVF and STAPL, which can't express the functional-clock run loop.
+STIL can; see below.
+
+### The run_mbist pattern as STIL
+
+`--emit-stil` writes `<top>_run_mbist.stil`, the pattern a tester loads, through
+warptap's `to_stil`. It is built from the same op list as `<top>_run_mbist.vec`,
+behind a reset lead-in:
+
+1. `trst_n` and `rst_n` go low while TCK clocks five times with TMS=1 and `clk`
+   pulses twice. The TAP, its network and the MBIST controller reset on a clock
+   edge while their reset is low, so the lead-in works even where the reset pin is
+   low from the start and never falls.
+2. Both are released and TCK takes the TAP to Run-Test/Idle.
+3. EXTEST is loaded and the `run_mbist` writes, run loop and reads follow, with TDO
+   compared on the two read bits (`bist_done = 1`, `bist_fail = 0`).
+
+Every pin of the wrapped top is declared, one STIL signal per bit of a bus
+(`"func_addr[0]"`): the inputs held at the values the JTAG testbench ties them to
+(the resets and `func_csb` high, the rest low), the outputs other than TDO
+declared `Out` and not compared. The run loop is one `Loop N` statement. In each
+TCK cycle TMS and TDI change at 0, TDO is compared at a quarter period, and TCK
+rises at half and falls at three quarters; `clk` has the same shape in its own
+period. The TCK period is 1 / `--tck-max-freq-mhz` (100 ns by default), so the
+STIL never runs the TAP faster than the BSDL says it can go; `clk`'s is
+`--stil-clk-period-ns` (100 ns by default). Both defaults are assumptions, and the
+command says so when it uses them.
+
+How it is checked (`tests/integration/test_stil_e2e.py`):
+
+- **Replayed against the RTL.** A replay reads the STIL text itself, independently
+  of warptap, and applies every drive at its time and every compare at its strobe to
+  the wrapped netlist in Icarus, from the lead-in on. It passes on a good memory, on
+  a 2RW memory, at `read_latency: 0`, on a self-repair network and on a shared
+  controller.
+- **Its compares are the vectors' compares**, bit for bit and in order.
+- **Controls:** a stuck bit in the memory fails exactly the `bist_fail` compare, and
+  a run loop shorter than the BIST fails the `bist_done` compare.
+- **An independent parser,** Semi-ATE-STIL, accepts its syntax and semantics.
+
+It needs warptap 0.0.4 or later: up to 0.0.3, `to_stil` compared TDO after the rising
+TCK edge, so on warptap's TAP every compare checked the next bit (found by replaying
+such a file against the RTL). With an older warptap, `--emit-stil` refuses rather
+than write that file. The STIL has not been run on a real tester; the replay is a
+simulation of what one would apply.
 
 ---
 
@@ -578,8 +897,8 @@ with code 1) line for each stage:
    stuck-at/march-c, transition-up/march-raw, and transition-down/march-raw,
    confirming each `simulate` run completes
 8. If `--faultflow`: emits (but does not run) a FaultFlow controller-grading
-   bundle against a fake repo stub, and checks the blackbox stub, Yosys script,
-   `.ofs`, and `run_faultflow.sh` all exist under `faultflow/`
+   bundle against a fake repo stub, and checks `manifest.json`, `options.ofs`,
+   and `run_faultflow.sh` all exist under `faultflow/`
 
 At the end it prints the workspace path and `[smoke] All checks passed`.
 
@@ -793,7 +1112,7 @@ Both `simulate` and `run` write the same structured report via
 | `fail_bitmap` | list[object] | **Opt-in, present only after a functional fail scan** (`run_simulation(fail_scan=True)`): the observation-derived set of failing cells, each `{"addr": int, "bit": int}`, parsed from `FAIL_CELL {json}` lines. Reports every cell that read wrong through the functional port, independent of any injected fault list — the input a redundancy-analysis (BIRA) step consumes. Absent (not `[]`) on ordinary runs, so those reports stay byte-identical. |
 | `junit` | object | Parsed JUnit XML: `path`, `exists`, `summary` (`tests`/`failures`/`errors`/`skipped`/`time_seconds`), `tests` (list), `system_out` (list) |
 | `summary` | string | Rendered human-readable multi-line summary (same text printed to the terminal) |
-| `controller_grading` | object | Only present after `grade-controller`/`run --faultflow` merges it in: FaultFlow's `detected`, `denominator`, `coverage_percent`, `excluded_blackbox` |
+| `controller_grading` | object | Only present after `grade-controller`/`run --faultflow` merges it in: FaultFlow's `detected`, `denominator`, `coverage_percent` (test coverage), `fault_coverage_percent`, `redundant`, `blackbox_unresolved` (testable only through the memory, counted against coverage), `blackbox_instances`, `blackbox_output_values`, and paths to FaultFlow's `coverage_json`/`coverage_rpt` |
 
 `reports/report.txt` is a plain-text rendering of the same report (`render_text_report()`),
 intended for humans rather than tooling.

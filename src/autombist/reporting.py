@@ -414,6 +414,27 @@ def _extract_fault_summary_block(log_text: str) -> str:
     return "\n".join(line.rstrip() for line in block).strip()
 
 
+def _controller_section(block: dict[str, Any] | None, divider: str) -> list[str]:
+    """The text report's controller-logic section: FaultFlow's grading of the
+    MBIST controller, next to the array coverage above it. Empty when no
+    grading was merged in."""
+    if not block:
+        return []
+    memories = ", ".join(block.get("blackbox_instances") or []) or "unknown"
+    return [
+        divider,
+        "CONTROLLER LOGIC (FaultFlow scan stuck-at ATPG, memory blackboxed)",
+        divider,
+        f"{'Coverage:':<23}{format_controller_coverage(block) or 'not reported'}",
+        f"{'Proven redundant:':<23}{block.get('redundant', 'unknown')}",
+        f"{'Blackbox-unresolved:':<23}{block.get('blackbox_unresolved', 'unknown')}"
+        "  (testable only through the memory; counted against coverage)",
+        f"{'Memory instances:':<23}{memories}",
+        f"{'FaultFlow report:':<23}{block.get('coverage_rpt', 'unknown')}",
+        "",
+    ]
+
+
 def render_text_report(report: dict[str, Any], fault_log_text: str) -> str:
     config = report.get("config", {})
     simulation = report.get("simulation", {})
@@ -487,6 +508,7 @@ def render_text_report(report: dict[str, Any], fault_log_text: str) -> str:
         f"{'Run status:':<23}{str(report.get('status', 'unknown')).upper()}",
         f"{'Runtime:':<23}{float(report.get('runtime_seconds', 0.0)):.3f} s",
         "",
+        *_controller_section(report.get("controller_grading"), divider),
         divider,
         fault_summary_block,
         "",
@@ -550,15 +572,8 @@ def format_simulation_summary(report: dict[str, Any]) -> str:
         )
     controller = report.get("controller_grading")
     if controller:
-        coverage = controller.get("coverage_percent")
-        if isinstance(coverage, (int, float)):
-            lines.append(
-                "  controller (FaultFlow scan SA): "
-                f"{controller.get('detected')}/{controller.get('denominator')} "
-                f"({coverage:.2f}%), excluded-blackbox={controller.get('excluded_blackbox')}"
-            )
-        else:
-            lines.append("  controller (FaultFlow scan SA): not reported")
+        line = format_controller_coverage(controller)
+        lines.append(f"  controller (FaultFlow scan SA): {line or 'not reported'}")
     junit_summary = report.get("junit", {}).get("summary", {})
     lines.append(
         "  junit: "
@@ -587,6 +602,22 @@ def coverage_meets_threshold(
     if coverage is None:
         return False, None
     return coverage >= min_coverage, coverage
+
+
+def format_controller_coverage(block: dict[str, Any] | None) -> str | None:
+    """``detected/denominator (coverage%), blackbox-unresolved=N`` for a
+    FaultFlow controller-grading block, or None when it reports no coverage.
+
+    blackbox-unresolved counts faults testable only by driving or observing the
+    blackboxed memory, which no scan test can do; they stay in the denominator.
+    """
+    coverage = (block or {}).get("coverage_percent")
+    if not isinstance(coverage, (int, float)):
+        return None
+    return (
+        f"{block.get('detected')}/{block.get('denominator')} ({coverage:.2f}%), "
+        f"blackbox-unresolved={block.get('blackbox_unresolved')}"
+    )
 
 
 def merge_faultflow_coverage(

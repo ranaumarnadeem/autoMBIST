@@ -1,9 +1,6 @@
 # autoMBIST
 
-> An open-source, OpenRAM-integrated MBIST (Memory Built-In Self-Test) + BIRA
-> (Built-In Redundancy Analysis) + BISR (Built-In Self-Repair) generator and
-> march-algorithm research platform, proven through open RTL-to-GDS physical
-> closure on the sky130 open PDK.
+> Open-source MBIST, BIRA and BISR generator for OpenRAM SRAM macros, proven through RTL-to-GDS on sky130 with LibreLane. Also a research platform for march algorithms and functional memory fault models.
 
 autoMBIST is a CLI that generates memory-test and memory-repair RTL for
 OpenRAM-compiled SRAM macros: march-algorithm MBIST controllers, a 2D
@@ -17,20 +14,32 @@ project. Timing signoff and DRC/LVS closure are the downstream PD/STA
 flow's responsibility, not autoMBIST's: it generates and functionally
 verifies RTL.
 
-## Documentation
+## Docs
 
+- [Quickstart](https://ranaumarnadeem.github.io/autoMBIST/quickstart.html): install with Nix, generate an MBIST wrapper and simulate it
+- [Architecture](https://ranaumarnadeem.github.io/autoMBIST/architecture.html): how the two subsystems are structured, and why they are kept separate
+- [CLI reference](https://ranaumarnadeem.github.io/autoMBIST/cli-reference.html): every command and flag of the classic MBIST path
+- [LibreLane hardening recipe](https://ranaumarnadeem.github.io/autoMBIST/librelane.html): the RTL-to-GDS macro-integration recipe that has been proven
 - [Documentation home](https://ranaumarnadeem.github.io/autoMBIST/): full site navigation
 - [Introduction](https://ranaumarnadeem.github.io/autoMBIST/introduction.html): what the tool is and its two subsystems (classic MBIST generator, redundancy/repair research platform)
-- [Quickstart](https://ranaumarnadeem.github.io/autoMBIST/quickstart.html): install and run a first generate + simulate pass
 - [Installation](https://ranaumarnadeem.github.io/autoMBIST/installation.html): Nix (recommended, matches CI) and manual setup
 - [Example](https://ranaumarnadeem.github.io/autoMBIST/example.html): a full walkthrough including redundancy repair
 - [Flow architecture](https://ranaumarnadeem.github.io/autoMBIST/flow.html): how generation, simulation, and hardening fit together
 - [Algo-Shell Guide](https://ranaumarnadeem.github.io/autoMBIST/algo-shell-guide.html) (experimental): the research-mode subsystem (`autombist test` / `autombist algo`)
 - [Configuration reference](https://ranaumarnadeem.github.io/autoMBIST/configuration.html): the config file schema
-- [LibreLane hardening recipe](https://ranaumarnadeem.github.io/autoMBIST/librelane.html): the proven RTL-to-GDS macro-integration recipe
 - [Challenges](https://ranaumarnadeem.github.io/autoMBIST/challenges.html): real problems hit during development and how they were resolved
 - [Roadmap](https://ranaumarnadeem.github.io/autoMBIST/roadmap.html): what's built and what's not
 - [Advanced Guide](https://ranaumarnadeem.github.io/autoMBIST/advanced-guide.html): architecture, CLI reference, multi-port guide, diagnosis reports, demo, and macro-integration notes
+
+## Talks
+
+- [ORConf 2026](https://www.youtube.com/watch?v=QJLI4zm1mHA): AutoMBIST: An Open-Source MBIST, BIRA, and BISR Generator for OpenRAM Memories
+
+## Related
+
+- [faultflow](https://github.com/ranaumarnadeem/faultflow): ATPG and fault simulation for Yosys gate-level netlists; grades autoMBIST controllers
+- [warptap](https://github.com/ranaumarnadeem/warptap): IEEE 1149.1 / 1687 test-access insertion, ICL and PDL; wraps the MBIST ports in JTAG/IJTAG
+- [OpenTestability](https://github.com/ranaumarnadeem/OpenTestability): SCOAP/COP testability analysis and test point insertion
 
 ## Source
 

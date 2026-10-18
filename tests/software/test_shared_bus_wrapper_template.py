@@ -20,6 +20,7 @@ the config-schema -> render_config wiring is step 2, not covered here.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -74,8 +75,11 @@ def test_shared_bus_instantiates_one_memory_per_entry() -> None:
 
 def test_shared_bus_demuxes_csb_and_muxes_dout_per_memory() -> None:
     text = _render_shared_bus(["a", "b"])
-    assert "sram_csb_arr [2];" in text
-    assert "sram_dout_arr [2];" in text
+    # Packed, never unpacked: an unpacked array read with a variable index
+    # makes Yosys drop every memory instance (see the template's own note).
+    assert "logic [2-1:0]                 sram_csb_arr;" in text
+    assert "logic [2-1:0][DATA_WIDTH-1:0] sram_dout_arr;" in text
+    assert re.search(r"\bsram_(csb|dout)_arr\s*\[\d+\]\s*;", text) is None
     assert "assign sram_csb_arr[0] = (mem_sel_q == 0) ? sram_csb : 1'b1;" in text
     assign_csb_arr_1 = "assign sram_csb_arr[1] = (mem_sel_q == 1) ? sram_csb : 1'b1;"
     assert assign_csb_arr_1 in text
