@@ -203,6 +203,26 @@ def test_wrap_passes_the_idcode_to_warptap_only_when_given(fake_insert) -> None:
     assert fake_insert["idcode_value"] == CUSTOM
 
 
+def test_wrap_clears_the_control_writes_on_the_wrappers_reset_unless_told_not_to(fake_insert) -> None:
+    wrap_test_access(["a.v"], "x")
+    assert fake_insert["chip_reset"] == testaccess.CHIP_RESET == "rst_n"
+
+    fake_insert.clear()
+    wrap_test_access(["a.v"], "x", chip_reset=None)
+    assert "chip_reset" not in fake_insert  # nothing an older warptap would not take
+
+
+def test_wrap_maps_a_chip_reset_typeerror_to_the_version_it_needs(fake_warptap, monkeypatch) -> None:
+    def insert(sources, top, specs, **kwargs):
+        raise TypeError("insert_test_access() got an unexpected keyword argument 'chip_reset'")
+
+    monkeypatch.setattr(testaccess, "_warptap_insert_test_access", insert, raising=False)
+    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports, **kw: [])
+
+    with pytest.raises(TestAccessUnavailable, match="0.0.4"):
+        wrap_test_access(["a.v"], "x")
+
+
 def test_wrap_refuses_a_bad_idcode_before_inserting_anything(fake_insert) -> None:
     with pytest.raises(ValueError, match="bit 0"):
         wrap_test_access(["a.v"], "x", idcode_value=PLACEHOLDER - 1)

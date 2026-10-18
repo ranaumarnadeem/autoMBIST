@@ -165,12 +165,14 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
     Yosys-assigned internal wire name (which could shift with formatting/version and would
     make this test fragile for no real gain):
 
-    1. `instrument_write` -- the primitive warptap uses for every control/WRITE port -- has,
-       in its own module definition, no port at all that could carry an external signal in.
-       `pin_out` is a pure shadow register: nothing but an Update-DR with that segment
-       selected ever changes it. This is *why* control ports go JTAG-only; if a future
-       warptap version adds a passthrough port to this primitive, that changes the finding
-       above, and this assertion is what should catch it.
+    1. `instrument_write_clr` -- the primitive warptap uses for every control/WRITE port
+       once it also clears on the chip reset -- has, in its own module definition, no port
+       at all that could carry an external signal in. `pin_out` is a pure shadow register:
+       nothing but an Update-DR with that segment selected ever changes it, and `clr_n`
+       only forces it to 0 (it comes from warptap's `tck_reset_sync`, fed by `rst_n`). This
+       is *why* control ports go JTAG-only; if a future warptap version adds a passthrough
+       port to this primitive, that changes the finding above, and this assertion is what
+       should catch it.
     2. Each port lands on the primitive its role predicts -- control ports get
        `instrument_write`, status ports get `bc1_shift_only_sync` (a real observe cell, reading
        the live signal through its `pi` port, behind a two-flop TCK synchronizer because the
@@ -274,15 +276,22 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
             f"warptap_sib_{port}* instance anyway"
         )
 
-    write_header = re.search(r"module instrument_write\(([^)]*)\);", inserted_verilog)
-    assert write_header, "instrument_write primitive not found in the inserted Verilog"
+    write_header = re.search(r"module instrument_write_clr\(([^)]*)\);", inserted_verilog)
+    assert write_header, "instrument_write_clr primitive not found in the inserted Verilog"
     assert [p.strip() for p in write_header.group(1).split(",")] == [
-        "si", "so", "pin_out", "select", "capture_dr", "shift_dr", "update_dr", "tck", "trst_n",
-    ], "instrument_write gained (or lost) a port -- re-check whether control ports are still JTAG-exclusive"
+        "si", "so", "pin_out", "select", "capture_dr", "shift_dr", "update_dr", "tck", "trst_n", "clr_n",
+    ], "instrument_write_clr gained (or lost) a port -- re-check whether control ports are still JTAG-exclusive"
+    # the clear comes from the chip reset, through one TCK release synchronizer
+    reset_sync = re.search(r"tck_reset_sync warptap_chip_reset_sync \((.*?)\);", inserted_verilog, re.DOTALL)
+    assert reset_sync and ".chip_rst_n(rst_n)" in reset_sync.group(1), "the control TDRs do not clear on rst_n"
+    clear = re.search(r"\.clr_n\((\w+)\)", reset_sync.group(1)).group(1)
 
     for port in _CONTROL_PORTS:
-        assert f"instrument_write warptap_sib_{port}_inst_0 (" in inserted_verilog, (
-            f"{port} (a control port) should be wrapped with instrument_write"
+        cell = re.search(rf"instrument_write_clr warptap_sib_{port}_inst_0 \((.*?)\);", inserted_verilog, re.DOTALL)
+        assert cell, f"{port} (a control port) should be wrapped with instrument_write_clr"
+        assert f".clr_n({clear})" in cell.group(1), f"{port}'s control TDR does not clear on the chip reset"
+        assert f"instrument_write warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
+            f"{port} (a control port) clears on TRST only"
         )
         assert f"bc1_shift_only_sync warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
             f"{port} (a control port) was wrapped as a status/observe port instead"
@@ -295,7 +304,7 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
         assert f"bc1_shift_only warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
             f"{port} (a status port from the clk domain) is captured without a TCK synchronizer"
         )
-        assert f"instrument_write warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
+        assert not re.search(rf"instrument_write(_clr)? warptap_sib_{port}_inst_0 \(", inserted_verilog), (
             f"{port} (a status port) was wrapped as a control/write port instead"
         )
         assert f".pi({port})" in inserted_verilog, (

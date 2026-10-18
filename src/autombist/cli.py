@@ -692,6 +692,7 @@ def _wrap_test_access(
     import math
 
     from autombist.testaccess import (
+        CHIP_RESET,
         TestAccessUnavailable,
         classify_test_access_ports,
         test_access_kwargs_from_config,
@@ -784,7 +785,9 @@ def _wrap_test_access(
         }
 
     try:
-        inserted_verilog, graph, root = wrap_test_access(sources, top, idcode_value=idcode, **ta_kwargs)
+        inserted_verilog, graph, root = wrap_test_access(
+            sources, top, idcode_value=idcode, capture_sync=True, chip_reset=CHIP_RESET, **ta_kwargs,
+        )
     except TestAccessUnavailable as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
@@ -815,6 +818,7 @@ def _wrap_test_access(
         typer.echo(f"  chain[{i}] {p.name} ({p.role}, width={p.width})")
     typer.echo(f"Inserted Verilog: {verilog_path}")
     typer.echo("Status reads:     through a two-flop TCK synchronizer per bit (they come from clk)")
+    typer.echo(f"Control writes:   cleared by {CHIP_RESET} as well as TRST, so a chip reset leaves test mode")
     typer.echo(
         f"TAP IDCODE:       {tap['idcode']} "
         f"({'warptap placeholder -- --idcode sets your own' if tap['idcode_is_placeholder'] else 'set by --idcode'})"
@@ -897,6 +901,7 @@ def _wrap_test_access(
                 [{"name": p.name, "role": p.role, "width": p.width} for p in ports],
                 output_verilog=verilog_path, output_dir=out, icl_path=icl_path,
                 bsdl_path=bsdl_path, tap=tap, stil=stil_record, capture_sync=True,
+                chip_reset=CHIP_RESET,
             )
             manifest_path = update_manifest_with_test_access(manifest, block)
         except (ManifestError, ValueError, OSError) as exc:
