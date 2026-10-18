@@ -96,6 +96,10 @@ class TestAccessPort:
 TestAccessPort.__test__ = False  # not a pytest test class -- the name just starts with "Test"
 
 
+CHIP_RESET = "rst_n"
+"""The generated wrapper's chip reset (active low), which the control TDRs also clear on."""
+
+
 def _require_warptap() -> None:
     if _warptap_insert_test_access is None:
         raise TestAccessUnavailable(
@@ -222,6 +226,7 @@ def wrap_test_access(
     repair_ports: Sequence[Mapping[str, Any]] = (),
     idcode_value: int | None = None,
     capture_sync: bool = True,
+    chip_reset: str | None = CHIP_RESET,
     yosys_command: str | None = None,
 ) -> tuple[str, Any, Any]:
     """Ingest ``sources``, wrap ``top_module``'s real control/status ports
@@ -245,6 +250,11 @@ def wrap_test_access(
 
     ``capture_sync`` (on by default) synchronizes every status read to TCK; see
     build_instrument_specs.
+
+    ``chip_reset`` names the top's active-low chip reset (default :data:`CHIP_RESET`,
+    the generated wrapper's ``rst_n``). Every control TDR then also clears on it, not
+    only on TRST, so a chip reset leaves the memory out of test mode with ``bist_start``
+    low even when the board never pulses TRST. ``None`` clears them on TRST only.
     """
     _require_warptap()
     if idcode_value is not None:
@@ -259,15 +269,23 @@ def wrap_test_access(
         repair_ports=repair_ports,
     )
     specs = build_instrument_specs(ports, capture_sync=capture_sync)
-    extra = {} if idcode_value is None else {"idcode_value": idcode_value}
+    # Only what was asked for, so an older warptap fails on the option it lacks, by name.
+    extra: dict[str, Any] = {}
+    if idcode_value is not None:
+        extra["idcode_value"] = idcode_value
+    if chip_reset is not None:
+        extra["chip_reset"] = chip_reset
     try:
         return _warptap_insert_test_access(
             sources, top_module, specs, yosys_command=yosys_command, use_sv=True, **extra,
         )
     except TypeError as exc:
-        if idcode_value is None or "idcode_value" not in str(exc):
+        lacking = [name for name in extra if name in str(exc)]
+        if not lacking:
             raise
-        raise TestAccessUnavailable(_NO_IDCODE_SUPPORT) from exc
+        raise TestAccessUnavailable(
+            _NO_IDCODE_SUPPORT if lacking == ["idcode_value"] else _NO_HARDENING_SUPPORT
+        ) from exc
     except (IndexError, KeyError, WarptapError) as exc:
         raise ValueError(
             f"warptap insertion failed ({type(exc).__name__}: {exc}) while wrapping "
@@ -293,7 +311,8 @@ _NO_BSDL_SUPPORT = (
 )
 _NO_HARDENING_SUPPORT = (
     "the installed warptap cannot harden the inserted network (TCK synchronizers on the "
-    "status reads) -- it needs warptap 0.0.4, which the Nix dev shell pins"
+    "status reads, the chip-reset clear on the control writes) -- it needs warptap 0.0.4, "
+    "which the Nix dev shell pins"
 )
 
 

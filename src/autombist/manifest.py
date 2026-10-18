@@ -32,7 +32,8 @@ from typing import Any
 
 from .generator import _algo_port_suffixes, _normalize_algo, _normalize_ports
 
-# 1.1: each test_access instrument records capture_sync. Additive, so a 1.0 reader still parses it.
+# 1.1: test_access records the chip reset its control TDRs clear on, and each instrument
+# capture_sync. Additive, so a 1.0 reader still parses it.
 SCHEMA_VERSION = "1.1.0"
 MANIFEST_FORMAT = "autombist_instance_manifest"
 MANIFEST_FILENAME = "manifest.json"
@@ -400,15 +401,19 @@ _WARPTAP_CATEGORIES = {
     "instrument_write": "ijtag_tdr",
     "bc1_shift_only": "ijtag_tdr",
     "bc1_shift_only_sync": "ijtag_tdr",  # a status bit captured through two TCK flops
+    "instrument_write_clr": "ijtag_tdr",  # a control bit that also clears on the chip reset
+    # The control TDRs' chip-reset clear, released on TCK. FaultFlow files it with the TDRs.
+    "tck_reset_sync": "ijtag_tdr",
 }
-_TDR_MODULES = {"instrument_write", "bc1_shift_only", "bc1_shift_only_sync"}
+_TDR_MODULES = {"instrument_write", "instrument_write_clr", "bc1_shift_only", "bc1_shift_only_sync"}
+_CHIP_RESET_SYNC = "tck_reset_sync"
 JTAG_BOUNDARY_PORTS = ["tck", "tms", "tdi", "tdo", "trst_n"]
 
 
-def _tdr_module(role: str, *, capture_sync: bool) -> str:
+def _tdr_module(role: str, *, capture_sync: bool, chip_reset: str | None) -> str:
     """The warptap cell each bit of a wrapped port must be, for the options it was wrapped with."""
     if role == "control":
-        return "instrument_write"
+        return "instrument_write_clr" if chip_reset is not None else "instrument_write"
     return "bc1_shift_only_sync" if capture_sync else "bc1_shift_only"
 
 
@@ -424,6 +429,7 @@ def build_test_access_block(
     tap: dict[str, Any] | None = None,
     stil: dict[str, Any] | None = None,
     capture_sync: bool = False,
+    chip_reset: str | None = None,
 ) -> dict[str, Any]:
     """The manifest's "test_access" block: a synthesis plan for the JTAG/IJTAG-wrapped
     netlist wrap-test-access wrote, built from ``enumerated``
@@ -432,7 +438,10 @@ def build_test_access_block(
 
     ``capture_sync`` says the status ports were wrapped with TCK synchronizers. Each
     port's TDR cells must then be the synchronized kind, which is checked against the
-    netlist, and each status instrument records ``capture_sync``.
+    netlist, and each status instrument records ``capture_sync``. ``chip_reset`` names the
+    active-low chip reset the control TDRs also clear on: their cells must be the clearing
+    kind and the netlist must hold its TCK release synchronizer, and the block records it
+    as ``chip_reset: {port, active}``.
 
     Every module the wrapped netlist uses is defined in ``output_verilog`` itself,
     already parameter-specialized by warptap's Yosys ingest (e.g.
@@ -485,7 +494,7 @@ def build_test_access_block(
             (e["instrument_bit"], e["instance"], e["module_type"]) for e in enumerated
             if e["sib_name"] == sib["sib_name"] and e["module_type"] in _TDR_MODULES
         )
-        expected = _tdr_module(port["role"], capture_sync=capture_sync)
+        expected = _tdr_module(port["role"], capture_sync=capture_sync, chip_reset=chip_reset)
         if [b for b, _, _ in bits] != list(range(port["width"])) or any(t != expected for _, _, t in bits):
             raise ManifestError(
                 f"wrapped port {port['name']!r} ({port['role']}, width {port['width']}) does not "
@@ -500,6 +509,13 @@ def build_test_access_block(
             "capture_sync": capture_sync and port["role"] == "status",
         })
 
+    reset_syncs = [e["instance"] for e in enumerated if e["module_type"] == _CHIP_RESET_SYNC]
+    if (chip_reset is not None) != bool(reset_syncs):
+        raise ManifestError(
+            f"the control TDRs should {'' if chip_reset else 'not '}clear on a chip reset, but the "
+            f"netlist has {len(reset_syncs)} {_CHIP_RESET_SYNC} instance(s)"
+        )
+
     return {
         "wrapped": True,
         "top_module": manifest["top_module"],
@@ -511,6 +527,8 @@ def build_test_access_block(
         # the run_mbist STIL ({path, tck_period_ns, clk_period_ns}) when --emit-stil wrote it
         "stil": stil,
         "boundary_ports": list(JTAG_BOUNDARY_PORTS),
+        # the chip reset the control TDRs also clear on, or None: they clear on TRST only
+        "chip_reset": None if chip_reset is None else {"port": chip_reset, "active": "low"},
         "memory_blackboxed": memory_blackboxed,
         "instances": instances,
         "instruments": instruments,
