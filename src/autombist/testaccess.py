@@ -172,7 +172,7 @@ def classify_test_access_ports(
     return ports
 
 
-def build_instrument_specs(ports: list[TestAccessPort]) -> list[Any]:
+def build_instrument_specs(ports: list[TestAccessPort], *, capture_sync: bool = True) -> list[Any]:
     """Convert TestAccessPort entries to warptap InstrumentSpec objects -- one
     SignalBinding per bit (signal_bits[k] binds bit k of the port, matching how
     warptap's own iWrite()/read-back values are bit-indexed), so this is a single,
@@ -181,19 +181,31 @@ def build_instrument_specs(ports: list[TestAccessPort]) -> list[Any]:
     exactly ``(SignalBinding(p.name, 0),)``, the same binding this produced before wide
     ports existed. Raises TestAccessUnavailable if warptap is not installed -- called
     lazily, not at module import time, so importing autombist.testaccess itself never
-    requires warptap."""
+    requires warptap.
+
+    ``capture_sync`` puts a two-flop TCK synchronizer in front of every status port's
+    capture (warptap's ``bc1_shift_only_sync``): the statuses come from the ``clk``
+    domain and Capture-DR samples them on TCK, so without one a capture near a status
+    change can go metastable. A capture then shows the status as it was two TCK edges
+    earlier, which is right for statuses that settle (done, fail, a logged address) and
+    is why the PDL reads them only after the run loop."""
     _require_warptap()
     specs = []
     for p in ports:
         if p.width < 1:
             raise ValueError(f"port {p.name!r} has invalid width {p.width} (must be >= 1)")
         direction = InstrumentDirection.WRITE if p.role == "control" else InstrumentDirection.READ
-        specs.append(
-            InstrumentSpec(
+        sync = {"capture_sync": True} if capture_sync and direction is InstrumentDirection.READ else {}
+        try:
+            spec = InstrumentSpec(
                 p.name, width=p.width, capture_value=0, direction=direction,
-                signal_bits=tuple(SignalBinding(p.name, i) for i in range(p.width)),
+                signal_bits=tuple(SignalBinding(p.name, i) for i in range(p.width)), **sync,
             )
-        )
+        except TypeError as exc:
+            if not sync or "capture_sync" not in str(exc):
+                raise
+            raise TestAccessUnavailable(_NO_HARDENING_SUPPORT) from exc
+        specs.append(spec)
     return specs
 
 
@@ -209,6 +221,7 @@ def wrap_test_access(
     addr_width: int = 0,
     repair_ports: Sequence[Mapping[str, Any]] = (),
     idcode_value: int | None = None,
+    capture_sync: bool = True,
     yosys_command: str | None = None,
 ) -> tuple[str, Any, Any]:
     """Ingest ``sources``, wrap ``top_module``'s real control/status ports
@@ -229,6 +242,9 @@ def wrap_test_access(
     placeholder default. It is validated with warptap's own rule (32 bits, bit 0 set,
     as IEEE 1149.1 requires) before anything is ingested, and raises ValueError when
     it fails; it needs a warptap that can set one, else TestAccessUnavailable.
+
+    ``capture_sync`` (on by default) synchronizes every status read to TCK; see
+    build_instrument_specs.
     """
     _require_warptap()
     if idcode_value is not None:
@@ -242,7 +258,7 @@ def wrap_test_access(
         addr_width=addr_width,
         repair_ports=repair_ports,
     )
-    specs = build_instrument_specs(ports)
+    specs = build_instrument_specs(ports, capture_sync=capture_sync)
     extra = {} if idcode_value is None else {"idcode_value": idcode_value}
     try:
         return _warptap_insert_test_access(
@@ -274,6 +290,10 @@ _NO_IDCODE_SUPPORT = (
 _NO_BSDL_SUPPORT = (
     "the installed warptap cannot emit a BSDL whose ICL AccessLink names the network's "
     "instruction (it has no warptap.bsdl_emit) -- upgrade warptap"
+)
+_NO_HARDENING_SUPPORT = (
+    "the installed warptap cannot harden the inserted network (TCK synchronizers on the "
+    "status reads) -- it needs warptap 0.0.4, which the Nix dev shell pins"
 )
 
 

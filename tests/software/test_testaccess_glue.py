@@ -9,10 +9,12 @@ does with whatever warptap returns, and they run with or without warptap install
 """
 from __future__ import annotations
 
+import enum
 import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NamedTuple
 
 import pytest
 from typer.testing import CliRunner
@@ -189,7 +191,7 @@ def fake_insert(fake_warptap, monkeypatch):
         return "module x(); endmodule", object(), _root(top)
 
     monkeypatch.setattr(testaccess, "_warptap_insert_test_access", insert, raising=False)
-    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports: [])
+    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports, **kw: [])
     return seen
 
 
@@ -214,7 +216,7 @@ def test_wrap_maps_an_idcode_typeerror_to_the_missing_feature(fake_warptap, monk
         return "v", object(), _root()
 
     monkeypatch.setattr(testaccess, "_warptap_insert_test_access", insert, raising=False)
-    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports: [])
+    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports, **kw: [])
 
     with pytest.raises(TestAccessUnavailable, match="IDCODE"):
         wrap_test_access(["a.v"], "x", idcode_value=CUSTOM)
@@ -225,7 +227,7 @@ def test_wrap_does_not_hide_an_unrelated_typeerror(fake_warptap, monkeypatch) ->
         raise TypeError("something else entirely")
 
     monkeypatch.setattr(testaccess, "_warptap_insert_test_access", insert, raising=False)
-    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports: [])
+    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports, **kw: [])
 
     with pytest.raises(TypeError, match="something else"):
         wrap_test_access(["a.v"], "x")
@@ -235,10 +237,71 @@ def test_wrap_does_not_hide_an_unrelated_typeerror(fake_warptap, monkeypatch) ->
 
 def test_wrap_needs_the_idcode_check_from_a_warptap_that_has_it(fake_warptap, monkeypatch) -> None:
     del sys.modules["warptap.tap_model"].idcode_value_error
-    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports: [])
+    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports, **kw: [])
 
     with pytest.raises(TestAccessUnavailable, match="IDCODE"):
         wrap_test_access(["a.v"], "x", idcode_value=CUSTOM)
+
+
+# --- build_instrument_specs ----------------------------------------------------
+
+class _Direction(enum.Enum):
+    READ = "read"
+    WRITE = "write"
+
+
+class _Spec(NamedTuple):  # warptap 0.0.4's InstrumentSpec, the fields autoMBIST sets
+    name: str
+    width: int
+    capture_value: int
+    direction: _Direction = _Direction.READ
+    signal_bits: tuple = ()
+    capture_sync: bool = False
+
+
+class _OldSpec(NamedTuple):  # an InstrumentSpec from before capture_sync
+    name: str
+    width: int
+    capture_value: int
+    direction: _Direction = _Direction.READ
+    signal_bits: tuple = ()
+
+
+@pytest.fixture
+def fake_specs(fake_warptap, monkeypatch):
+    monkeypatch.setattr(testaccess, "InstrumentDirection", _Direction, raising=False)
+    monkeypatch.setattr(testaccess, "SignalBinding", lambda name, bit: (name, bit), raising=False)
+    monkeypatch.setattr(testaccess, "InstrumentSpec", _Spec, raising=False)
+
+
+PORTS = [testaccess.TestAccessPort("bist_start", "control"), testaccess.TestAccessPort("diag_addr", "status", 2)]
+
+
+def test_every_status_read_and_no_control_write_is_synchronized(fake_specs) -> None:
+    specs = testaccess.build_instrument_specs(PORTS)
+
+    assert [(s.name, s.direction, s.capture_sync) for s in specs] == [
+        ("bist_start", _Direction.WRITE, False), ("diag_addr", _Direction.READ, True)]
+    assert specs[1].signal_bits == (("diag_addr", 0), ("diag_addr", 1))
+    assert not any(s.capture_sync for s in testaccess.build_instrument_specs(PORTS, capture_sync=False))
+
+
+def test_a_warptap_without_capture_sync_is_refused_with_the_version_it_needs(fake_specs, monkeypatch) -> None:
+    monkeypatch.setattr(testaccess, "InstrumentSpec", _OldSpec)
+
+    with pytest.raises(TestAccessUnavailable, match="0.0.4"):
+        testaccess.build_instrument_specs(PORTS)
+    # without the synchronizers it asks nothing an older warptap lacks
+    assert len(testaccess.build_instrument_specs(PORTS, capture_sync=False)) == 2
+
+
+def test_an_unrelated_spec_typeerror_is_not_hidden(fake_specs, monkeypatch) -> None:
+    def broken(*args, **kwargs):
+        raise TypeError("something else entirely")
+
+    monkeypatch.setattr(testaccess, "InstrumentSpec", broken)
+    with pytest.raises(TypeError, match="something else"):
+        testaccess.build_instrument_specs(PORTS)
 
 
 # --- the CLI: validation first, nothing written on a failure -------------------
