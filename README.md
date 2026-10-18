@@ -3,6 +3,7 @@
 [![CI](https://github.com/ranaumarnadeem/autoMBIST/actions/workflows/test.yml/badge.svg)](https://github.com/ranaumarnadeem/autoMBIST/actions/workflows/test.yml)
 [![Docs](https://github.com/ranaumarnadeem/autoMBIST/actions/workflows/docs.yml/badge.svg)](https://ranaumarnadeem.github.io/autoMBIST/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23453213.svg)](https://doi.org/10.5281/zenodo.23453213)
 
 **autoMBIST is an open-source Memory Built-In Self-Test (MBIST) generator with built-in redundancy analysis (BIRA) and built-in self-repair (BISR) for OpenRAM SRAM macros, taken through full RTL-to-GDS on SkyWater sky130 with LibreLane.**
 
@@ -222,7 +223,7 @@ Full details, including the physical/signoff toolchain:
 
 ## Citing
 
-If you use autoMBIST in research, use the "Cite this repository" button on GitHub or the metadata in [CITATION.cff](CITATION.cff).
+If you use autoMBIST in research, use the "Cite this repository" button on GitHub or the metadata in [CITATION.cff](CITATION.cff). Every release is archived on Zenodo: cite [10.5281/zenodo.23453213](https://doi.org/10.5281/zenodo.23453213) for the software as a whole (it resolves to the latest version), or a release's own DOI from that page to pin one version.
 
 ## FAQ
 

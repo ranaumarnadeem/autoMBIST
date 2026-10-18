@@ -33,4 +33,6 @@ keywords:
   - memory testing
   - SRAM
   - Verilator
-# doi: 10.5281/zenodo.XXXXXXX   # add after minting a Zenodo DOI from a tagged GitHub release
+# Zenodo's concept DOI: it resolves to the latest archived release. Each release
+# also gets a DOI of its own (v0.3.0: 10.5281/zenodo.23453214).
+doi: 10.5281/zenodo.23453213
