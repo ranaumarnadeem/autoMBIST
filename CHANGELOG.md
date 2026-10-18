@@ -45,7 +45,7 @@ everything that predates the migration.
 ### Changed
 - `wrap-test-access` needs warptap 0.0.4, the version the Nix dev shell pins, for
   every run, not only `--emit-stil`; an older one is refused with the version it
-  needs.
+  needs. The `test-access` extra in `pyproject.toml` states the same floor.
 
 ### Documentation
 - The docs site has an Open Graph image, the same 1280x640 card as the

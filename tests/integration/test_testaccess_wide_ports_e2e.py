@@ -41,7 +41,7 @@ pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("warptap") is None
     or shutil.which("iverilog") is None
     or shutil.which("yosys") is None,
-    reason="needs `pip install warptap` plus iverilog and yosys on PATH "
+    reason="needs warptap (the Nix dev shell pins it) plus iverilog and yosys on PATH "
     "(Linux/WSL only) -- warptap shells out to both, no bundled fallback",
 )
 

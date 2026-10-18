@@ -26,7 +26,7 @@ from autombist.testbench import bist_cycle_bound
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("warptap") is None
     or any(shutil.which(tool) is None for tool in ("yosys", "iverilog", "vvp")),
-    reason="needs `pip install warptap` plus yosys and Icarus Verilog on PATH (Linux/WSL only)",
+    reason="needs warptap (the Nix dev shell pins it) plus yosys and Icarus Verilog on PATH (Linux/WSL only)",
 )
 
 runner = CliRunner()
