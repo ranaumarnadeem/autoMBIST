@@ -32,8 +32,9 @@ from typing import Any
 
 from .generator import _algo_port_suffixes, _normalize_algo, _normalize_ports
 
-# 1.1: test_access records the chip reset its control TDRs clear on, and each instrument
-# capture_sync. Additive, so a 1.0 reader still parses it.
+# 1.1: test_access records the instruction that selects the network, the TAP's IDCODE, the
+# chip reset its control TDRs clear on, and each instrument capture_sync. Additive, so a 1.0
+# reader still parses it.
 SCHEMA_VERSION = "1.1.0"
 MANIFEST_FORMAT = "autombist_instance_manifest"
 MANIFEST_FILENAME = "manifest.json"
@@ -430,6 +431,9 @@ def build_test_access_block(
     stil: dict[str, Any] | None = None,
     capture_sync: bool = False,
     chip_reset: str | None = None,
+    network_instruction: str = "EXTEST",
+    network_opcode: int = 0,
+    idcode_value: int | None = None,
 ) -> dict[str, Any]:
     """The manifest's "test_access" block: a synthesis plan for the JTAG/IJTAG-wrapped
     netlist wrap-test-access wrote, built from ``enumerated``
@@ -441,7 +445,9 @@ def build_test_access_block(
     netlist, and each status instrument records ``capture_sync``. ``chip_reset`` names the
     active-low chip reset the control TDRs also clear on: their cells must be the clearing
     kind and the netlist must hold its TCK release synchronizer, and the block records it
-    as ``chip_reset: {port, active}``.
+    as ``chip_reset: {port, active}``. ``network_instruction``/``network_opcode`` are the
+    TAP instruction that selects the network (EXTEST, 0, is what a block without them
+    means) and ``idcode_value`` the TAP's IDCODE, recorded as they are given.
 
     Every module the wrapped netlist uses is defined in ``output_verilog`` itself,
     already parameter-specialized by warptap's Yosys ingest (e.g.
@@ -527,6 +533,10 @@ def build_test_access_block(
         # the run_mbist STIL ({path, tck_period_ns, clk_period_ns}) when --emit-stil wrote it
         "stil": stil,
         "boundary_ports": list(JTAG_BOUNDARY_PORTS),
+        # the TAP instruction that selects the network, and the TAP's IDCODE
+        "network_instruction": network_instruction,
+        "network_opcode": network_opcode,
+        "idcode_value": idcode_value,
         # the chip reset the control TDRs also clear on, or None: they clear on TRST only
         "chip_reset": None if chip_reset is None else {"port": chip_reset, "active": "low"},
         "memory_blackboxed": memory_blackboxed,

@@ -316,6 +316,16 @@ def test_test_access_block_without_a_bsdl_or_tap_says_so(tmp_path: Path) -> None
     block = _block(tmp_path, _enumerated())
 
     assert block["bsdl_path"] is None and block["tap"] is None
+    # what a block without the 1.1 fields means: the network behind EXTEST, IDCODE unstated
+    assert (block["network_instruction"], block["network_opcode"], block["idcode_value"]) == ("EXTEST", 0, None)
+
+
+def test_test_access_block_names_the_networks_instruction_as_faultflow_reads_it(tmp_path: Path) -> None:
+    block = _block(tmp_path, _enumerated(), network_instruction="IJTAG_ACCESS", network_opcode=0b1100,
+                   idcode_value=0x5CA1AB1F)
+
+    assert block["network_instruction"] == "IJTAG_ACCESS"
+    assert block["network_opcode"] == 12 and block["idcode_value"] == 0x5CA1AB1F  # integers, not bit strings
 
 
 def test_test_access_block_orders_wide_tdr_bits(tmp_path: Path) -> None:
