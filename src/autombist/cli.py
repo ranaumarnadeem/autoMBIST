@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 from pathlib import Path
+from typing import NoReturn
 
 import typer
 import yaml
@@ -269,7 +270,11 @@ def _grade_controller(
     import json
 
     from autombist.faultflow_flow import FaultFlowError
-    from autombist.reporting import merge_faultflow_coverage, write_simulation_report
+    from autombist.reporting import (
+        format_controller_coverage,
+        merge_faultflow_coverage,
+        write_simulation_report,
+    )
     from autombist.runner import run_controller_grading
 
     bundle = module_outdir / "faultflow"
@@ -302,15 +307,41 @@ def _grade_controller(
     if silent:
         return
 
-    coverage_percent = coverage.get("coverage_percent") if coverage else None
-    if isinstance(coverage_percent, (int, float)):
-        typer.echo(
-            "Controller structural coverage (FaultFlow): "
-            f"{coverage.get('detected')}/{coverage.get('denominator')} ({coverage_percent:.2f}%), "
-            f"excluded-blackbox={coverage.get('excluded_blackbox')}"
-        )
+    line = format_controller_coverage(coverage)
+    if line:
+        typer.echo(f"Controller structural coverage (FaultFlow): {line}")
     else:
         typer.echo(f"Controller grading complete. Bundle: {bundle}")
+
+
+def _emit_manifest(module_outdir: Path, config_path: Path) -> None:
+    from autombist.manifest import ManifestError, build_instance_manifest, write_instance_manifest
+
+    # Re-loads the config.yml snapshot generate_from_config already wrote,
+    # rather than threading the in-memory render_config through -- _generate()
+    # returns only the wrapper Path, matching the existing precedent
+    # _wrap_test_access's own --config handling already uses.
+    snapshot_path = module_outdir / "config.yml"
+    try:
+        loaded = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if not isinstance(loaded, dict):
+        typer.secho(f"autombist: {snapshot_path} must be a YAML mapping", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    try:
+        manifest = build_instance_manifest(
+            loaded, module_outdir, tool_version=__version__, config_path=config_path,
+        )
+        manifest_path = write_instance_manifest(manifest, module_outdir)
+    except (ManifestError, KeyError, ValueError, OSError) as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    if not _is_quiet():
+        typer.echo(f"Emitted instance manifest: {manifest_path}")
 
 
 _CLI_STATE: dict[str, bool] = {"verbose": False, "quiet": False}
@@ -372,6 +403,7 @@ def generate(
     fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at (SA0/SA1), transition-up, transition-down, or port-coupling (march-1r1w only; march-2rw supports stuck-at/transition only)"),
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
     algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, march-2rw, march-x, mats-plus, or checkerboard"),
+    emit_manifest: bool = typer.Option(False, "--emit-manifest/--no-emit-manifest", help="Also write manifest.json: memory instances to blackbox and MBIST logic instances to grade, for external synthesis tooling (e.g. FaultFlow)"),
 ) -> None:
     r"""Generate MBIST wrapper, RTL, and optionally fault masks.
 
@@ -386,14 +418,26 @@ def generate(
       - sram_model.sv and the shared repair/self-repair RTL
         (repair_remap_row.sv, repair_remap_col.sv, sram_model_spares.sv,
         onchip_row_repair_analyzer.sv, onchip_selfrepair_ctrl.sv, ...)
+      - <memory_name>_bbox.v (port-only (* blackbox *) SRAM stub -- always
+        emitted, for any downstream synthesis tooling that needs to treat the
+        memory as a boundary rather than flatten/optimize through it)
+      - tb/tb_<wrapper>.sv + tb/<memory_name>_model.v + tb/run_tb.sh (a
+        self-checking testbench running the BIST from the wrapper's pins, with a
+        behavioral model of the memory generated from the config; run it with
+        Icarus Verilog: bash tb/run_tb.sh, or pass the macro's own model to
+        replace the generated one: bash tb/run_tb.sh <memory model .v>)
       - \[with --test] <memory_name>_saboteur.v (fault injection wrapper)
       - \[with --test] faults/*.hex (fault masks)
       - \[with --test] Makefile (for running simulation)
+      - \[with --emit-manifest] manifest.json (machine-readable instance list:
+        which instances to blackbox vs. flatten and grade, for external
+        synthesis-aware tooling such as FaultFlow)
 
     Examples:
       autombist generate --config config.yml
       autombist generate --config my_sram.yml --out results --algo march-raw
       autombist generate --config config.yml --test --faults 100 --seed 42
+      autombist generate --config config.yml --emit-manifest
       autombist generate  # uses ./config.yml when present
     """
 
@@ -404,6 +448,8 @@ def generate(
         if test:
             typer.echo(f"Generated fault masks in: {wrapper_path.parent / 'faults'}")
             typer.echo(f"Generated fault-sim Makefile: {wrapper_path.parent / 'Makefile'}")
+    if emit_manifest:
+        _emit_manifest(wrapper_path.parent, config)
 
 
 @app.command()
@@ -463,6 +509,7 @@ def run(
     scan_chains: int = typer.Option(1, "--scan-chains", help="Scan chains for controller grading"),
     min_coverage: float | None = typer.Option(None, "--min-coverage", help="Fail (exit 1) if array fault coverage is below this percent"),
     json_output: bool = typer.Option(False, "--json", help="Print the structured report as JSON to stdout instead of the human summary"),
+    emit_manifest: bool = typer.Option(False, "--emit-manifest/--no-emit-manifest", help="Also write manifest.json: memory instances to blackbox and MBIST logic instances to grade, for external synthesis tooling (e.g. FaultFlow)"),
 ) -> None:
     """Generate wrapper AND run simulation in one command (convenience mode).
 
@@ -497,6 +544,8 @@ def run(
     if faultflow:
         opts = _build_faultflow_options(faultflow_repo, cell_lib, scan_chains, 90.0, 20)
         _grade_controller(wrapper_path.parent, opts, run=True, quiet=_is_quiet(), json_output=json_output)
+    if emit_manifest:
+        _emit_manifest(wrapper_path.parent, config)
 
 
 @app.command("grade-controller")
@@ -512,12 +561,16 @@ def grade_controller(
     """Grade the MBIST controller logic with FaultFlow (memory macro blackboxed).
 
     Emits a self-contained, re-runnable bundle under out/<memory>/faultflow/
-    (blackbox stub, Yosys script, FaultFlow .ofs, run_faultflow.sh) and, unless
-    --no-run is given, synthesizes the collar and runs scan stuck-at ATPG, then
-    reports controller structural coverage and merges it into the latest report.
+    (manifest.json, options.ofs, run_faultflow.sh) and, unless --no-run is given,
+    runs it: FaultFlow's autoMBIST integration synthesizes every test instrument
+    standalone with the memory blackboxed, then scan insertion, scan-check and
+    scan stuck-at ATPG run with the memory's outputs treated as unknown. Reports
+    controller structural coverage and merges it into the latest report. Every
+    file a run writes stays inside the bundle.
 
-    Requirements (Linux/WSL): Yosys, and a built FaultFlow at --faultflow-repo
-    (or $FAULTFLOW_HOME). FaultFlow is invoked from its own venv.
+    Requirements (Linux/WSL): Yosys, and a built FaultFlow with its autoMBIST
+    integration at --faultflow-repo (or $FAULTFLOW_HOME). FaultFlow is invoked
+    from its own venv.
 
     Examples:
       autombist grade-controller --out out --faultflow-repo ~/faultflow
@@ -609,17 +662,88 @@ def yield_sweep_cmd(
         typer.echo(f"Report: {report_path}")
 
 
+def _fail(message: str) -> NoReturn:
+    typer.secho(f"autombist: {message}", err=True, fg=typer.colors.RED)
+    raise typer.Exit(code=1)
+
+
+def _is_blackbox_source(path: Path) -> bool:
+    try:
+        return "(* blackbox *)" in path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+
+
+def _parse_idcode(text: str) -> int:
+    try:
+        return int(text, 0)
+    except ValueError:
+        _fail(f"--idcode {text!r} is not a number -- write it in hex, e.g. 0x5CA1AB1F")
+
+
 def _wrap_test_access(
-    sources: list[Path], top: str, out: Path, *,
+    sources: list[Path] | None, top: str | None, out: Path | None, *,
     onchip_selfrepair: bool, onchip_repair_persistence: bool, onchip_diagnosis: bool,
-    config: Path | None, emit_icl: bool,
+    config: Path | None, emit_icl: bool, manifest: Path | None = None,
+    bist_cycles: int | None = None, tck_max_freq_mhz: float | None = None,
+    idcode: int | None = None, emit_stil: bool = False, stil_clk_period_ns: float | None = None,
 ) -> None:
+    import json
+    import math
+
     from autombist.testaccess import (
         TestAccessUnavailable,
         classify_test_access_ports,
         test_access_kwargs_from_config,
         wrap_test_access,
     )
+
+    if tck_max_freq_mhz is not None:
+        if not (emit_icl or emit_stil):
+            _fail("--tck-max-freq-mhz sets the BSDL's TCK limit and the STIL's TCK period, and needs "
+                  "--emit-icl or --emit-stil")
+        if not math.isfinite(tck_max_freq_mhz) or tck_max_freq_mhz <= 0:
+            _fail(f"--tck-max-freq-mhz must be a finite number > 0, got {tck_max_freq_mhz}")
+    if stil_clk_period_ns is not None:
+        if not emit_stil:
+            _fail("--stil-clk-period-ns sets the STIL's clock period and needs --emit-stil")
+        if not math.isfinite(stil_clk_period_ns) or stil_clk_period_ns <= 0:
+            _fail(f"--stil-clk-period-ns must be a finite number > 0, got {stil_clk_period_ns}")
+    if emit_stil:
+        from autombist.jtag_bist import stil_support_problem
+
+        problem = stil_support_problem()
+        if problem is not None:
+            _fail(problem)
+
+    legacy_flags = onchip_selfrepair or onchip_repair_persistence or onchip_diagnosis
+    base_manifest = None
+    bist_config: dict | None = None
+    if manifest is not None:
+        # --manifest alone is enough: everything else defaults from the generate
+        # output directory it names, with the memory's blackbox stub standing in
+        # for the memory model so the wrapped netlist keeps it a test boundary.
+        from autombist.manifest import MANIFEST_FILENAME, synthesis_sources
+
+        try:
+            base_manifest = json.loads((manifest / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+            snapshot = yaml.safe_load((manifest / "config.yml").read_text(encoding="utf-8"))
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            _fail(f"{exc} -- run `generate --emit-manifest` for {manifest} first")
+        top = top or base_manifest["top_module"]
+        out = out or manifest / "test-access"
+        if config is None and not legacy_flags:
+            config = manifest / "config.yml"
+        if not sources:
+            sources = [
+                *synthesis_sources(snapshot, manifest),
+                manifest / base_manifest["sources"]["blackbox_stub"],
+            ]
+    if not sources or top is None:
+        _fail("--source and --top are required unless --manifest is given")
+    out = out or Path("out/test-access")
+    if emit_stil and config is None and bist_cycles is None:
+        _fail("--emit-stil needs the BIST's run length: pass --config or --manifest, or --bist-cycles")
 
     if config is not None:
         if onchip_selfrepair or onchip_repair_persistence or onchip_diagnosis:
@@ -651,6 +775,7 @@ def _wrap_test_access(
         except ValueError as exc:
             typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
             raise typer.Exit(code=1)
+        bist_config = loaded
     else:
         ta_kwargs = {
             "onchip_selfrepair": onchip_selfrepair,
@@ -659,13 +784,26 @@ def _wrap_test_access(
         }
 
     try:
-        inserted_verilog, graph, root = wrap_test_access(sources, top, **ta_kwargs)
+        inserted_verilog, graph, root = wrap_test_access(sources, top, idcode_value=idcode, **ta_kwargs)
     except TestAccessUnavailable as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
     except (FileNotFoundError, OSError, ValueError) as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
+
+    # The ICL and the BSDL its AccessLink points at. Rendered before anything is
+    # written, so a failure leaves no half-written output directory.
+    from autombist.testaccess import DEFAULT_TCK_MAX_FREQ_HZ, describe_test_access_tap, tap_facts
+
+    tck_hz = DEFAULT_TCK_MAX_FREQ_HZ if tck_max_freq_mhz is None else tck_max_freq_mhz * 1e6
+    description = None
+    if emit_icl:
+        try:
+            description = describe_test_access_tap(graph, root, tck_max_freq_hz=tck_hz, idcode_value=idcode)
+        except (TestAccessUnavailable, ValueError) as exc:
+            _fail(str(exc))
+    tap = tap_facts(idcode_value=idcode, description=description)
 
     out.mkdir(parents=True, exist_ok=True)
     verilog_path = out / f"{top}_test_access.v"
@@ -676,28 +814,152 @@ def _wrap_test_access(
     for i, p in enumerate(ports):
         typer.echo(f"  chain[{i}] {p.name} ({p.role}, width={p.width})")
     typer.echo(f"Inserted Verilog: {verilog_path}")
+    typer.echo(
+        f"TAP IDCODE:       {tap['idcode']} "
+        f"({'warptap placeholder -- --idcode sets your own' if tap['idcode_is_placeholder'] else 'set by --idcode'})"
+    )
 
-    if emit_icl:
-        from warptap.icl_emit import to_icl
-
+    icl_path: Path | None = None
+    bsdl_path: Path | None = None
+    if description is not None:
         icl_path = out / f"{top}_test_access.icl"
-        icl_path.write_text(to_icl(graph, root, include_access_link=False), encoding="utf-8")
+        icl_path.write_text(description.icl, encoding="utf-8")
+        bsdl_path = out / f"{top}_test_access.bsd"
+        bsdl_path.write_text(description.bsdl, encoding="utf-8")
         typer.echo(f"ICL:              {icl_path}")
+        assumed = " -- assumed, set --tck-max-freq-mhz" if tck_max_freq_mhz is None else ""
+        typer.echo(f"BSDL:             {bsdl_path} (TAP only; TCK max {tck_hz / 1e6:g} MHz{assumed})")
+
+    # Running the BIST over JTAG: the PDL procedure, its retargeted vectors and
+    # a self-checking testbench. The run loop's length comes from the config
+    # (the BIST's length for its algorithm and size), or --bist-cycles.
+    from autombist.testbench import TestbenchError, bist_cycle_bound, bist_cycles as bist_length
+
+    try:
+        exact = bist_length(bist_config) if bist_config is not None else None
+        run_cycles = bist_cycles or (bist_cycle_bound(bist_config) if bist_config is not None else None)
+    except (TestbenchError, KeyError, ValueError) as exc:
+        _fail(str(exc))
+    stil_record: dict | None = None
+    if run_cycles is None:
+        typer.echo(
+            "PDL/JTAG testbench: skipped -- pass --config or --manifest (or --bist-cycles) "
+            "so the BIST's run length is known"
+        )
+    else:
+        from autombist.jtag_bist import DEFAULT_STIL_CLK_PERIOD_NS, StilTiming, write_jtag_bist
+
+        # The STIL's TCK period is the BSDL's TCK limit, so the two can't disagree.
+        stil = (
+            StilTiming(tck_period_ns=1e9 / tck_hz,
+                       clk_period_ns=stil_clk_period_ns or DEFAULT_STIL_CLK_PERIOD_NS)
+            if emit_stil else None
+        )
+        try:
+            files = write_jtag_bist(
+                out, top=top, graph=graph, root=root,
+                wrapped_verilog=inserted_verilog, wrapped_file=verilog_path.name,
+                memory_name=str(bist_config["memory_name"]) if bist_config is not None else None,
+                run_cycles=run_cycles, bist_cycles=exact,
+                icl_file=icl_path.name if icl_path is not None else None,
+                bsdl_file=bsdl_path.name if bsdl_path is not None else None,
+                stil=stil,
+            )
+        except (TestbenchError, OSError) as exc:
+            _fail(str(exc))
+        typer.echo(f"PDL (run_mbist):  {files.pdl}")
+        typer.echo(f"JTAG vectors:     {files.vectors}")
+        typer.echo(f"JTAG testbench:   {files.testbench} (run: bash {files.run_script} [memory model .v])")
+        if files.stil is not None:
+            assumed = [flag for flag, given in (("--tck-max-freq-mhz", tck_max_freq_mhz),
+                                                ("--stil-clk-period-ns", stil_clk_period_ns)) if given is None]
+            note = f" -- assumed, set {' / '.join(assumed)}" if assumed else ""
+            typer.echo(f"STIL (run_mbist): {files.stil} (TCK {stil.tck_period_ns:g} ns, "
+                       f"clk {stil.clk_period_ns:g} ns{note})")
+            stil_record = {"path": str(files.stil.resolve()),
+                           "tck_period_ns": stil.tck_period_ns, "clk_period_ns": stil.clk_period_ns}
+
+    if manifest is not None:
+        from autombist.manifest import (
+            ManifestError,
+            build_test_access_block,
+            update_manifest_with_test_access,
+        )
+        from autombist.testaccess import enumerate_test_access_instances
+
+        try:
+            enumerated = enumerate_test_access_instances(
+                verilog_path, top, extra_sources=[s for s in sources if _is_blackbox_source(s)],
+            )
+            block = build_test_access_block(
+                base_manifest, enumerated,
+                [{"name": p.name, "role": p.role, "width": p.width} for p in ports],
+                output_verilog=verilog_path, output_dir=out, icl_path=icl_path,
+                bsdl_path=bsdl_path, tap=tap, stil=stil_record,
+            )
+            manifest_path = update_manifest_with_test_access(manifest, block)
+        except (ManifestError, ValueError, OSError) as exc:
+            _fail(str(exc))
+        jtag = sum(1 for i in block["instances"] if i["category"].startswith(("jtag_", "ijtag_")))
+        typer.echo(
+            f"Updated manifest:  {manifest_path} ({jtag} JTAG/IJTAG instances, "
+            f"memory {'blackboxed' if block['memory_blackboxed'] else 'synthesized from its model'})"
+        )
 
 
 @app.command("wrap-test-access")
 def wrap_test_access_cmd(
-    source: list[Path] = typer.Option(..., "--source", help="A source file the design needs (repeatable) -- generated wrapper(s), shared algorithm/repair RTL, macro models"),
-    top: str = typer.Option(..., "--top", help="Top module name to insert the test-access network into"),
-    out: Path = typer.Option("out/test-access", "--out", help="Output directory for the inserted Verilog (and --emit-icl's ICL file)"),
+    source: list[Path] | None = typer.Option(None, "--source", help="A source file the design needs (repeatable) -- generated wrapper(s), shared algorithm/repair RTL, macro models or blackbox stubs. Required unless --manifest is given"),
+    top: str | None = typer.Option(None, "--top", help="Top module name to insert the test-access network into. Required unless --manifest is given"),
+    out: Path | None = typer.Option(None, "--out", help="Output directory for the inserted Verilog (and --emit-icl's ICL file). Default: <manifest dir>/test-access with --manifest, else out/test-access"),
     onchip_selfrepair: bool = typer.Option(False, "--onchip-selfrepair", help="Also wrap self_repair_start/done/fail/busy -- must match the redundancy config the sources were generated with. Omit when passing --config"),
     onchip_repair_persistence: bool = typer.Option(False, "--onchip-repair-persistence", help="Also wrap repair_load/repair_load_done -- must match the redundancy config the sources were generated with. Omit when passing --config"),
     onchip_diagnosis: bool = typer.Option(False, "--onchip-diagnosis", help="Also wrap diag_overflow -- must match the redundancy config the sources were generated with. Omit when passing --config"),
     config: Path | None = typer.Option(None, "--config", help="Path to the config.yml snapshot `generate` wrote alongside these sources -- derives the flags above PLUS the wide-port geometry (diag_valid/diag_addr/fuse_row_repair_en/fuse_faulty_row_addr/repair_ports) needed to wrap them. Without it, only the always-1-bit ports are wrapped, exactly as before wide-port support"),
-    emit_icl: bool = typer.Option(False, "--emit-icl", help="Also emit an ICL description of the inserted network"),
+    emit_icl: bool = typer.Option(False, "--emit-icl", help="Also emit an ICL description of the inserted network, and the BSDL its AccessLink points at (the TAP's instruction set: which instruction selects the network)"),
+    manifest: Path | None = typer.Option(None, "--manifest", help="A `generate --emit-manifest` output directory. Records every inserted TAP/SIB/TDR instance in its manifest.json's test_access block, and on its own supplies --source (with the memory's blackbox stub in place of a model), --top, --config and --out"),
+    bist_cycles: int | None = typer.Option(None, "--bist-cycles", min=1, help="Length, in clk cycles, of the BIST run loop in the emitted PDL and JTAG testbench. Default: autoMBIST's bound on the BIST's length for the config's algorithm and size (needs --config or --manifest)"),
+    tck_max_freq_mhz: float | None = typer.Option(None, "--tck-max-freq-mhz", help="The TAP's maximum TCK frequency in MHz, stated in the BSDL and used as the STIL's TCK period (needs --emit-icl or --emit-stil). Nothing in the RTL says what it is; default 10 MHz is an assumption -- set the real limit"),
+    idcode: str | None = typer.Option(None, "--idcode", help="The TAP's 32-bit IDCODE, e.g. 0x5CA1AB1F (bit 0 must be 1, per IEEE 1149.1). Default: warptap's placeholder, which is not a registered manufacturer ID -- ship your own"),
+    emit_stil: bool = typer.Option(False, "--emit-stil", help="Also write the run_mbist pattern as IEEE 1450 STIL for a tester (<top>_run_mbist.stil): a TRST/reset lead-in, then the same TCK cycles and clk run loop as the JTAG vectors, every pin of the wrapped top declared. Needs the BIST's run length (--config, --manifest or --bist-cycles) and warptap 0.0.4 or later"),
+    stil_clk_period_ns: float | None = typer.Option(None, "--stil-clk-period-ns", help="The functional clock's period in the STIL, in ns (needs --emit-stil). Nothing in the RTL says what it may be; default 100 ns is an assumption -- set the real one"),
 ) -> None:
     """Wrap a generated design's control/status ports with a JTAG/IJTAG test-access
     network, via the external warptap package.
+
+    With --manifest DIR alone, everything comes from that generate output directory:
+    the wrapper and instrument RTL, the memory's blackbox stub (so the wrapped netlist
+    keeps the memory a test boundary), the top module and config.yml; output goes to
+    DIR/test-access, and manifest.json's test_access block lists every instance of the
+    wrapped netlist (TAP, one SIB per port, one TDR bit per port bit, the MBIST blocks
+    as parameter-specialized modules, the blackboxed memory).
+
+    Alongside the wrapped netlist it writes what runs the BIST over JTAG: an IEEE 1687
+    PDL procedure (<top>_run_mbist.pdl: enter test mode, start the BIST, run clk for
+    its length, read bist_done/bist_fail back, return to idle), that procedure
+    retargeted to TCK-level vectors with the expected TDO (<top>_run_mbist.vec), and a
+    self-checking testbench playing them (tb_<top>_jtag.sv; run with run_tb_jtag.sh,
+    which uses the generated tb/<memory>_model.v when it sits next to the output
+    directory, or take the macro's own model as an argument). The run loop's length
+    needs --config or --manifest, or --bist-cycles.
+
+    With --emit-icl it also writes the ICL (<top>_test_access.icl) and the BSDL
+    (<top>_test_access.bsd) its AccessLink points at. The AccessLink names the TAP
+    instruction that selects the network (EXTEST), which the BSDL declares, so a
+    retargeting tool needs no out-of-band knowledge to reach it. The BSDL describes the
+    TAP only -- no boundary register -- so a tool that requires one will reject it.
+    --tck-max-freq-mhz and --idcode set the two values it states that the RTL cannot:
+    the TCK limit (default 10 MHz, an assumption) and the IDCODE (default warptap's
+    placeholder). manifest.json's test_access block records both, the ICL and BSDL
+    paths, and the instruction that selects the network.
+
+    With --emit-stil it also writes the same pattern as IEEE 1450 STIL for a tester
+    (<top>_run_mbist.stil), through warptap's to_stil: TRST and rst_n asserted while TCK
+    and clk run, then released, then the TCK cycles and clk run loop of the vectors
+    above, with every pin of the wrapped top declared (inputs held at their idle
+    values, outputs other than TDO not compared). Its TCK period is 1 / the
+    --tck-max-freq-mhz limit (default 100 ns), and --stil-clk-period-ns sets clk's
+    (default 100 ns); both defaults are assumptions, and the command says so.
 
     Wraps every control/status port a generated wrapper can expose: the always-1-bit
     ones -- test_mode, bist_start, bist_done, bist_fail, and (with the matching flags)
@@ -710,8 +972,9 @@ def wrap_test_access_cmd(
     src/autombist/testaccess.py's own module docstring.
 
     Requirements (Linux/WSL): `pip install warptap` (>=0.0.2 -- earlier versions have a
-    real bug on any width>1 port), plus Yosys and Icarus Verilog on PATH (warptap shells
-    out to both; neither is bundled).
+    real bug on any width>1 port; the BSDL and --idcode need warptap 0.0.3 and --emit-stil
+    0.0.4, which the Nix dev shell pins and PyPI does not have yet), plus Yosys and Icarus Verilog on
+    PATH (warptap shells out to both; neither is bundled).
 
     Examples:
       autombist wrap-test-access --source out/sram_1rw/sram_1rw_mbist.v \\
@@ -723,6 +986,9 @@ def wrap_test_access_cmd(
 
       autombist wrap-test-access --source out/sram_1rw/sram_1rw_mbist.v ... \\
           --top sram_1rw_mbist --config out/sram_1rw/config.yml --emit-icl
+
+      autombist generate --config config.yml --emit-manifest
+      autombist wrap-test-access --manifest out/sram_1rw --emit-icl
     """
     _wrap_test_access(
         source, top, out,
@@ -731,6 +997,12 @@ def wrap_test_access_cmd(
         onchip_diagnosis=onchip_diagnosis,
         config=config,
         emit_icl=emit_icl,
+        manifest=manifest,
+        bist_cycles=bist_cycles,
+        tck_max_freq_mhz=tck_max_freq_mhz,
+        idcode=_parse_idcode(idcode) if idcode is not None else None,
+        emit_stil=emit_stil,
+        stil_clk_period_ns=stil_clk_period_ns,
     )
 
 
@@ -1360,10 +1632,8 @@ def smoke(
                 typer.secho(f"[smoke] FAIL: FaultFlow bundle emit failed: {exc}", err=True, fg=typer.colors.RED)
                 raise typer.Exit(code=1)
             bundle = ff_module_outdir / "faultflow"
-            top = str(_default_mbist_config()["wrapper_module_name"])
-            _assert_smoke_file(bundle / f"{memory_name}_bbox.v", "faultflow blackbox stub")
-            _assert_smoke_file(bundle / "synth_collar.ys", "faultflow synth script")
-            _assert_smoke_file(bundle / f"{top}.ofs", "faultflow .ofs")
+            _assert_smoke_file(bundle / "manifest.json", "faultflow synthesis manifest")
+            _assert_smoke_file(bundle / "options.ofs", "faultflow grading options")
             _assert_smoke_file(bundle / "run_faultflow.sh", "faultflow run script")
             typer.echo("[smoke] faultflow bundle emit (emit-only): PASS")
 

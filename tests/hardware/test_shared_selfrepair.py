@@ -109,7 +109,9 @@ async def test_shared_selfrepair(dut):
     self_repair_fail = await with_timeout(_run_self_repair_once(dut), 500_000, "ns")
     assert self_repair_fail == 0, f"expected every repairable defect to succeed, self_repair_fail={self_repair_fail}"
 
-    per_memory_fail = [int(dut.self_repair_fail_arr[i].value) for i in range(num_memories)]
+    # self_repair_fail_arr is a packed logic [N-1:0]: memory i is bit i.
+    fail_vec = int(dut.self_repair_fail_arr.value)
+    per_memory_fail = [(fail_vec >> i) & 1 for i in range(num_memories)]
     assert per_memory_fail == [0] * num_memories, (
         f"per-memory self_repair_fail_arr={per_memory_fail} -- at least one memory's OWN "
         "analyzer/ctrl instance reported failure even though the aggregate self_repair_fail read 0"

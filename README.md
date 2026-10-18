@@ -4,38 +4,28 @@
 [![Docs](https://github.com/ranaumarnadeem/autoMBIST/actions/workflows/docs.yml/badge.svg)](https://ranaumarnadeem.github.io/autoMBIST/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-**[📖 Full documentation](https://ranaumarnadeem.github.io/autoMBIST/)** — quickstart,
-installation, worked examples, architecture, the CLI reference, the LibreLane
-hardening recipe, and the roadmap. This README is a fast overview; the docs
-site has the detail.
+**autoMBIST is an open-source Memory Built-In Self-Test (MBIST) generator with built-in redundancy analysis (BIRA) and built-in self-repair (BISR) for OpenRAM SRAM macros, taken through full RTL-to-GDS on SkyWater sky130 with LibreLane.**
 
-> Development has been outpacing the docs site above — several features in
-> [CHANGELOG.md](CHANGELOG.md)'s `0.1.0` release (multi-memory/shared-bus
-> topology, JTAG/IJTAG test-access wrapping, FaultFlow controller grading,
-> and more) aren't reflected there yet. Check CHANGELOG.md for the most
-> current picture until the docs site catches up.
+It generates synthesizable MBIST controllers and repair logic around OpenRAM memories, verifies them in cocotb and Icarus Verilog simulation, and doubles as a Verilator-driven research platform for march algorithms and functional memory fault models. It is the open-source counterpart to the memory test and repair features in commercial tools such as Tessent MemoryBIST.
 
-**An open-source, OpenRAM-integrated MBIST + BIRA + BISR generator and
-march-algorithm research platform — proven through open RTL-to-GDS closure on
-sky130.**
+- Documentation: https://ranaumarnadeem.github.io/autoMBIST/
+- ORConf 2026 talk: [AutoMBIST: An Open-Source MBIST, BIRA, and BISR Generator for OpenRAM Memories](https://www.youtube.com/watch?v=QJLI4zm1mHA)
+- License: Apache-2.0
 
-autoMBIST tests memory macros for manufacturing defects, repairs them with
-built-in row/column redundancy, and lets you research the march algorithms
-that do it — all behind one CLI. It's really two independent subsystems:
+### At a glance
 
-1. **MBIST wrapper generation + array fault simulation** (`generate`,
-   `simulate`, `run`) — takes an OpenRAM-style SRAM macro and a config file
-   describing its pins, and emits synthesizable MBIST wrapper + march-controller
-   RTL around it, with stuck-at/transition/inter-port-coupling fault injection
-   through cocotb + Icarus Verilog.
-2. **Functional fault-primitive research platform** (`test`, `algo`) — an
-   independent, Verilator-driven toolchain built around a 43-primitive
-   functional fault-model DSL and a programmable march-algorithm engine, for
-   grading a march algorithm (or a real controller FSM) with no memory macro
-   required.
-
-They don't share RTL, a simulator, or a fault format — see
-[Which subsystem do I want?](#which-subsystem-do-i-want).
+| | |
+|---|---|
+| March algorithms built in | Research engine: MATS+, March X, March Y, March B, March C-, March C+, March SS, March RAW1 (13n diagnostic), checkerboard. RTL generator (`generate --algo`): march-c, march-raw, march-x, mats-plus, checkerboard, march-1r1w, march-2rw |
+| March test synthesizer | Generates a custom march test covering the selected fault primitives |
+| Functional fault primitives | 43 built-in fault types; the shipped fault list grades 41 (see [Fault coverage](#fault-coverage)) |
+| Repair | 2D row + column BIRA/BISR, tester-driven or fully autonomous on-chip; a saved repair signature can be reloaded after reset |
+| Memory ports | 1RW, 1R1W, 2RW |
+| Physical closure | OpenRAM sky130 macros hardened with LibreLane, including self-repair-wrapped macros |
+| System proof | Unmodified PicoRV32 boots and runs a program through self-repaired memory |
+| Test-access | JTAG/IJTAG wrapping via [warptap](https://github.com/ranaumarnadeem/warptap) |
+| Tests | 3,022 tests; CI fails below 90% line coverage |
+| Reproducible env | `nix develop` from a clone (the flake's devShell; CI runs the test suite inside it) |
 
 ## Table of Contents
 
@@ -45,6 +35,9 @@ They don't share RTL, a simulator, or a fault format — see
 - [Fault coverage](#fault-coverage)
 - [Command overview](#command-overview)
 - [Installation](#installation)
+- [Part of an open-source DFT toolchain](#part-of-an-open-source-dft-toolchain)
+- [Citing](#citing)
+- [FAQ](#faq)
 - [Further Documentation](#further-documentation)
 
 ## Which subsystem do I want?
@@ -174,12 +167,13 @@ above (March X; `checkerboard`, an address-parity test; `march_raw1`, the
 | Command | What it does |
 |---|---|
 | `init` | Scaffold a starter `config.yml` + `openram.yml` + `Makefile` |
-| `generate` | Emit MBIST wrapper RTL (+ fault injection with `--test`) |
+| `generate` | Emit MBIST wrapper RTL and a standalone self-checking BIST testbench (+ fault injection with `--test`) |
+| `wrap-test-access` | Wrap the control/status ports with a JTAG/IJTAG network; emits ICL and the BSDL its `AccessLink` names, a `run_mbist` PDL procedure, the same pattern as STIL for a tester (`--emit-stil`), and a testbench running the BIST over JTAG |
 | `simulate` | Run cocotb + Icarus against a `generate`d output directory |
 | `run` | `generate` + `simulate` (+ optional `--faultflow`) in one shot |
 | `test` | Grade a march algorithm or controller FSM against the functional fault DSL |
 | `algo` | Interactive research shell — register algorithms/faults, run campaigns, export reports |
-| `grade-controller` | FaultFlow scan-ATPG structural grading of the controller logic |
+| `grade-controller` | [faultflow](https://github.com/ranaumarnadeem/faultflow) scan-ATPG structural grading of the controller logic |
 | `ram-synth` | Synthesize an SRAM macro through OpenRAM from a config |
 | `harden` | Drive LibreLane RTL-to-GDS hardening |
 | `fix-lef-units` / `macro-signoff` | LibreLane pre-flight and per-macro DRC/LVS signoff helpers |
@@ -217,6 +211,36 @@ python -m pip install -e .
 Full details, including the physical/signoff toolchain:
 [Installation](https://ranaumarnadeem.github.io/autoMBIST/installation.html).
 
+## Part of an open-source DFT toolchain
+
+| Tool | What it does |
+|---|---|
+| [faultflow](https://github.com/ranaumarnadeem/faultflow) | ATPG and fault simulation for Yosys gate-level netlists; grades autoMBIST controllers |
+| [OpenTestability](https://github.com/ranaumarnadeem/OpenTestability) | SCOAP/COP testability analysis and test point insertion |
+| **autoMBIST** | MBIST, BIRA and BISR generation for OpenRAM memories |
+| [warptap](https://github.com/ranaumarnadeem/warptap) | IEEE 1149.1 / 1687 test-access insertion, ICL and PDL |
+
+## Citing
+
+If you use autoMBIST in research, use the "Cite this repository" button on GitHub or the metadata in [CITATION.cff](CITATION.cff).
+
+## FAQ
+
+**Is there an open-source MBIST generator for OpenRAM?**
+Yes. autoMBIST takes an OpenRAM-style SRAM macro and a config file describing its pins, and generates the MBIST controller, wrapper and optional BIRA/BISR repair logic as synthesizable Verilog.
+
+**Which march algorithms does autoMBIST support?**
+The research engine has nine built in: MATS+, March X, March Y, March B, March C-, March C+, March SS, March RAW1 and a checkerboard test. The RTL generator (`autombist generate --algo`) emits controllers for march-c, march-raw, march-x, mats-plus, checkerboard, march-1r1w and march-2rw. The march synthesizer can also generate a custom test for a chosen set of fault primitives.
+
+**Can autoMBIST repair faulty memory cells?**
+Yes. It supports 2D row and column redundancy with built-in redundancy analysis and self-repair, either driven by a tester or fully autonomous on chip.
+
+**Does it work with sky130 and LibreLane?**
+Yes. Subsystems built from OpenRAM sky130 macros, including self-repair-wrapped ones, have been hardened through LibreLane. The macros are treated as hard IP at that level; see the signoff caveats above.
+
+**How do I access the MBIST controller from JTAG?**
+With `autombist wrap-test-access`, which uses warptap to wrap the MBIST control and status ports in an IEEE 1687 IJTAG network behind an IEEE 1149.1 TAP. It also writes a PDL procedure that runs the BIST and a testbench that plays it over JTAG.
+
 ## Further Documentation
 
 This README covers install and orientation. For everything else, see the
@@ -238,3 +262,5 @@ published docs site:
   zero-to-result walkthrough covering both subsystems and the hardening flow.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development setup, test markers, and
   how to submit changes.
+
+Some features listed in [CHANGELOG.md](CHANGELOG.md) are not yet on the docs site.

@@ -1350,4 +1350,23 @@ def generate_from_config(
     wrapper_path.write_text(wrapper_text, encoding="utf-8")
 
     copy_mbist_rtl(module_outdir, algo_dir)
+
+    # A port-only (* blackbox *) model of the memory for synthesis, the same
+    # one grade-controller's bundle uses, so any downstream consumer of
+    # module_outdir has it without re-deriving it. Skipped under --test: the
+    # instance is then the saboteur, not the memory. Imported here, not at
+    # module level -- manifest.py imports this module.
+    if not use_saboteur:
+        from .manifest import render_memory_stub
+
+        stub_path = module_outdir / f"{render_config['memory_name']}_bbox.v"
+        stub_path.write_text(render_memory_stub(render_config), encoding="utf-8")
+
+    # A standalone, self-checking testbench (tb/) that runs the BIST from the
+    # wrapper's pins against the memory's own simulation model. Imported here
+    # for the same reason as the stub above.
+    from .testbench import write_bist_testbench
+
+    write_bist_testbench(module_outdir, render_config, wrapper_text)
+
     return wrapper_path

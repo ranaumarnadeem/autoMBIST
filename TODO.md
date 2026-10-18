@@ -24,7 +24,6 @@ work it describes; don't let it silently go stale the way
 
 ## Not started (scoped as GitHub milestones, no work begun)
 
-- **STIL pattern export** — export MBIST test patterns in STIL format.
 - **ISO 26262 diagnostic-coverage mapping** — map fault-model coverage
   onto ISO 26262's diagnostic-coverage metrics for automotive use.
 - **IEEE 1450.6.2 memory modeling (CTL)** — describe a memory core's test
@@ -50,29 +49,142 @@ scoped follow-up:
   shared/hierarchical scoping doc — deliberately not started before the
   flat case was proven, which it now is).
 
-## FaultFlow integration — status re-verified 2026-09-22
+## FaultFlow integration — status re-verified 2026-09-28
 
-The original approved plan (see memory / `docs/` history) had three parts:
+- FaultFlow controller-grading (`grade-controller`, `run --faultflow`) —
+  **works end to end against a real FaultFlow, verified 2026-09-28.** The
+  bundle now hands synthesis to FaultFlow's autoMBIST integration (driven by
+  the manifest below: every instrument standalone, memory blackboxed), then
+  runs scan insertion, `scan-check` (the old bundle skipped it, so it could
+  never reach ATPG) and scan stuck-at ATPG with the memory's outputs treated
+  as unknown. Everything a run writes stays in the bundle; it used to run
+  from inside the FaultFlow checkout and write its output there. A `--test`
+  build is graded as its clean collar, so `run --test --faultflow` reports
+  array and controller coverage together. The live tests
+  (`tests/integration/test_grade_controller.py`, marker `faultflow`) run
+  whenever `$FAULTFLOW_HOME` and Yosys are available. Example, 16x4
+  `sram_1rw` with march-c: controller 554/680 (81.47%), 126 faults
+  testable only through the memory.
+- JTAG/IJTAG-wrapped designs (`wrap-test-access --manifest`'s `test_access`
+  block) — **not graded yet.** FaultFlow reads the block but doesn't
+  interpret it; that is FaultFlow-side work.
+- Part B (autoMBIST bug fixes) — **confirmed fixed** (2026-09-22): sim-time
+  fault-mask re-randomization, the `REPO_ROOT`/`--out` path-resolution bug,
+  and the hardcoded `READ_LATENCY`. The "O(depth)/clock transition saboteur"
+  item was **not** re-checked — still open/unverified.
+- v3 (IEEE-1500 intest on the blackboxed memory boundary) — FaultFlow ships
+  `intest`/`extest`, but autoMBIST never uses them; that wiring is undone.
 
-- FaultFlow controller-grading integration itself — **shipped**
-  (`grade-controller`, `run --faultflow`, fully documented).
-- Part B (autoMBIST bug fixes) — **confirmed fixed**, all three named
-  items checked directly against current source: sim-time fault-mask
-  re-randomization (`tests/hardware/test_mbist.py`'s `_prepare_fault_files`
-  now consumes the masks `generate` already wrote, only regenerating when
-  missing), the `REPO_ROOT`/`--out` path-resolution bug (covered by
-  `tests/integration/test_cli_run_json_e2e.py`'s own regression test), and
-  the hardcoded `READ_LATENCY` (now `.READ_LATENCY({{ read_latency }})`,
-  fully config-driven). The "O(depth)/clock transition saboteur" item
-  specifically was **not** re-checked — still genuinely open/unverified.
-- v3 (IEEE-1500 intest on the blackboxed memory boundary) — **nuanced**:
-  FaultFlow itself already ships `intest`/`extest` CLI commands and
-  wrapper-mode config (`faultflow/cli.py`, `faultflow/config.py`), so the
-  underlying capability this plan called for exists. But autoMBIST's own
-  `faultflow_flow.py`/`cli.py` never reference `intest`/`extest`/
-  `wrapper_mode` at all — the integration side (actually using FaultFlow's
-  intest mode from `grade-controller`) is still unbuilt, not just
-  "pending in FaultFlow." Scoping that wiring is real, undone work.
+### Instance manifest (synthesis plan) — done on both sides
+
+`generate --emit-manifest` writes `manifest.json`: every instance with its
+`hierarchical_path`, `module_type`, instantiation `parameters`, `sources`,
+and `hierarchy_hint` — `"blackbox"` for memories (read the
+`<memory_name>_bbox.v` stub `-lib`), `"separate"` for test instruments (MBIST
+controller, self-repair, diagnosis, remaps: synthesize each standalone with
+`chparam`, blackbox it in the glue synth, splice back — per the Yosys team's
+advice to synthesize test instruments apart from the core). Proven
+sufficient with Yosys alone (no FaultFlow code): driven only by the
+manifest, every block synthesizes standalone to pure sky130 cells and the
+glue synthesizes with every block as a `-lib` stub, with the manifest's
+instance paths matching the glue's cell names exactly — for every
+configuration tried (dedicated single-/multi-port incl. march-2rw and
+march-1r1w, tester-driven and on-chip repair, shared-bus). FaultFlow now
+consumes it (`faultflow/integrations/autombist.py`, `ff.py
+autombist-generate`): per-block synthesis with parameter-carrying stubs, then
+`compose_soc` splices the blocks into one netlist, checked driver-clean by
+Yosys and at gate level (BIST passes a good memory, fails a stuck-bit one).
+
+- **Reverted** (2026-09-27): baking `(* keep_hierarchy *)` into the repair
+  RTL. Yosys keeps the hierarchy, but FaultFlow's loader only simulates the
+  top module's cells and hard-fails on unknown types, so it broke grading.
+- **Fixed, autoMBIST RTL that was not Yosys-synthesizable** (Icarus/Verilator
+  always simulated them fine; nothing had ever run them through Yosys):
+  - ~~`topology: shared-bus` loses its memories in synthesis~~ — **fixed
+    2026-09-27**. The wrapper's per-memory arrays were unpacked, and Yosys
+    lowered the variable-index read `sram_dout_arr[mem_sel_q]` to a
+    never-written `$mem`, so `opt_clean` deleted every memory instance; with
+    the read data undefined it also optimized the compare path, so the
+    synthesized BIST passed a DEFECTIVE memory too (RTL simulation was always
+    fine). Now packed arrays; proven at gate level by
+    `tests/integration/test_synthesized_bist_e2e.py` (synthesized collar,
+    real cocotb run: passes a good memory, fails `sram_1rw_stuck_bit.v`).
+  - ~~march-2rw not synthesizable~~ — **fixed 2026-09-27**:
+    `march_2rw_algo.sv`'s per-port outputs (and `march_2rw_fsm.sv`'s matching
+    wires) were unpacked arrays, which Yosys's SV frontend rejects outright;
+    now packed. `test_synthesized_bist_e2e.py` covers it at gate level with a
+    defect only in port 1's read path, so port 1's own compare is proven to
+    survive synthesis.
+- ~~JTAG/IJTAG instances not enumerated~~ — **done 2026-09-27**.
+  `wrap-test-access --manifest DIR` alone derives its sources from the manifest
+  with the memory's stub in place of the model, so the JTAG-wrapped netlist
+  keeps the memory blackboxed (this reconciles the collar and JTAG-wrapped
+  netlists, previously two unrelated outputs), writes into `DIR/test-access/`,
+  and records a `test_access` synthesis plan: every instance of the wrapped
+  top (TAP, one SIB per port, one TDR bit per port bit, MBIST blocks under
+  their parameter-specialized module names, the memory) plus each
+  instrument's SIB and ordered TDR bits, enumerated by re-reading the output
+  through warptap's own ingest (not predicted). Proven sufficient with Yosys
+  alone by `tests/integration/test_testaccess_manifest_e2e.py` (every block
+  standalone from the wrapped file; glue with them blackboxed leaves exactly
+  the listed instances). BSR (boundary-scan register) insertion is a
+  separate warptap step `wrap-test-access` does not do.
+- **Not started (FaultFlow repo, separate PR)**: consuming the manifest —
+  subprocess-invoke `autombist generate --emit-manifest` (and optionally
+  `autombist wrap-test-access --manifest DIR`), load and validate
+  `manifest.json`, generate per-block/glue synth scripts for the collar or
+  the JTAG-wrapped netlist, splice, then `sim`/`scan` — plus
+  `autombist-generate` CLI and Tcl commands.
+
+### Network access description (BSDL) — autoMBIST side done, three things open
+
+`wrap-test-access --emit-icl` now writes the BSDL its ICL `AccessLink` names, plus
+`--tck-max-freq-mhz`, `--idcode`, and `bsdl_path`/`tap` in the manifest.
+
+- **Raise the `warptap` floor in `pyproject.toml` to 0.0.4** once 0.0.4 is published to
+  PyPI (it is tagged on GitHub and has `bsdl_emit`, `idcode_value`, the EXTEST-only
+  network select and the corrected STIL strobe, but PyPI stops at 0.0.2). Until then the
+  floor stays 0.0.2 so the pip extra still installs, and `--emit-icl`/`--idcode`/
+  `--emit-stil` refuse with an upgrade message.
+- **warptap in CI** is done through the flake: `flake.nix` pins warptap `v0.0.4` as a
+  source input (`flake.lock` fixes the commit), so CI runs the wrap-test-access, BSDL and
+  IDCODE tests instead of skipping them. Move it with
+  `nix flake lock --update-input warptap`. `nix run` (the packaged CLI) still has no
+  warptap, so `wrap-test-access` there reports it is not installed.
+- **The `AccessLink` lists only the first SIB** in its `ScanInterface`. warptap records
+  it as an open question no readable source settles; nothing here can check it without
+  a real retargeting tool. Our networks have many top-level SIBs.
+- **The BSDL has no independent parser check** (TAP-only, so a strict tool rejects it).
+  Its claims are checked against the real TAP RTL, and the IDCODE is read back from the
+  wrapped netlist (`tests/integration/test_bsdl_e2e.py`).
+
+### STIL pattern export (milestone 5): done, two things open
+
+`wrap-test-access --emit-stil` writes `<top>_run_mbist.stil` through warptap 0.0.4's
+`to_stil`: a TRST/reset lead-in, the run_mbist TCK cycles and clk run loop, every pin of
+the wrapped top declared. It is replayed against the wrapped RTL (good memory passes, a
+stuck bit fails exactly the bist_fail compare, a short run loop the bist_done one) and
+accepted by Semi-ATE-STIL (`tests/integration/test_stil_e2e.py`).
+
+- **Not run on a real tester.** The replay is a simulation of what one would apply.
+- **CI does not run the Semi-ATE-STIL check:** that parser is not in the Nix devShell, so
+  the test skips there; the replay tests do run in CI.
+
+### Harden the inserted test access (next)
+
+warptap 0.0.4 has three options, each off by default, that `wrap-test-access` does not
+turn on yet. Each closes a silicon-level gap simulation cannot show:
+
+- **`capture_sync` on every status read** (`bist_done`, `bist_fail`, `self_repair_*`,
+  diagnosis): those come from the `clk` domain and are captured on TCK, so they can go
+  metastable. A two-flop TCK synchronizer per bit fixes it; they are settled statuses.
+- **`chip_reset` on the control writes** (`test_mode`, `bist_start`, ...), tied to `rst_n`:
+  today only TRST clears them, so a chip reset can leave the memory in test mode.
+- **The dedicated IJTAG access instruction** instead of EXTEST: a board-level EXTEST now
+  selects the network, and its scans can write `test_mode`/`bist_start`. FaultFlow already
+  grades a TAP behind it and reads the opcode from the manifest; the PDL, vectors, STIL,
+  BSDL and ICL `AccessLink` would follow warptap's opcode. Changing the default changes the
+  opcode a tester loads, so earlier PDL/STIL would no longer match.
 
 ## Housekeeping
 
@@ -87,16 +199,21 @@ The original approved plan (see memory / `docs/` history) had three parts:
   already covers it). `yield-sweep`/milestone 4 deliberately still excluded.
 - **Per-macro OpenRAM signoff (DRC/LVS on the macros' own GDS) is
   unresolved** — a stale vendored OpenRAM checkout, not a defect in this
-  project's own RTL. Already documented honestly in
+  project's own RTL. Re-confirmed 2026-09-23 during the docs full-audit
+  pass: vendored `OpenRAM/` HEAD is still `449781d2` (2026-04-08); the two
+  upstream fixes (`5077282`/`8c4f4ef`, dated 2026-04-28/2026-05-14) are
+  still not ancestors of it. Already documented honestly in
   `flow/multimem/mbist/README.md#honest-signoff-caveats`; tracked here so
   it doesn't get lost.
-- **MAINTAINERS.md does not exist yet.**
+- ~~MAINTAINERS.md does not exist yet~~ — done 2026-09-22.
 - ~~GitHub repo description/topics refresh~~ — done 2026-09-22 (description
   now mentions shared-bus/multi-memory + row/column repair; added
   `openram`/`sky130`/`jtag` topics).
-- **`CONTRIBUTING.md`'s test-tier guidance doesn't warn that the newest
-  `tests/integration/test_yield_sweep_*` and
-  `tests/integration/test_shared_bus_*` files are meaningfully slower**
-  than the rest of the integration tier (each trial/scenario is a real,
-  freshly-compiled Icarus run) — worth a one-line note so a contributor
-  running the full suite isn't surprised by the wall-clock jump.
+- ~~`CONTRIBUTING.md`'s test-tier guidance doesn't warn about the slow
+  shared-bus/yield-sweep integration tests~~ — done 2026-09-22.
+- ~~`docs/source/*.md` full audit~~ — done 2026-09-23: all 17 pages read in
+  full (8 previously, 8 more in a parallel pass, `roadmap.md` separately).
+  12 real findings fixed (biggest: `multi-port-guide.md` flatly claimed
+  march-2rw does not and will not support on-chip self-repair — it does,
+  row and column both). `quickstart.md` verified clean by reproducing its
+  commands against a live install, not just reading it.
