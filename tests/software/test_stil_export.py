@@ -132,15 +132,16 @@ def _network():
 
 def test_render_stil_opens_with_the_reset_lead_in_and_states_its_periods() -> None:
     graph, root = _network()
-    from warptap.tap_model import DEFAULT_IR_WIDTH, OPCODE_EXTEST
-
     from autombist.jtag_bist import run_mbist_ops
+    from autombist.testaccess import network_access
 
-    ops = run_mbist_ops(graph, root, run_mbist_steps(50), ir_width=DEFAULT_IR_WIDTH, extest=OPCODE_EXTEST)
-    stil = render_stil("t", ops, PORTS, StilTiming(tck_period_ns=40, clk_period_ns=12.5))
+    access = network_access()
+    ops = run_mbist_ops(graph, root, run_mbist_steps(50), access=access)
+    stil = render_stil("t", ops, PORTS, StilTiming(tck_period_ns=40, clk_period_ns=12.5), access)
 
     assert stil.startswith("// IEEE 1450 STIL: run the memory BIST of t over JTAG")
     assert "// TCK period 40 ns, clk period 12.5 ns." in stil
+    assert "// Then loads IJTAG_ACCESS (IR 1100)" in stil
     assert "Period '40ns';" in stil and "Period '12.5ns';" in stil
     first = re.search(r"V \{([^}]*)\}", stil.split("Pattern ", 1)[1]).group(1)
     assert "trst_n=0;" in first and "rst_n=0;" in first  # both resets asserted from the first vector

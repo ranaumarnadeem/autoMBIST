@@ -12,6 +12,47 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-18
+
+### Changed (breaking): the network has its own TAP instruction
+- `wrap-test-access` puts the IJTAG network behind warptap's dedicated
+  `IJTAG_ACCESS` instruction (`IR 4'b1100`), no longer behind EXTEST. EXTEST,
+  SAMPLE and PRELOAD now select BYPASS, so a board-level boundary-scan EXTEST no
+  longer reaches `test_mode` or `bist_start`. The PDL, the vectors, the STIL, the
+  BSDL (which declares `IJTAG_ACCESS` and gives the other three BYPASS), the ICL
+  `AccessLink` and the manifest all follow. A PDL, vector file or STIL from 0.2.0
+  loads EXTEST and does not reach a network wrapped by this version: regenerate
+  them with the netlist, or pass `--access-instruction extest` to keep the network
+  behind EXTEST.
+
+### Added: the inserted test access, hardened for silicon
+- Every status read (`bist_done`, `bist_fail`, the self-repair and diagnosis
+  statuses) is captured through a two-flop TCK synchronizer: they come from the
+  `clk` domain and Capture-DR samples them on TCK.
+- A chip reset clears the controls JTAG drives: every control TDR also clears on
+  the wrapper's `rst_n`, through a TCK release synchronizer, not only on TRST.
+  Before, a chip reset on a board that never pulses TRST left the memory in test
+  mode with `bist_start` high, and the BIST ran again.
+- `--access-instruction ijtag-access|extest` picks the instruction above.
+- Tests replay both behaviors against the wrapped RTL next to a netlist wrapped
+  without them: after a chip reset `bist_done` stays 0 where the old netlist runs
+  the BIST again, and scans under EXTEST leave an `IJTAG_ACCESS` network as reset
+  where a network behind EXTEST starts the BIST. The synchronizers are checked
+  structurally; RTL simulation cannot show metastability.
+- Manifest schema 1.1.0: `test_access` records `network_instruction`,
+  `network_opcode`, `idcode_value` and `chip_reset` (`{port, active}`), and each
+  instrument `capture_sync`, the fields FaultFlow's parser reads. Additive: a block
+  without the network fields means EXTEST.
+
+### Changed
+- `wrap-test-access` needs warptap 0.0.4, the version the Nix dev shell pins, for
+  every run, not only `--emit-stil`; an older one is refused with the version it
+  needs. The `test-access` extra in `pyproject.toml` states the same floor.
+
+### Documentation
+- The docs site has an Open Graph image, the same 1280x640 card as the
+  repository's GitHub social preview, so shared links show it.
+
 ## [0.2.0] - 2026-10-18
 
 ### Added: running the BIST without the cocotb flow, and from a tester
@@ -99,7 +140,7 @@ everything that predates the migration.
 ### Documentation
 - README: a new introduction and at-a-glance table, the open-source DFT
   toolchain it belongs to (faultflow, OpenTestability, warptap), a FAQ and a
-  Citing section. `CITATION.cff`: version 0.1.0, the docs URL, more keywords.
+  Citing section. `CITATION.cff`: version 0.2.0, the docs URL, more keywords.
   The docs site's description and `llms.txt` are updated.
 
 ### Known limits

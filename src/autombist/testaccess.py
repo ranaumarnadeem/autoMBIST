@@ -1,6 +1,6 @@
 """Wraps a generated MBIST wrapper's real control/status ports with an IEEE 1149.1
 (JTAG/TAP) + IEEE 1687 (IJTAG) test-access network, via the external ``warptap`` package
-(https://github.com/ranaumarnadeem/warptap, PyPI ``warptap``).
+(https://github.com/ranaumarnadeem/warptap; the Nix dev shell pins it).
 
 Import-guarded exactly like tcl_shell.py's tkinter dependency: warptap is an optional
 capability, not a core one, so its absence must never break the rest of the CLI. Callers
@@ -96,12 +96,60 @@ class TestAccessPort:
 TestAccessPort.__test__ = False  # not a pytest test class -- the name just starts with "Test"
 
 
+CHIP_RESET = "rst_n"
+"""The generated wrapper's chip reset (active low), which the control TDRs also clear on."""
+
+ACCESS_INSTRUCTIONS = ("ijtag-access", "extest")
+"""The choices for the TAP instruction that selects the IJTAG network."""
+DEFAULT_ACCESS_INSTRUCTION = "ijtag-access"
+
+
+@dataclass(frozen=True)
+class NetworkAccess:
+    """The TAP instruction that selects the IJTAG network: its name, as the BSDL declares
+    it, its opcode and the instruction register's length."""
+
+    instruction: str
+    opcode: int
+    ir_width: int
+
+    @property
+    def dedicated(self) -> bool:
+        """True for IJTAG_ACCESS, the network's own instruction. EXTEST is also what a
+        board-level boundary-scan test loads."""
+        return self.instruction != "EXTEST"
+
+    @property
+    def opcode_bits(self) -> str:
+        return format(self.opcode, f"0{self.ir_width}b")
+
+
+def network_access(choice: str = DEFAULT_ACCESS_INSTRUCTION) -> NetworkAccess:
+    """The instruction ``choice`` (one of :data:`ACCESS_INSTRUCTIONS`) names, from warptap's
+    own constants. ``ijtag-access`` is warptap's IJTAG_ACCESS at its suggested opcode: it
+    alone selects the network, and EXTEST, SAMPLE and PRELOAD select BYPASS, so a
+    board-level EXTEST cannot write ``test_mode`` or ``bist_start``. ``extest`` is the
+    network behind EXTEST, as before 0.3.0."""
+    if choice not in ACCESS_INSTRUCTIONS:
+        raise ValueError(f"unknown network access instruction {choice!r}: use one of {', '.join(ACCESS_INSTRUCTIONS)}")
+    _require_warptap()
+    from warptap.tap_model import DEFAULT_IR_WIDTH, OPCODE_EXTEST
+
+    if choice == "extest":
+        return NetworkAccess("EXTEST", OPCODE_EXTEST, DEFAULT_IR_WIDTH)
+    try:
+        from warptap.tap_model import OPCODE_IJTAG_ACCESS
+    except ImportError as exc:
+        raise TestAccessUnavailable(_NO_HARDENING_SUPPORT) from exc
+    return NetworkAccess("IJTAG_ACCESS", OPCODE_IJTAG_ACCESS, DEFAULT_IR_WIDTH)
+
+
 def _require_warptap() -> None:
     if _warptap_insert_test_access is None:
         raise TestAccessUnavailable(
             "warptap is not installed. Test-access wrapping (JTAG/TAP/IJTAG/ICL/PDL) is "
-            "an optional capability: `pip install warptap` (or the `test-access` extra) "
-            f"to enable it. Import error was: {_WARPTAP_IMPORT_ERROR}"
+            "an optional capability: run it in the Nix dev shell (`nix develop`), which "
+            f"pins warptap 0.0.4. Import error was: {_WARPTAP_IMPORT_ERROR}"
         )
 
 
@@ -172,7 +220,7 @@ def classify_test_access_ports(
     return ports
 
 
-def build_instrument_specs(ports: list[TestAccessPort]) -> list[Any]:
+def build_instrument_specs(ports: list[TestAccessPort], *, capture_sync: bool = True) -> list[Any]:
     """Convert TestAccessPort entries to warptap InstrumentSpec objects -- one
     SignalBinding per bit (signal_bits[k] binds bit k of the port, matching how
     warptap's own iWrite()/read-back values are bit-indexed), so this is a single,
@@ -181,19 +229,31 @@ def build_instrument_specs(ports: list[TestAccessPort]) -> list[Any]:
     exactly ``(SignalBinding(p.name, 0),)``, the same binding this produced before wide
     ports existed. Raises TestAccessUnavailable if warptap is not installed -- called
     lazily, not at module import time, so importing autombist.testaccess itself never
-    requires warptap."""
+    requires warptap.
+
+    ``capture_sync`` puts a two-flop TCK synchronizer in front of every status port's
+    capture (warptap's ``bc1_shift_only_sync``): the statuses come from the ``clk``
+    domain and Capture-DR samples them on TCK, so without one a capture near a status
+    change can go metastable. A capture then shows the status as it was two TCK edges
+    earlier, which is right for statuses that settle (done, fail, a logged address) and
+    is why the PDL reads them only after the run loop."""
     _require_warptap()
     specs = []
     for p in ports:
         if p.width < 1:
             raise ValueError(f"port {p.name!r} has invalid width {p.width} (must be >= 1)")
         direction = InstrumentDirection.WRITE if p.role == "control" else InstrumentDirection.READ
-        specs.append(
-            InstrumentSpec(
+        sync = {"capture_sync": True} if capture_sync and direction is InstrumentDirection.READ else {}
+        try:
+            spec = InstrumentSpec(
                 p.name, width=p.width, capture_value=0, direction=direction,
-                signal_bits=tuple(SignalBinding(p.name, i) for i in range(p.width)),
+                signal_bits=tuple(SignalBinding(p.name, i) for i in range(p.width)), **sync,
             )
-        )
+        except TypeError as exc:
+            if not sync or "capture_sync" not in str(exc):
+                raise
+            raise TestAccessUnavailable(_NO_HARDENING_SUPPORT) from exc
+        specs.append(spec)
     return specs
 
 
@@ -209,6 +269,9 @@ def wrap_test_access(
     addr_width: int = 0,
     repair_ports: Sequence[Mapping[str, Any]] = (),
     idcode_value: int | None = None,
+    capture_sync: bool = True,
+    chip_reset: str | None = CHIP_RESET,
+    access_instruction: str = DEFAULT_ACCESS_INSTRUCTION,
     yosys_command: str | None = None,
 ) -> tuple[str, Any, Any]:
     """Ingest ``sources``, wrap ``top_module``'s real control/status ports
@@ -229,8 +292,21 @@ def wrap_test_access(
     placeholder default. It is validated with warptap's own rule (32 bits, bit 0 set,
     as IEEE 1149.1 requires) before anything is ingested, and raises ValueError when
     it fails; it needs a warptap that can set one, else TestAccessUnavailable.
+
+    ``capture_sync`` (on by default) synchronizes every status read to TCK; see
+    build_instrument_specs.
+
+    ``chip_reset`` names the top's active-low chip reset (default :data:`CHIP_RESET`,
+    the generated wrapper's ``rst_n``). Every control TDR then also clears on it, not
+    only on TRST, so a chip reset leaves the memory out of test mode with ``bist_start``
+    low even when the board never pulses TRST. ``None`` clears them on TRST only.
+
+    ``access_instruction`` picks the TAP instruction that selects the network (see
+    network_access): IJTAG_ACCESS by default, or EXTEST. Give describe_test_access_tap,
+    tap_facts and the PDL the same choice.
     """
     _require_warptap()
+    access = network_access(access_instruction)
     if idcode_value is not None:
         _check_idcode(idcode_value)
     ports = classify_test_access_ports(
@@ -242,16 +318,24 @@ def wrap_test_access(
         addr_width=addr_width,
         repair_ports=repair_ports,
     )
-    specs = build_instrument_specs(ports)
-    extra = {} if idcode_value is None else {"idcode_value": idcode_value}
+    specs = build_instrument_specs(ports, capture_sync=capture_sync)
+    # Only what was asked for, so an older warptap fails on the option it lacks, by name.
+    extra: dict[str, Any] = {}
+    if idcode_value is not None:
+        extra["idcode_value"] = idcode_value
+    if chip_reset is not None:
+        extra["chip_reset"] = chip_reset
+    if access.dedicated:
+        extra["ijtag_access_opcode"] = access.opcode
     try:
         return _warptap_insert_test_access(
             sources, top_module, specs, yosys_command=yosys_command, use_sv=True, **extra,
         )
     except TypeError as exc:
-        if idcode_value is None or "idcode_value" not in str(exc):
+        feature = _missing_feature(exc, extra)
+        if feature is None:
             raise
-        raise TestAccessUnavailable(_NO_IDCODE_SUPPORT) from exc
+        raise feature from exc
     except (IndexError, KeyError, WarptapError) as exc:
         raise ValueError(
             f"warptap insertion failed ({type(exc).__name__}: {exc}) while wrapping "
@@ -275,6 +359,23 @@ _NO_BSDL_SUPPORT = (
     "the installed warptap cannot emit a BSDL whose ICL AccessLink names the network's "
     "instruction (it has no warptap.bsdl_emit) -- upgrade warptap"
 )
+_NO_HARDENING_SUPPORT = (
+    "the installed warptap cannot harden the inserted network (TCK synchronizers on the "
+    "status reads, the chip-reset clear on the control writes, the IJTAG_ACCESS "
+    "instruction) -- it needs warptap 0.0.4, which the Nix dev shell pins"
+)
+
+
+def _missing_feature(exc: TypeError, asked: Mapping[str, Any]) -> TestAccessUnavailable | None:
+    """The option the installed warptap lacks, when a TypeError from a warptap call names one
+    of ``asked`` (the keywords given beyond the call's basic ones); ``None`` when it names
+    none of them, a bug that should not be hidden."""
+    lacking = [name for name in asked if name in str(exc)]
+    if not lacking:
+        return None
+    if lacking == ["idcode_value"]:
+        return TestAccessUnavailable(_NO_IDCODE_SUPPORT)
+    return TestAccessUnavailable(_NO_HARDENING_SUPPORT)
 
 
 def _check_idcode(value: int) -> None:
@@ -324,12 +425,17 @@ def describe_test_access_tap(
     *,
     tck_max_freq_hz: float = DEFAULT_TCK_MAX_FREQ_HZ,
     idcode_value: int | None = None,
+    access_instruction: str = DEFAULT_ACCESS_INSTRUCTION,
 ) -> TapDescription:
     """Render the ICL (with its AccessLink) and BSDL for the network ``wrap_test_access``
-    inserted. Pass the same ``idcode_value`` given to ``wrap_test_access``: the BSDL states
-    what the hardware was built with. Raises ValueError for an unusable frequency, IDCODE
-    or entity name, and TestAccessUnavailable for a warptap without BSDL support."""
+    inserted. Pass the same ``idcode_value`` and ``access_instruction`` given to
+    ``wrap_test_access``: the BSDL states what the hardware was built with, and with
+    IJTAG_ACCESS it declares that instruction and gives EXTEST, SAMPLE and PRELOAD the
+    BYPASS register, while the AccessLink names IJTAG_ACCESS. Raises ValueError for an
+    unusable frequency, IDCODE or entity name, and TestAccessUnavailable for a warptap
+    without BSDL support."""
     _require_warptap()
+    access = network_access(access_instruction)
     if (
         isinstance(tck_max_freq_hz, bool)
         or not isinstance(tck_max_freq_hz, (int, float))
@@ -345,7 +451,11 @@ def describe_test_access_tap(
     except ImportError as exc:
         raise TestAccessUnavailable(_NO_BSDL_SUPPORT) from exc
 
-    extra = {} if idcode_value is None else {"idcode_value": idcode_value}
+    extra: dict[str, Any] = {} if idcode_value is None else {"idcode_value": idcode_value}
+    icl_extra: dict[str, Any] = {}
+    if access.dedicated:
+        extra["ijtag_access_opcode"] = access.opcode
+        icl_extra["ijtag_access"] = True
     failure: Exception | None = None
     for entity in bsdl_entity_candidates(root.name):
         try:
@@ -354,33 +464,37 @@ def describe_test_access_tap(
             failure = exc
             continue
         except TypeError as exc:
-            raise TestAccessUnavailable(_NO_IDCODE_SUPPORT if extra else _NO_BSDL_SUPPORT) from exc
+            raise (_missing_feature(exc, extra) or TestAccessUnavailable(_NO_BSDL_SUPPORT)) from exc
         try:
-            icl = to_icl(graph, root, include_access_link=True, bsdl_entity_name=entity)
+            icl = to_icl(graph, root, include_access_link=True, bsdl_entity_name=entity, **icl_extra)
         except TypeError as exc:
-            raise TestAccessUnavailable(_NO_BSDL_SUPPORT) from exc
+            raise (_missing_feature(exc, icl_extra) or TestAccessUnavailable(_NO_BSDL_SUPPORT)) from exc
         return TapDescription(icl=icl, bsdl=bsdl, entity=entity, tck_max_freq_hz=float(tck_max_freq_hz))
     raise ValueError(f"no BSDL entity name works for module {root.name!r}: {failure}")
 
 
 def tap_facts(
-    *, idcode_value: int | None = None, description: TapDescription | None = None
+    *,
+    idcode_value: int | None = None,
+    description: TapDescription | None = None,
+    access_instruction: str = DEFAULT_ACCESS_INSTRUCTION,
 ) -> dict[str, Any]:
     """The TAP facts a consumer of the manifest needs, from warptap's own constants: the
     IDCODE the hardware holds after reset, the instruction register's length and the
-    instruction that selects the IJTAG network. ``description`` adds the BSDL's entity and
-    TCK limit. The network's instruction is EXTEST because that is the opcode the vectors
-    load (``OPCODE_EXTEST``)."""
+    instruction that selects the IJTAG network (``access_instruction``, the choice the TAP
+    was inserted with, which is also what the vectors load). ``description`` adds the
+    BSDL's entity and TCK limit."""
     _require_warptap()
-    from warptap.tap_model import DEFAULT_IR_WIDTH, IDCODE_VALUE, OPCODE_EXTEST
+    from warptap.tap_model import IDCODE_VALUE
 
+    access = network_access(access_instruction)
     idcode = IDCODE_VALUE if idcode_value is None else idcode_value
     facts: dict[str, Any] = {
         "idcode": f"0x{idcode:08X}",
         "idcode_is_placeholder": idcode == IDCODE_VALUE,
-        "instruction_length": DEFAULT_IR_WIDTH,
-        "network_access_instruction": "EXTEST",
-        "network_access_opcode": format(OPCODE_EXTEST, f"0{DEFAULT_IR_WIDTH}b"),
+        "instruction_length": access.ir_width,
+        "network_access_instruction": access.instruction,
+        "network_access_opcode": access.opcode_bits,
     }
     if description is not None:
         facts["bsdl_entity"] = description.entity

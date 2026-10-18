@@ -120,19 +120,36 @@ def test_emit_icl_writes_a_bsdl_the_icl_the_pdl_and_the_manifest_point_at(tmp_pa
 
     assert f"BSDL:             {bsdl_path}" in result.output and "assumed" in result.output
     assert f"entity {top} is" in bsdl and f"BSDLEntity {top};" in icl
-    assert "EXTEST { ScanInterface {" in icl
+    assert "IJTAG_ACCESS { ScanInterface {" in icl
     assert f"# BSDL: {bsdl_path.name}" in pdl and f"# ICL: {top}_test_access.icl" in pdl
     assert Path(block["bsdl_path"]) == bsdl_path
     assert Path(block["icl_path"]).name == f"{top}_test_access.icl"
 
-    # the BSDL's EXTEST and instruction length are what the vectors really load
+    # the BSDL's IJTAG_ACCESS and instruction length are what the vectors really load, and
+    # what the manifest tells FaultFlow
     length = int(tap["instruction_length"])
     assert f"INSTRUCTION_LENGTH of {top} : entity is {length};" in bsdl
     loaded = _ir_loaded_by((access / f"{top}_run_mbist.vec").read_text(encoding="utf-8"), length)
-    assert format(loaded, f"0{length}b") == _opcode(bsdl, "EXTEST") == tap["network_access_opcode"]
-    assert tap["network_access_instruction"] == "EXTEST"
+    assert format(loaded, f"0{length}b") == _opcode(bsdl, "IJTAG_ACCESS") == tap["network_access_opcode"]
+    assert tap["network_access_instruction"] == block["network_instruction"] == "IJTAG_ACCESS"
+    assert block["network_opcode"] == loaded
+    assert '"BYPASS (EXTEST, SAMPLE, PRELOAD)"' in bsdl
     assert tap["bsdl_entity"] == top
     assert tap["tck_max_freq_hz"] == 10e6 and "1.000000e+07, BOTH" in bsdl
+
+
+def test_behind_extest_the_bsdl_icl_vectors_and_manifest_all_say_extest(tmp_path: Path) -> None:
+    result, access, manifest = _wrap(tmp_path, "--access-instruction", "extest")
+    top = "bd_ctrl"
+    bsdl = (access / f"{top}_test_access.bsd").read_text(encoding="utf-8")
+    icl = (access / f"{top}_test_access.icl").read_text(encoding="utf-8")
+    block = manifest["test_access"]
+
+    assert "EXTEST { ScanInterface {" in icl and "IJTAG_ACCESS" not in bsdl
+    loaded = _ir_loaded_by((access / f"{top}_run_mbist.vec").read_text(encoding="utf-8"), 4)
+    assert format(loaded, "04b") == _opcode(bsdl, "EXTEST") == block["tap"]["network_access_opcode"] == "0000"
+    assert (block["network_instruction"], block["network_opcode"]) == ("EXTEST", 0)
+    assert "a board-level EXTEST also reaches the network" in result.output
 
 
 def test_the_tck_limit_and_idcode_options_reach_the_bsdl_and_the_manifest(tmp_path: Path) -> None:
@@ -142,6 +159,7 @@ def test_the_tck_limit_and_idcode_options_reach_the_bsdl_and_the_manifest(tmp_pa
 
     assert "2.500000e+07, BOTH" in bsdl and tap["tck_max_freq_hz"] == 25e6
     assert _idcode(bsdl) == CUSTOM_IDCODE and tap["idcode"] == "0x5CA1AB1F"
+    assert manifest["test_access"]["idcode_value"] == CUSTOM_IDCODE  # as FaultFlow reads it
     assert tap["idcode_is_placeholder"] is False
     assert "set by --idcode" in result.output and "assumed" not in result.output
 
