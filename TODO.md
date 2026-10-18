@@ -170,6 +170,22 @@ accepted by Semi-ATE-STIL (`tests/integration/test_stil_e2e.py`).
 - **CI does not run the Semi-ATE-STIL check:** that parser is not in the Nix devShell, so
   the test skips there; the replay tests do run in CI.
 
+### Harden the inserted test access (next)
+
+warptap 0.0.4 has three options, each off by default, that `wrap-test-access` does not
+turn on yet. Each closes a silicon-level gap simulation cannot show:
+
+- **`capture_sync` on every status read** (`bist_done`, `bist_fail`, `self_repair_*`,
+  diagnosis): those come from the `clk` domain and are captured on TCK, so they can go
+  metastable. A two-flop TCK synchronizer per bit fixes it; they are settled statuses.
+- **`chip_reset` on the control writes** (`test_mode`, `bist_start`, ...), tied to `rst_n`:
+  today only TRST clears them, so a chip reset can leave the memory in test mode.
+- **The dedicated IJTAG access instruction** instead of EXTEST: a board-level EXTEST now
+  selects the network, and its scans can write `test_mode`/`bist_start`. FaultFlow already
+  grades a TAP behind it and reads the opcode from the manifest; the PDL, vectors, STIL,
+  BSDL and ICL `AccessLink` would follow warptap's opcode. Changing the default changes the
+  opcode a tester loads, so earlier PDL/STIL would no longer match.
+
 ## Housekeeping
 
 - ~~`main` significantly behind `dev`~~ / ~~no tagged release since the
