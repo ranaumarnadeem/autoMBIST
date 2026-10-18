@@ -25,7 +25,7 @@ from autombist.testaccess import classify_test_access_ports, test_access_kwargs_
 
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("warptap") is None or shutil.which("yosys") is None,
-    reason="needs `pip install warptap` plus yosys on PATH (Linux/WSL only)",
+    reason="needs warptap (the Nix dev shell pins it) plus yosys on PATH (Linux/WSL only)",
 )
 
 runner = CliRunner()

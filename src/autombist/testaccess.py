@@ -1,6 +1,6 @@
 """Wraps a generated MBIST wrapper's real control/status ports with an IEEE 1149.1
 (JTAG/TAP) + IEEE 1687 (IJTAG) test-access network, via the external ``warptap`` package
-(https://github.com/ranaumarnadeem/warptap, PyPI ``warptap``).
+(https://github.com/ranaumarnadeem/warptap; the Nix dev shell pins it).
 
 Import-guarded exactly like tcl_shell.py's tkinter dependency: warptap is an optional
 capability, not a core one, so its absence must never break the rest of the CLI. Callers
@@ -148,8 +148,8 @@ def _require_warptap() -> None:
     if _warptap_insert_test_access is None:
         raise TestAccessUnavailable(
             "warptap is not installed. Test-access wrapping (JTAG/TAP/IJTAG/ICL/PDL) is "
-            "an optional capability: `pip install warptap` (or the `test-access` extra) "
-            f"to enable it. Import error was: {_WARPTAP_IMPORT_ERROR}"
+            "an optional capability: run it in the Nix dev shell (`nix develop`), which "
+            f"pins warptap 0.0.4. Import error was: {_WARPTAP_IMPORT_ERROR}"
         )
 
 

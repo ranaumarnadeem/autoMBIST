@@ -11,8 +11,8 @@ write self_repair_start=0 -- is warptap's own already-proven one, reused verbati
 rather than invented fresh, so a difference in outcome is attributable to this
 module, not to picking a different (possibly easier) scenario.
 
-Skips (not fails) when warptap is not installed: it is an optional capability,
-`pip install warptap`, mirroring this project's iverilog/verilator skip-marker
+Skips (not fails) when warptap is not installed: it is an optional capability
+(the Nix dev shell pins it), mirroring this project's iverilog/verilator skip-marker
 convention for other optional external dependencies. Also needs iverilog (the real
 simulator both this test and warptap's own cross-sim tests run the inserted RTL
 through) and a real yosys (warptap's own ingest()/insert_sib_network() shell out to
@@ -37,7 +37,7 @@ pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("warptap") is None
     or shutil.which("iverilog") is None
     or shutil.which("yosys") is None,
-    reason="needs `pip install warptap` plus iverilog and yosys on PATH "
+    reason="needs warptap (the Nix dev shell pins it) plus iverilog and yosys on PATH "
     "(Linux/WSL only) -- warptap shells out to both, no bundled fallback",
 )
 
