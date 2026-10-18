@@ -12,6 +12,10 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Documentation
+- The docs site has an Open Graph image, the same 1280x640 card as the
+  repository's GitHub social preview, so shared links show it.
+
 ## [0.2.0] - 2026-10-18
 
 ### Added: running the BIST without the cocotb flow, and from a tester
@@ -99,7 +103,7 @@ everything that predates the migration.
 ### Documentation
 - README: a new introduction and at-a-glance table, the open-source DFT
   toolchain it belongs to (faultflow, OpenTestability, warptap), a FAQ and a
-  Citing section. `CITATION.cff`: version 0.1.0, the docs URL, more keywords.
+  Citing section. `CITATION.cff`: version 0.2.0, the docs URL, more keywords.
   The docs site's description and `llms.txt` are updated.
 
 ### Known limits
