@@ -12,6 +12,8 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-18
+
 ### Added: running the BIST without the cocotb flow, and from a tester
 - `generate` writes a standalone, self-checking testbench into `tb/`:
   `tb_<wrapper>.sv` runs the BIST from the wrapper's own pins and `run_tb.sh`
