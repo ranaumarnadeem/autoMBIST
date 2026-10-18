@@ -12,6 +12,106 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Added: running the BIST without the cocotb flow, and from a tester
+- `generate` writes a standalone, self-checking testbench into `tb/`:
+  `tb_<wrapper>.sv` runs the BIST from the wrapper's own pins and `run_tb.sh`
+  compiles and runs it with Icarus Verilog, no Python or cocotb involved. Its
+  timeout comes from a BIST-length model measured against the RTL for every
+  algorithm (never short, at most two cycles long).
+- `tb/<memory>_model.v`, a behavioral model of the memory generated from the
+  config, with the same ports as the blackbox stub: spare rows and columns,
+  1R1W and 2RW ports, shared-bus, both write polarities, any `read_latency`.
+  `run_tb.sh` uses it when given no arguments; a model on the command line
+  replaces it. At `read_latency: 0` a multi-port model forwards a write to a
+  read of the same address on the same edge, which the two-port algorithms
+  expect.
+- `wrap-test-access` writes what runs the BIST over JTAG: the `run_mbist`
+  IEEE 1687 PDL procedure, its retargeting to TCK-level vectors with the
+  expected TDO, and a self-checking JTAG testbench that checks the result only
+  at TDO, as a tester would. `--bist-cycles` sets the run loop when there is
+  no config to compute it from.
+- `wrap-test-access --emit-icl` also writes a TAP-only BSDL, and the ICL now
+  carries an `AccessLink` naming the instruction that selects the IJTAG network
+  (EXTEST), which that BSDL declares. `--idcode` bakes a 32-bit IDCODE into the
+  TAP (bit 0 must be 1); `--tck-max-freq-mhz` sets the BSDL's TCK limit. The
+  defaults (warptap's placeholder IDCODE, 10 MHz) are stated as assumptions.
+- `wrap-test-access --emit-stil` writes the `run_mbist` pattern as IEEE 1450
+  STIL for a tester, through warptap's `to_stil`: TRST and `rst_n` held low
+  while TCK and `clk` run, then the same TCK cycles and `clk` run loop as the
+  vectors, with every pin of the wrapped top declared. TCK's period is
+  1 / `--tck-max-freq-mhz`, `clk`'s is `--stil-clk-period-ns`. Tests replay the
+  file against the wrapped RTL, independently of warptap: a good memory passes,
+  a stuck bit fails exactly the `bist_fail` compare, and a run loop shorter
+  than the BIST fails the `bist_done` one. It refuses warptap older than 0.0.4,
+  whose `to_stil` compared TDO after the rising TCK edge.
+
+### Added: handoff to FaultFlow and other synthesis-aware tools
+- `generate --emit-manifest` writes `manifest.json`, a synthesis plan: every
+  instance with its parameters and sources, the memories marked `blackbox` and
+  the test instruments (MBIST controller, self-repair, diagnosis, remaps)
+  `separate`, so a downstream flow synthesizes each one standalone and never
+  optimizes across an instrument boundary. `generate` always writes the
+  port-only `<memory>_bbox.v` stub, now built from the real port list and
+  redundancy geometry.
+- `wrap-test-access --manifest DIR` takes the sources, top, config and output
+  location from that directory, wraps the memory's stub, and records every
+  instance of the wrapped netlist in a `test_access` block: the TAP, one SIB per
+  wrapped port, one TDR bit per port bit, the MBIST blocks and the memory, read
+  back from the inserted netlist rather than predicted. The block also records
+  the ICL, BSDL and STIL paths and the TAP's facts (IDCODE, instruction length,
+  the instruction and opcode that select the network).
+- `grade-controller` and `run --faultflow` grade through FaultFlow's autoMBIST
+  integration: each instrument synthesized standalone, the memory blackboxed,
+  `scan-check` run, and nothing written into the FaultFlow checkout. A `--test`
+  build is graded as its clean collar, so array and controller coverage are
+  reported together, with faults testable only through the memory shown as
+  blackbox-unresolved.
+
+### Fixed
+- The shared-bus wrapper lost every memory when synthesized. Yosys lowered its
+  unpacked per-memory arrays to memories its instance ports never reached,
+  deleted the memory instances, and the synthesized BIST then passed a
+  defective memory. All shared-bus arrays are packed; dedicated wrappers render
+  byte-identically. A new test synthesizes the collar and runs the BIST on the
+  netlist: a good memory passes and a stuck bit fails.
+- The `march-2rw` controller could not be synthesized: Yosys rejects its
+  unpacked per-port arrays. They are packed, and a gate-level test catches a
+  defect that sits only in port 1's read path.
+- `onchip_2d_repair_analyzer` inferred latches, which Yosys rejects in an
+  `always_comb`. Fixed, and the Verilator LATCH lint is no longer suppressed for it.
+- `grade-controller` wrote a synthesis script FaultFlow could never accept
+  (leftover `$scopeinfo` cells, missing repair sources, a memory stub that fit
+  only one read/write port, a hardcoded memory instance), and under shared-bus
+  it pointed Yosys at a wrapper file that does not exist.
+
+### Changed
+- The Nix dev shell, and so CI, pins warptap `v0.0.4` as a flake input, so CI
+  runs the `wrap-test-access`, BSDL, IDCODE and STIL tests instead of skipping
+  them. Tests that need warptap skip cleanly without it, and the code around it
+  is also tested against stand-ins.
+- `pyproject.toml`: a new description, keywords, an authors entry and the
+  documentation URL. The `test-access` extra stays at `warptap>=0.0.2`, because
+  PyPI has nothing newer; the BSDL and `--idcode` need 0.0.3 and `--emit-stil`
+  0.0.4, and each refuses with an upgrade message on an older one.
+
+### Documentation
+- README: a new introduction and at-a-glance table, the open-source DFT
+  toolchain it belongs to (faultflow, OpenTestability, warptap), a FAQ and a
+  Citing section. `CITATION.cff`: version 0.1.0, the docs URL, more keywords.
+  The docs site's description and `llms.txt` are updated.
+
+### Known limits
+- The STIL has not been run on a real tester; the tests replay it against the
+  RTL in simulation.
+- The BSDL describes the TAP only, with no boundary register, and the
+  `AccessLink` names only the first SIB of the network (an open question in
+  warptap).
+- The inserted test access does not yet use three options warptap 0.0.4 offers:
+  `capture_sync` (status reads cross from the `clk` domain to TCK without a
+  synchronizer), `chip_reset` (a chip reset does not clear `test_mode` or
+  `bist_start`), and a dedicated IJTAG access instruction (a board-level EXTEST
+  selects the network).
+
 ## [0.1.0] — 2026-09-22
 
 ### Added — MBIST core
