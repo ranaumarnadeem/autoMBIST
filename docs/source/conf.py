@@ -11,7 +11,7 @@ author = "Rana Umar Nadeem"
 try:
     from autombist import __version__ as release
 except ImportError:
-    release = "0.2.0"
+    release = "0.3.0"
 version = release
 
 extensions = [

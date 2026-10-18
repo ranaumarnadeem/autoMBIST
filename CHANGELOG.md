@@ -12,6 +12,8 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-18
+
 ### Changed (breaking): the network has its own TAP instruction
 - `wrap-test-access` puts the IJTAG network behind warptap's dedicated
   `IJTAG_ACCESS` instruction (`IR 4'b1100`), no longer behind EXTEST. EXTEST,
