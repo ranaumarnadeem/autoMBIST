@@ -31,7 +31,7 @@ import pytest
 import yaml
 
 from autombist.generator import generate_from_config
-from autombist.testaccess import TestAccessUnavailable, wrap_test_access
+from autombist.testaccess import TestAccessUnavailable, network_access, wrap_test_access
 
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("warptap") is None
@@ -444,7 +444,7 @@ def test_self_repair_start_write_and_busy_read_through_real_jtag(tmp_path: Path)
     from warptap.pdl_verify import check_reads, correlate_observed
     from warptap.sim_io import run_verilog_testbench
     from warptap.tap_fsm import TapState
-    from warptap.tap_ir import GotoState, ShiftIR, bits_to_int
+    from warptap.tap_ir import GotoState, ShiftIR
     from warptap.tap_ir_play import to_cycles
 
     warptap_fixtures = Path.home() / "warptap" / "tests" / "fixtures"
@@ -480,7 +480,7 @@ def test_self_repair_start_write_and_busy_read_through_real_jtag(tmp_path: Path)
 
     ir_ops = [
         GotoState(TapState.SHIFT_IR),
-        ShiftIR(4, tdi=bits_to_int([0, 0, 0, 0])),  # OPCODE_EXTEST = 0, IR_WIDTH = 4
+        ShiftIR(4, tdi=network_access().opcode),  # the instruction wrap_test_access selects the network with
         GotoState(TapState.RUN_TEST_IDLE),
     ] + pdl.program
 

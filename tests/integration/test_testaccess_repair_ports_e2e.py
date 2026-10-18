@@ -34,7 +34,7 @@ import pytest
 import yaml
 
 from autombist.generator import generate_from_config
-from autombist.testaccess import wrap_test_access
+from autombist.testaccess import network_access, wrap_test_access
 
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("warptap") is None
@@ -145,12 +145,12 @@ class _FuncBusProgram:
 
     def __init__(self, pdl):
         from warptap.tap_fsm import TapState
-        from warptap.tap_ir import GotoState, ShiftIR, bits_to_int
+        from warptap.tap_ir import GotoState, ShiftIR
 
         self._pdl = pdl
         self._base_ops = [
             GotoState(TapState.SHIFT_IR),
-            ShiftIR(4, tdi=bits_to_int([0, 0, 0, 0])),
+            ShiftIR(4, tdi=network_access().opcode),  # the instruction wrap_test_access selects the network with
             GotoState(TapState.RUN_TEST_IDLE),
         ]
         self.func_rows: list[tuple[int, int, int, int]] = []

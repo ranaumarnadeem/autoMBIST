@@ -15,6 +15,7 @@ from autombist.jtag_bist import (
     render_pdl,
     run_mbist_steps,
 )
+from autombist.testaccess import NetworkAccess
 from autombist.testbench import (
     TestbenchError,
     bist_cycle_bound,
@@ -152,20 +153,25 @@ def test_run_mbist_holds_start_until_the_result_is_read() -> None:
             assert steps[i + 1] == PdlStep("apply")
 
 
+IJTAG_ACCESS = NetworkAccess("IJTAG_ACCESS", 0b1100, 4)
+EXTEST = NetworkAccess("EXTEST", 0b0000, 4)
+
+
 def test_pdl_addresses_the_icl_registers() -> None:
     names = ("test_mode", "bist_start", "bist_done", "bist_fail")
     text = render_pdl(
         "x_ctrl", run_mbist_steps(520),
         widths={n: 1 for n in names},
         register_path={n: f"warptap_instr_{n}.DR" for n in names},
-        icl_file="x_ctrl_test_access.icl", ir_width=4, extest=0, bist_cycles=403,
+        icl_file="x_ctrl_test_access.icl", access=IJTAG_ACCESS, bist_cycles=403,
     )
     assert "iProcsForModule x_ctrl" in text
     assert "iProc run_mbist {} {" in text
     assert "    iWrite warptap_instr_bist_start.DR 0b1" in text
     assert "    iRead warptap_instr_bist_fail.DR 0b0" in text
     assert "    iRunLoop 520 -sck clk" in text
-    assert "(IR 4'b0000)" in text and "# ICL: x_ctrl_test_access.icl" in text
+    assert "load IJTAG_ACCESS (IR 4'b1100)" in text and "# ICL: x_ctrl_test_access.icl" in text
+    assert "a board-level EXTEST does not reach it" in text
     assert "up to 403 clk cycles" in text
     assert "iTarget" not in text  # IEEE 1687 has no iTarget; paths are absolute
 
@@ -175,16 +181,21 @@ def test_pdl_points_at_the_icl_and_the_bsdl_its_access_link_names() -> None:
     kwargs = dict(
         widths={n: 1 for n in names},
         register_path={n: f"warptap_instr_{n}.DR" for n in names},
-        ir_width=4, extest=0, bist_cycles=403,
+        bist_cycles=403,
     )
-    with_bsdl = render_pdl("x_ctrl", run_mbist_steps(520), icl_file="x.icl", bsdl_file="x.bsd", **kwargs)
-    icl_only = render_pdl("x_ctrl", run_mbist_steps(520), icl_file="x.icl", **kwargs)
+    with_bsdl = render_pdl("x_ctrl", run_mbist_steps(520), icl_file="x.icl", bsdl_file="x.bsd",
+                           access=IJTAG_ACCESS, **kwargs)
+    icl_only = render_pdl("x_ctrl", run_mbist_steps(520), icl_file="x.icl", access=IJTAG_ACCESS, **kwargs)
+    behind_extest = render_pdl("x_ctrl", run_mbist_steps(520), icl_file="x.icl", bsdl_file="x.bsd",
+                               access=EXTEST, **kwargs)
 
     assert "# ICL: x.icl" in with_bsdl and "# BSDL: x.bsd" in with_bsdl
     assert "AccessLink names the TAP instruction" in with_bsdl
     # what a tester without a retargeting tool needs is still stated
-    assert "EXTEST (IR 4'b0000) loaded first" in with_bsdl
-    assert "BSDL" not in icl_only and "(IR 4'b0000)" in icl_only
+    assert "IJTAG_ACCESS (IR 4'b1100) loaded first" in with_bsdl
+    assert "BSDL" not in icl_only and "(IR 4'b1100)" in icl_only
+    # behind EXTEST, as 0.2.0 inserted it: the same text with EXTEST's opcode, and no BYPASS claim
+    assert "EXTEST (IR 4'b0000) loaded first" in behind_extest and "BYPASS" not in behind_extest
 
 
 def test_vector_lines() -> None:
@@ -229,8 +240,9 @@ def test_jtag_testbench_labels_each_read() -> None:
     text = render_jtag_testbench(
         "x_ctrl", parse_netlist_ports(YOSYS_NETLIST, "x_ctrl"),
         vectors_file="x_ctrl_run_mbist.vec", pdl_file="x_ctrl_run_mbist.pdl",
-        read_labels=["bist_done = 1", "bist_fail = 0"],
+        read_labels=["bist_done = 1", "bist_fail = 0"], instruction="IJTAG_ACCESS",
     )
+    assert "load IJTAG_ACCESS, write test_mode=1" in text
     assert '1: read_label = "bist_done = 1";' in text
     assert '2: read_label = "bist_fail = 0";' in text
     assert "`define MBIST_VECTORS \"x_ctrl_run_mbist.vec\"" in text
@@ -240,4 +252,4 @@ def test_jtag_testbench_labels_each_read() -> None:
 def test_jtag_testbench_needs_the_jtag_ports() -> None:
     ports = [NetlistPort("clk", "input", ""), NetlistPort("rst_n", "input", "")]
     with pytest.raises(TestbenchError, match="tck"):
-        render_jtag_testbench("x", ports, vectors_file="v", pdl_file="p", read_labels=[])
+        render_jtag_testbench("x", ports, vectors_file="v", pdl_file="p", read_labels=[], instruction="EXTEST")

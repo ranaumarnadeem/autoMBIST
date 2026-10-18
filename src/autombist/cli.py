@@ -687,17 +687,22 @@ def _wrap_test_access(
     config: Path | None, emit_icl: bool, manifest: Path | None = None,
     bist_cycles: int | None = None, tck_max_freq_mhz: float | None = None,
     idcode: int | None = None, emit_stil: bool = False, stil_clk_period_ns: float | None = None,
+    access_instruction: str = "ijtag-access",
 ) -> None:
     import json
     import math
 
     from autombist.testaccess import (
+        ACCESS_INSTRUCTIONS,
         CHIP_RESET,
         TestAccessUnavailable,
         classify_test_access_ports,
         test_access_kwargs_from_config,
         wrap_test_access,
     )
+
+    if access_instruction not in ACCESS_INSTRUCTIONS:
+        _fail(f"--access-instruction must be one of {', '.join(ACCESS_INSTRUCTIONS)}, got {access_instruction!r}")
 
     if tck_max_freq_mhz is not None:
         if not (emit_icl or emit_stil):
@@ -786,7 +791,8 @@ def _wrap_test_access(
 
     try:
         inserted_verilog, graph, root = wrap_test_access(
-            sources, top, idcode_value=idcode, capture_sync=True, chip_reset=CHIP_RESET, **ta_kwargs,
+            sources, top, idcode_value=idcode, capture_sync=True, chip_reset=CHIP_RESET,
+            access_instruction=access_instruction, **ta_kwargs,
         )
     except TestAccessUnavailable as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
@@ -797,16 +803,18 @@ def _wrap_test_access(
 
     # The ICL and the BSDL its AccessLink points at. Rendered before anything is
     # written, so a failure leaves no half-written output directory.
-    from autombist.testaccess import DEFAULT_TCK_MAX_FREQ_HZ, describe_test_access_tap, tap_facts
+    from autombist.testaccess import DEFAULT_TCK_MAX_FREQ_HZ, describe_test_access_tap, network_access, tap_facts
 
+    access = network_access(access_instruction)
     tck_hz = DEFAULT_TCK_MAX_FREQ_HZ if tck_max_freq_mhz is None else tck_max_freq_mhz * 1e6
     description = None
     if emit_icl:
         try:
-            description = describe_test_access_tap(graph, root, tck_max_freq_hz=tck_hz, idcode_value=idcode)
+            description = describe_test_access_tap(graph, root, tck_max_freq_hz=tck_hz, idcode_value=idcode,
+                                                   access_instruction=access_instruction)
         except (TestAccessUnavailable, ValueError) as exc:
             _fail(str(exc))
-    tap = tap_facts(idcode_value=idcode, description=description)
+    tap = tap_facts(idcode_value=idcode, description=description, access_instruction=access_instruction)
 
     out.mkdir(parents=True, exist_ok=True)
     verilog_path = out / f"{top}_test_access.v"
@@ -819,6 +827,12 @@ def _wrap_test_access(
     typer.echo(f"Inserted Verilog: {verilog_path}")
     typer.echo("Status reads:     through a two-flop TCK synchronizer per bit (they come from clk)")
     typer.echo(f"Control writes:   cleared by {CHIP_RESET} as well as TRST, so a chip reset leaves test mode")
+    if access.dedicated:
+        typer.echo(f"Network access:   {access.instruction} (IR {access.opcode_bits}); EXTEST, SAMPLE and "
+                   "PRELOAD select BYPASS, so a board-level EXTEST does not reach it")
+    else:
+        typer.echo(f"Network access:   {access.instruction} (IR {access.opcode_bits}) -- a board-level EXTEST "
+                   "also reaches the network and can write test_mode/bist_start")
     typer.echo(
         f"TAP IDCODE:       {tap['idcode']} "
         f"({'warptap placeholder -- --idcode sets your own' if tap['idcode_is_placeholder'] else 'set by --idcode'})"
@@ -867,6 +881,7 @@ def _wrap_test_access(
                 memory_name=str(bist_config["memory_name"]) if bist_config is not None else None,
                 run_cycles=run_cycles, bist_cycles=exact,
                 icl_file=icl_path.name if icl_path is not None else None,
+                access=access,
                 bsdl_file=bsdl_path.name if bsdl_path is not None else None,
                 stil=stil,
             )
@@ -901,7 +916,8 @@ def _wrap_test_access(
                 [{"name": p.name, "role": p.role, "width": p.width} for p in ports],
                 output_verilog=verilog_path, output_dir=out, icl_path=icl_path,
                 bsdl_path=bsdl_path, tap=tap, stil=stil_record, capture_sync=True,
-                chip_reset=CHIP_RESET,
+                chip_reset=CHIP_RESET, network_instruction=access.instruction,
+                network_opcode=access.opcode, idcode_value=int(tap["idcode"], 16),
             )
             manifest_path = update_manifest_with_test_access(manifest, block)
         except (ManifestError, ValueError, OSError) as exc:
@@ -929,6 +945,7 @@ def wrap_test_access_cmd(
     idcode: str | None = typer.Option(None, "--idcode", help="The TAP's 32-bit IDCODE, e.g. 0x5CA1AB1F (bit 0 must be 1, per IEEE 1149.1). Default: warptap's placeholder, which is not a registered manufacturer ID -- ship your own"),
     emit_stil: bool = typer.Option(False, "--emit-stil", help="Also write the run_mbist pattern as IEEE 1450 STIL for a tester (<top>_run_mbist.stil): a TRST/reset lead-in, then the same TCK cycles and clk run loop as the JTAG vectors, every pin of the wrapped top declared. Needs the BIST's run length (--config, --manifest or --bist-cycles) and warptap 0.0.4 or later"),
     stil_clk_period_ns: float | None = typer.Option(None, "--stil-clk-period-ns", help="The functional clock's period in the STIL, in ns (needs --emit-stil). Nothing in the RTL says what it may be; default 100 ns is an assumption -- set the real one"),
+    access_instruction: str = typer.Option("ijtag-access", "--access-instruction", help="The TAP instruction that selects the IJTAG network. ijtag-access (default): warptap's dedicated IJTAG_ACCESS (IR 1100), under which EXTEST, SAMPLE and PRELOAD select BYPASS, so a board-level EXTEST cannot write test_mode or bist_start. extest: the network behind EXTEST, as autoMBIST 0.2.0 inserted it (its PDL and STIL load EXTEST)"),
 ) -> None:
     """Wrap a generated design's control/status ports with a JTAG/IJTAG test-access
     network, via the external warptap package.
@@ -949,10 +966,16 @@ def wrap_test_access_cmd(
     directory, or take the macro's own model as an argument). The run loop's length
     needs --config or --manifest, or --bist-cycles.
 
+    The network is hardened for silicon: every status read passes through a two-flop
+    TCK synchronizer (the statuses come from clk), every control write also clears on
+    the wrapper's rst_n (so a chip reset leaves test mode even if TRST never pulses),
+    and the network has its own TAP instruction, IJTAG_ACCESS, so a board-level EXTEST
+    does not reach it. --access-instruction extest puts it behind EXTEST instead.
+
     With --emit-icl it also writes the ICL (<top>_test_access.icl) and the BSDL
     (<top>_test_access.bsd) its AccessLink points at. The AccessLink names the TAP
-    instruction that selects the network (EXTEST), which the BSDL declares, so a
-    retargeting tool needs no out-of-band knowledge to reach it. The BSDL describes the
+    instruction that selects the network (IJTAG_ACCESS, or EXTEST), which the BSDL
+    declares, so a retargeting tool needs no out-of-band knowledge to reach it. The BSDL describes the
     TAP only -- no boundary register -- so a tool that requires one will reject it.
     --tck-max-freq-mhz and --idcode set the two values it states that the RTL cannot:
     the TCK limit (default 10 MHz, an assumption) and the IDCODE (default warptap's
@@ -977,10 +1000,8 @@ def wrap_test_access_cmd(
     internal wires never promoted to the boundary; see
     src/autombist/testaccess.py's own module docstring.
 
-    Requirements (Linux/WSL): `pip install warptap` (>=0.0.2 -- earlier versions have a
-    real bug on any width>1 port; the BSDL and --idcode need warptap 0.0.3 and --emit-stil
-    0.0.4, which the Nix dev shell pins and PyPI does not have yet), plus Yosys and Icarus Verilog on
-    PATH (warptap shells out to both; neither is bundled).
+    Requirements (Linux/WSL): warptap 0.0.4, which the Nix dev shell pins, plus Yosys
+    and Icarus Verilog on PATH (warptap shells out to both; neither is bundled).
 
     Examples:
       autombist wrap-test-access --source out/sram_1rw/sram_1rw_mbist.v \\
@@ -1009,6 +1030,7 @@ def wrap_test_access_cmd(
         idcode=_parse_idcode(idcode) if idcode is not None else None,
         emit_stil=emit_stil,
         stil_clk_period_ns=stil_clk_period_ns,
+        access_instruction=access_instruction,
     )
 
 
