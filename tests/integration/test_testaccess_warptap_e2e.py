@@ -11,8 +11,8 @@ write self_repair_start=0 -- is warptap's own already-proven one, reused verbati
 rather than invented fresh, so a difference in outcome is attributable to this
 module, not to picking a different (possibly easier) scenario.
 
-Skips (not fails) when warptap is not installed: it is an optional capability,
-`pip install warptap`, mirroring this project's iverilog/verilator skip-marker
+Skips (not fails) when warptap is not installed: it is an optional capability
+(the Nix dev shell pins it), mirroring this project's iverilog/verilator skip-marker
 convention for other optional external dependencies. Also needs iverilog (the real
 simulator both this test and warptap's own cross-sim tests run the inserted RTL
 through) and a real yosys (warptap's own ingest()/insert_sib_network() shell out to
@@ -31,13 +31,13 @@ import pytest
 import yaml
 
 from autombist.generator import generate_from_config
-from autombist.testaccess import TestAccessUnavailable, wrap_test_access
+from autombist.testaccess import TestAccessUnavailable, network_access, wrap_test_access
 
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("warptap") is None
     or shutil.which("iverilog") is None
     or shutil.which("yosys") is None,
-    reason="needs `pip install warptap` plus iverilog and yosys on PATH "
+    reason="needs warptap (the Nix dev shell pins it) plus iverilog and yosys on PATH "
     "(Linux/WSL only) -- warptap shells out to both, no bundled fallback",
 )
 
@@ -165,15 +165,18 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
     Yosys-assigned internal wire name (which could shift with formatting/version and would
     make this test fragile for no real gain):
 
-    1. `instrument_write` -- the primitive warptap uses for every control/WRITE port -- has,
-       in its own module definition, no port at all that could carry an external signal in.
-       `pin_out` is a pure shadow register: nothing but an Update-DR with that segment
-       selected ever changes it. This is *why* control ports go JTAG-only; if a future
-       warptap version adds a passthrough port to this primitive, that changes the finding
-       above, and this assertion is what should catch it.
+    1. `instrument_write_clr` -- the primitive warptap uses for every control/WRITE port
+       once it also clears on the chip reset -- has, in its own module definition, no port
+       at all that could carry an external signal in. `pin_out` is a pure shadow register:
+       nothing but an Update-DR with that segment selected ever changes it, and `clr_n`
+       only forces it to 0 (it comes from warptap's `tck_reset_sync`, fed by `rst_n`). This
+       is *why* control ports go JTAG-only; if a future warptap version adds a passthrough
+       port to this primitive, that changes the finding above, and this assertion is what
+       should catch it.
     2. Each port lands on the primitive its role predicts -- control ports get
-       `instrument_write`, status ports get `bc1_shift_only` (a real observe cell, reading
-       the live signal through its `pi` port) -- never the other way around. That pairing is
+       `instrument_write`, status ports get `bc1_shift_only_sync` (a real observe cell, reading
+       the live signal through its `pi` port, behind a two-flop TCK synchronizer because the
+       status comes from the clk domain) -- never the other way around. That pairing is
        autombist.testaccess's own responsibility (classify_test_access_ports /
        build_instrument_specs choosing WRITE vs READ), checked here against warptap's real
        output rather than mocked.
@@ -182,7 +185,7 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
     fuse_faulty_row_addr -- present because this config turns on
     onchip_repair_persistence and passes num_spare_rows/addr_width; diag_valid,
     diag_addr -- onchip_diagnosis plus num_diagnosis_entries/addr_width): these get the
-    SAME control/status treatment as any 1-bit port -- instrument_write/bc1_shift_only,
+    SAME control/status treatment as any 1-bit port -- instrument_write/bc1_shift_only_sync,
     a real warptap_sib_* instance, direction matching their role -- just at their real
     width, confirmed both via the rendered Verilog and directly against
     graph.chain[i].instrument's own width/direction/signal_bits (the exact width>1 path
@@ -273,25 +276,35 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
             f"warptap_sib_{port}* instance anyway"
         )
 
-    write_header = re.search(r"module instrument_write\(([^)]*)\);", inserted_verilog)
-    assert write_header, "instrument_write primitive not found in the inserted Verilog"
+    write_header = re.search(r"module instrument_write_clr\(([^)]*)\);", inserted_verilog)
+    assert write_header, "instrument_write_clr primitive not found in the inserted Verilog"
     assert [p.strip() for p in write_header.group(1).split(",")] == [
-        "si", "so", "pin_out", "select", "capture_dr", "shift_dr", "update_dr", "tck", "trst_n",
-    ], "instrument_write gained (or lost) a port -- re-check whether control ports are still JTAG-exclusive"
+        "si", "so", "pin_out", "select", "capture_dr", "shift_dr", "update_dr", "tck", "trst_n", "clr_n",
+    ], "instrument_write_clr gained (or lost) a port -- re-check whether control ports are still JTAG-exclusive"
+    # the clear comes from the chip reset, through one TCK release synchronizer
+    reset_sync = re.search(r"tck_reset_sync warptap_chip_reset_sync \((.*?)\);", inserted_verilog, re.DOTALL)
+    assert reset_sync and ".chip_rst_n(rst_n)" in reset_sync.group(1), "the control TDRs do not clear on rst_n"
+    clear = re.search(r"\.clr_n\((\w+)\)", reset_sync.group(1)).group(1)
 
     for port in _CONTROL_PORTS:
-        assert f"instrument_write warptap_sib_{port}_inst_0 (" in inserted_verilog, (
-            f"{port} (a control port) should be wrapped with instrument_write"
+        cell = re.search(rf"instrument_write_clr warptap_sib_{port}_inst_0 \((.*?)\);", inserted_verilog, re.DOTALL)
+        assert cell, f"{port} (a control port) should be wrapped with instrument_write_clr"
+        assert f".clr_n({clear})" in cell.group(1), f"{port}'s control TDR does not clear on the chip reset"
+        assert f"instrument_write warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
+            f"{port} (a control port) clears on TRST only"
         )
-        assert f"bc1_shift_only warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
+        assert f"bc1_shift_only_sync warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
             f"{port} (a control port) was wrapped as a status/observe port instead"
         )
 
     for port in _STATUS_PORTS:
-        assert f"bc1_shift_only warptap_sib_{port}_inst_0 (" in inserted_verilog, (
-            f"{port} (a status port) should be wrapped with bc1_shift_only"
+        assert f"bc1_shift_only_sync warptap_sib_{port}_inst_0 (" in inserted_verilog, (
+            f"{port} (a status port) should be wrapped with bc1_shift_only_sync"
         )
-        assert f"instrument_write warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
+        assert f"bc1_shift_only warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
+            f"{port} (a status port from the clk domain) is captured without a TCK synchronizer"
+        )
+        assert not re.search(rf"instrument_write(_clr)? warptap_sib_{port}_inst_0 \(", inserted_verilog), (
             f"{port} (a status port) was wrapped as a control/write port instead"
         )
         assert f".pi({port})" in inserted_verilog, (
@@ -299,6 +312,9 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
         )
 
     chain_by_name = {n.instrument.name: n.instrument for n in graph.chain}
+    # the network model agrees: every READ, and only a READ, is captured through the synchronizer
+    for instrument in chain_by_name.values():
+        assert instrument.capture_sync is (instrument.direction.name == "READ"), instrument.name
     for port, (role, width) in _WIDE_PORTS.items():
         assert f"warptap_sib_{port}" in inserted_verilog, (
             f"{port} (a wide port) should now get real SIB treatment -- found no "
@@ -428,7 +444,7 @@ def test_self_repair_start_write_and_busy_read_through_real_jtag(tmp_path: Path)
     from warptap.pdl_verify import check_reads, correlate_observed
     from warptap.sim_io import run_verilog_testbench
     from warptap.tap_fsm import TapState
-    from warptap.tap_ir import GotoState, ShiftIR, bits_to_int
+    from warptap.tap_ir import GotoState, ShiftIR
     from warptap.tap_ir_play import to_cycles
 
     warptap_fixtures = Path.home() / "warptap" / "tests" / "fixtures"
@@ -464,7 +480,7 @@ def test_self_repair_start_write_and_busy_read_through_real_jtag(tmp_path: Path)
 
     ir_ops = [
         GotoState(TapState.SHIFT_IR),
-        ShiftIR(4, tdi=bits_to_int([0, 0, 0, 0])),  # OPCODE_EXTEST = 0, IR_WIDTH = 4
+        ShiftIR(4, tdi=network_access().opcode),  # the instruction wrap_test_access selects the network with
         GotoState(TapState.RUN_TEST_IDLE),
     ] + pdl.program
 

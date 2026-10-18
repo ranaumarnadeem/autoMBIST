@@ -11,7 +11,7 @@ author = "Rana Umar Nadeem"
 try:
     from autombist import __version__ as release
 except ImportError:
-    release = "0.2.0"
+    release = "0.3.0"
 version = release
 
 extensions = [
@@ -44,7 +44,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "furo"
 html_title = "autoMBIST"
-html_static_path = []
+html_static_path = ["_static"]
 
 html_theme_options = {
     "source_repository": "https://github.com/ranaumarnadeem/autoMBIST",
@@ -91,8 +91,13 @@ ogp_site_url = _SITE_URL
 ogp_site_name = "autoMBIST"
 ogp_type = "website"
 ogp_description_length = 280
+# The same 1280x640 card is the repository's GitHub social preview (uploaded by hand in
+# the repo settings; GitHub has no API for it). A relative path is resolved against
+# ogp_site_url. Setting it also turns off sphinxext-opengraph's generated cards.
+ogp_image = "_static/social-preview.png"
+ogp_image_alt = "autoMBIST: MBIST, BIRA and BISR generator for OpenRAM memories"
 ogp_custom_meta_tags = [
-    '<meta name="twitter:card" content="summary" />',
+    '<meta name="twitter:card" content="summary_large_image" />',
 ]
 
 # robots.txt + llms.txt: copied verbatim to the site root (not part of any

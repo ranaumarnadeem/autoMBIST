@@ -691,7 +691,7 @@ def test_wrap_test_access_config_and_legacy_flags_conflict(tmp_path: Path) -> No
     """--config derives the flags itself -- passing both is ambiguous, so it's a hard
     error rather than silently picking one source, matching this repo's own
     never-silently-accept-ambiguous-input style. Fails before touching warptap at all
-    (no `pip install warptap` needed to run this test)."""
+    (no warptap needed to run this test)."""
     config_path = tmp_path / "config.yml"
     config_path.write_text(
         yaml.safe_dump({"addr_width": 4, "wrapper_module_name": "x"}), encoding="utf-8",

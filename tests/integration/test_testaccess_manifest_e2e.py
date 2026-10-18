@@ -25,7 +25,7 @@ from autombist.testaccess import classify_test_access_ports, test_access_kwargs_
 
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("warptap") is None or shutil.which("yosys") is None,
-    reason="needs `pip install warptap` plus yosys on PATH (Linux/WSL only)",
+    reason="needs warptap (the Nix dev shell pins it) plus yosys on PATH (Linux/WSL only)",
 )
 
 runner = CliRunner()
@@ -73,7 +73,8 @@ def test_manifest_lists_every_jtag_instance_and_keeps_the_memory_blackboxed(tmp_
     assert block["memory_blackboxed"] is True
     assert Path(block["output_verilog"]) == module_outdir / "test-access" / f"{top}_test_access.v"
     assert Path(block["icl_path"]).exists()
-    assert Path(block["bsdl_path"]).exists() and block["tap"]["network_access_instruction"] == "EXTEST"
+    assert Path(block["bsdl_path"]).exists() and block["tap"]["network_access_instruction"] == "IJTAG_ACCESS"
+    assert (block["network_instruction"], block["network_opcode"]) == ("IJTAG_ACCESS", 0b1100)
 
     snapshot = yaml.safe_load((module_outdir / "config.yml").read_text(encoding="utf-8"))
     ports = classify_test_access_ports(**test_access_kwargs_from_config(snapshot))
@@ -83,12 +84,19 @@ def test_manifest_lists_every_jtag_instance_and_keeps_the_memory_blackboxed(tmp_
 
     paths = {i["hierarchical_path"]: i for i in block["instances"]}
     assert [p for p, i in paths.items() if i["category"] == "jtag_tap"] == ["warptap_tap_core"]
+    # the chip reset the control TDRs clear on, and its TCK release synchronizer, filed with the TDRs
+    assert block["chip_reset"] == {"port": "rst_n", "active": "low"}
+    assert [(p, i["category"]) for p, i in paths.items() if i["module_type"] == "tck_reset_sync"] == [
+        ("warptap_chip_reset_sync", "ijtag_tdr")]
     for inst in block["instruments"]:
         assert paths[inst["sib"]]["category"] == "ijtag_sib"
         assert paths[inst["sib"]]["instrument"] == inst["name"]
-        expected = "instrument_write" if inst["role"] == "control" else "bc1_shift_only"
+        # every status bit is captured through a TCK synchronizer, and says so; every
+        # control bit also clears on the chip reset
+        expected = "instrument_write_clr" if inst["role"] == "control" else "bc1_shift_only_sync"
         assert [paths[b]["module_type"] for b in inst["tdr_bits"]] == [expected] * inst["width"]
         assert [paths[b]["bit"] for b in inst["tdr_bits"]] == list(range(inst["width"]))
+        assert inst["capture_sync"] is (inst["role"] == "status")
     # Every base-manifest instance (MBIST blocks, memory) survives into the wrapped netlist.
     base = {i["hierarchical_path"]: i["category"] for i in manifest["instances"]}
     assert {p: paths[p]["category"] for p in base} == base

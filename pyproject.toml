@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autombist"
-version = "0.2.0"
+version = "0.3.0"
 description = "Open-source MBIST, BIRA and BISR generator for OpenRAM memories, with a march-algorithm research platform"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -45,12 +45,10 @@ test-access = [
   # tcl_shell.py's tkinter dependency, so its absence never breaks the rest of the CLI.
   # Also needs a real Yosys and Icarus Verilog on PATH at runtime (warptap shells out
   # to both; this extra covers only the Python side).
-  "warptap>=0.0.2",  # 0.0.2 fixes a width>1 AssertionError in the vendored icl_parser
-  # `--emit-icl`'s BSDL and `--idcode` need warptap 0.0.3 (warptap.bsdl_emit, idcode_value)
-  # and `--emit-stil` needs 0.0.4 (to_stil compares TDO before the rising TCK edge); with an
-  # older warptap they refuse with an upgrade message. The Nix devShell (so CI) pins 0.0.4
-  # in flake.lock. This floor stays 0.0.2 because PyPI has nothing newer yet: raise it to
-  # 0.0.4 once 0.0.4 is published there (TODO.md).
+  # 0.0.4: the hardened network (status synchronizers, chip-reset clear, IJTAG_ACCESS), the
+  # BSDL, --idcode and --emit-stil. The Nix devShell (so CI) pins it in flake.lock, and an
+  # older warptap is refused with the version it needs.
+  "warptap>=0.0.4",
 ]
 
 [project.scripts]

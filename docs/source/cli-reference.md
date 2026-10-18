@@ -457,6 +457,7 @@ autombist wrap-test-access [OPTIONS]
 | `--emit-stil` | off | Also write the `run_mbist` pattern as IEEE 1450 STIL for a tester, `<out>/<top>_run_mbist.stil` (see *The run_mbist pattern as STIL* below). Needs the BIST's run length (`--config`, `--manifest` or `--bist-cycles`) and warptap 0.0.4 or later |
 | `--stil-clk-period-ns FLOAT` | 100 (an assumption) | The functional clock's period in the STIL, in ns. Needs `--emit-stil`. Nothing in the RTL says what it may be; the command prints that it applied the default. Set the real one |
 | `--idcode TEXT` | warptap's placeholder `0x1A5A5003` | The TAP's 32-bit IDCODE, e.g. `0x5CA1AB1F`; bit 0 must be 1, as IEEE 1149.1 requires. The default is not a registered manufacturer ID (its manufacturer field falls in an assigned JEP106 slot), so ship your own |
+| `--access-instruction TEXT` | `ijtag-access` | The TAP instruction that selects the IJTAG network: `ijtag-access`, warptap's dedicated `IJTAG_ACCESS` (`IR 4'b1100`), under which EXTEST, SAMPLE and PRELOAD select BYPASS; or `extest`, the network behind EXTEST as 0.2.0 inserted it (see *Hardened for silicon* below) |
 | `--manifest PATH` | none | A `generate --emit-manifest` output directory. Records every instance of the wrapped netlist in its `manifest.json`'s `test_access` block, and on its own supplies `--source` (wrapper + instrument RTL, with the memory's `<memory_name>_bbox.v` stub in place of a model), `--top`, `--config` and `--out` |
 | `--bist-cycles INTEGER` | the BIST-length bound for the config | Length, in clk cycles, of the BIST run loop in the emitted PDL and JTAG testbench. Without `--config`/`--manifest` there is no config to compute it from, so the PDL and testbench are skipped unless this is given |
 
@@ -492,8 +493,8 @@ port list, and independently the `--emit-icl` output's `TCKPort`/`TMSPort`/
 `self_repair_start`, `repair_load`) become JTAG-exclusive.** Confirmed
 directly in the generated netlist: the write instrument that replaces each of
 these is a pure JTAG shadow register (`pin_out` changes only on an explicit
-Update-DR with that segment selected) with no port at all for an external
-signal to feed it. The original top-level pin is still declared, for
+Update-DR with that segment selected, and a reset clears it) with no port at all
+for an external signal to feed it. The original top-level pin is still declared, for
 interface stability, but has zero fan-out anywhere in the design — after
 wrapping, driving it directly does nothing; the *only* way to start BIST or
 enter test mode is through the JTAG/IJTAG network. Tie these input pins off
@@ -502,8 +503,8 @@ final chip.
 
 Status ports (`bist_done`, `bist_fail`, and their self-repair/persistence
 counterparts) are **not** affected this way: the SIB only taps them
-non-destructively (a boundary-scan observe cell watching the real signal),
-so the original output pin keeps being driven exactly as before, in parallel
+non-destructively (a boundary-scan observe cell watching the real signal
+through a TCK synchronizer), so the original output pin keeps being driven exactly as before, in parallel
 with the new JTAG read path. Nothing about reading these ports functionally
 changes.
 
@@ -517,20 +518,50 @@ the tester-driven `repair_ports:` config instead (mutually exclusive with
 `onchip_selfrepair`), they ARE real boundary ports, wrappable via `--config`
 like any other `repair_ports:` entry.
 
-Requires (Linux/WSL only): `pip install warptap>=0.0.2` (or the `test-access`
-extra — `pip install "autombist[test-access]"`), plus Yosys and Icarus Verilog
-on PATH. warptap shells out to both; neither is bundled. `>=0.0.2` matters: an
-earlier warptap has a real bug in its vendored ICL parser on any width>1
-instrument, which every wide port above needs.
+### Hardened for silicon
 
-The BSDL (`--emit-icl`) and `--idcode` need warptap 0.0.3 or later
-(`warptap.bsdl_emit` and `idcode_value`). The Nix dev shell (`nix develop`, and so
-CI) pins warptap `v0.0.4` in `flake.lock`; PyPI has only 0.0.2 so far. With an
-older warptap the command still wraps, and refuses those two options with a message
-saying to upgrade. 0.0.3 also fixes the network moving under **any** TAP instruction: before
-it, two all-ones DR scans under IDCODE or BYPASS (a board chain passing through)
-would have driven every control instrument (`test_mode`, `bist_start`, ...) to 1.
-Regenerate any wrapped netlist made with an earlier warptap.
+Three gaps that simulation cannot show are closed by default, each with a warptap
+0.0.4 option:
+
+- **Status reads are synchronized to TCK.** `bist_done`, `bist_fail` and every
+  other status come from the `clk` domain, and Capture-DR samples them on TCK.
+  Each status bit is captured through a two-flop TCK synchronizer
+  (`bc1_shift_only_sync`), so a capture never catches a bit mid-transition; it
+  shows the status as it was two TCK edges earlier, which is why `run_mbist` reads
+  only after the run loop. A multi-bit status is coherent once it has settled, as
+  done, fail and a logged address do.
+- **A chip reset clears the controls JTAG drives.** Every control TDR
+  (`instrument_write_clr`) clears on the wrapper's `rst_n` as well as on TRST,
+  through one `tck_reset_sync` that releases two TCK edges after the reset does.
+  Before, only TRST cleared them, so a chip reset on a board that never pulses TRST
+  left the memory in test mode with `bist_start` high, and the controller, which
+  starts on the level of `bist_start`, ran the BIST again.
+- **The network has its own instruction.** It sits behind warptap's
+  `IJTAG_ACCESS` (`IR 4'b1100`), and EXTEST, SAMPLE and PRELOAD select BYPASS, so a
+  board-level boundary-scan EXTEST no longer reaches `test_mode` or `bist_start`.
+  The PDL, the vectors, the STIL, the BSDL, the ICL `AccessLink` and the manifest
+  all name `IJTAG_ACCESS`.
+
+`tests/integration/test_testaccess_hardening_e2e.py` replays each claim against the
+wrapped RTL next to the same netlist wrapped without it. A chip reset after
+`bist_start=1` leaves `bist_done` at 0, where the netlist without the clear runs
+the BIST again. Scans under EXTEST that write `test_mode=1` and `bist_start=1`
+leave the network as reset, where the netlist behind EXTEST starts the BIST. The
+synchronizer is checked structurally (every status bit is a `bc1_shift_only_sync`,
+no control bit is); metastability itself is not something RTL simulation can show.
+
+**Upgrading from 0.2.0:** the default network instruction changed, so a PDL, vector
+file or STIL generated by 0.2.0 loads EXTEST and no longer reaches a network wrapped
+by this version. Regenerate them with the netlist, or pass `--access-instruction
+extest` to keep the network behind EXTEST (the other two fixes stay on).
+
+Requires (Linux/WSL only): warptap 0.0.4, which the Nix dev shell (`nix develop`,
+and so CI) pins in `flake.lock`, plus Yosys and Icarus Verilog on PATH. warptap
+shells out to both; neither is bundled. An older warptap is refused with the
+version it needs. warptap 0.0.3 also fixed the network moving under **any** TAP
+instruction: before it, two all-ones DR scans under IDCODE or BYPASS (a board
+chain passing through) would have driven every control instrument (`test_mode`,
+`bist_start`, ...) to 1. Regenerate any wrapped netlist made with an earlier warptap.
 
 ### Examples
 
@@ -600,25 +631,32 @@ autombist wrap-test-access --manifest out/sram_1rw --emit-icl
   - `instances` — every instance in the wrapped top: the TAP
     (`warptap_tap_core`, `jtag_tap`), one SIB per wrapped port
     (`warptap_sib_<port>`, `ijtag_sib`), one TDR bit per port bit
-    (`warptap_sib_<port>_inst_<k>`: `instrument_write` for a control port,
-    `bc1_shift_only` for a status port; `ijtag_tdr`), the MBIST blocks (under
-    the module names that file uses, no `parameters` — they're baked in) and
-    the memory. `"separate"` instances synthesize standalone with
-    `hierarchy -top <module_type>` straight from `output_verilog`; pass
-    module names beginning with `\` to Yosys verbatim
-  - `instruments` — each wrapped port with its role, width, SIB and ordered
-    TDR bits
-
+    (`warptap_sib_<port>_inst_<k>`: `instrument_write_clr` for a control port,
+    `bc1_shift_only_sync` for a status port; `ijtag_tdr`), the control TDRs'
+    chip-reset synchronizer (`warptap_chip_reset_sync`, `tck_reset_sync`, filed
+    as `ijtag_tdr`), the MBIST blocks (under the module names that file uses, no
+    `parameters` — they're baked in) and the memory. `"separate"` instances
+    synthesize standalone with `hierarchy -top <module_type>` straight from
+    `output_verilog`; pass module names beginning with `\` to Yosys verbatim
+  - `instruments` — each wrapped port with its role, width, SIB, ordered TDR
+    bits and `capture_sync` (true for every status port: captured through a TCK
+    synchronizer)
+  - `network_instruction`, `network_opcode` — the TAP instruction that selects
+    the network (`IJTAG_ACCESS`, 12; or `EXTEST`, 0), `idcode_value` the TAP's
+    IDCODE, and `chip_reset` (`{port: rst_n, active: low}`) the reset the control
+    TDRs also clear on, all as integers and names FaultFlow reads them
   - `icl_path`, `bsdl_path` — the ICL and BSDL, when `--emit-icl` wrote them
   - `stil`: `{path, tck_period_ns, clk_period_ns}` when `--emit-stil` wrote it, else null
   - `tap` — what a consumer needs to reach the network without reading the
     ICL: `idcode` (and `idcode_is_placeholder`), `instruction_length`,
-    `network_access_instruction` (`EXTEST`) and its `network_access_opcode`;
-    with the BSDL, also `bsdl_entity` and `tck_max_freq_hz`. These fields are
-    additive: a reader that doesn't know them can ignore them
+    `network_access_instruction` (`IJTAG_ACCESS`, or `EXTEST`) and its
+    `network_access_opcode`; with the BSDL, also `bsdl_entity` and
+    `tck_max_freq_hz`
 
-  The command refuses to write the block if any port's SIB or TDR cells don't
-  line up with its role and width.
+  These fields are additive (manifest schema 1.1.0): a reader that doesn't know
+  them can ignore them, and a block without the network fields means EXTEST. The
+  command refuses to write the block if any port's SIB or TDR cells don't line up
+  with its role, width and the hardening it was wrapped with.
 
 ### The ICL, the BSDL and the TAP's IDCODE
 
@@ -627,24 +665,26 @@ autombist wrap-test-access --manifest out/sram_1rw --emit-icl
 ```
 AccessLink warptap_tap Of STD_1149_1_2001 {
     BSDLEntity sram_1rw_mbist;
-    EXTEST { ScanInterface { warptap_sib_test_mode; } }
+    IJTAG_ACCESS { ScanInterface { warptap_sib_test_mode; } }
 }
 ```
 
-binds the network to the TAP and names the instruction (`EXTEST`) that selects
-it; `<top>_test_access.bsd` declares that instruction, the TAP's pins and scan
-attributes, its instruction length, opcodes, capture pattern and IDCODE. A
-retargeting tool therefore needs no out-of-band knowledge of which instruction
-to load. The PDL and vectors still load EXTEST (`IR 4'b0000`) themselves. The
-BSDL's opcode, the instruction length and the IR load in the vectors are
-checked against each other by `tests/integration/test_bsdl_e2e.py`.
+binds the network to the TAP and names the instruction (`IJTAG_ACCESS`) that
+selects it; `<top>_test_access.bsd` declares that instruction, the TAP's pins and
+scan attributes, its instruction length, opcodes, capture pattern and IDCODE, and
+gives EXTEST, SAMPLE and PRELOAD the BYPASS register. A retargeting tool therefore
+needs no out-of-band knowledge of which instruction to load. The PDL and vectors
+still load `IJTAG_ACCESS` (`IR 4'b1100`) themselves. With `--access-instruction
+extest` all of these name EXTEST (`IR 4'b0000`) instead. The BSDL's opcode, the
+instruction length and the IR load in the vectors are checked against each other
+by `tests/integration/test_bsdl_e2e.py`, for both choices.
 
 What the BSDL is not, stated by the file itself in `DESIGN_WARNING`:
 
 - **TAP only.** No `BOUNDARY_LENGTH` or `BOUNDARY_REGISTER`, so a boundary-scan
-  tool that requires one will reject it. EXTEST here selects the IJTAG network,
-  not a boundary register (a SIB network and a boundary register never share a
-  design in warptap).
+  tool that requires one will reject it. There is no boundary register for EXTEST
+  to select (a SIB network and a boundary register never share a design in
+  warptap): it selects BYPASS, or the IJTAG network with `--access-instruction extest`.
 - **Not validated by an independent BSDL parser.** None that accepts a TAP-only
   file was usable. warptap cross-simulates every claim in it against the real
   TAP RTL, and autoMBIST's test reads the IDCODE back from the wrapped netlist.
@@ -688,11 +728,11 @@ It enters test mode, starts the BIST and holds the start, runs the MBIST's
 functional clock `clk` for the BIST's length (`iRunLoop -sck`), reads
 `bist_done=1` and `bist_fail=0` back, and returns the controller to idle. Each
 instrument is addressed by its ICL register (`warptap_instr_<port>.DR`). The
-network sits behind the TAP's data-register path, so EXTEST (`IR 4'b0000` on
-warptap's 4-bit IR) is loaded first. With `--emit-icl` the ICL's `AccessLink`
-names that instruction and the PDL's header points at the ICL and BSDL; a
-tester playing the PDL without a retargeting tool loads EXTEST itself, as the
-header says.
+network sits behind the TAP's data-register path, so `IJTAG_ACCESS` (`IR 4'b1100`
+on warptap's 4-bit IR; EXTEST, `IR 4'b0000`, with `--access-instruction extest`)
+is loaded first. With `--emit-icl` the ICL's `AccessLink` names that instruction
+and the PDL's header points at the ICL and BSDL; a tester playing the PDL without
+a retargeting tool loads the instruction itself, as the header says.
 
 `<top>_run_mbist.vec` is that procedure retargeted here, through warptap's own
 PDL interpreter over the inserted network, driven by the same steps the PDL is
@@ -734,8 +774,9 @@ behind a reset lead-in:
    edge while their reset is low, so the lead-in works even where the reset pin is
    low from the start and never falls.
 2. Both are released and TCK takes the TAP to Run-Test/Idle.
-3. EXTEST is loaded and the `run_mbist` writes, run loop and reads follow, with TDO
-   compared on the two read bits (`bist_done = 1`, `bist_fail = 0`).
+3. `IJTAG_ACCESS` (or EXTEST, with `--access-instruction extest`) is loaded and the
+   `run_mbist` writes, run loop and reads follow, with TDO compared on the two read
+   bits (`bist_done = 1`, `bist_fail = 0`). The file's header names the instruction.
 
 Every pin of the wrapped top is declared, one STIL signal per bit of a bus
 (`"func_addr[0]"`): the inputs held at the values the JTAG testbench ties them to

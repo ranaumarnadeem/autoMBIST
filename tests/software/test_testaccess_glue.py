@@ -9,10 +9,12 @@ does with whatever warptap returns, and they run with or without warptap install
 """
 from __future__ import annotations
 
+import enum
 import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NamedTuple
 
 import pytest
 from typer.testing import CliRunner
@@ -48,8 +50,8 @@ def fake_warptap(monkeypatch):
             raise FakeBsdlEmitError(f"{entity!r} is not a valid entity name")
         return f"BSDL {entity} {tck_max_freq_hz} {extra}"
 
-    def to_icl(graph, root, *, include_access_link, bsdl_entity_name):
-        calls.to_icl.append((root.name, include_access_link, bsdl_entity_name))
+    def to_icl(graph, root, *, include_access_link, bsdl_entity_name, **extra):
+        calls.to_icl.append((root.name, include_access_link, bsdl_entity_name, extra))
         return f"ICL {root.name} link={include_access_link} entity={bsdl_entity_name}"
 
     def idcode_value_error(value):
@@ -63,7 +65,7 @@ def fake_warptap(monkeypatch):
         "warptap.icl_emit": types.SimpleNamespace(to_icl=to_icl),
         "warptap.tap_model": types.SimpleNamespace(
             idcode_value_error=idcode_value_error, DEFAULT_IR_WIDTH=4, IDCODE_VALUE=PLACEHOLDER,
-            OPCODE_EXTEST=0,
+            OPCODE_EXTEST=0, OPCODE_IJTAG_ACCESS=0b1100,
         ),
     }
     modules["warptap"].__path__ = []
@@ -85,19 +87,28 @@ def test_describe_renders_the_icl_and_bsdl_under_one_entity(fake_warptap) -> Non
 
     assert described == TapDescription(
         icl="ICL x_ctrl link=True entity=x_ctrl",
-        bsdl=f"BSDL x_ctrl {DEFAULT_TCK_MAX_FREQ_HZ} {{}}",
+        bsdl=f"BSDL x_ctrl {DEFAULT_TCK_MAX_FREQ_HZ} {{'ijtag_access_opcode': 12}}",
         entity="x_ctrl",
         tck_max_freq_hz=DEFAULT_TCK_MAX_FREQ_HZ,
     )
-    # no idcode keyword at all when none was asked for: an older warptap lacks it
+    # the BSDL declares IJTAG_ACCESS and the ICL's AccessLink names it; no idcode keyword at
+    # all when none was asked for
+    assert fake_warptap.to_bsdl == [("x_ctrl", DEFAULT_TCK_MAX_FREQ_HZ, {"ijtag_access_opcode": 0b1100})]
+    assert fake_warptap.to_icl == [("x_ctrl", True, "x_ctrl", {"ijtag_access": True})]
+
+
+def test_describe_behind_extest_asks_nothing_extra(fake_warptap) -> None:
+    describe_test_access_tap(object(), _root("x_ctrl"), access_instruction="extest")
+
     assert fake_warptap.to_bsdl == [("x_ctrl", DEFAULT_TCK_MAX_FREQ_HZ, {})]
+    assert fake_warptap.to_icl == [("x_ctrl", True, "x_ctrl", {})]
 
 
 def test_describe_passes_the_tck_limit_and_idcode_through(fake_warptap) -> None:
     described = describe_test_access_tap(object(), _root(), tck_max_freq_hz=25, idcode_value=CUSTOM)
 
     assert described.tck_max_freq_hz == 25.0 and isinstance(described.tck_max_freq_hz, float)
-    assert fake_warptap.to_bsdl == [("x_ctrl", 25.0, {"idcode_value": CUSTOM})]
+    assert fake_warptap.to_bsdl == [("x_ctrl", 25.0, {"idcode_value": CUSTOM, "ijtag_access_opcode": 0b1100})]
 
 
 @pytest.mark.parametrize(("top", "entity", "tried"), [
@@ -112,7 +123,7 @@ def test_describe_falls_back_to_a_derived_entity_name_and_the_icl_follows(
 
     assert described.entity == entity
     assert [t[0] for t in fake_warptap.to_bsdl] == tried
-    assert fake_warptap.to_icl == [(top, True, entity)]
+    assert [t[:3] for t in fake_warptap.to_icl] == [(top, True, entity)]
 
 
 def test_describe_gives_up_with_the_last_reason_when_no_entity_name_works(fake_warptap, monkeypatch) -> None:
@@ -149,14 +160,33 @@ def test_describe_maps_a_typeerror_to_the_missing_feature(fake_warptap, monkeypa
 
     monkeypatch.setattr(sys.modules["warptap.bsdl_emit"], "to_bsdl", old_to_bsdl)
     with pytest.raises(TestAccessUnavailable, match="IDCODE"):
-        describe_test_access_tap(object(), _root(), idcode_value=CUSTOM)
+        describe_test_access_tap(object(), _root(), idcode_value=CUSTOM, access_instruction="extest")
+    with pytest.raises(TestAccessUnavailable, match="IJTAG_ACCESS.*0.0.4"):  # no ijtag_access_opcode
+        describe_test_access_tap(object(), _root())
 
     def old_to_icl(graph, root, *, include_access_link):  # an older to_icl: no bsdl_entity_name
         return "ICL"
 
     monkeypatch.setattr(sys.modules["warptap.icl_emit"], "to_icl", old_to_icl)
     with pytest.raises(TestAccessUnavailable, match="BSDL"):
+        describe_test_access_tap(object(), _root(), access_instruction="extest")
+
+
+def test_describe_maps_an_icl_without_ijtag_access_to_the_version_it_needs(fake_warptap, monkeypatch) -> None:
+    def to_icl_0_0_3(graph, root, *, include_access_link, bsdl_entity_name):  # no ijtag_access keyword
+        return "ICL"
+
+    monkeypatch.setattr(sys.modules["warptap.icl_emit"], "to_icl", to_icl_0_0_3)
+    with pytest.raises(TestAccessUnavailable, match="0.0.4"):
         describe_test_access_tap(object(), _root())
+
+
+def test_a_warptap_without_the_ijtag_access_opcode_is_refused(fake_warptap) -> None:
+    del sys.modules["warptap.tap_model"].OPCODE_IJTAG_ACCESS
+
+    with pytest.raises(TestAccessUnavailable, match="0.0.4"):
+        testaccess.network_access()
+    assert testaccess.network_access("extest") == testaccess.NetworkAccess("EXTEST", 0, 4)
 
 
 def test_describe_needs_warptap_installed(monkeypatch) -> None:
@@ -173,9 +203,22 @@ def test_tap_facts_state_what_the_hardware_holds(fake_warptap) -> None:
     custom = tap_facts(idcode_value=CUSTOM, description=TapDescription("i", "b", "ent", 25e6))
 
     assert plain == {"idcode": "0x1A5A5003", "idcode_is_placeholder": True, "instruction_length": 4,
-                     "network_access_instruction": "EXTEST", "network_access_opcode": "0000"}
+                     "network_access_instruction": "IJTAG_ACCESS", "network_access_opcode": "1100"}
     assert custom == {**plain, "idcode": "0x5CA1AB1F", "idcode_is_placeholder": False,
                       "bsdl_entity": "ent", "tck_max_freq_hz": 25e6}
+    assert tap_facts(access_instruction="extest") == {
+        **plain, "network_access_instruction": "EXTEST", "network_access_opcode": "0000"}
+
+
+def test_network_access_names_the_instruction_and_its_opcode(fake_warptap) -> None:
+    ijtag = testaccess.network_access()
+
+    assert ijtag == testaccess.NetworkAccess("IJTAG_ACCESS", 0b1100, 4)
+    assert ijtag.dedicated and ijtag.opcode_bits == "1100"
+    extest = testaccess.network_access("extest")
+    assert not extest.dedicated and extest.opcode_bits == "0000"
+    with pytest.raises(ValueError, match="use one of ijtag-access, extest"):
+        testaccess.network_access("EXTEST")
 
 
 # --- wrap_test_access ----------------------------------------------------------
@@ -189,7 +232,7 @@ def fake_insert(fake_warptap, monkeypatch):
         return "module x(); endmodule", object(), _root(top)
 
     monkeypatch.setattr(testaccess, "_warptap_insert_test_access", insert, raising=False)
-    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports: [])
+    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports, **kw: [])
     return seen
 
 
@@ -199,6 +242,41 @@ def test_wrap_passes_the_idcode_to_warptap_only_when_given(fake_insert) -> None:
 
     wrap_test_access(["a.v"], "x", idcode_value=CUSTOM)
     assert fake_insert["idcode_value"] == CUSTOM
+
+
+def test_wrap_gives_the_network_its_own_instruction_unless_told_to_use_extest(fake_insert) -> None:
+    wrap_test_access(["a.v"], "x")
+    assert fake_insert["ijtag_access_opcode"] == 0b1100
+
+    fake_insert.clear()
+    wrap_test_access(["a.v"], "x", access_instruction="extest")
+    assert "ijtag_access_opcode" not in fake_insert
+
+
+def test_wrap_refuses_an_unknown_access_instruction_before_inserting(fake_insert) -> None:
+    with pytest.raises(ValueError, match="use one of"):
+        wrap_test_access(["a.v"], "x", access_instruction="bypass")
+    assert fake_insert == {}
+
+
+def test_wrap_clears_the_control_writes_on_the_wrappers_reset_unless_told_not_to(fake_insert) -> None:
+    wrap_test_access(["a.v"], "x")
+    assert fake_insert["chip_reset"] == testaccess.CHIP_RESET == "rst_n"
+
+    fake_insert.clear()
+    wrap_test_access(["a.v"], "x", chip_reset=None)
+    assert "chip_reset" not in fake_insert  # nothing an older warptap would not take
+
+
+def test_wrap_maps_a_chip_reset_typeerror_to_the_version_it_needs(fake_warptap, monkeypatch) -> None:
+    def insert(sources, top, specs, **kwargs):
+        raise TypeError("insert_test_access() got an unexpected keyword argument 'chip_reset'")
+
+    monkeypatch.setattr(testaccess, "_warptap_insert_test_access", insert, raising=False)
+    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports, **kw: [])
+
+    with pytest.raises(TestAccessUnavailable, match="0.0.4"):
+        wrap_test_access(["a.v"], "x")
 
 
 def test_wrap_refuses_a_bad_idcode_before_inserting_anything(fake_insert) -> None:
@@ -214,7 +292,7 @@ def test_wrap_maps_an_idcode_typeerror_to_the_missing_feature(fake_warptap, monk
         return "v", object(), _root()
 
     monkeypatch.setattr(testaccess, "_warptap_insert_test_access", insert, raising=False)
-    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports: [])
+    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports, **kw: [])
 
     with pytest.raises(TestAccessUnavailable, match="IDCODE"):
         wrap_test_access(["a.v"], "x", idcode_value=CUSTOM)
@@ -225,7 +303,7 @@ def test_wrap_does_not_hide_an_unrelated_typeerror(fake_warptap, monkeypatch) ->
         raise TypeError("something else entirely")
 
     monkeypatch.setattr(testaccess, "_warptap_insert_test_access", insert, raising=False)
-    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports: [])
+    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports, **kw: [])
 
     with pytest.raises(TypeError, match="something else"):
         wrap_test_access(["a.v"], "x")
@@ -235,10 +313,71 @@ def test_wrap_does_not_hide_an_unrelated_typeerror(fake_warptap, monkeypatch) ->
 
 def test_wrap_needs_the_idcode_check_from_a_warptap_that_has_it(fake_warptap, monkeypatch) -> None:
     del sys.modules["warptap.tap_model"].idcode_value_error
-    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports: [])
+    monkeypatch.setattr(testaccess, "build_instrument_specs", lambda ports, **kw: [])
 
     with pytest.raises(TestAccessUnavailable, match="IDCODE"):
         wrap_test_access(["a.v"], "x", idcode_value=CUSTOM)
+
+
+# --- build_instrument_specs ----------------------------------------------------
+
+class _Direction(enum.Enum):
+    READ = "read"
+    WRITE = "write"
+
+
+class _Spec(NamedTuple):  # warptap 0.0.4's InstrumentSpec, the fields autoMBIST sets
+    name: str
+    width: int
+    capture_value: int
+    direction: _Direction = _Direction.READ
+    signal_bits: tuple = ()
+    capture_sync: bool = False
+
+
+class _OldSpec(NamedTuple):  # an InstrumentSpec from before capture_sync
+    name: str
+    width: int
+    capture_value: int
+    direction: _Direction = _Direction.READ
+    signal_bits: tuple = ()
+
+
+@pytest.fixture
+def fake_specs(fake_warptap, monkeypatch):
+    monkeypatch.setattr(testaccess, "InstrumentDirection", _Direction, raising=False)
+    monkeypatch.setattr(testaccess, "SignalBinding", lambda name, bit: (name, bit), raising=False)
+    monkeypatch.setattr(testaccess, "InstrumentSpec", _Spec, raising=False)
+
+
+PORTS = [testaccess.TestAccessPort("bist_start", "control"), testaccess.TestAccessPort("diag_addr", "status", 2)]
+
+
+def test_every_status_read_and_no_control_write_is_synchronized(fake_specs) -> None:
+    specs = testaccess.build_instrument_specs(PORTS)
+
+    assert [(s.name, s.direction, s.capture_sync) for s in specs] == [
+        ("bist_start", _Direction.WRITE, False), ("diag_addr", _Direction.READ, True)]
+    assert specs[1].signal_bits == (("diag_addr", 0), ("diag_addr", 1))
+    assert not any(s.capture_sync for s in testaccess.build_instrument_specs(PORTS, capture_sync=False))
+
+
+def test_a_warptap_without_capture_sync_is_refused_with_the_version_it_needs(fake_specs, monkeypatch) -> None:
+    monkeypatch.setattr(testaccess, "InstrumentSpec", _OldSpec)
+
+    with pytest.raises(TestAccessUnavailable, match="0.0.4"):
+        testaccess.build_instrument_specs(PORTS)
+    # without the synchronizers it asks nothing an older warptap lacks
+    assert len(testaccess.build_instrument_specs(PORTS, capture_sync=False)) == 2
+
+
+def test_an_unrelated_spec_typeerror_is_not_hidden(fake_specs, monkeypatch) -> None:
+    def broken(*args, **kwargs):
+        raise TypeError("something else entirely")
+
+    monkeypatch.setattr(testaccess, "InstrumentSpec", broken)
+    with pytest.raises(TypeError, match="something else"):
+        testaccess.build_instrument_specs(PORTS)
 
 
 # --- the CLI: validation first, nothing written on a failure -------------------
@@ -281,18 +420,24 @@ def test_cli_says_so_when_warptap_is_not_installed(tmp_path: Path, monkeypatch) 
 
 @pytest.fixture
 def faked_wrap(monkeypatch):
-    seen = SimpleNamespace(wrap=None, describe=None)
+    seen = SimpleNamespace(wrap=None, describe=None, access=None)
 
     def wrap(sources, top, **kwargs):
         seen.wrap = kwargs
         return "module t(); endmodule\n", SimpleNamespace(chain=[]), _root(top)
 
-    def describe(graph, root, *, tck_max_freq_hz, idcode_value):
+    def describe(graph, root, *, tck_max_freq_hz, idcode_value, access_instruction):
         seen.describe = (tck_max_freq_hz, idcode_value)
+        seen.access = access_instruction
         return TapDescription("ICL TEXT", "BSDL TEXT", "t", tck_max_freq_hz)
+
+    def access(choice):
+        return (testaccess.NetworkAccess("IJTAG_ACCESS", 0b1100, 4) if choice == "ijtag-access"
+                else testaccess.NetworkAccess("EXTEST", 0, 4))
 
     monkeypatch.setattr(testaccess, "wrap_test_access", wrap)
     monkeypatch.setattr(testaccess, "describe_test_access_tap", describe)
+    monkeypatch.setattr(testaccess, "network_access", access)
     monkeypatch.setattr(testaccess, "tap_facts", lambda **kw: {
         "idcode": f"0x{(kw['idcode_value'] or PLACEHOLDER):08X}",
         "idcode_is_placeholder": kw["idcode_value"] is None})
@@ -333,8 +478,33 @@ def test_cli_without_emit_icl_writes_no_icl_or_bsdl(tmp_path: Path, faked_wrap) 
     assert faked_wrap.describe is None  # nothing rendered
 
 
+def test_cli_hardens_the_network_by_default_and_says_how(tmp_path: Path, faked_wrap) -> None:
+    result = _wrap_cli(tmp_path, "--emit-icl")
+
+    assert result.exit_code == 0, result.output
+    assert faked_wrap.wrap["capture_sync"] is True and faked_wrap.wrap["chip_reset"] == "rst_n"
+    assert faked_wrap.wrap["access_instruction"] == faked_wrap.access == "ijtag-access"
+    assert "two-flop TCK synchronizer" in result.output and "cleared by rst_n" in result.output
+    assert "IJTAG_ACCESS (IR 1100); EXTEST, SAMPLE and PRELOAD select BYPASS" in result.output
+
+
+def test_cli_can_put_the_network_behind_extest_and_says_what_that_means(tmp_path: Path, faked_wrap) -> None:
+    result = _wrap_cli(tmp_path, "--emit-icl", "--access-instruction", "extest")
+
+    assert result.exit_code == 0, result.output
+    assert faked_wrap.wrap["access_instruction"] == faked_wrap.access == "extest"
+    assert "EXTEST (IR 0000) -- a board-level EXTEST also reaches the network" in result.output
+
+
+def test_cli_refuses_an_unknown_access_instruction_before_anything(tmp_path: Path, faked_wrap) -> None:
+    result = _wrap_cli(tmp_path, "--access-instruction", "sample")
+
+    assert result.exit_code == 1 and "must be one of ijtag-access, extest" in result.output
+    assert faked_wrap.wrap is None and not (tmp_path / "out").exists()
+
+
 def test_cli_renders_before_writing_so_a_failure_leaves_no_output(tmp_path: Path, faked_wrap, monkeypatch) -> None:
-    def refuse(graph, root, *, tck_max_freq_hz, idcode_value):
+    def refuse(graph, root, **kwargs):
         raise ValueError("no BSDL entity name works")
 
     monkeypatch.setattr(testaccess, "describe_test_access_tap", refuse)

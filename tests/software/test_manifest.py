@@ -212,7 +212,8 @@ def test_update_manifest_with_test_access_requires_existing_manifest(tmp_path: P
         update_manifest_with_test_access(tmp_path, {"wrapped": True})
 
 
-def _enumerated(*, memory_blackbox: bool = True, tdr_type: str = "instrument_write", bits=(0,)) -> list[dict]:
+def _enumerated(*, memory_blackbox: bool = True, tdr_type: str = "instrument_write", bits=(0,),
+                reset_sync: bool = False) -> list[dict]:
     def e(instance, module_type, **kw):
         return {"instance": instance, "module_type": module_type, "is_blackbox": False,
                 "sib_name": None, "instrument_name": None, "instrument_bit": None, "mux_name": None, **kw}
@@ -220,17 +221,18 @@ def _enumerated(*, memory_blackbox: bool = True, tdr_type: str = "instrument_wri
         e("u_sram", "sram_1rw", is_blackbox=memory_blackbox),
         e("u_algo_top", r"\$paramod$abc\march_c_top"),
         e("warptap_tap_core", "tap_core"),
+        *([e("warptap_chip_reset_sync", "tck_reset_sync")] if reset_sync else []),
         e("warptap_sib_bist_start", "sib_cell", sib_name="sib_bist_start", instrument_name="bist_start"),
         *[e(f"warptap_sib_bist_start_inst_{k}", tdr_type, sib_name="sib_bist_start", instrument_bit=k)
           for k in bits],
     ]
 
 
-def _block(tmp_path: Path, enumerated: list[dict], width: int = 1, role: str = "control") -> dict:
+def _block(tmp_path: Path, enumerated: list[dict], width: int = 1, role: str = "control", **options) -> dict:
     manifest = _manifest(_config(), tmp_path)
     return build_test_access_block(
         manifest, enumerated, [{"name": "bist_start", "role": role, "width": width}],
-        output_verilog=tmp_path / "x_test_access.v", output_dir=tmp_path, icl_path=None,
+        output_verilog=tmp_path / "x_test_access.v", output_dir=tmp_path, icl_path=None, **options,
     )
 
 
@@ -255,7 +257,42 @@ def test_test_access_block_lists_every_wrapped_instance(tmp_path: Path) -> None:
     assert block["instruments"] == [{
         "name": "bist_start", "role": "control", "width": 1,
         "sib": "warptap_sib_bist_start", "tdr_bits": ["warptap_sib_bist_start_inst_0"],
+        "capture_sync": False,
     }]
+
+
+def test_a_synchronized_status_port_is_recorded_as_one(tmp_path: Path) -> None:
+    block = _block(tmp_path, _enumerated(tdr_type="bc1_shift_only_sync"), role="status", capture_sync=True)
+
+    paths = {i["hierarchical_path"]: i for i in block["instances"]}
+    assert paths["warptap_sib_bist_start_inst_0"]["category"] == "ijtag_tdr"
+    assert block["instruments"][0]["capture_sync"] is True
+
+
+def test_capture_sync_never_marks_a_control_port(tmp_path: Path) -> None:
+    block = _block(tmp_path, _enumerated(), role="control", capture_sync=True)
+
+    assert block["instruments"][0]["capture_sync"] is False
+
+
+def test_a_chip_reset_clear_is_recorded_with_its_synchronizer(tmp_path: Path) -> None:
+    block = _block(tmp_path, _enumerated(tdr_type="instrument_write_clr", reset_sync=True), chip_reset="rst_n")
+
+    paths = {i["hierarchical_path"]: i for i in block["instances"]}
+    assert block["chip_reset"] == {"port": "rst_n", "active": "low"}
+    assert paths["warptap_chip_reset_sync"]["category"] == "ijtag_tdr"  # FaultFlow files it with the TDRs
+    assert paths["warptap_chip_reset_sync"]["hierarchy_hint"] == "separate"
+    assert paths["warptap_sib_bist_start_inst_0"]["category"] == "ijtag_tdr"
+    assert _block(tmp_path, _enumerated())["chip_reset"] is None
+
+
+@pytest.mark.parametrize("enumerated, options", [
+    (_enumerated(tdr_type="instrument_write_clr"), {"chip_reset": "rst_n"}),  # no release synchronizer
+    (_enumerated(reset_sync=True), {}),                                       # a clear nobody asked for
+])
+def test_the_chip_reset_must_be_what_the_netlist_holds(tmp_path: Path, enumerated: list[dict], options: dict) -> None:
+    with pytest.raises(ManifestError, match="chip reset"):
+        _block(tmp_path, enumerated, **options)
 
 
 def test_test_access_block_records_the_bsdl_and_the_tap(tmp_path: Path) -> None:
@@ -279,6 +316,16 @@ def test_test_access_block_without_a_bsdl_or_tap_says_so(tmp_path: Path) -> None
     block = _block(tmp_path, _enumerated())
 
     assert block["bsdl_path"] is None and block["tap"] is None
+    # what a block without the 1.1 fields means: the network behind EXTEST, IDCODE unstated
+    assert (block["network_instruction"], block["network_opcode"], block["idcode_value"]) == ("EXTEST", 0, None)
+
+
+def test_test_access_block_names_the_networks_instruction_as_faultflow_reads_it(tmp_path: Path) -> None:
+    block = _block(tmp_path, _enumerated(), network_instruction="IJTAG_ACCESS", network_opcode=0b1100,
+                   idcode_value=0x5CA1AB1F)
+
+    assert block["network_instruction"] == "IJTAG_ACCESS"
+    assert block["network_opcode"] == 12 and block["idcode_value"] == 0x5CA1AB1F  # integers, not bit strings
 
 
 def test_test_access_block_orders_wide_tdr_bits(tmp_path: Path) -> None:
@@ -290,15 +337,21 @@ def test_test_access_block_reports_a_synthesized_memory(tmp_path: Path) -> None:
     assert _block(tmp_path, _enumerated(memory_blackbox=False))["memory_blackboxed"] is False
 
 
-@pytest.mark.parametrize("enumerated, width, role", [
-    (_enumerated(bits=(0,)), 2, "control"),                    # a TDR bit missing
-    (_enumerated(tdr_type="bc1_shift_only"), 1, "control"),    # wrong TDR cell for the role
+@pytest.mark.parametrize("enumerated, width, role, options", [
+    (_enumerated(bits=(0,)), 2, "control", {}),                    # a TDR bit missing
+    (_enumerated(tdr_type="bc1_shift_only"), 1, "control", {}),    # wrong TDR cell for the role
+    # the manifest says the status reads are synchronized only when the netlist has the cells
+    (_enumerated(tdr_type="bc1_shift_only"), 1, "status", {"capture_sync": True}),
+    (_enumerated(tdr_type="bc1_shift_only_sync"), 1, "status", {}),
+    # and the control writes clear on the chip reset only when their cells do
+    (_enumerated(reset_sync=True), 1, "control", {"chip_reset": "rst_n"}),
+    (_enumerated(tdr_type="instrument_write_clr"), 1, "control", {}),
 ])
 def test_test_access_block_rejects_tdr_cells_that_do_not_match_the_port(
-    tmp_path: Path, enumerated: list[dict], width: int, role: str,
+    tmp_path: Path, enumerated: list[dict], width: int, role: str, options: dict,
 ) -> None:
     with pytest.raises(ManifestError, match="does not match its TDR cells"):
-        _block(tmp_path, enumerated, width=width, role=role)
+        _block(tmp_path, enumerated, width=width, role=role, **options)
 
 
 def test_test_access_block_rejects_a_port_without_a_sib(tmp_path: Path) -> None:

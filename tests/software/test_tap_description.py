@@ -65,22 +65,37 @@ def test_bsdl_entity_candidates_turn_a_module_name_into_vhdl_identifiers(top: st
     assert bsdl_entity_candidates(top) == expected
 
 
-def test_the_access_link_names_the_instruction_the_bsdl_declares() -> None:
+@pytest.mark.parametrize(("choice", "instruction", "opcode"), [
+    ("ijtag-access", "IJTAG_ACCESS", "1100"),  # the default
+    ("extest", "EXTEST", "0000"),
+])
+def test_the_access_link_names_the_instruction_the_bsdl_declares(choice: str, instruction: str, opcode: str) -> None:
     graph, root = _network("x_ctrl")  # skips here, before any warptap import, when it is absent
-    from warptap.bsdl_emit import NETWORK_ACCESS_BSDL_INSTRUCTION
-    from warptap.tap_model import DEFAULT_IR_WIDTH, OPCODE_EXTEST
+    from warptap.bsdl_emit import IJTAG_ACCESS_BSDL_INSTRUCTION, NETWORK_ACCESS_BSDL_INSTRUCTION
+    from warptap.tap_model import DEFAULT_IR_WIDTH
 
-    described = describe_test_access_tap(graph, root)
+    described = describe_test_access_tap(graph, root, access_instruction=choice)
+    default = describe_test_access_tap(graph, root)
 
     assert described.entity == _entity(described.bsdl) == "x_ctrl"
     assert re.search(
         r"AccessLink warptap_tap Of STD_1149_1_2001 \{\s*BSDLEntity x_ctrl;\s*"
-        rf"{NETWORK_ACCESS_BSDL_INSTRUCTION} \{{ ScanInterface \{{ \w+; \}} \}}\s*\}}",
+        rf"{instruction} \{{ ScanInterface \{{ \w+; \}} \}}\s*\}}",
         described.icl,
     )
-    assert NETWORK_ACCESS_BSDL_INSTRUCTION == "EXTEST"
-    assert _opcode(described.bsdl, "EXTEST") == format(OPCODE_EXTEST, f"0{DEFAULT_IR_WIDTH}b")
+    assert (IJTAG_ACCESS_BSDL_INSTRUCTION, NETWORK_ACCESS_BSDL_INSTRUCTION) == ("IJTAG_ACCESS", "EXTEST")
+    assert _opcode(described.bsdl, instruction) == opcode
     assert f"INSTRUCTION_LENGTH of x_ctrl : entity is {DEFAULT_IR_WIDTH};" in described.bsdl
+    # with its own instruction, a board-level EXTEST/SAMPLE/PRELOAD is given BYPASS
+    assert ('"BYPASS (EXTEST, SAMPLE, PRELOAD)"' in described.bsdl) is (instruction == "IJTAG_ACCESS")
+    assert default == describe_test_access_tap(graph, root, access_instruction="ijtag-access")
+
+
+def test_an_unknown_access_instruction_is_refused() -> None:
+    graph, root = _network()
+
+    with pytest.raises(ValueError, match="ijtag-access, extest"):
+        describe_test_access_tap(graph, root, access_instruction="sample")
 
 
 def test_the_tck_limit_defaults_to_the_stated_assumption_and_can_be_set() -> None:
@@ -139,7 +154,7 @@ def test_a_bad_idcode_is_refused_before_anything_is_rendered_or_ingested(bad) ->
 
 def test_the_tap_facts_come_from_warptaps_own_constants() -> None:
     graph, root = _network("x_ctrl")  # skips here, before any warptap import, when it is absent
-    from warptap.tap_model import DEFAULT_IR_WIDTH, IDCODE_VALUE, OPCODE_EXTEST
+    from warptap.tap_model import DEFAULT_IR_WIDTH, IDCODE_VALUE, OPCODE_EXTEST, OPCODE_IJTAG_ACCESS
 
     described = describe_test_access_tap(graph, root, tck_max_freq_hz=25e6)
 
@@ -150,12 +165,15 @@ def test_the_tap_facts_come_from_warptaps_own_constants() -> None:
         "idcode": f"0x{IDCODE_VALUE:08X}",
         "idcode_is_placeholder": True,
         "instruction_length": DEFAULT_IR_WIDTH,
-        "network_access_instruction": "EXTEST",
-        "network_access_opcode": format(OPCODE_EXTEST, f"0{DEFAULT_IR_WIDTH}b"),
+        "network_access_instruction": "IJTAG_ACCESS",
+        "network_access_opcode": format(OPCODE_IJTAG_ACCESS, f"0{DEFAULT_IR_WIDTH}b"),
     }
     assert with_bsdl == {**plain, "bsdl_entity": "x_ctrl", "tck_max_freq_hz": 25e6}
     # the instruction the manifest names is the one the BSDL declares and the ICL links
     assert _opcode(described.bsdl, plain["network_access_instruction"]) == plain["network_access_opcode"]
+    behind_extest = tap_facts(access_instruction="extest")
+    assert behind_extest == {**plain, "network_access_instruction": "EXTEST",
+                             "network_access_opcode": format(OPCODE_EXTEST, f"0{DEFAULT_IR_WIDTH}b")}
 
     custom = tap_facts(idcode_value=CUSTOM_IDCODE)
     assert custom["idcode"] == "0x5CA1AB1F" and custom["idcode_is_placeholder"] is False
