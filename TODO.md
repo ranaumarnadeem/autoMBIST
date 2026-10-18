@@ -136,16 +136,11 @@ Yosys and at gate level (BIST passes a good memory, fails a stuck-bit one).
   the JTAG-wrapped netlist, splice, then `sim`/`scan` — plus
   `autombist-generate` CLI and Tcl commands.
 
-### Network access description (BSDL) — autoMBIST side done, three things open
+### Network access description (BSDL) — autoMBIST side done, two things open
 
 `wrap-test-access --emit-icl` now writes the BSDL its ICL `AccessLink` names, plus
 `--tck-max-freq-mhz`, `--idcode`, and `bsdl_path`/`tap` in the manifest.
 
-- **Raise the `warptap` floor in `pyproject.toml` to 0.0.4** once 0.0.4 is published to
-  PyPI (it is tagged on GitHub and has `bsdl_emit`, `idcode_value`, the EXTEST-only
-  network select and the corrected STIL strobe, but PyPI stops at 0.0.2). Until then the
-  floor stays 0.0.2 so the pip extra still installs, and `--emit-icl`/`--idcode`/
-  `--emit-stil` refuse with an upgrade message.
 - **warptap in CI** is done through the flake: `flake.nix` pins warptap `v0.0.4` as a
   source input (`flake.lock` fixes the commit), so CI runs the wrap-test-access, BSDL and
   IDCODE tests instead of skipping them. Move it with
@@ -170,21 +165,26 @@ accepted by Semi-ATE-STIL (`tests/integration/test_stil_e2e.py`).
 - **CI does not run the Semi-ATE-STIL check:** that parser is not in the Nix devShell, so
   the test skips there; the replay tests do run in CI.
 
-### Harden the inserted test access (next)
+### Harden the inserted test access: done
 
-warptap 0.0.4 has three options, each off by default, that `wrap-test-access` does not
-turn on yet. Each closes a silicon-level gap simulation cannot show:
+`wrap-test-access` turns on all three of warptap 0.0.4's options by default
+(cli-reference.md, *Hardened for silicon*):
 
-- **`capture_sync` on every status read** (`bist_done`, `bist_fail`, `self_repair_*`,
-  diagnosis): those come from the `clk` domain and are captured on TCK, so they can go
-  metastable. A two-flop TCK synchronizer per bit fixes it; they are settled statuses.
-- **`chip_reset` on the control writes** (`test_mode`, `bist_start`, ...), tied to `rst_n`:
-  today only TRST clears them, so a chip reset can leave the memory in test mode.
-- **The dedicated IJTAG access instruction** instead of EXTEST: a board-level EXTEST now
-  selects the network, and its scans can write `test_mode`/`bist_start`. FaultFlow already
-  grades a TAP behind it and reads the opcode from the manifest; the PDL, vectors, STIL,
-  BSDL and ICL `AccessLink` would follow warptap's opcode. Changing the default changes the
-  opcode a tester loads, so earlier PDL/STIL would no longer match.
+- **`capture_sync` on every status read:** each status bit is captured through a two-flop
+  TCK synchronizer (`bc1_shift_only_sync`), checked structurally; metastability itself
+  cannot be shown in RTL simulation.
+- **`chip_reset` on the control writes**, tied to `rst_n`: a chip reset clears
+  `test_mode`/`bist_start`. Replayed: after `bist_start=1` a chip reset leaves `bist_done`
+  at 0, where the netlist without it reruns the BIST.
+- **`IJTAG_ACCESS` (`IR 4'b1100`) selects the network**, and EXTEST, SAMPLE and PRELOAD
+  select BYPASS. Replayed: scans under EXTEST leave the network as reset, where a
+  network behind EXTEST starts the BIST. PDL, vectors, STIL, BSDL, ICL `AccessLink` and
+  manifest follow; `--access-instruction extest` keeps 0.2.0's network. This changes the
+  opcode a tester loads: 0.2.0's PDL/STIL do not reach a 0.3.0 network.
+
+The manifest records all three in the fields FaultFlow's parser already reads
+(schema 1.1.0). Not checked here: FaultFlow grading a network wrapped this way end to
+end (its own integration tests against a 1.1.0 manifest).
 
 ## Housekeeping
 
