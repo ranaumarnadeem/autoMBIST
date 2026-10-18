@@ -86,9 +86,11 @@ def test_manifest_lists_every_jtag_instance_and_keeps_the_memory_blackboxed(tmp_
     for inst in block["instruments"]:
         assert paths[inst["sib"]]["category"] == "ijtag_sib"
         assert paths[inst["sib"]]["instrument"] == inst["name"]
-        expected = "instrument_write" if inst["role"] == "control" else "bc1_shift_only"
+        # every status bit is captured through a TCK synchronizer, and says so
+        expected = "instrument_write" if inst["role"] == "control" else "bc1_shift_only_sync"
         assert [paths[b]["module_type"] for b in inst["tdr_bits"]] == [expected] * inst["width"]
         assert [paths[b]["bit"] for b in inst["tdr_bits"]] == list(range(inst["width"]))
+        assert inst["capture_sync"] is (inst["role"] == "status")
     # Every base-manifest instance (MBIST blocks, memory) survives into the wrapped netlist.
     base = {i["hierarchical_path"]: i["category"] for i in manifest["instances"]}
     assert {p: paths[p]["category"] for p in base} == base

@@ -226,11 +226,11 @@ def _enumerated(*, memory_blackbox: bool = True, tdr_type: str = "instrument_wri
     ]
 
 
-def _block(tmp_path: Path, enumerated: list[dict], width: int = 1, role: str = "control") -> dict:
+def _block(tmp_path: Path, enumerated: list[dict], width: int = 1, role: str = "control", **options) -> dict:
     manifest = _manifest(_config(), tmp_path)
     return build_test_access_block(
         manifest, enumerated, [{"name": "bist_start", "role": role, "width": width}],
-        output_verilog=tmp_path / "x_test_access.v", output_dir=tmp_path, icl_path=None,
+        output_verilog=tmp_path / "x_test_access.v", output_dir=tmp_path, icl_path=None, **options,
     )
 
 
@@ -255,7 +255,22 @@ def test_test_access_block_lists_every_wrapped_instance(tmp_path: Path) -> None:
     assert block["instruments"] == [{
         "name": "bist_start", "role": "control", "width": 1,
         "sib": "warptap_sib_bist_start", "tdr_bits": ["warptap_sib_bist_start_inst_0"],
+        "capture_sync": False,
     }]
+
+
+def test_a_synchronized_status_port_is_recorded_as_one(tmp_path: Path) -> None:
+    block = _block(tmp_path, _enumerated(tdr_type="bc1_shift_only_sync"), role="status", capture_sync=True)
+
+    paths = {i["hierarchical_path"]: i for i in block["instances"]}
+    assert paths["warptap_sib_bist_start_inst_0"]["category"] == "ijtag_tdr"
+    assert block["instruments"][0]["capture_sync"] is True
+
+
+def test_capture_sync_never_marks_a_control_port(tmp_path: Path) -> None:
+    block = _block(tmp_path, _enumerated(), role="control", capture_sync=True)
+
+    assert block["instruments"][0]["capture_sync"] is False
 
 
 def test_test_access_block_records_the_bsdl_and_the_tap(tmp_path: Path) -> None:
@@ -290,15 +305,18 @@ def test_test_access_block_reports_a_synthesized_memory(tmp_path: Path) -> None:
     assert _block(tmp_path, _enumerated(memory_blackbox=False))["memory_blackboxed"] is False
 
 
-@pytest.mark.parametrize("enumerated, width, role", [
-    (_enumerated(bits=(0,)), 2, "control"),                    # a TDR bit missing
-    (_enumerated(tdr_type="bc1_shift_only"), 1, "control"),    # wrong TDR cell for the role
+@pytest.mark.parametrize("enumerated, width, role, options", [
+    (_enumerated(bits=(0,)), 2, "control", {}),                    # a TDR bit missing
+    (_enumerated(tdr_type="bc1_shift_only"), 1, "control", {}),    # wrong TDR cell for the role
+    # the manifest says the status reads are synchronized only when the netlist has the cells
+    (_enumerated(tdr_type="bc1_shift_only"), 1, "status", {"capture_sync": True}),
+    (_enumerated(tdr_type="bc1_shift_only_sync"), 1, "status", {}),
 ])
 def test_test_access_block_rejects_tdr_cells_that_do_not_match_the_port(
-    tmp_path: Path, enumerated: list[dict], width: int, role: str,
+    tmp_path: Path, enumerated: list[dict], width: int, role: str, options: dict,
 ) -> None:
     with pytest.raises(ManifestError, match="does not match its TDR cells"):
-        _block(tmp_path, enumerated, width=width, role=role)
+        _block(tmp_path, enumerated, width=width, role=role, **options)
 
 
 def test_test_access_block_rejects_a_port_without_a_sib(tmp_path: Path) -> None:

@@ -172,8 +172,9 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
        warptap version adds a passthrough port to this primitive, that changes the finding
        above, and this assertion is what should catch it.
     2. Each port lands on the primitive its role predicts -- control ports get
-       `instrument_write`, status ports get `bc1_shift_only` (a real observe cell, reading
-       the live signal through its `pi` port) -- never the other way around. That pairing is
+       `instrument_write`, status ports get `bc1_shift_only_sync` (a real observe cell, reading
+       the live signal through its `pi` port, behind a two-flop TCK synchronizer because the
+       status comes from the clk domain) -- never the other way around. That pairing is
        autombist.testaccess's own responsibility (classify_test_access_ports /
        build_instrument_specs choosing WRITE vs READ), checked here against warptap's real
        output rather than mocked.
@@ -182,7 +183,7 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
     fuse_faulty_row_addr -- present because this config turns on
     onchip_repair_persistence and passes num_spare_rows/addr_width; diag_valid,
     diag_addr -- onchip_diagnosis plus num_diagnosis_entries/addr_width): these get the
-    SAME control/status treatment as any 1-bit port -- instrument_write/bc1_shift_only,
+    SAME control/status treatment as any 1-bit port -- instrument_write/bc1_shift_only_sync,
     a real warptap_sib_* instance, direction matching their role -- just at their real
     width, confirmed both via the rendered Verilog and directly against
     graph.chain[i].instrument's own width/direction/signal_bits (the exact width>1 path
@@ -283,13 +284,16 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
         assert f"instrument_write warptap_sib_{port}_inst_0 (" in inserted_verilog, (
             f"{port} (a control port) should be wrapped with instrument_write"
         )
-        assert f"bc1_shift_only warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
+        assert f"bc1_shift_only_sync warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
             f"{port} (a control port) was wrapped as a status/observe port instead"
         )
 
     for port in _STATUS_PORTS:
-        assert f"bc1_shift_only warptap_sib_{port}_inst_0 (" in inserted_verilog, (
-            f"{port} (a status port) should be wrapped with bc1_shift_only"
+        assert f"bc1_shift_only_sync warptap_sib_{port}_inst_0 (" in inserted_verilog, (
+            f"{port} (a status port) should be wrapped with bc1_shift_only_sync"
+        )
+        assert f"bc1_shift_only warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
+            f"{port} (a status port from the clk domain) is captured without a TCK synchronizer"
         )
         assert f"instrument_write warptap_sib_{port}_inst_0 (" not in inserted_verilog, (
             f"{port} (a status port) was wrapped as a control/write port instead"
@@ -299,6 +303,9 @@ def test_control_ports_are_jtag_exclusive_status_ports_are_not(tmp_path: Path) -
         )
 
     chain_by_name = {n.instrument.name: n.instrument for n in graph.chain}
+    # the network model agrees: every READ, and only a READ, is captured through the synchronizer
+    for instrument in chain_by_name.values():
+        assert instrument.capture_sync is (instrument.direction.name == "READ"), instrument.name
     for port, (role, width) in _WIDE_PORTS.items():
         assert f"warptap_sib_{port}" in inserted_verilog, (
             f"{port} (a wide port) should now get real SIB treatment -- found no "

@@ -814,6 +814,7 @@ def _wrap_test_access(
     for i, p in enumerate(ports):
         typer.echo(f"  chain[{i}] {p.name} ({p.role}, width={p.width})")
     typer.echo(f"Inserted Verilog: {verilog_path}")
+    typer.echo("Status reads:     through a two-flop TCK synchronizer per bit (they come from clk)")
     typer.echo(
         f"TAP IDCODE:       {tap['idcode']} "
         f"({'warptap placeholder -- --idcode sets your own' if tap['idcode_is_placeholder'] else 'set by --idcode'})"
@@ -895,7 +896,7 @@ def _wrap_test_access(
                 base_manifest, enumerated,
                 [{"name": p.name, "role": p.role, "width": p.width} for p in ports],
                 output_verilog=verilog_path, output_dir=out, icl_path=icl_path,
-                bsdl_path=bsdl_path, tap=tap, stil=stil_record,
+                bsdl_path=bsdl_path, tap=tap, stil=stil_record, capture_sync=True,
             )
             manifest_path = update_manifest_with_test_access(manifest, block)
         except (ManifestError, ValueError, OSError) as exc:

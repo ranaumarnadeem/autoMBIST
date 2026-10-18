@@ -32,7 +32,8 @@ from typing import Any
 
 from .generator import _algo_port_suffixes, _normalize_algo, _normalize_ports
 
-SCHEMA_VERSION = "1.0.0"
+# 1.1: each test_access instrument records capture_sync. Additive, so a 1.0 reader still parses it.
+SCHEMA_VERSION = "1.1.0"
 MANIFEST_FORMAT = "autombist_instance_manifest"
 MANIFEST_FILENAME = "manifest.json"
 
@@ -398,9 +399,17 @@ _WARPTAP_CATEGORIES = {
     "sib_cell": "ijtag_sib",
     "instrument_write": "ijtag_tdr",
     "bc1_shift_only": "ijtag_tdr",
+    "bc1_shift_only_sync": "ijtag_tdr",  # a status bit captured through two TCK flops
 }
-_TDR_MODULE_BY_ROLE = {"control": "instrument_write", "status": "bc1_shift_only"}
+_TDR_MODULES = {"instrument_write", "bc1_shift_only", "bc1_shift_only_sync"}
 JTAG_BOUNDARY_PORTS = ["tck", "tms", "tdi", "tdo", "trst_n"]
+
+
+def _tdr_module(role: str, *, capture_sync: bool) -> str:
+    """The warptap cell each bit of a wrapped port must be, for the options it was wrapped with."""
+    if role == "control":
+        return "instrument_write"
+    return "bc1_shift_only_sync" if capture_sync else "bc1_shift_only"
 
 
 def build_test_access_block(
@@ -414,11 +423,16 @@ def build_test_access_block(
     bsdl_path: Path | None = None,
     tap: dict[str, Any] | None = None,
     stil: dict[str, Any] | None = None,
+    capture_sync: bool = False,
 ) -> dict[str, Any]:
     """The manifest's "test_access" block: a synthesis plan for the JTAG/IJTAG-wrapped
     netlist wrap-test-access wrote, built from ``enumerated``
     (testaccess.enumerate_test_access_instances on that netlist) and ``wrapped_ports``
     ({name, role, width} per wrapped control/status port).
+
+    ``capture_sync`` says the status ports were wrapped with TCK synchronizers. Each
+    port's TDR cells must then be the synchronized kind, which is checked against the
+    netlist, and each status instrument records ``capture_sync``.
 
     Every module the wrapped netlist uses is defined in ``output_verilog`` itself,
     already parameter-specialized by warptap's Yosys ingest (e.g.
@@ -469,13 +483,13 @@ def build_test_access_block(
             raise ManifestError(f"no SIB found for wrapped port {port['name']!r}")
         bits = sorted(
             (e["instrument_bit"], e["instance"], e["module_type"]) for e in enumerated
-            if e["sib_name"] == sib["sib_name"] and e["module_type"] in _TDR_MODULE_BY_ROLE.values()
+            if e["sib_name"] == sib["sib_name"] and e["module_type"] in _TDR_MODULES
         )
-        expected = _TDR_MODULE_BY_ROLE[port["role"]]
+        expected = _tdr_module(port["role"], capture_sync=capture_sync)
         if [b for b, _, _ in bits] != list(range(port["width"])) or any(t != expected for _, _, t in bits):
             raise ManifestError(
                 f"wrapped port {port['name']!r} ({port['role']}, width {port['width']}) does not "
-                f"match its TDR cells in the netlist: {bits}"
+                f"match its TDR cells in the netlist (expected {expected}): {bits}"
             )
         instruments.append({
             "name": port["name"],
@@ -483,6 +497,7 @@ def build_test_access_block(
             "width": port["width"],
             "sib": sib["instance"],
             "tdr_bits": [inst for _, inst, _ in bits],
+            "capture_sync": capture_sync and port["role"] == "status",
         })
 
     return {
