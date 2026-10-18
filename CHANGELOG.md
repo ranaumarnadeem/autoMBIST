@@ -12,6 +12,12 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Documentation
+- Releases are archived on Zenodo. `CITATION.cff` carries the concept DOI,
+  10.5281/zenodo.23453213, which resolves to the latest version, and the README
+  has a DOI badge and says how to cite one version. v0.3.0's own DOI is
+  10.5281/zenodo.23453214.
+
 ## [0.3.0] - 2026-10-18
 
 ### Changed (breaking): the network has its own TAP instruction
