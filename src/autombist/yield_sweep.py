@@ -35,6 +35,7 @@ from .generator import generate_from_config, load_config
 from .repair.bira import analyze
 from .repair.types import RepairSolution, SpareGeometry, Unrepairable
 from .runner import run_simulation
+from .yieldsim.stats import wilson_interval
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -55,8 +56,10 @@ __all__ = [
 # of it. Bump the major only on an incompatible change to build_sweep_report's shape.
 # 1.1 (additive, a 1.0 reader still parses it): each trial's "status"
 # (repaired / unrepairable / invalid) and "invalid_reason", each point's
-# "valid_trials" and "repaired_count", and the top-level "observation". A
-# point's "repair_rate" now counts valid trials only.
+# "valid_trials", "repaired_count", "invalid_count" and "wilson" (the 95%
+# Wilson interval), and the top-level "observation", "engine", "seeding" and
+# "defect_model" (whose "unit" says what "faults" counts). A point's
+# "repair_rate" now counts valid trials only.
 SCHEMA_VERSION = "1.1"
 
 
@@ -67,6 +70,8 @@ SCHEMA_VERSION = "1.1"
 #: and a write to the same address in the same cycle, which the scan never does.
 OBSERVATION = "functional-scan"
 OBSERVABLE_FAULT_TYPES = ("stuck-at",)
+#: The report's engine name, as the yieldsim engines name theirs.
+ENGINE = "rtl-functional-scan"
 
 
 def check_observable(fault_type: str) -> None:
@@ -287,6 +292,11 @@ def _trial_to_dict(trial: TrialResult) -> dict[str, Any]:
     return entry
 
 
+def _wilson(point: DensityPoint, confidence: float = 0.95) -> dict[str, float]:
+    low, high = wilson_interval(point.repaired_count, point.valid_trials, confidence)
+    return {"confidence": confidence, "low": low, "high": high}
+
+
 def build_sweep_report(
     points: Sequence[DensityPoint],
     config_path: Path,
@@ -324,12 +334,19 @@ def build_sweep_report(
         # How failures were observed. The scan does not run the march, so the
         # algorithm only chooses which controller RTL is compiled.
         "observation": {"mode": OBSERVATION, "uses_algo": False},
+        "engine": {"name": ENGINE},
+        # The original seed formula, kept so a 1.0 sweep's trials reproduce.
+        "seeding": {"scheme": "linear", "base_seed": base_seed},
+        # Each trial injects exactly "faults" distinct cells (fault_gen samples sites).
+        "defect_model": {"model": "saboteur", "fault_type": fault_type, "unit": "cells"},
         "points": [
             {
                 "faults": point.faults,
                 "repair_rate": point.repair_rate,
                 "valid_trials": point.valid_trials,
                 "repaired_count": point.repaired_count,
+                "invalid_count": len(point.trials) - point.valid_trials,
+                "wilson": _wilson(point),
                 "trials": [_trial_to_dict(trial) for trial in point.trials],
             }
             for point in points
