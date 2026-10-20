@@ -5,6 +5,8 @@ import random
 
 import pytest
 
+from autombist.repair.bira import analyze_detailed
+from autombist.repair.types import SpareGeometry
 from autombist.yieldsim.bitmap_engine import BitmapEngine
 from autombist.yieldsim.defects import (
     DEFECT_CLASSES,
@@ -192,7 +194,70 @@ def test_the_engine_describes_its_setup() -> None:
     engine = BitmapEngine(G, spare_rows=3, spare_cols=3, model=defect_model("itc2020-3050"))
     info = engine.describe()
     assert info["geometry"] == {"rows": 16, "cols": 12, "banks": 2, "spare_rows_per_bank": 3,
-                                "spare_cols_per_bank": 3, "spares_exposed": False}
+                                "spare_cols_per_bank": 3, "spares_exposed": False, "area_ratio": 1.0}
     assert info["defect_model"]["unit"] == "cells" and info["defect_model"]["reading"] == "each-memory"
     with pytest.raises(ValueError, match="non-negative"):
         BitmapEngine(G, spare_rows=-1, spare_cols=0, model=defect_model("singles"))
+    assert info["spare_budget"] == {"num_spare_rows": 3, "num_spare_cols": 3, "per": "bank", "total": 12}
+
+
+# --- defects in the spares --------------------------------------------------------
+
+def test_exposed_spares_widen_the_placement_and_record_the_area_ratio() -> None:
+    engine = BitmapEngine(ArrayGeometry(rows=8, cols=6), spare_rows=2, spare_cols=1,
+                          model=defect_model("singles"), expose_spares=True)
+    assert (engine.placement.rows, engine.placement.cols) == (10, 7)
+    assert engine.area_ratio == pytest.approx(70 / 48)
+    assert engine.describe()["geometry"]["spares_exposed"] is True
+
+
+def test_cells_in_the_spares_become_spare_faults_per_bank() -> None:
+    engine = BitmapEngine(ArrayGeometry(rows=4, cols=3, banks=2), spare_rows=1, spare_cols=1,
+                          model=defect_model("singles"), expose_spares=True)
+    # physical bank width 4: bank 1 starts at column 4
+    cells = {(0, 0), (4, 2), (1, 3), (4, 3), (2, 5), (4, 7)}
+    (base0, faults0, n0), (base1, faults1, n1) = engine._banks(cells)
+    assert base0 == {(0, 0)} and base1 == {(2, 1)}
+    assert faults0.row_cells == {0: frozenset({2})} and faults0.col_cells == {0: frozenset({1})}
+    assert faults0.corners == frozenset({(0, 0)}) and n0 == 3
+    assert faults1.corners == frozenset({(0, 0)}) and n1 == 1
+
+
+def test_a_word_line_open_into_the_spare_columns_takes_a_spare_row() -> None:
+    """The Amirkhanyan et al. (EWDTS 2024) rule as an outcome: with spares
+    exposed, a word-line open runs to the far end through the spare columns, so
+    it is repairable with a spare row and never with spare columns alone."""
+    model = MixModel(weights={"wl_open": 1.0})
+    engine = BitmapEngine(ArrayGeometry(rows=16, cols=8), spare_rows=1, spare_cols=8, model=model,
+                          expose_spares=True)
+    cols_only = SpareGeometry(base_words=16, word_size=8, num_spare_rows=0, num_spare_cols=8)
+    checked = 0
+    for seed in range(60):
+        (defect,) = model.draw(random.Random(seed), engine.placement, 1)
+        ((base, faults, _),) = engine._banks(set(defect.cells))
+        if not base or faults.row_cells:  # the open is on the spare row, or starts past the base columns
+            continue
+        checked += 1
+        (row,) = {r for r, _ in base}
+        best = analyze_detailed(base, engine.spares, objective="min_spares", spare_faults=faults)
+        assert best.result.row_map == {row: 0} and not best.result.col_map
+        assert not analyze_detailed(base, cols_only, spare_faults=faults).repaired
+    assert checked > 20
+
+
+def test_min_spares_and_the_overused_spares_rate() -> None:
+    engine = BitmapEngine(ArrayGeometry(rows=32, cols=32), spare_rows=3, spare_cols=3,
+                          model=defect_model("ohler-d2"), min_spares=True)
+    result = run_sweep(engine, [3, 4, 5], trials=60)
+    for point in result.points:
+        for trial in point.trials:
+            if trial.repaired:
+                assert trial.min_spares is not None and trial.min_spares <= trial.spares_used
+            else:
+                assert trial.min_spares is None
+    from autombist.yieldsim.sweep import build_report
+
+    report = build_report(result)
+    spares = report["points"][1]["spares"]
+    assert spares["mean_min"] <= spares["mean_used"] and spares["ros"] >= 0.0
+    assert spares["utilization"] == pytest.approx(spares["mean_used"] / 6)

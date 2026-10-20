@@ -198,14 +198,35 @@ def _trial_entry(record: TrialRecord) -> dict[str, Any]:
     return entry
 
 
+def _spares_summary(point: PointResult, spare_budget: int | None) -> dict[str, Any]:
+    """Spare use over the repaired trials. "ros" is Jeong et al.'s rate of
+    overused spares (TVLSI 2009), spares used over the minimum minus one, taken
+    as a ratio of sums over the point's trials (the paper does not say whether
+    it averages per trial); "utilization" is spares used over the budget."""
+    used = [t.spares_used for t in point.trials if t.repaired and t.spares_used is not None]
+    pairs = [(t.spares_used, t.min_spares) for t in point.trials
+             if t.repaired and t.spares_used is not None and t.min_spares is not None]
+    summary: dict[str, Any] = {"mean_used": sum(used) / len(used) if used else None}
+    if pairs:
+        total_min = sum(m for _, m in pairs)
+        summary["mean_min"] = total_min / len(pairs)
+        summary["ros"] = sum(u for u, _ in pairs) / total_min - 1.0 if total_min else 0.0
+    if spare_budget:
+        summary["utilization"] = summary["mean_used"] / spare_budget if used else None
+    return summary
+
+
 def points_report(
     result: SweepResult, *, trial_detail: TrialDetail = "all", confidence: float = 0.95,
+    spare_budget: int | None = None,
 ) -> list[dict[str, Any]]:
     """The per-point part of a sweep report, in the shape ``yield_sweep.json``
     1.1 uses: "faults" is k (its unit is the report's), "repair_rate" is over
     valid trials (0.0 when none is valid; "valid_trials" tells that case apart),
-    plus the Wilson interval. ``trial_detail`` keeps every trial, only the ones
-    that were not repaired, or none."""
+    plus the Wilson interval and the spare use of the repaired trials
+    (``spare_budget`` is the spares per memory, for utilization).
+    ``trial_detail`` keeps every trial, only the ones that were not repaired,
+    or none."""
     if trial_detail not in ("none", "failures", "all"):
         raise ValueError(f"trial_detail must be none, failures or all, got {trial_detail!r}")
     rows = []
@@ -226,6 +247,7 @@ def points_report(
             "invalid_count": point.invalid_count,
             "wilson": {"confidence": confidence, "low": low, "high": high},
             "mean_cells": sum(cells) / len(cells) if cells else None,
+            "spares": _spares_summary(point, spare_budget),
             "trials": [_trial_entry(t) for t in kept],
         })
     return rows
@@ -250,5 +272,8 @@ def build_report(
         "base_seed": result.base_seed,
         "seeding": {"scheme": result.seed_scheme, "base_seed": result.base_seed},
         "trial_detail": trial_detail,
-        "points": points_report(result, trial_detail=trial_detail, confidence=confidence),
+        "points": points_report(
+            result, trial_detail=trial_detail, confidence=confidence,
+            spare_budget=(description.get("spare_budget") or {}).get("total"),
+        ),
     }
