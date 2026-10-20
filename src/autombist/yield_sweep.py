@@ -38,6 +38,9 @@ from .runner import run_simulation
 
 __all__ = [
     "SCHEMA_VERSION",
+    "OBSERVATION",
+    "OBSERVABLE_FAULT_TYPES",
+    "check_observable",
     "TrialResult",
     "DensityPoint",
     "run_trial",
@@ -49,22 +52,59 @@ __all__ = [
 # Independent of reporting.py's own per-simulation-run schema_version -- this
 # is a sibling artifact (docs/diagnosis-yield-analysis-plan.md's own framing:
 # "sibling to, not a mutation of, results.json/latest.json"), not a variant
-# of it. Bump only on an incompatible change to build_sweep_report's shape.
-SCHEMA_VERSION = "1.0"
+# of it. Bump the major only on an incompatible change to build_sweep_report's shape.
+# 1.1 (additive, a 1.0 reader still parses it): each trial's "status"
+# (repaired / unrepairable / invalid) and "invalid_reason", each point's
+# "valid_trials" and "repaired_count", and the top-level "observation". A
+# point's "repair_rate" now counts valid trials only.
+SCHEMA_VERSION = "1.1"
+
+
+#: The only observation this sweep has: a functional solid-0 / solid-1 scan
+#: through the wrapper's functional port, after the faults are in place. It sees
+#: stuck-at faults only. A transition fault's delayed write has committed long
+#: before the scan reads the word back, and a port-coupling fault needs a read
+#: and a write to the same address in the same cycle, which the scan never does.
+OBSERVATION = "functional-scan"
+OBSERVABLE_FAULT_TYPES = ("stuck-at",)
+
+
+def check_observable(fault_type: str) -> None:
+    """Raise ValueError when the functional scan cannot observe ``fault_type``:
+    every trial would then report zero failing cells and a 100% repair rate."""
+    if fault_type not in OBSERVABLE_FAULT_TYPES:
+        raise ValueError(
+            f"the yield sweep observes failures with a functional solid-0/solid-1 scan, which sees "
+            f"{', '.join(OBSERVABLE_FAULT_TYPES)} faults only; {fault_type!r} faults would all read "
+            "back correctly and every trial would count as repaired"
+        )
 
 
 @dataclass(slots=True, frozen=True)
 class TrialResult:
-    """One randomized fault-injection trial's outcome."""
+    """One randomized fault-injection trial's outcome. A trial is invalid, and
+    neither repaired nor unrepairable, when its observation did not complete:
+    ``outcome`` is then None and ``invalid_reason`` says why."""
 
     faults: int
     seed: int
     fail_cells: frozenset[tuple[int, int]]
-    outcome: object  # RepairSolution | Unrepairable, from repair.bira
+    outcome: object  # RepairSolution | Unrepairable, from repair.bira; None when invalid
+    invalid_reason: str | None = None
+
+    @property
+    def valid(self) -> bool:
+        return self.invalid_reason is None
 
     @property
     def repaired(self) -> bool:
-        return isinstance(self.outcome, RepairSolution)
+        return self.valid and isinstance(self.outcome, RepairSolution)
+
+    @property
+    def status(self) -> str:
+        if not self.valid:
+            return "invalid"
+        return "repaired" if self.repaired else "unrepairable"
 
 
 @dataclass(slots=True, frozen=True)
@@ -75,12 +115,44 @@ class DensityPoint:
     trials: tuple[TrialResult, ...]
 
     @property
+    def valid_trials(self) -> int:
+        return sum(1 for t in self.trials if t.valid)
+
+    @property
+    def repaired_count(self) -> int:
+        return sum(1 for t in self.trials if t.repaired)
+
+    @property
     def repair_rate(self) -> float:
-        """Fraction of trials repair.bira.analyze() actually solved. 0.0 for
-        an empty trial set (never divides by zero, never a spurious 100%)."""
-        if not self.trials:
+        """Fraction of the VALID trials repair.bira.analyze() solved; invalid
+        trials (an observation that did not complete) are left out rather than
+        counted as repaired. 0.0 when no trial is valid (never divides by zero,
+        never a spurious 100%); ``valid_trials`` tells that case apart."""
+        valid = self.valid_trials
+        if not valid:
             return 0.0
-        return sum(1 for t in self.trials if t.repaired) / len(self.trials)
+        return self.repaired_count / valid
+
+
+def _trial_invalid_reason(report: dict[str, Any]) -> str | None:
+    """Why a simulation report cannot be trusted as a complete fail bitmap, or None.
+
+    run_simulation already raises on a failing simulator exit code, so a report
+    that reaches here says "pass"; what it can still lack is a completed scan,
+    a clean test run, or a read-back of every word."""
+    if "fail_bitmap" not in report:
+        return "the fail scan did not complete (no FAIL_SCAN_COMPLETE marker)"
+    junit = report.get("junit") or {}
+    summary = junit.get("summary") or {}
+    if summary.get("failures") or summary.get("errors"):
+        return f"the simulation had {summary.get('failures', 0)} failure(s) and {summary.get('errors', 0)} error(s)"
+    tests = {t.get("name"): t.get("status") for t in junit.get("tests") or []}
+    if junit.get("exists") and tests.get("test_fail_scan") not in (None, "passed"):
+        return f"test_fail_scan did not pass (status {tests['test_fail_scan']!r})"
+    unknown = report.get("fail_scan_unknown_addrs") or []
+    if unknown:
+        return f"{len(unknown)} word(s) read back as unknown (X/Z), so their cells were not observed"
+    return None
 
 
 def run_trial(
@@ -98,9 +170,13 @@ def run_trial(
     """Run ONE fault-injection trial and classify it against a spare budget.
 
     ``num_spare_rows``/``num_spare_cols`` describe the budget under
-    evaluation, not the wrapper's own (if any) ``redundancy:`` config --
-    ``config_path`` need not declare redundancy at all.
+    evaluation, not the wrapper's own ``redundancy:`` config; ``config_path``
+    must not declare one (the fault-injecting saboteur has no spare rows).
+
+    A trial whose scan did not complete, failed, or read a word as X/Z is
+    returned invalid (``outcome`` None), never as repaired.
     """
+    check_observable(fault_type)
     wrapper_path = generate_from_config(
         config_path,
         trial_outdir,
@@ -113,6 +189,10 @@ def run_trial(
     )
     result = run_simulation(wrapper_path.parent, fail_scan=True)
     cells = fail_cells(result.report)
+    invalid = _trial_invalid_reason(result.report)
+    if invalid is not None:
+        return TrialResult(faults=faults, seed=seed, fail_cells=frozenset(cells), outcome=None,
+                           invalid_reason=invalid)
 
     config = load_config(config_path)
     geometry = SpareGeometry(
@@ -151,7 +231,17 @@ def sweep(
     ``random``/``time``-based) so a sweep is exactly reproducible -- matching
     the same "reproducible fault injection" contract the existing
     ``--seed`` CLI option already gives a single run.
+
+    Raises ValueError, before any trial runs, for a fault type the scan cannot
+    observe, a non-positive trial count, or a negative or repeated fault count.
     """
+    check_observable(fault_type)
+    if trials_per_point < 1:
+        raise ValueError(f"trials per point must be at least 1, got {trials_per_point}")
+    if any(k < 0 for k in fault_counts):
+        raise ValueError(f"fault counts must be non-negative, got {list(fault_counts)}")
+    if len(set(fault_counts)) != len(fault_counts):
+        raise ValueError(f"fault counts must not repeat (a repeat reruns the same seeds), got {list(fault_counts)}")
     points: list[DensityPoint] = []
     for faults in fault_counts:
         trials = []
@@ -175,15 +265,26 @@ def sweep(
     return points
 
 
-def _outcome_to_dict(outcome: RepairSolution | Unrepairable) -> dict[str, Any]:
-    if isinstance(outcome, RepairSolution):
-        return {"repaired": True, "row_map": outcome.row_map, "col_map": outcome.col_map}
-    return {
-        "repaired": False,
-        "reason": outcome.reason,
-        "faulty_rows": list(outcome.faulty_rows),
-        "faulty_cols": list(outcome.faulty_cols),
+def _trial_to_dict(trial: TrialResult) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "seed": trial.seed,
+        "fail_cell_count": len(trial.fail_cells),
+        "status": trial.status,
     }
+    outcome = trial.outcome
+    if not trial.valid:
+        entry.update({"repaired": False, "invalid_reason": trial.invalid_reason})
+    elif isinstance(outcome, RepairSolution):
+        entry.update({"repaired": True, "row_map": outcome.row_map, "col_map": outcome.col_map})
+    else:
+        assert isinstance(outcome, Unrepairable)
+        entry.update({
+            "repaired": False,
+            "reason": outcome.reason,
+            "faulty_rows": list(outcome.faulty_rows),
+            "faulty_cols": list(outcome.faulty_cols),
+        })
+    return entry
 
 
 def build_sweep_report(
@@ -220,18 +321,16 @@ def build_sweep_report(
         "spare_budget": {"num_spare_rows": num_spare_rows, "num_spare_cols": num_spare_cols},
         "trials_per_point": trials_per_point,
         "base_seed": base_seed,
+        # How failures were observed. The scan does not run the march, so the
+        # algorithm only chooses which controller RTL is compiled.
+        "observation": {"mode": OBSERVATION, "uses_algo": False},
         "points": [
             {
                 "faults": point.faults,
                 "repair_rate": point.repair_rate,
-                "trials": [
-                    {
-                        "seed": trial.seed,
-                        "fail_cell_count": len(trial.fail_cells),
-                        **_outcome_to_dict(trial.outcome),
-                    }
-                    for trial in point.trials
-                ],
+                "valid_trials": point.valid_trials,
+                "repaired_count": point.repaired_count,
+                "trials": [_trial_to_dict(trial) for trial in point.trials],
             }
             for point in points
         ],

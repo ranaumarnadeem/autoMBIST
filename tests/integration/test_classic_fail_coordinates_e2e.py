@@ -147,3 +147,51 @@ def test_high_bit_defect_not_mirrored_to_low_bit(tmp_path: Path) -> None:
     assert (high_addr, high_bit) in observed
     assert (high_addr, 0) not in observed  # the naive-mirror bug would put it here
     assert observed == {(high_addr, high_bit)}
+
+
+# The OpenRAM-style demo macro of the repo's default config: dout0 goes to X
+# T_HOLD (1 ns) after the rising edge and to valid data DELAY (3 ns) after the
+# falling edge, with read_latency 0.
+DEMO_ADDR_WIDTH = 4
+DEMO_DATA_WIDTH = 8
+DEMO_CONFIG = {
+    "memory_name": "input_demo_8x16_scn4m",
+    "wrapper_module_name": "input_demo_8x16_scn4m_mbist",
+    "addr_width": DEMO_ADDR_WIDTH,
+    "data_width": DEMO_DATA_WIDTH,
+    "we_active_low": True,
+    "read_latency": 0,
+    "ports": {"clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "we": "web0", "csb": "csb0"},
+}
+
+
+def test_the_scan_reads_an_openram_style_macro_without_unknown_words(tmp_path: Path) -> None:
+    """On the demo model, whose model lines are $display-ed into the same log as
+    the scan's markers, every word reads back (none X) and the bitmap is exactly
+    the injected set. This seed puts a stuck cell at (3, 0), whose FAIL_CELL line
+    lands glued to a model display line: the start-of-line parser dropped it."""
+    faults, seed = 6, 11
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(yaml.safe_dump(DEMO_CONFIG, sort_keys=False), encoding="utf-8")
+
+    wrapper = generate_from_config(
+        config_path, tmp_path / "out",
+        use_saboteur=True, faults=faults, fault_seed=seed,
+        fault_type="stuck-at", algo="march-c",
+    )
+    result = run_simulation(wrapper.parent, fail_scan=True)
+
+    assert result.report["fail_scan_unknown_addrs"] == []
+    sa0, sa1 = generate_fault_masks(
+        addr_width=DEMO_ADDR_WIDTH, data_width=DEMO_DATA_WIDTH,
+        fault_type=FaultType.STUCK_AT, faults=faults, seed=seed,
+    )
+    all_ones = (1 << DEMO_DATA_WIDTH) - 1
+    expected = {
+        (addr, bit)
+        for addr in range(1 << DEMO_ADDR_WIDTH)
+        for bit in range(DEMO_DATA_WIDTH)
+        if ((((~sa0[addr]) & all_ones) | sa1[addr]) >> bit) & 1
+    }
+    assert len(expected) == faults
+    assert fail_cells(result.report) == expected

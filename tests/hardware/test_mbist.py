@@ -5,7 +5,7 @@ from pathlib import Path
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, RisingEdge, Timer, with_timeout
+from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge, Timer, with_timeout
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
@@ -682,7 +682,23 @@ async def test_port_coupling_faults(dut):
         assert int(dut.bist_fail.value) == 0, "MBIST reported fail with zero injected port-coupling faults (false positive)"
 
 
-async def _functional_fail_scan(dut, addr_width: int, data_width: int, read_latency: int) -> list[tuple[int, int]]:
+#: The fail scan's clock period (ns), shared by the scan and its timeout.
+_FAIL_SCAN_CLOCK_NS = 10
+
+
+def _fail_scan_timeout_ns(addr_width: int, read_latency: int) -> int:
+    """A timeout that grows with the array: two patterns, each writing every
+    address (2 cycles) and reading it back (hold + 1 cycles), plus reset, with a
+    2x margin. A fixed timeout capped the scan at about addr_width 11."""
+    depth = 1 << addr_width
+    hold = read_latency + 4
+    cycles = 2 * depth * (2 + hold + 1) + 64
+    return 2 * cycles * _FAIL_SCAN_CLOCK_NS
+
+
+async def _functional_fail_scan(
+    dut, addr_width: int, data_width: int, read_latency: int,
+) -> tuple[list[tuple[int, int]], list[int]]:
     """Observation-derived fail-bitmap via the functional port.
 
     In functional mode (test_mode=0) drive ONLY the wrapper's functional
@@ -701,13 +717,22 @@ async def _functional_fail_scan(dut, addr_width: int, data_width: int, read_late
     cycles so the result is robust to the macro's registered-read latency (0/1/2)
     rather than depending on one exact sampling edge.
 
-    Returns the sorted list of failing ``(addr, bit)`` coordinates.
+    Each word is sampled just before the next rising edge, in the middle of
+    every model's valid-data window. An OpenRAM-style model drives ``dout`` to X
+    ``T_HOLD`` after the rising edge and to valid data ``DELAY`` after the
+    falling edge, so a sample at the rising edge plus ``T_HOLD`` would depend on
+    the simulator's event order within that time step. A word that still reads
+    as unknown is returned, never skipped silently.
+
+    Returns ``(fails, unknown_addrs)``: the sorted failing ``(addr, bit)``
+    coordinates and the sorted addresses whose read-back was not 0/1.
     """
     depth = 1 << addr_width
     data_mask = (1 << data_width) - 1
     hold = read_latency + 4  # generous: dout re-latches mem[addr] every held cycle
+    settle_ns = _FAIL_SCAN_CLOCK_NS // 2 - 1  # from the falling edge to just before the next rise
 
-    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    cocotb.start_soon(Clock(dut.clk, _FAIL_SCAN_CLOCK_NS, unit="ns").start())
 
     dut.rst_n.value = 0
     dut.test_mode.value = 0          # functional mode: func_* drives the macro
@@ -721,6 +746,7 @@ async def _functional_fail_scan(dut, addr_width: int, data_width: int, read_late
     await ClockCycles(dut.clk, 2)
 
     fails: set[tuple[int, int]] = set()
+    unknown: set[int] = set()
     for pattern in (0, data_mask):
         # Phase 1: write the solid pattern to every cell.
         for addr in range(depth):
@@ -739,9 +765,11 @@ async def _functional_fail_scan(dut, addr_width: int, data_width: int, read_late
             dut.func_we.value = 0        # 0 = read
             dut.func_addr.value = addr
             await ClockCycles(dut.clk, hold)
-            await Timer(1, unit="ns")    # let NBA read data settle before sampling
+            await FallingEdge(dut.clk)
+            await Timer(settle_ns, unit="ns")  # sample just before the next rising edge
             read_word = _safe_int(dut.func_dout)
             if read_word is None:
+                unknown.add(addr)
                 continue
             diff = (read_word ^ pattern) & data_mask
             bit = 0
@@ -753,7 +781,7 @@ async def _functional_fail_scan(dut, addr_width: int, data_width: int, read_late
         dut.func_csb.value = 1
         await ClockCycles(dut.clk, 2)
 
-    return sorted(fails)
+    return sorted(fails), sorted(unknown)
 
 
 @cocotb.test()
@@ -761,7 +789,8 @@ async def test_fail_scan(dut):
     """Opt-in observation-derived fail-bitmap (FAULT_MODE=failscan).
 
     Probe every cell through the functional port and emit one
-    ``FAIL_CELL {"addr":A,"bit":B}`` line per cell that reads wrong, then a
+    ``FAIL_CELL {"addr":A,"bit":B}`` line per cell that reads wrong, one
+    ``FAIL_SCAN_UNKNOWN {"addr":A}`` line per word that read back as X/Z, then a
     ``FAIL_SCAN_COMPLETE`` marker. This is the ungated, memory-observing input a
     future BIRA step consumes -- it reports the real defect set regardless of any
     injected fault list. Gated on FAULT_MODE=="failscan" so it is the ONLY test
@@ -774,11 +803,13 @@ async def test_fail_scan(dut):
     data_width = int(os.getenv("DATA_WIDTH", "32"))
     read_latency = int(os.getenv("READ_LATENCY", "1"))
 
-    fails = await with_timeout(
+    fails, unknown = await with_timeout(
         _functional_fail_scan(dut, addr_width, data_width, read_latency),
-        500_000,
+        _fail_scan_timeout_ns(addr_width, read_latency),
         "ns",
     )
     for addr, bit in fails:
         print("FAIL_CELL " + json.dumps({"addr": addr, "bit": bit}))
-    print(f"FAIL_SCAN_COMPLETE cells={len(fails)}")
+    for addr in unknown:
+        print("FAIL_SCAN_UNKNOWN " + json.dumps({"addr": addr}))
+    print(f"FAIL_SCAN_COMPLETE cells={len(fails)} unknown={len(unknown)}")
