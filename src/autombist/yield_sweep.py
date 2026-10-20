@@ -1,14 +1,14 @@
-"""Monte Carlo repair-yield sweep (docs/diagnosis-yield-analysis-plan.md, §4-5).
+"""Monte Carlo repair-yield sweep on the RTL.
 
-A repair-yield curve: run N independent randomized fault-injection trials at
-each of several defect densities, classify each trial's OBSERVED failures
+A repair-rate curve R(k): run N independent randomized fault-injection trials
+at each of several fault counts k, classify each trial's OBSERVED failures
 (never the chip's own self-report -- see ``bira_input.fail_cells``'s own
 docstring) against a hypothetical spare budget via the existing BIRA solver,
 and report the fraction of trials that solver actually repairs. This is the
-"repair rate" metric from the BIRA literature (algorithm-quality, not a
-silicon-calibrated yield law -- see the plan doc's own §1/§6 for why a
-closed-form Stapper/Poisson model needs real measured defect-density data
-this project doesn't have).
+"repair rate" metric from the BIRA literature, a property of the spare budget
+and the defects, not a yield: ``autombist yield-multiplier``
+(``autombist.yieldsim.model``) turns the curve into yield with redundancy for an
+ASSUMED defect-count distribution, never a silicon-calibrated one.
 
 Reuses the existing generate/simulate pipeline unchanged, per trial: each
 trial is a REAL ``generate_from_config(use_saboteur=True, ...)`` +
@@ -51,9 +51,8 @@ __all__ = [
 ]
 
 # Independent of reporting.py's own per-simulation-run schema_version -- this
-# is a sibling artifact (docs/diagnosis-yield-analysis-plan.md's own framing:
-# "sibling to, not a mutation of, results.json/latest.json"), not a variant
-# of it. Bump the major only on an incompatible change to build_sweep_report's shape.
+# is a sibling artifact to results.json/latest.json, not a variant of it. Bump
+# the major only on an incompatible change to build_sweep_report's shape.
 # 1.1 (additive, a 1.0 reader still parses it): each trial's "status"
 # (repaired / unrepairable / invalid) and "invalid_reason", each point's
 # "valid_trials", "repaired_count", "invalid_count" and "wilson" (the 95%

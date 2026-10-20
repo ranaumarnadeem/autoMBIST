@@ -22,6 +22,14 @@ if __package__ in {None, ""}:
     )
     from autombist.runner import SimulationError, run_simulation
     from autombist.yield_sweep import build_sweep_report, sweep, write_sweep_report
+    from autombist.yieldsim.model import (
+        DISCLAIMER,
+        ITC2020_ALPHA,
+        ITC2020_LAM,
+        curve_from_report,
+        multiplier_report,
+        yield_points,
+    )
     from autombist.signoff import (
         LIBRELANE_FLAKE_REF,
         SignoffConfigError,
@@ -43,6 +51,14 @@ else:
     )
     from .runner import SimulationError, run_simulation
     from .yield_sweep import build_sweep_report, sweep, write_sweep_report
+    from .yieldsim.model import (
+        DISCLAIMER,
+        ITC2020_ALPHA,
+        ITC2020_LAM,
+        curve_from_report,
+        multiplier_report,
+        yield_points,
+    )
     from .signoff import (
         LIBRELANE_FLAKE_REF,
         SignoffConfigError,
@@ -686,6 +702,117 @@ def yield_sweep_cmd(
             for p in points
         ]
         print_status_table("Repair-yield sweep", ["Faults", "Trials", "Invalid", "Repair rate"], rows, status_col=3)
+        typer.echo(f"Report: {report_path}")
+
+
+def _split_values(values: list[str]) -> list[str]:
+    """Repeatable options that also take comma-separated lists."""
+    return [part.strip() for value in values for part in value.split(",") if part.strip()]
+
+
+def _parse_number(option: str, text: str, presets: dict[str, float | None]) -> float | None:
+    lowered = text.lower()
+    if lowered in presets:
+        return presets[lowered]
+    try:
+        return float(text)
+    except ValueError:
+        names = ", ".join(sorted(presets))
+        _fail(f"{option} {text!r} is not a number or one of: {names}")
+
+
+@app.command("yield-multiplier")
+def yield_multiplier_cmd(
+    report: Path = typer.Option(..., "--report", help="A yield_sweep.json (or yield_sim.json) whose repair curve to weight; it needs every fault count from 1 to its largest"),
+    y0: list[str] = typer.Option([], "--y0", help="Assumed yield without redundancy, 0 < Y0 <= 1: repeatable or comma-separated. Default 0.9,0.7,0.5,0.3,0.1 when neither --y0 nor --lam is given"),
+    lam: list[str] = typer.Option([], "--lam", help="Assumed mean defect count per base array, instead of --y0: repeatable or comma-separated; 'itc2020' is the ITC'2020 RA Benchmarks mean (2.006)"),
+    alpha: list[str] = typer.Option([], "--alpha", help="Defect clustering: 'poisson' (none), a positive number (smaller clusters more), or 'itc2020' (0.6212): repeatable or comma-separated. Default poisson,2,0.5"),
+    area_ratio: float = typer.Option(1.0, "--area-ratio", min=1.0, help="Physical array area over the base array's, when the sweep put defects in the spares too; 1.0 when it did not"),
+    confidence: float = typer.Option(0.95, "--confidence", help="Confidence of the band, combined over every fault count (Bonferroni over Wilson intervals)"),
+    out: Path = typer.Option("out", "--out", help="Output directory for yield_multiplier.json"),
+    json_output: bool = typer.Option(False, "--json", help="Print the report as JSON to stdout instead of a human table"),
+) -> None:
+    """Yield with redundancy and the yield multiplier M from a sweep's repair
+    curve R(k): Y_red = sum over k of P(k) R(k), M = Y_red / Y0.
+
+    Every sweep point has at least one defect, so M exists only for an assumed
+    defect-count distribution: an initial yield Y0 (or mean defect count) and a
+    clustering alpha (Poisson, or a negative binomial). Each pair gives one row;
+    none of them is calibrated to silicon. Beyond the sweep's largest fault
+    count the repair rate is taken as 0 (a lower bound); the upper figure adds
+    the remaining probability at the smallest measured rate.
+
+    Examples:
+      autombist yield-multiplier --report out/yield_sweep.json
+      autombist yield-multiplier --report out/yield_sweep.json --y0 0.8,0.5 --alpha poisson,1 --json
+      autombist yield-multiplier --report out/yield_sim.json --lam itc2020 --alpha itc2020
+    """
+    import hashlib
+    import json as _json
+    from datetime import datetime, timezone
+
+    y0_values = [_parse_number("--y0", text, {}) for text in _split_values(y0)]
+    lam_values = [_parse_number("--lam", text, {"itc2020": ITC2020_LAM}) for text in _split_values(lam)]
+    if y0_values and lam_values:
+        _fail("give --y0 or --lam, not both: each fixes the defect-count distribution's mean")
+    if not y0_values and not lam_values:
+        y0_values = [0.9, 0.7, 0.5, 0.3, 0.1]
+    alphas = [
+        _parse_number("--alpha", text, {"poisson": None, "itc2020": ITC2020_ALPHA})
+        for text in _split_values(alpha) or ["poisson", "2", "0.5"]
+    ]
+
+    try:
+        raw = report.read_bytes()
+        data = _json.loads(raw)
+        curve = curve_from_report(data)
+        points = yield_points(
+            curve, alphas=alphas, y0_values=y0_values, lam_values=lam_values,
+            area_ratio=area_ratio, confidence=confidence,
+        )
+    except OSError as exc:
+        _fail(f"cannot read the sweep report: {exc}")
+    except _json.JSONDecodeError as exc:
+        _fail(f"{report} is not JSON: {exc}")
+    except (KeyError, TypeError, AttributeError) as exc:
+        _fail(f"{report} is not a sweep report (bad or missing field: {exc})")
+    except ValueError as exc:
+        _fail(str(exc))
+
+    body = multiplier_report(curve, points, source={
+        "path": str(report.resolve()),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "schema_version": data.get("schema_version"),
+    })
+    body["generated_at"] = datetime.now(timezone.utc).isoformat()
+    body["tool_version"] = __version__
+    out = out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    report_path = out / "yield_multiplier.json"
+    report_path.write_text(_json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
+
+    if json_output:
+        typer.echo(_json.dumps(body, indent=2, sort_keys=True))
+        return
+
+    if not _is_quiet():
+        band = f"M {confidence * 100:g}% band"
+        rows = []
+        for p in points:
+            y_red = f"{p.y_red * 100:.1f}%"
+            if p.y_red_high - p.y_red >= 0.0005:
+                y_red += f" to {p.y_red_high * 100:.1f}%"
+            low, high = p.m_band
+            rows.append([
+                "poisson" if p.alpha is None else f"alpha {p.alpha:g}",
+                f"{p.y0 * 100:.1f}%", f"{p.lam:.3g}", y_red, f"{p.m:.3f}", f"{low:.3f} to {high:.3f}",
+            ])
+        print_status_table(
+            "Yield with redundancy", ["Clustering", "Y0", "Mean defects", "Yield with repair", "M", band],
+            rows, status_col=0,
+        )
+        typer.echo(f"Repair curve: k = 1..{curve.k_max} {curve.unit}, from {report}")
+        typer.echo(DISCLAIMER)
         typer.echo(f"Report: {report_path}")
 
 
