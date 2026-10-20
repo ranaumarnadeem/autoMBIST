@@ -1,0 +1,703 @@
+{
+  "schema_version": "1.0",
+  "tool_version": "0.3.0",
+  "commit": "2db02d7",
+  "itc2020": {
+    "target": {
+      "name": "MLS3050",
+      "source": "Lee et al., ITC 2020, doi 10.1109/ITC44778.2020.9325273, Table II, B&B",
+      "faults_per_bank": [
+        8,
+        9,
+        10,
+        11,
+        12
+      ],
+      "repair_rate": [
+        0.9761,
+        0.8894,
+        0.7249,
+        0.4976,
+        0.281
+      ],
+      "trials": 100000
+    },
+    "setup": {
+      "rows": 512,
+      "cols": 256,
+      "banks": 2,
+      "spare_rows": 3,
+      "spare_cols": 3,
+      "preset": "itc2020-3050",
+      "trials": 100000,
+      "base_seed": 0,
+      "seed_scheme": "blake2b"
+    },
+    "rule": "smallest sum of z^2 over the five points; gate |z| <= 3 at every point",
+    "readings": {
+      "each-bank": {
+        "line": "each",
+        "scope": "bank",
+        "points": [
+          {
+            "k": 8,
+            "valid": 100000,
+            "repaired": 97257,
+            "rate": 0.97257,
+            "reference": 0.9761,
+            "z": -4.9918551504088295
+          },
+          {
+            "k": 9,
+            "valid": 100000,
+            "repaired": 89655,
+            "rate": 0.89655,
+            "reference": 0.8894,
+            "z": 5.17199166676029
+          },
+          {
+            "k": 10,
+            "valid": 100000,
+            "repaired": 73888,
+            "rate": 0.73888,
+            "reference": 0.7249,
+            "z": 7.057759195110208
+          },
+          {
+            "k": 11,
+            "valid": 100000,
+            "repaired": 51027,
+            "rate": 0.51027,
+            "reference": 0.4976,
+            "z": 5.666826627605096
+          },
+          {
+            "k": 12,
+            "valid": 100000,
+            "repaired": 29628,
+            "rate": 0.29628,
+            "reference": 0.281,
+            "z": 7.541315607180258
+          }
+        ],
+        "chi2": 190.46444561429843,
+        "seconds": 217.6
+      },
+      "each-memory": {
+        "line": "each",
+        "scope": "memory",
+        "points": [
+          {
+            "k": 8,
+            "valid": 100000,
+            "repaired": 64866,
+            "rate": 0.64866,
+            "reference": 0.9761,
+            "z": -206.58408058397967
+          },
+          {
+            "k": 9,
+            "valid": 100000,
+            "repaired": 47782,
+            "rate": 0.47782,
+            "reference": 0.8894,
+            "z": -220.66945578550562
+          },
+          {
+            "k": 10,
+            "valid": 100000,
+            "repaired": 31729,
+            "rate": 0.31729,
+            "reference": 0.7249,
+            "z": -199.83834674068027
+          },
+          {
+            "k": 11,
+            "valid": 100000,
+            "repaired": 18034,
+            "rate": 0.18034,
+            "reference": 0.4976,
+            "z": -159.0656961839944
+          },
+          {
+            "k": 12,
+            "valid": 100000,
+            "repaired": 8970,
+            "rate": 0.0897,
+            "reference": 0.281,
+            "z": -113.57708782723967
+          }
+        ],
+        "chi2": 169509.0064772631,
+        "seconds": 286.7
+      },
+      "total-bank": {
+        "line": "total",
+        "scope": "bank",
+        "points": [
+          {
+            "k": 8,
+            "valid": 100000,
+            "repaired": 65903,
+            "rate": 0.65903,
+            "reference": 0.9761,
+            "z": -201.3241268039249
+          },
+          {
+            "k": 9,
+            "valid": 100000,
+            "repaired": 36984,
+            "rate": 0.36984,
+            "reference": 0.8894,
+            "z": -285.3924048333335
+          },
+          {
+            "k": 10,
+            "valid": 100000,
+            "repaired": 15633,
+            "rate": 0.15633,
+            "reference": 0.7249,
+            "z": -312.3676604993262
+          },
+          {
+            "k": 11,
+            "valid": 100000,
+            "repaired": 4892,
+            "rate": 0.04892,
+            "reference": 0.4976,
+            "z": -260.5607101778085
+          },
+          {
+            "k": 12,
+            "valid": 100000,
+            "repaired": 1294,
+            "rate": 0.01294,
+            "reference": 0.281,
+            "z": -182.89557253501425
+          }
+        ],
+        "chi2": 320896.458237013,
+        "seconds": 162.1
+      },
+      "total-memory": {
+        "line": "total",
+        "scope": "memory",
+        "points": [
+          {
+            "k": 8,
+            "valid": 100000,
+            "repaired": 31056,
+            "rate": 0.31056,
+            "reference": 0.9761,
+            "z": -431.91277856434004
+          },
+          {
+            "k": 9,
+            "valid": 100000,
+            "repaired": 15081,
+            "rate": 0.15081,
+            "reference": 0.8894,
+            "z": -490.8317180134545
+          },
+          {
+            "k": 10,
+            "valid": 100000,
+            "repaired": 5719,
+            "rate": 0.05719,
+            "reference": 0.7249,
+            "z": -419.5044795205882
+          },
+          {
+            "k": 11,
+            "valid": 100000,
+            "repaired": 1688,
+            "rate": 0.01688,
+            "reference": 0.4976,
+            "z": -294.42238694153804
+          },
+          {
+            "k": 12,
+            "valid": 100000,
+            "repaired": 491,
+            "rate": 0.00491,
+            "reference": 0.281,
+            "z": -191.93063857428714
+          }
+        ],
+        "chi2": 726970.343988934,
+        "seconds": 190.4
+      }
+    },
+    "chosen": "each-bank",
+    "chosen_label": "inferred",
+    "gate": {
+      "max_abs_z": 3.0,
+      "passed": false,
+      "failing_points": [
+        8,
+        9,
+        10,
+        11,
+        12
+      ]
+    }
+  },
+  "ohler2007": {
+    "target": {
+      "name": "d2",
+      "source": "Ohler, Hellebrand, Wunderlich, DDECS 2007, Table 2 (intelligentSolve)",
+      "defects": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "repair_rate": [
+        1.0,
+        1.0,
+        1.0,
+        0.993,
+        1.0,
+        0.97,
+        0.873,
+        0.835,
+        0.753,
+        0.753,
+        0.047,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "trials": 1000
+    },
+    "setup": {
+      "rows": 1024,
+      "cols": 1024,
+      "banks": 1,
+      "spare_rows": 5,
+      "spare_cols": 5,
+      "preset": "ohler-d2",
+      "trials": 10000,
+      "base_seed": 0,
+      "seed_scheme": "blake2b"
+    },
+    "role": "comparison only, not a gate",
+    "variants": {
+      "default": {
+        "shape": "defaults",
+        "points": [
+          {
+            "k": 1,
+            "valid": 10000,
+            "repaired": 10000,
+            "rate": 1.0,
+            "reference": 1.0,
+            "z": 0.0
+          },
+          {
+            "k": 2,
+            "valid": 10000,
+            "repaired": 10000,
+            "rate": 1.0,
+            "reference": 1.0,
+            "z": 0.0
+          },
+          {
+            "k": 3,
+            "valid": 10000,
+            "repaired": 10000,
+            "rate": 1.0,
+            "reference": 1.0,
+            "z": 0.0
+          },
+          {
+            "k": 4,
+            "valid": 10000,
+            "repaired": 10000,
+            "rate": 1.0,
+            "reference": 0.993,
+            "z": 2.655060341673139
+          },
+          {
+            "k": 5,
+            "valid": 10000,
+            "repaired": 9999,
+            "rate": 0.9999,
+            "reference": 1.0,
+            "z": -1.0000500037502575
+          },
+          {
+            "k": 6,
+            "valid": 10000,
+            "repaired": 9990,
+            "rate": 0.999,
+            "reference": 0.97,
+            "z": 5.36669996349524
+          },
+          {
+            "k": 7,
+            "valid": 10000,
+            "repaired": 9934,
+            "rate": 0.9934,
+            "reference": 0.873,
+            "z": 11.400848379400802
+          },
+          {
+            "k": 8,
+            "valid": 10000,
+            "repaired": 9635,
+            "rate": 0.9635,
+            "reference": 0.835,
+            "z": 10.81047276869148
+          },
+          {
+            "k": 9,
+            "valid": 10000,
+            "repaired": 8464,
+            "rate": 0.8464,
+            "reference": 0.753,
+            "z": 6.6210884676482396
+          },
+          {
+            "k": 10,
+            "valid": 10000,
+            "repaired": 5971,
+            "rate": 0.5971,
+            "reference": 0.753,
+            "z": -10.756888709894008
+          },
+          {
+            "k": 11,
+            "valid": 10000,
+            "repaired": 349,
+            "rate": 0.0349,
+            "reference": 0.047,
+            "z": -1.743595513408025
+          },
+          {
+            "k": 12,
+            "valid": 10000,
+            "repaired": 11,
+            "rate": 0.0011,
+            "reference": 0.0,
+            "z": 3.3184504402894315
+          },
+          {
+            "k": 13,
+            "valid": 10000,
+            "repaired": 0,
+            "rate": 0.0,
+            "reference": 0.0,
+            "z": 0.0
+          },
+          {
+            "k": 14,
+            "valid": 10000,
+            "repaired": 0,
+            "rate": 0.0,
+            "reference": 0.0,
+            "z": 0.0
+          },
+          {
+            "k": 15,
+            "valid": 10000,
+            "repaired": 0,
+            "rate": 0.0,
+            "reference": 0.0,
+            "z": 0.0
+          }
+        ],
+        "checks": {
+          "high_at_k_le_3": true,
+          "near_zero_at_k_ge_12": true,
+          "largest_drop_at_11": true
+        },
+        "seconds": 496.4
+      },
+      "cluster-sides-1-6": {
+        "shape": {
+          "cluster_side": [
+            1,
+            6
+          ]
+        },
+        "points": [
+          {
+            "k": 1,
+            "valid": 10000,
+            "repaired": 9972,
+            "rate": 0.9972,
+            "reference": 1.0,
+            "z": -5.298926319206761
+          },
+          {
+            "k": 2,
+            "valid": 10000,
+            "repaired": 9915,
+            "rate": 0.9915,
+            "reference": 1.0,
+            "z": -9.258979095890306
+          },
+          {
+            "k": 3,
+            "valid": 10000,
+            "repaired": 9843,
+            "rate": 0.9843,
+            "reference": 1.0,
+            "z": -12.62949785994084
+          },
+          {
+            "k": 4,
+            "valid": 10000,
+            "repaired": 9728,
+            "rate": 0.9728,
+            "reference": 0.993,
+            "z": -6.520535444761379
+          },
+          {
+            "k": 5,
+            "valid": 10000,
+            "repaired": 9446,
+            "rate": 0.9446,
+            "reference": 1.0,
+            "z": -24.217589406702047
+          },
+          {
+            "k": 6,
+            "valid": 10000,
+            "repaired": 9092,
+            "rate": 0.9092,
+            "reference": 0.97,
+            "z": -9.947778191527298
+          },
+          {
+            "k": 7,
+            "valid": 10000,
+            "repaired": 8533,
+            "rate": 0.8533,
+            "reference": 0.873,
+            "z": -1.7734876173137128
+          },
+          {
+            "k": 8,
+            "valid": 10000,
+            "repaired": 7606,
+            "rate": 0.7606,
+            "reference": 0.835,
+            "z": -5.957077326754891
+          },
+          {
+            "k": 9,
+            "valid": 10000,
+            "repaired": 6378,
+            "rate": 0.6378,
+            "reference": 0.753,
+            "z": -7.966795148959209
+          },
+          {
+            "k": 10,
+            "valid": 10000,
+            "repaired": 4719,
+            "rate": 0.4719,
+            "reference": 0.753,
+            "z": -19.355756969344295
+          },
+          {
+            "k": 11,
+            "valid": 10000,
+            "repaired": 276,
+            "rate": 0.0276,
+            "reference": 0.047,
+            "z": -2.815594111400812
+          },
+          {
+            "k": 12,
+            "valid": 10000,
+            "repaired": 8,
+            "rate": 0.0008,
+            "reference": 0.0,
+            "z": 2.8295591748714637
+          },
+          {
+            "k": 13,
+            "valid": 10000,
+            "repaired": 0,
+            "rate": 0.0,
+            "reference": 0.0,
+            "z": 0.0
+          },
+          {
+            "k": 14,
+            "valid": 10000,
+            "repaired": 0,
+            "rate": 0.0,
+            "reference": 0.0,
+            "z": 0.0
+          },
+          {
+            "k": 15,
+            "valid": 10000,
+            "repaired": 0,
+            "rate": 0.0,
+            "reference": 0.0,
+            "z": 0.0
+          }
+        ],
+        "checks": {
+          "high_at_k_le_3": false,
+          "near_zero_at_k_ge_12": true,
+          "largest_drop_at_11": true
+        },
+        "seconds": 627.0
+      },
+      "line-length-2-16": {
+        "shape": {
+          "line_length": [
+            2,
+            16
+          ]
+        },
+        "points": [
+          {
+            "k": 1,
+            "valid": 10000,
+            "repaired": 10000,
+            "rate": 1.0,
+            "reference": 1.0,
+            "z": 0.0
+          },
+          {
+            "k": 2,
+            "valid": 10000,
+            "repaired": 10000,
+            "rate": 1.0,
+            "reference": 1.0,
+            "z": 0.0
+          },
+          {
+            "k": 3,
+            "valid": 10000,
+            "repaired": 10000,
+            "rate": 1.0,
+            "reference": 1.0,
+            "z": 0.0
+          },
+          {
+            "k": 4,
+            "valid": 10000,
+            "repaired": 10000,
+            "rate": 1.0,
+            "reference": 0.993,
+            "z": 2.655060341673139
+          },
+          {
+            "k": 5,
+            "valid": 10000,
+            "repaired": 9999,
+            "rate": 0.9999,
+            "reference": 1.0,
+            "z": -1.0000500037502575
+          },
+          {
+            "k": 6,
+            "valid": 10000,
+            "repaired": 9991,
+            "rate": 0.9991,
+            "reference": 0.97,
+            "z": 5.386126436856005
+          },
+          {
+            "k": 7,
+            "valid": 10000,
+            "repaired": 9942,
+            "rate": 0.9942,
+            "reference": 0.873,
+            "z": 11.480668828131035
+          },
+          {
+            "k": 8,
+            "valid": 10000,
+            "repaired": 9647,
+            "rate": 0.9647,
+            "reference": 0.835,
+            "z": 10.91573002596124
+          },
+          {
+            "k": 9,
+            "valid": 10000,
+            "repaired": 8471,
+            "rate": 0.8471,
+            "reference": 0.753,
+            "z": 6.6715250115812745
+          },
+          {
+            "k": 10,
+            "valid": 10000,
+            "repaired": 5963,
+            "rate": 0.5963,
+            "reference": 0.753,
+            "z": -10.811689442263472
+          },
+          {
+            "k": 11,
+            "valid": 10000,
+            "repaired": 364,
+            "rate": 0.0364,
+            "reference": 0.047,
+            "z": -1.525242948055284
+          },
+          {
+            "k": 12,
+            "valid": 10000,
+            "repaired": 8,
+            "rate": 0.0008,
+            "reference": 0.0,
+            "z": 2.8295591748714637
+          },
+          {
+            "k": 13,
+            "valid": 10000,
+            "repaired": 0,
+            "rate": 0.0,
+            "reference": 0.0,
+            "z": 0.0
+          },
+          {
+            "k": 14,
+            "valid": 10000,
+            "repaired": 0,
+            "rate": 0.0,
+            "reference": 0.0,
+            "z": 0.0
+          },
+          {
+            "k": 15,
+            "valid": 10000,
+            "repaired": 0,
+            "rate": 0.0,
+            "reference": 0.0,
+            "z": 0.0
+          }
+        ],
+        "checks": {
+          "high_at_k_le_3": true,
+          "near_zero_at_k_ge_12": true,
+          "largest_drop_at_11": true
+        },
+        "seconds": 574.5
+      }
+    }
+  }
+}
