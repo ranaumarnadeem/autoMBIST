@@ -13,16 +13,21 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from autombist.bira_input import observed_cells  # noqa: E402
 from autombist.reporting import (  # noqa: E402
     build_simulation_report,
     fail_scan_ran,
     parse_fail_bitmap_lines,
     parse_fail_scan_unknown_lines,
+    parse_march_fail_lines,
+    parse_march_log_summary,
 )
 
 
@@ -177,3 +182,38 @@ def test_a_marker_glued_to_a_model_display_line_is_still_read() -> None:
     assert parse_fail_bitmap_lines(stdout, "") == [{"addr": 3, "bit": 0}, {"addr": 5, "bit": 7}]
     assert parse_fail_scan_unknown_lines(stdout, "") == [9]
     assert fail_scan_ran(stdout, "") is True
+
+
+# --------------------------------------------------------------------------- #
+# the march fail log
+# --------------------------------------------------------------------------- #
+MARCH_OUT = (
+    'MARCH_FAIL {"addr": 2, "bit": 1}\n'
+    'noise from the model ...MARCH_FAIL {"addr": 0, "bit": 3}\n'
+    'MARCH_FAIL {"addr": 2, "bit": 1}\n'
+    "MARCH_LOG_COMPLETE events=5 cells=2 unknown=0 bist_fail=1\n"
+)
+
+
+def test_march_fail_lines_are_parsed_like_the_scan_and_not_as_scan_cells() -> None:
+    assert parse_march_fail_lines(MARCH_OUT, "") == [{"addr": 0, "bit": 3}, {"addr": 2, "bit": 1}]
+    assert parse_fail_bitmap_lines(MARCH_OUT, "") == []  # MARCH_FAIL is not FAIL_CELL
+    assert parse_march_log_summary(MARCH_OUT, "") == {"events": 5, "cells": 2, "unknown": 0, "bist_fail": 1}
+    assert parse_march_log_summary('MARCH_FAIL {"addr": 0, "bit": 0}\n', "") is None
+
+
+def test_the_report_carries_the_march_log_only_when_it_completed(tmp_path: Path) -> None:
+    report = _report(tmp_path, MARCH_OUT)
+    assert report["march_log"]["events"] == 5
+    assert report["march_fail_bitmap"] == [{"addr": 0, "bit": 3}, {"addr": 2, "bit": 1}]
+    assert "fail_bitmap" not in report
+    assert observed_cells(report, "march") == {(0, 3), (2, 1)}
+    assert observed_cells(report, "functional") == set()
+
+    unfinished = _report(tmp_path, 'MARCH_FAIL {"addr": 0, "bit": 0}\n')
+    assert "march_log" not in unfinished and "march_fail_bitmap" not in unfinished
+
+
+def test_an_unknown_observation_source_is_refused() -> None:
+    with pytest.raises(ValueError, match="unknown observation source"):
+        observed_cells({}, "telepathy")
