@@ -44,6 +44,10 @@ FAIL_SCAN_UNKNOWN_RE = re.compile(r"FAIL_SCAN_UNKNOWN (\{[^{}\n]*\})")
 # in a line.)
 MARCH_FAIL_RE = re.compile(r"MARCH_FAIL (\{[^{}\n]*\})")
 MARCH_LOG_DONE_RE = re.compile(r"MARCH_LOG_COMPLETE events=(\d+) cells=(\d+) unknown=(\d+) bist_fail=([01])")
+# The self-repair sweep trial (test_selfrepair_sweep) prints the on-chip outcome
+# as one SELF_REPAIR_RESULT {json} line: self_repair_fail, the analyzer's
+# unrepairable flag, the latched signature and the diagnosis status.
+SELF_REPAIR_RESULT_RE = re.compile(r"SELF_REPAIR_RESULT (\{[^{}\n]*\})")
 
 
 @dataclass(slots=True)
@@ -189,6 +193,22 @@ def parse_march_log_summary(stdout: str, stderr: str) -> dict[str, int] | None:
         return None
     events, cells, unknown, bist_fail = (int(group) for group in match.groups())
     return {"events": events, "cells": cells, "unknown": unknown, "bist_fail": bist_fail}
+
+
+def parse_self_repair_result(stdout: str, stderr: str) -> dict[str, int | None] | None:
+    """The on-chip self-repair outcome a sweep trial printed, or None."""
+    combined = "\n".join(part for part in (stdout, stderr) if part)
+    match = SELF_REPAIR_RESULT_RE.search(combined)
+    if match is None:
+        return None
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return {str(key): value if isinstance(value, int) and not isinstance(value, bool) else None
+            for key, value in payload.items()}
 
 
 def _parse_cell_lines(pattern: re.Pattern[str], stdout: str, stderr: str) -> list[dict[str, int]]:
@@ -420,6 +440,9 @@ def build_simulation_report(
     if march_log is not None:
         report["march_fail_bitmap"] = parse_march_fail_lines(stdout, stderr)
         report["march_log"] = march_log
+    self_repair = parse_self_repair_result(stdout, stderr)
+    if self_repair is not None:
+        report["self_repair"] = self_repair
     report["summary"] = format_simulation_summary(report)
     return report
 

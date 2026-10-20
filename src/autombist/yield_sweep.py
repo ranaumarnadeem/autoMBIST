@@ -26,6 +26,7 @@ without regenerating anything.
 """
 from __future__ import annotations
 
+import copy
 import json
 import random
 from dataclasses import dataclass
@@ -33,11 +34,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
+import yaml
+
 from .bira_input import fail_cells, observed_cells
 from .fault_gen import FaultType, generate_fault_masks, write_fault_files
 from .generator import generate_from_config, load_config
-from .repair.bira import analyze, analyze_detailed
-from .repair.types import RepairSolution, SpareGeometry, Unrepairable
+from .memory_model import render_memory_model
+from .repair.bira import analyze, analyze_detailed, verify_solution
+from .repair.types import RepairSolution, SpareFaults, SpareGeometry, Unrepairable
 from .runner import run_simulation
 from .yieldsim.defects import ArrayGeometry, class_counts, defect_model
 from .yieldsim.stats import wilson_interval
@@ -56,6 +60,8 @@ __all__ = [
     "write_sweep_report",
     "OBSERVATIONS",
     "RtlEngine",
+    "CAUSES",
+    "SelfRepairEngine",
 ]
 
 # Independent of reporting.py's own per-simulation-run schema_version -- this
@@ -545,3 +551,291 @@ class RtlEngine:
             extras["defects"] = classes
         return TrialRecord(k=k, seed=seed, status=status, cells=len(observed),
                            spares_used=from_observed.spares_used if status == "repaired" else None, extras=extras)
+
+
+# --- the chip's own self-repair, against the exact solver ----------------------
+
+SELF_REPAIR_TEST_MODULE = "test_selfrepair_sweep"
+#: Why a trial the exact solver repairs was not repaired on chip.
+CAUSES = {
+    "analyzer": "the on-chip analyzer gave up on a fail map the exact solver repairs",
+    "faulty_spare": "the on-chip repair covers every faulty cell but allocates a faulty spare",
+    "observation_escape": "the analyze pass did not observe every faulty cell",
+    "false_pass": "the chip reported a pass but the repaired memory still reads wrong",
+    "unexplained": "none of the above",
+}
+
+
+def _unpack(value: int | None, width: int, count: int) -> list[int]:
+    value = value or 0
+    return [(value >> (width * i)) & ((1 << width) - 1) for i in range(count)]
+
+
+def _flat_ports(ports: dict[str, Any]) -> bool:
+    return all(isinstance(value, str) for value in ports.values())
+
+
+class SelfRepairEngine:
+    """Trials of the chip's own on-chip self-repair, on the RTL.
+
+    The sweep's config (without ``redundancy:``) gets a ``redundancy:`` block with
+    on-chip self-repair over ``num_spare_rows`` spare rows and ``num_spare_cols``
+    spare columns (the 2D analyzer when there are spare columns), optionally the
+    diagnosis log. The memory is the fault-injectable behavioral model
+    (``memory_model.render_memory_model`` with stuck-at masks over the physical
+    array), compiled once; each trial rewrites the masks.
+
+    Each trial draws defects from a ``yieldsim.defects`` preset, each stuck at a
+    random value; with ``expose_spares`` over the physical array, so spare rows
+    and spare lanes can be faulty. It records the exact repair of the truth
+    (``analyze_detailed`` with the spare faults: the upper bound), the exact
+    repair of what the analyze pass observed, and the chip's outcome, verified by
+    an independent post-repair scan. A trial is repaired when the chip reports a
+    pass and the scan reads back clean; when the exact solver repairs a trial the
+    chip did not, ``cause`` says why (see :data:`CAUSES`).
+    """
+
+    name = "rtl-onchip-selfrepair"
+
+    def __init__(
+        self,
+        config_path: Path,
+        workdir: Path,
+        *,
+        num_spare_rows: int,
+        num_spare_cols: int = 0,
+        algo: str = "march-c",
+        defects: str | None = None,
+        expose_spares: bool = False,
+        diagnosis_entries: int = 0,
+    ) -> None:
+        if num_spare_rows < 1:
+            raise ValueError("on-chip self-repair needs at least one spare row (the wrapper's redundancy path requires one)")
+        if diagnosis_entries < 0:
+            raise ValueError(f"diagnosis entries must be non-negative, got {diagnosis_entries}")
+        raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+        if isinstance(raw, dict) and raw.get("redundancy"):
+            raise ValueError("the sweep config must not declare redundancy: the spares are --spare-rows/--spare-cols")
+        base = load_config(config_path)
+        self.workdir = workdir
+        self.algo = algo
+        self.depth = 1 << base["addr_width"]
+        self.width = base["data_width"]
+        self.geometry = SpareGeometry(base_words=self.depth, word_size=self.width,
+                                      num_spare_rows=num_spare_rows, num_spare_cols=num_spare_cols)
+        self.expose_spares = expose_spares
+        self.placement = (ArrayGeometry(rows=self.depth + num_spare_rows, cols=self.width + num_spare_cols)
+                          if expose_spares else ArrayGeometry(rows=self.depth, cols=self.width))
+        self.defects = defects or "singles"
+        self.model = defect_model(self.defects)
+        self.unit = self.model.unit
+        self.diagnosis_entries = diagnosis_entries
+        self.config = self._with_redundancy(base)
+        self._module: Path | None = None
+
+    def _with_redundancy(self, base: dict[str, Any]) -> dict[str, Any]:
+        config = copy.deepcopy(base)
+        redundancy: dict[str, Any] = {
+            "num_spare_rows": self.geometry.num_spare_rows,
+            "num_spare_cols": self.geometry.num_spare_cols,
+            "onchip_selfrepair": True,
+        }
+        if self.geometry.num_spare_cols:
+            redundancy["onchip_col_repair"] = True
+            ports = config.get("ports") or {}
+            if _flat_ports(ports) and "spare_wen" not in ports:
+                ports["spare_wen"] = "spare_wen0"
+        if self.diagnosis_entries:
+            redundancy.update(onchip_diagnosis=True, num_diagnosis_entries=self.diagnosis_entries)
+        config["redundancy"] = redundancy
+        return config
+
+    @property
+    def area_ratio(self) -> float:
+        return (self.placement.rows * self.placement.cols) / (self.depth * self.width)
+
+    def describe(self) -> dict[str, Any]:
+        cols = self.geometry.num_spare_cols
+        return {
+            "config": {"memory_name": self.config["memory_name"], "addr_width": self.config["addr_width"],
+                       "data_width": self.width, "algo": self.algo, "fault_type": "stuck-at"},
+            "spare_budget": {"num_spare_rows": self.geometry.num_spare_rows, "num_spare_cols": cols},
+            "geometry": {"rows": self.depth, "cols": self.width, "banks": 1,
+                         "spare_rows_per_bank": self.geometry.num_spare_rows, "spare_cols_per_bank": cols,
+                         "spares_exposed": self.expose_spares, "area_ratio": self.area_ratio},
+            "observation": {"mode": "onchip-selfrepair", "uses_algo": True},
+            "defect_model": {**self.model.describe(), "fault_type": "stuck-at",
+                             "polarity": "each defect stuck at 0 or 1 with equal probability"},
+            "analyzer": {
+                "on_chip": "onchip_2d_repair_analyzer (greedy)" if cols else "onchip_row_repair_analyzer",
+                "reference": "repair.bira.analyze_detailed with the spare faults",
+                "repaired_means": "self_repair_fail is 0 and a post-repair functional scan reads back clean",
+            },
+            "causes": CAUSES,
+            **({"diagnosis": {"entries": self.diagnosis_entries}} if self.diagnosis_entries else {}),
+        }
+
+    @property
+    def mask_paths(self) -> tuple[Path, Path]:
+        faults = self.workdir / "masks"
+        return faults / "phys_sa0.hex", faults / "phys_sa1.hex"
+
+    @property
+    def module_dir(self) -> Path:
+        """The generated wrapper and the injectable model (generated on first use)."""
+        if self._module is None:
+            self.workdir.mkdir(parents=True, exist_ok=True)
+            config_path = self.workdir / "selfrepair_config.yml"
+            config_path.write_text(yaml.safe_dump(self.config, sort_keys=False), encoding="utf-8")
+            wrapper = generate_from_config(config_path, self.workdir / "build", algo=self.algo)
+            module = wrapper.parent
+            snapshot = yaml.safe_load((module / "config.yml").read_text(encoding="utf-8"))
+            self._write_masks({})
+            sa0, sa1 = (str(p.resolve()) for p in self.mask_paths)
+            model = render_memory_model(snapshot, stuck_masks=(sa0, sa1))
+            (module / f"{self.config['memory_name']}_inject_model.v").write_text(model, encoding="utf-8")
+            self._module = module
+        return self._module
+
+    @property
+    def model_path(self) -> Path:
+        return self.module_dir / f"{self.config['memory_name']}_inject_model.v"
+
+    def _write_masks(self, stuck: dict[tuple[int, int], int]) -> None:
+        depth = 1 << self.geometry.mem_addr_width
+        width = self.geometry.mem_data_width
+        sa0, sa1 = [(1 << width) - 1] * depth, [0] * depth
+        for (row, col), value in stuck.items():
+            if value:
+                sa1[row] |= 1 << col
+            else:
+                sa0[row] &= ~(1 << col)
+        digits = (width + 3) // 4
+        for path, words in zip(self.mask_paths, (sa0, sa1)):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("".join(f"{word:0{digits}X}\n" for word in words), encoding="ascii")
+
+    def _split(self, stuck: dict[tuple[int, int], int]) -> tuple[set[tuple[int, int]], SpareFaults, int]:
+        base: set[tuple[int, int]] = set()
+        row_cells: dict[int, set[int]] = {}
+        col_cells: dict[int, set[int]] = {}
+        corners: set[tuple[int, int]] = set()
+        for row, col in stuck:
+            if row < self.depth and col < self.width:
+                base.add((row, col))
+            elif col < self.width:
+                row_cells.setdefault(row - self.depth, set()).add(col)
+            elif row < self.depth:
+                col_cells.setdefault(col - self.width, set()).add(row)
+            else:
+                corners.add((row - self.depth, col - self.width))
+        faults = SpareFaults(row_cells={i: frozenset(v) for i, v in row_cells.items()},
+                             col_cells={k: frozenset(v) for k, v in col_cells.items()},
+                             corners=frozenset(corners))
+        return base, faults, len(stuck) - len(base)
+
+    def _signature(self, outcome: dict[str, Any]) -> RepairSolution:
+        geometry = self.geometry
+        rows = _unpack(outcome.get("faulty_row_addr"), geometry.addr_width, geometry.num_spare_rows)
+        cols = _unpack(outcome.get("faulty_bit"), geometry.bit_index_width, geometry.num_spare_cols)
+        row_en, col_en = outcome.get("row_repair_en") or 0, outcome.get("col_repair_en") or 0
+        return RepairSolution(
+            row_map={rows[i]: i for i in range(geometry.num_spare_rows) if (row_en >> i) & 1},
+            col_map={cols[k]: k for k in range(geometry.num_spare_cols) if (col_en >> k) & 1},
+        )
+
+    @staticmethod
+    def _invalid_reason(report: dict[str, Any]) -> str | None:
+        summary = (report.get("junit") or {}).get("summary") or {}
+        if summary.get("failures") or summary.get("errors"):
+            return f"the simulation had {summary.get('failures', 0)} failure(s) and {summary.get('errors', 0)} error(s)"
+        outcome = report.get("self_repair")
+        if outcome is None:
+            return "the self-repair trial did not finish (no SELF_REPAIR_RESULT)"
+        if outcome.get("self_repair_fail") is None:
+            return "self_repair_fail read back as unknown (X/Z)"
+        if "march_log" not in report:
+            return "the analyze-pass log did not complete"
+        if "fail_bitmap" not in report:
+            return "the post-repair scan did not complete"
+        if report.get("fail_scan_unknown_addrs"):
+            return f"{len(report['fail_scan_unknown_addrs'])} word(s) read back as unknown after repair"
+        return None
+
+    def run_trial(self, k: int, seed: int) -> TrialRecord:
+        rng = random.Random(seed)
+        drawn = self.model.draw(rng, self.placement, k)
+        stuck: dict[tuple[int, int], int] = {}
+        for defect in drawn:
+            value = rng.randrange(2)
+            for cell in defect.cells:
+                stuck[cell] = value
+        return self.run_stuck(stuck, k=k, seed=seed, classes=class_counts(drawn))
+
+    def run_stuck(
+        self, stuck: dict[tuple[int, int], int], *, k: int = 0, seed: int = 0,
+        classes: dict[str, int] | None = None,
+    ) -> TrialRecord:
+        """One trial with these stuck cells, in physical coordinates (spare rows
+        at 2^A + i, spare columns at bit W + k), value 0 or 1 each."""
+        module = self.module_dir  # generated first: generating writes blank masks
+        self._write_masks(stuck)
+        result = run_simulation(module, extra_make_vars={
+            "COCOTB_TEST_MODULES": SELF_REPAIR_TEST_MODULE, "SRAM_SOURCE": str(self.model_path),
+        })
+        report = result.report
+        base, faults, spare_cells = self._split(stuck)
+        invalid = self._invalid_reason(report)
+        if invalid is not None:
+            return TrialRecord(k=k, seed=seed, status="invalid", invalid_reason=invalid,
+                               extras={"truth_cells": len(base), "spare_cells": spare_cells})
+
+        outcome = report["self_repair"]
+        observed = observed_cells(report, "march")
+        residual = observed_cells(report, "functional")
+        exact = analyze_detailed(base, self.geometry, spare_faults=faults)
+        observed_exact = analyze_detailed(observed, self.geometry)
+        signature = self._signature(outcome)
+        failed = outcome["self_repair_fail"] == 1
+        repaired = not failed and not residual
+
+        cause = None
+        if repaired and not exact.repaired:
+            cause = "unexplained"  # the chip beat the exact solver: the reference is wrong
+        elif not repaired and exact.repaired:
+            if not failed:
+                cause = "false_pass"
+            elif outcome.get("unrepairable"):
+                cause = "analyzer" if observed_exact.repaired else (
+                    "observation_escape" if observed != base else "unexplained")
+            elif verify_solution(base, self.geometry, signature) == []:
+                cause = "faulty_spare" if verify_solution(base, self.geometry, signature, faults) else "unexplained"
+            else:
+                cause = "observation_escape" if observed != base else "unexplained"
+
+        extras: dict[str, Any] = {
+            "truth_cells": len(base),
+            "spare_cells": spare_cells,
+            "fail_cell_count": len(observed),
+            "overkill": len(observed - base),
+            "truth_repairable": exact.repaired,
+            "observed_repairable": observed_exact.repaired,
+            "onchip_fail": int(failed),
+            "onchip_unrepairable": outcome.get("unrepairable"),
+            "residual_cells": len(residual),
+            "cause": cause,
+            "row_map": signature.row_map,
+            "col_map": signature.col_map,
+        }
+        if not failed and residual:
+            extras["escapes"] = len(residual)
+        if outcome.get("diag_overflow") is not None:
+            extras["diag_overflow"] = outcome["diag_overflow"]
+        if classes is not None:
+            extras["defects"] = classes
+        used = len(signature.row_map) + len(signature.col_map) if repaired else None
+        fewest = None
+        if repaired and exact.repaired:
+            fewest = analyze_detailed(base, self.geometry, objective="min_spares", spare_faults=faults).spares_used
+        return TrialRecord(k=k, seed=seed, status="repaired" if repaired else "unrepairable",
+                           cells=len(observed), spares_used=used, min_spares=fewest, extras=extras)
