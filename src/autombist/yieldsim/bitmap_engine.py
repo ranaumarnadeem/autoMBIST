@@ -21,7 +21,10 @@ from typing import Any
 
 from ..repair.bira import analyze_detailed
 from ..repair.types import SpareFaults, SpareGeometry
-from .defects import ArrayGeometry, Itc2020Model, MixModel, class_counts, union_cells
+from collections import Counter
+
+from .defects import ArrayGeometry, Defect, Itc2020Model, MixModel, class_counts, union_cells
+from .shapes import classify, confusion
 from .sweep import TrialRecord
 
 __all__ = ["BitmapEngine"]
@@ -46,6 +49,7 @@ class BitmapEngine:
         model: MixModel | Itc2020Model,
         expose_spares: bool = False,
         min_spares: bool = False,
+        classify_shapes: bool = False,
     ) -> None:
         if spare_rows < 0 or spare_cols < 0:
             raise ValueError(f"spare counts must be non-negative, got {spare_rows} rows, {spare_cols} columns")
@@ -53,6 +57,7 @@ class BitmapEngine:
         self.model = model
         self.expose_spares = expose_spares
         self.min_spares = min_spares
+        self.classify_shapes = classify_shapes
         self.spares = SpareGeometry(
             base_words=geometry.rows, word_size=geometry.cols,
             num_spare_rows=spare_rows, num_spare_cols=spare_cols,
@@ -70,7 +75,10 @@ class BitmapEngine:
 
     def describe(self) -> dict[str, Any]:
         rows, cols = self.spares.num_spare_rows, self.spares.num_spare_cols
+        shapes = {"shape_classifier": {"module": "yieldsim.shapes", "line_density": 0.5,
+                                       "cluster_density": 0.75, "distance": 1}} if self.classify_shapes else {}
         return {
+            **shapes,
             "geometry": {
                 **self.geometry.describe(),
                 "spare_rows_per_bank": rows,
@@ -113,6 +121,33 @@ class BitmapEngine:
             out.append((base, faults, spare_cells))
         return out
 
+    def _shapes(self, defects: list[Defect], bank_cells: list[set[Cell]]) -> dict[str, Any]:
+        """Classify each bank's base fail map and score it against the defects
+        that put cells there (their base cells, in bank coordinates)."""
+        rows, cols, width = self.geometry.rows, self.geometry.cols, self.placement.cols
+        per_bank: list[list[Defect]] = [[] for _ in bank_cells]
+        for defect in defects:
+            local: dict[int, set[Cell]] = {}
+            for r, x in defect.cells:
+                bank, c = divmod(x, width)
+                if r < rows and c < cols:
+                    local.setdefault(bank, set()).add((r, c))
+            for bank, part in local.items():
+                per_bank[bank].append(Defect(defect.kind, frozenset(part)))
+        labels: Counter[str] = Counter()
+        table: Counter[str] = Counter()
+        extracted = injected = 0
+        for cells, bank_defects in zip(bank_cells, per_bank):
+            patterns = classify(cells, rows=rows, cols=cols, spare_rows=self.spares.num_spare_rows,
+                                spare_cols=self.spares.num_spare_cols)
+            labels.update(p.label for p in patterns)
+            for (expected, found), n in confusion(bank_defects, patterns, rows=rows, cols=cols).items():
+                table[f"{expected}->{found}"] += n
+            extracted += len(patterns)
+            injected += len(bank_defects)
+        return {"patterns": dict(sorted(labels.items())), "confusion": dict(sorted(table.items())),
+                "extracted": extracted, "injected": injected}
+
     def run_trial(self, k: int, seed: int) -> TrialRecord:
         rng = random.Random(seed)
         defects = self.model.draw(rng, self.placement, k)
@@ -122,7 +157,8 @@ class BitmapEngine:
         base_cells = 0
         spare_cells = 0
         failing_banks = []
-        for bank, (bank_cells, faults, bank_spare_cells) in enumerate(self._banks(cells)):
+        banks = self._banks(cells)
+        for bank, (bank_cells, faults, bank_spare_cells) in enumerate(banks):
             base_cells += len(bank_cells)
             spare_cells += bank_spare_cells
             first = analyze_detailed(bank_cells, self.spares, spare_faults=faults)
@@ -135,6 +171,8 @@ class BitmapEngine:
                                            spare_faults=faults).spares_used
         repaired = not failing_banks
         extras: dict[str, Any] = {"defects": class_counts(defects)}
+        if self.classify_shapes:
+            extras["shapes"] = self._shapes(defects, [bank_cells for bank_cells, _, _ in banks])
         if self.expose_spares:
             extras["spare_cells"] = spare_cells
         if failing_banks and self.geometry.banks > 1:

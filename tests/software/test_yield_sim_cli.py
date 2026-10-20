@@ -103,3 +103,13 @@ def test_an_exposed_sweep_hands_its_area_ratio_to_yield_multiplier(tmp_path: Pat
 
     assert multiplier()["area_ratio"] == pytest.approx(report["geometry"]["area_ratio"])
     assert multiplier("--area-ratio", "1")["area_ratio"] == 1.0
+
+
+def test_classes_add_a_shape_table_and_report_block(tmp_path: Path) -> None:
+    result = _invoke(tmp_path, "--array", "64x64", "--spare-rows", "3", "--spare-cols", "3", "--defects", "ohler-d2",
+                     "--faults", "1", "--faults", "8", "--trials", "20", "--classes")
+    assert result.exit_code == 0, result.output
+    assert "Fail-bitmap shapes" in result.output and "Merged defects" in result.output
+    report = json.loads((tmp_path / "out" / "yield_sim.json").read_text(encoding="utf-8"))
+    assert report["points"][0]["shapes"]["merge_rate"] == 0.0
+    assert "shape_classifier" in report

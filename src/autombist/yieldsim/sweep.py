@@ -198,6 +198,34 @@ def _trial_entry(record: TrialRecord) -> dict[str, Any]:
     return entry
 
 
+def _shapes_summary(point: PointResult) -> dict[str, Any] | None:
+    """The shape classes summed over the point's valid trials, when the engine
+    classified them: pattern counts, the expected->found confusion counts, the
+    merge rate (defects whose pattern also holds another defect), and the defect
+    spectrum check (patterns extracted minus defects injected, per trial)."""
+    shaped = [t.extras["shapes"] for t in point.trials if t.valid and "shapes" in t.extras]
+    if not shaped:
+        return None
+    patterns: dict[str, int] = {}
+    table: dict[str, int] = {}
+    spectrum: dict[str, int] = {}
+    for shapes in shaped:
+        for label, n in shapes["patterns"].items():
+            patterns[label] = patterns.get(label, 0) + n
+        for pair, n in shapes["confusion"].items():
+            table[pair] = table.get(pair, 0) + n
+        delta = str(shapes["extracted"] - shapes["injected"])
+        spectrum[delta] = spectrum.get(delta, 0) + 1
+    defects = sum(table.values())
+    merged = sum(n for pair, n in table.items() if pair.endswith("->merged"))
+    return {
+        "patterns": dict(sorted(patterns.items())),
+        "confusion": dict(sorted(table.items())),
+        "merge_rate": merged / defects if defects else None,
+        "spectrum": dict(sorted(spectrum.items(), key=lambda kv: int(kv[0]))),
+    }
+
+
 def _spares_summary(point: PointResult, spare_budget: int | None) -> dict[str, Any]:
     """Spare use over the repaired trials. "ros" is Jeong et al.'s rate of
     overused spares (TVLSI 2009), spares used over the minimum minus one, taken
@@ -239,7 +267,7 @@ def points_report(
         else:
             kept = ()
         cells = [t.cells for t in point.trials if t.valid and t.cells is not None]
-        rows.append({
+        row: dict[str, Any] = {
             "faults": point.k,
             "repair_rate": point.repair_rate if point.repair_rate is not None else 0.0,
             "valid_trials": point.valid_trials,
@@ -248,8 +276,12 @@ def points_report(
             "wilson": {"confidence": confidence, "low": low, "high": high},
             "mean_cells": sum(cells) / len(cells) if cells else None,
             "spares": _spares_summary(point, spare_budget),
-            "trials": [_trial_entry(t) for t in kept],
-        })
+        }
+        shapes = _shapes_summary(point)
+        if shapes is not None:
+            row["shapes"] = shapes
+        row["trials"] = [_trial_entry(t) for t in kept]
+        rows.append(row)
     return rows
 
 
