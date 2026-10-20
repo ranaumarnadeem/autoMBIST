@@ -30,6 +30,10 @@ if __package__ in {None, ""}:
         multiplier_report,
         yield_points,
     )
+    from autombist.yieldsim.bitmap_engine import BitmapEngine
+    from autombist.yieldsim.defects import ITC2020_READINGS, ArrayGeometry, defect_model
+    from autombist.yieldsim.defects import PRESETS as DEFECT_PRESETS
+    from autombist.yieldsim.sweep import build_report, run_sweep
     from autombist.signoff import (
         LIBRELANE_FLAKE_REF,
         SignoffConfigError,
@@ -59,6 +63,10 @@ else:
         multiplier_report,
         yield_points,
     )
+    from .yieldsim.bitmap_engine import BitmapEngine
+    from .yieldsim.defects import ITC2020_READINGS, ArrayGeometry, defect_model
+    from .yieldsim.defects import PRESETS as DEFECT_PRESETS
+    from .yieldsim.sweep import build_report, run_sweep
     from .signoff import (
         LIBRELANE_FLAKE_REF,
         SignoffConfigError,
@@ -813,6 +821,107 @@ def yield_multiplier_cmd(
         )
         typer.echo(f"Repair curve: k = 1..{curve.k_max} {curve.unit}, from {report}")
         typer.echo(DISCLAIMER)
+        typer.echo(f"Report: {report_path}")
+
+
+def _parse_array(text: str) -> tuple[int, int]:
+    try:
+        rows, cols = (int(part) for part in text.lower().split("x"))
+    except ValueError:
+        _fail(f"--array {text!r} is not ROWSxCOLS, e.g. 1024x1024")
+    if rows < 1 or cols < 1:
+        _fail(f"--array {text!r} needs at least one row and one column")
+    return rows, cols
+
+
+@app.command("yield-sim")
+def yield_sim_cmd(
+    array: str = typer.Option(..., "--array", help="Base array per bank as ROWSxCOLS (rows are words, columns bits), e.g. 1024x1024"),
+    banks: int = typer.Option(1, "--banks", min=1, help="Banks side by side along the columns, each --array wide with its own spares; a memory is repaired only if every bank is"),
+    spare_rows: int = typer.Option(..., "--spare-rows", min=0, help="Spare rows per bank"),
+    spare_cols: int = typer.Option(0, "--spare-cols", min=0, help="Spare columns per bank"),
+    defects: str = typer.Option("singles", "--defects", help=f"Defect model: {', '.join(DEFECT_PRESETS)}"),
+    itc_reading: str = typer.Option("each-memory", "--itc-reading", help=f"How an itc2020 preset reads the paper's open points: {', '.join(sorted(ITC2020_READINGS))}"),
+    faults: list[str] = typer.Option(..., "--faults", help="Defect count k to sweep: repeatable, and each value may be a range (e.g. --faults 1..15). For itc2020 presets k is faulty cells per bank"),
+    trials: int = typer.Option(1000, "--trials", min=1, help="Trials per defect count"),
+    seed: int = typer.Option(0, "--seed", help="Base seed; each trial's seed is a hash of (seed, k, trial)"),
+    trial_detail: str = typer.Option("failures", "--trial-detail", help="Per-trial records kept in the report: none, failures (trials not repaired) or all"),
+    confidence: float = typer.Option(0.95, "--confidence", help="Confidence of each point's Wilson interval"),
+    out: Path = typer.Option("out", "--out", help="Output directory for yield_sim.json"),
+    json_output: bool = typer.Option(False, "--json", help="Print the report as JSON to stdout instead of a human table"),
+) -> None:
+    """Repair-rate sweep on the fail bitmap alone, no RTL: draw k random
+    defects per trial, union their cells, and ask the exact repair solver
+    whether each bank's spares cover them.
+
+    This measures what a spare budget can repair against a defect model, with
+    the true fail map; it says nothing about what a BIST observes (yield-sweep
+    simulates that on the RTL). The defect models are assumptions: the mixes of
+    Ohler et al. (DDECS 2007, Table 1) and the clustered sequential placement of
+    the ITC'2020 RA Benchmarks, with shape parameters this tool fixes itself.
+    Feed yield_sim.json to yield-multiplier for yield with redundancy.
+
+    Examples:
+      autombist yield-sim --array 1024x1024 --spare-rows 5 --spare-cols 5 --defects ohler-d2 --faults 1..15
+      autombist yield-sim --array 512x256 --banks 2 --spare-rows 3 --spare-cols 3 --defects itc2020-3050 --faults 8..12 --json
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    rows, cols = _parse_array(array)
+    fault_counts = _parse_fault_counts(faults)
+    if trial_detail not in ("none", "failures", "all"):
+        _fail(f"--trial-detail must be none, failures or all, got {trial_detail!r}")
+    try:
+        model = defect_model(defects, reading=itc_reading)
+        engine = BitmapEngine(
+            ArrayGeometry(rows=rows, cols=cols, banks=banks),
+            spare_rows=spare_rows, spare_cols=spare_cols, model=model,
+        )
+        total = len(fault_counts) * trials
+        with fault_progress(total, "trials") as advance:
+            done = 0
+
+            def progress(_k: int, _i: int, _record: object) -> None:
+                nonlocal done
+                done += 1
+                if advance is not None:
+                    advance(done, total)
+
+            result = run_sweep(engine, fault_counts, trials, seed, seed_scheme="blake2b", progress=progress)
+        report = build_report(result, trial_detail=trial_detail, confidence=confidence)
+    except ValueError as exc:
+        _fail(str(exc))
+
+    report["generated_at"] = datetime.now(timezone.utc).isoformat()
+    report["tool_version"] = __version__
+    out = out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    report_path = out / "yield_sim.json"
+    report_path.write_text(_json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+
+    if json_output:
+        typer.echo(_json.dumps(report, indent=2, sort_keys=True))
+        return
+
+    if not _is_quiet():
+        table = []
+        for point in report["points"]:
+            interval = point["wilson"]
+            valid = point["valid_trials"]
+            table.append([
+                str(point["faults"]), str(valid),
+                f"{point['repair_rate'] * 100:.1f}%" if valid else "n/a",
+                f"{interval['low'] * 100:.1f}% to {interval['high'] * 100:.1f}%",
+                f"{point['mean_cells']:.1f}" if point["mean_cells"] is not None else "n/a",
+            ])
+        print_status_table(
+            "Repair-rate sweep (bitmap)",
+            ["Defects" if result.unit == "defects" else "Cells", "Trials", "Repair rate",
+             f"{confidence * 100:g}% interval", "Mean cells"],
+            table, status_col=2,
+        )
+        typer.echo(f"Defect model: {defects}; spares per bank: {spare_rows} rows, {spare_cols} columns")
         typer.echo(f"Report: {report_path}")
 
 

@@ -217,6 +217,7 @@ def points_report(
             kept = tuple(t for t in point.trials if not t.repaired)
         else:
             kept = ()
+        cells = [t.cells for t in point.trials if t.valid and t.cells is not None]
         rows.append({
             "faults": point.k,
             "repair_rate": point.repair_rate if point.repair_rate is not None else 0.0,
@@ -224,6 +225,7 @@ def points_report(
             "repaired_count": point.repaired_count,
             "invalid_count": point.invalid_count,
             "wilson": {"confidence": confidence, "low": low, "high": high},
+            "mean_cells": sum(cells) / len(cells) if cells else None,
             "trials": [_trial_entry(t) for t in kept],
         })
     return rows

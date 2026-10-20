@@ -9,6 +9,7 @@ from autombist.yieldsim.stats import bonferroni_confidence, wilson_interval
 from autombist.yieldsim.sweep import (
     REPORT_SCHEMA_VERSION,
     PointResult,
+    SweepResult,
     TrialRecord,
     build_report,
     derive_seed,
@@ -103,6 +104,9 @@ def test_the_sweep_counts_valid_repaired_and_invalid_trials() -> None:
 def test_a_point_with_no_valid_trial_has_an_unknown_rate() -> None:
     point = PointResult(k=1, trials=(TrialRecord(k=1, seed=7, status="invalid", invalid_reason="x"),))
     assert point.repair_rate is None and point.wilson() == (0.0, 1.0)
+    result = SweepResult(engine="fake", unit="defects", description={}, trials_per_point=1, base_seed=0,
+                         seed_scheme="linear", points=(point,))
+    assert points_report(result)[0]["mean_cells"] is None
 
 
 def test_the_points_report_has_the_yield_sweep_1_1_shape_and_detail_levels() -> None:
@@ -113,6 +117,7 @@ def test_the_points_report_has_the_yield_sweep_1_1_shape_and_detail_levels() -> 
     first = full[0]
     assert (first["repair_rate"], first["valid_trials"], first["repaired_count"], first["invalid_count"]) == (1.0, 12, 12, 2)
     assert first["wilson"]["confidence"] == 0.95 and first["wilson"]["high"] == 1.0
+    assert first["mean_cells"] == 1.0  # the valid trials each saw k cells
     assert first["trials"][0] == {"seed": 14, "status": "invalid", "repaired": False,
                                   "invalid_reason": "seed divisible by 7"}
     assert first["trials"][1] == {"seed": 15, "status": "repaired", "repaired": True,
