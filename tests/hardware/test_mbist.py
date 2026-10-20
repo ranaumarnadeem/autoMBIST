@@ -289,10 +289,11 @@ def _prepare_fault_files() -> None:
 
     if mode == "clean":
         faults = 0
-    elif mode not in ("faults", "failscan"):
-        # "failscan" (the opt-in functional fail scan, test_fail_scan) reuses the
-        # exact same saboteur masks as "faults" -- it just observes them through
-        # the functional port instead of running the march detection test.
+    elif mode not in ("faults", "failscan", "marchlog"):
+        # "failscan" (the opt-in functional fail scan, test_fail_scan) and
+        # "marchlog" (the march's own fail strobes, test_march_log) reuse the
+        # exact same saboteur masks as "faults" -- they just observe them
+        # differently from the march detection test.
         raise ValueError(f"Unsupported FAULT_MODE: {mode}")
 
     fault_type_map = {
@@ -324,6 +325,18 @@ def _prepare_fault_files() -> None:
 _prepare_fault_files()
 
 
+# The controller FSM instance inside u_algo_top, per algorithm.
+_FSM_INSTANCE = {
+    "march-c": "u_march_c_fsm",
+    "march-raw": "u_march_raw_fsm",
+    "march-1r1w": "u_march_1r1w_fsm",
+    "march-2rw": "u_march_2rw_fsm",
+    "march-x": "u_march_x_fsm",
+    "mats-plus": "u_mats_plus_fsm",
+    "checkerboard": "u_checkerboard_fsm",
+}
+
+
 async def _run_mbist_once(
     dut,
     fault_type: str = "stuck-at",
@@ -337,15 +350,7 @@ async def _run_mbist_once(
     pending_sa_checks: list[dict[str, int]] = []
     use_saboteur = os.getenv("USE_SABOTEUR", "1").strip().lower() not in {"0", "false", "no"}
     algo_name = os.getenv("ALGO", "march-c").strip().lower()
-    fsm_name = {
-        "march-c": "u_march_c_fsm",
-        "march-raw": "u_march_raw_fsm",
-        "march-1r1w": "u_march_1r1w_fsm",
-        "march-2rw": "u_march_2rw_fsm",
-        "march-x": "u_march_x_fsm",
-        "mats-plus": "u_mats_plus_fsm",
-        "checkerboard": "u_checkerboard_fsm",
-    }.get(algo_name, "u_march_raw_fsm")
+    fsm_name = _FSM_INSTANCE.get(algo_name, "u_march_raw_fsm")
     read_latency = int(os.getenv("READ_LATENCY", "1"))
     data_width = int(os.getenv("DATA_WIDTH", "32"))
     data_mask = (1 << data_width) - 1
@@ -813,3 +818,101 @@ async def test_fail_scan(dut):
     for addr in unknown:
         print("FAIL_SCAN_UNKNOWN " + json.dumps({"addr": addr}))
     print(f"FAIL_SCAN_COMPLETE cells={len(fails)} unknown={len(unknown)}")
+
+
+_MARCH_CLOCK_NS = 10
+
+
+def _march_log_timeout_ns(addr_width: int, read_latency: int) -> int:
+    """Generous bound on one BIST run: every algorithm here makes at most a few
+    dozen operations per address, each a few cycles plus the read latency."""
+    depth = 1 << addr_width
+    cycles = 64 * depth * (read_latency + 4) + 2000
+    return 2 * cycles * _MARCH_CLOCK_NS
+
+
+def _fail_strobes(dut, algo_name: str):
+    """The algorithm's live per-read fail outputs (valid, addr, bitmask): the
+    top's bist_fail_* ports, else the FSM's own fail_* signals."""
+    top = dut.u_algo_top
+    try:
+        return top.bist_fail_valid, top.bist_fail_addr, top.bist_fail_bitmask
+    except AttributeError:
+        fsm = getattr(top, _FSM_INSTANCE.get(algo_name, "u_march_raw_fsm"))
+        return fsm.fail_valid, fsm.fail_addr, fsm.fail_bitmask
+
+
+async def _march_log(dut, data_width: int) -> tuple[int, list[tuple[int, int]], int]:
+    """Run the BIST once and record every read the algorithm itself flags.
+
+    fail_valid is combinational (the FSM's check state with a read whose data
+    differs from the expected word), so it is sampled once per cycle just before
+    the rising edge, where the FSM's own fail flag samples the same compare.
+    Returns (fail events, distinct failing cells, events with an unknown address
+    or mask)."""
+    algo_name = os.getenv("ALGO", "march-c").strip().lower()
+    valid_h, addr_h, mask_h = _fail_strobes(dut, algo_name)
+    settle_ns = _MARCH_CLOCK_NS // 2 - 1
+    cocotb.start_soon(Clock(dut.clk, _MARCH_CLOCK_NS, unit="ns").start())
+
+    dut.rst_n.value = 0
+    dut.test_mode.value = 1
+    dut.bist_start.value = 0
+    dut.func_csb.value = 1
+    dut.func_addr.value = 0
+    dut.func_din.value = 0
+    dut.func_we.value = 0
+    await ClockCycles(dut.clk, 4)
+    dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)
+    dut.bist_start.value = 1
+    await RisingEdge(dut.clk)
+    dut.bist_start.value = 0
+
+    events = 0
+    unknown = 0
+    cells: set[tuple[int, int]] = set()
+    while True:
+        await FallingEdge(dut.clk)
+        await Timer(settle_ns, unit="ns")
+        if _safe_int(dut.bist_done) == 1:
+            break
+        if _safe_int(valid_h) != 1:
+            continue
+        addr = _safe_int(addr_h)
+        mask = _safe_int(mask_h)
+        if addr is None or mask is None:
+            unknown += 1
+            continue
+        events += 1
+        cells.update((addr, bit) for bit in range(data_width) if (mask >> bit) & 1)
+    return events, sorted(cells), unknown
+
+
+@cocotb.test()
+async def test_march_log(dut):
+    """Opt-in march fail log (FAULT_MODE=marchlog): what the BIST algorithm
+    itself observes, as opposed to the functional scan's read-back.
+
+    Prints one ``MARCH_FAIL {"addr":A,"bit":B}`` line per distinct cell any read
+    flagged during the whole march, then ``MARCH_LOG_COMPLETE`` with the counts
+    and bist_fail, and checks that the log and bist_fail agree: a fail event was
+    seen exactly when the controller reports a fail.
+    """
+    if os.getenv("FAULT_MODE", "clean").strip().lower() != "marchlog":
+        return
+
+    addr_width = int(os.getenv("ADDR_WIDTH", "10"))
+    data_width = int(os.getenv("DATA_WIDTH", "32"))
+    read_latency = int(os.getenv("READ_LATENCY", "1"))
+    events, cells, unknown = await with_timeout(
+        _march_log(dut, data_width), _march_log_timeout_ns(addr_width, read_latency), "ns",
+    )
+    bist_fail = 1 if _safe_int(dut.bist_fail) == 1 else 0
+    for addr, bit in cells:
+        print("MARCH_FAIL " + json.dumps({"addr": addr, "bit": bit}))
+    print(f"MARCH_LOG_COMPLETE events={events} cells={len(cells)} unknown={unknown} bist_fail={bist_fail}")
+    assert unknown == 0, f"{unknown} fail event(s) had an unknown address or mask"
+    assert (events > 0) == (bist_fail == 1), (
+        f"the march log saw {events} fail event(s) but bist_fail is {bist_fail}"
+    )

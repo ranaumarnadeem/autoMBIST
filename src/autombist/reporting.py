@@ -38,6 +38,12 @@ FAIL_CELL_RE = re.compile(r"FAIL_CELL (\{[^{}\n]*\})")
 FAIL_SCAN_DONE_RE = re.compile(r"FAIL_SCAN_COMPLETE\b")
 # One FAIL_SCAN_UNKNOWN {"addr": A} line per word the scan read back as X/Z.
 FAIL_SCAN_UNKNOWN_RE = re.compile(r"FAIL_SCAN_UNKNOWN (\{[^{}\n]*\})")
+# The opt-in march log (test_mbist.test_march_log) emits one MARCH_FAIL {json}
+# line per cell the algorithm's own compare flagged during the march, then the
+# MARCH_LOG_COMPLETE counts. (Not "..._FAIL_CELL": FAIL_CELL_RE matches anywhere
+# in a line.)
+MARCH_FAIL_RE = re.compile(r"MARCH_FAIL (\{[^{}\n]*\})")
+MARCH_LOG_DONE_RE = re.compile(r"MARCH_LOG_COMPLETE events=(\d+) cells=(\d+) unknown=(\d+) bist_fail=([01])")
 
 
 @dataclass(slots=True)
@@ -166,10 +172,30 @@ def parse_fail_bitmap_lines(stdout: str, stderr: str) -> list[dict[str, int]]:
     timeout), and a partial fail-bitmap is still useful to a repair-analysis
     (BIRA) consumer.
     """
+    return _parse_cell_lines(FAIL_CELL_RE, stdout, stderr)
+
+
+def parse_march_fail_lines(stdout: str, stderr: str) -> list[dict[str, int]]:
+    """The cells the march log flagged (``MARCH_FAIL {json}`` lines), in the
+    same deduplicated, sorted ``{"addr", "bit"}`` shape as the fail scan's."""
+    return _parse_cell_lines(MARCH_FAIL_RE, stdout, stderr)
+
+
+def parse_march_log_summary(stdout: str, stderr: str) -> dict[str, int] | None:
+    """The march log's completion counts, or None when no march log finished."""
+    combined = "\n".join(part for part in (stdout, stderr) if part)
+    match = MARCH_LOG_DONE_RE.search(combined)
+    if match is None:
+        return None
+    events, cells, unknown, bist_fail = (int(group) for group in match.groups())
+    return {"events": events, "cells": cells, "unknown": unknown, "bist_fail": bist_fail}
+
+
+def _parse_cell_lines(pattern: re.Pattern[str], stdout: str, stderr: str) -> list[dict[str, int]]:
     combined = "\n".join(part for part in (stdout, stderr) if part)
     seen: set[tuple[int, int]] = set()
     cells: list[dict[str, int]] = []
-    for match in FAIL_CELL_RE.finditer(combined):
+    for match in pattern.finditer(combined):
         try:
             payload = json.loads(match.group(1))
         except json.JSONDecodeError:
@@ -389,6 +415,11 @@ def build_simulation_report(
         report["fail_bitmap"] = parse_fail_bitmap_lines(stdout, stderr)
         # Addresses whose read-back was X/Z: their cells were not observed.
         report["fail_scan_unknown_addrs"] = parse_fail_scan_unknown_lines(stdout, stderr)
+    # Likewise opt-in: the march's own fail log, only when it completed.
+    march_log = parse_march_log_summary(stdout, stderr)
+    if march_log is not None:
+        report["march_fail_bitmap"] = parse_march_fail_lines(stdout, stderr)
+        report["march_log"] = march_log
     report["summary"] = format_simulation_summary(report)
     return report
 

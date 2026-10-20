@@ -550,3 +550,17 @@ def test_run_controller_grading_delegates_to_faultflow_flow(tmp_path: Path, monk
     assert captured["outdir"] == module_outdir
     assert captured["opts"] is opts
     assert captured["run"] is True
+
+
+@pytest.mark.parametrize(("kwargs", "mode"), [
+    ({}, "FAULT_MODE=faults"),
+    ({"fail_scan": True}, "FAULT_MODE=failscan"),
+    ({"march_log": True}, "FAULT_MODE=marchlog"),
+])
+def test_the_fault_command_selects_one_observation(tmp_path: Path, kwargs, mode: str) -> None:
+    config = {"memory_name": "sram_tiny", "wrapper_module_name": "sram_tiny_mbist", "addr_width": 2, "data_width": 4}
+    command = runner_mod._build_fault_command(
+        hardware_dir=tmp_path, module_outdir=tmp_path / "m", config=config, faults=1, fault_seed=0,
+        fault_type="stuck-at", pulse_width_ns=2, algo="march-c", project_root=tmp_path, **kwargs,
+    )
+    assert mode in command

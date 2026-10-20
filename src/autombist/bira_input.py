@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["fail_cells"]
+__all__ = ["fail_cells", "observed_cells", "SOURCES"]
 
 
 def _coerce_int(value: Any) -> int | None:
@@ -88,4 +88,32 @@ def fail_cells(report: dict[str, Any]) -> set[tuple[int, int]]:
             if addr is not None and bit is not None:
                 cells.add((addr, bit))
 
+    return cells
+
+
+#: Where an observed fail map can come from: the functional-port scan
+#: (``fail_bitmap``) or the march's own fail log (``march_fail_bitmap``).
+SOURCES = ("functional", "march")
+
+
+def observed_cells(report: dict[str, Any], source: str = "functional") -> set[tuple[int, int]]:
+    """``{(addr, bit)}`` the chosen observation saw failing.
+
+    ``"functional"`` is :func:`fail_cells`. ``"march"`` is every cell a read of
+    the march itself flagged (``tests/hardware/test_mbist.py``'s
+    ``test_march_log``): what the BIST observes, which for a transition fault
+    differs from what a later read-back shows.
+    """
+    if source == "functional":
+        return fail_cells(report)
+    if source != "march":
+        raise ValueError(f"unknown observation source {source!r}: use one of {SOURCES}")
+    cells: set[tuple[int, int]] = set()
+    for entry in report.get("march_fail_bitmap") or []:
+        if not isinstance(entry, dict):
+            continue
+        addr = _coerce_int(entry.get("addr"))
+        bit = _coerce_int(entry.get("bit"))
+        if addr is not None and bit is not None:
+            cells.add((addr, bit))
     return cells
