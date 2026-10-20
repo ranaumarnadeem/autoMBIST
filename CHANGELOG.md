@@ -12,6 +12,53 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Added: repair yield analysis
+- `yield-sim`: a repair-rate sweep on the fail bitmap alone, no RTL, over the
+  defect mixes of Ohler et al. (DDECS 2007) and the clustered sequential
+  placement of the ITC'2020 RA Benchmarks, with banks, defects in the spares
+  (`--expose-spares`), minimum spares and the rate of overused spares
+  (`--min-spares`), and fail-bitmap shape classes (`--classes`). Writes
+  `yield_sim.json`.
+- `yield-multiplier`: yield with redundancy and the yield multiplier from a
+  sweep's repair curve, for each assumed initial yield (or mean defect count)
+  and clustering, with truncation bounds and a joint confidence band. Writes
+  `yield_multiplier.json`.
+- `yield-sweep --observe march`: the march's own per-read fail log as the
+  observation, which sees transition faults; `--defects` injects preset defects;
+  `--self-repair` runs the chip's own on-chip self-repair on a fault-injectable
+  memory model (defects in the spares with `--expose-spares`, the diagnosis log
+  with `--diagnosis-entries`) and names why each gap to the exact solver
+  happened.
+- `repair.bira.analyze_detailed()`: a minimum-spares objective, faulty spares,
+  solver statistics, and `verify_solution()`. `analyze()` is unchanged.
+- For library use: `run_simulation(march_log=True)` and the report's
+  `march_fail_bitmap`; `render_memory_model(stuck_masks=...)` for a
+  fault-injectable behavioral model.
+- The calibration protocol and its results (`scripts/calibrate_yield.py`,
+  `tests/data/yield_calibration.json`): the ITC'2020 MLS3050 gate failed, by 0.35
+  to 1.5 points at every count, and nothing was tuned. See
+  [Repair Yield Analysis](https://ranaumarnadeem.github.io/autoMBIST/yield-analysis.html).
+
+### Changed
+- `yield-sweep`'s repair rate now counts valid trials only. A trial whose fail
+  scan did not complete, failed, or read a word as X used to count as repaired;
+  it is now reported invalid and left out.
+- `yield-sweep` generates and compiles the wrapper once per sweep instead of once
+  per trial, and counts a trial repaired only when the repair from the observed
+  cells covers every injected cell (identical to before for stuck-at faults seen
+  by the functional scan). The seeds are unchanged.
+- `yield-sweep` refuses fault types its observation cannot see (the functional
+  scan sees stuck-at faults only), accepts `--faults` ranges such as `1..8`, and
+  reports an error as one line instead of a traceback.
+- `yield_sweep.json` is schema 1.1, additive over 1.0: trial `status` and
+  `invalid_reason`, point `valid_trials`, `repaired_count`, `invalid_count` and
+  `wilson`, and top-level `engine`, `seeding`, `observation` and `defect_model`.
+
+### Fixed
+- A `FAIL_CELL` (or `FAULT_SITE`) marker that landed glued to the end of a
+  memory model's `$display` line was dropped from the fail bitmap. Markers are now
+  found anywhere in a line.
+
 ### Documentation
 - Releases are archived on Zenodo. `CITATION.cff` carries the concept DOI,
   10.5281/zenodo.23453213, which resolves to the latest version, and the README
