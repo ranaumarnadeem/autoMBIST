@@ -215,6 +215,29 @@ def _truth_summary(point: PointResult) -> dict[str, Any] | None:
     }
 
 
+def _onchip_summary(point: PointResult) -> dict[str, Any] | None:
+    """For an engine that runs a chip's own repair: the exact solver's repair rate
+    on the truth, the chip's, Jeong et al.'s normalized repair rate (chips
+    repaired over chips the exact solver can repair), and why each chip the
+    exact solver repairs was not."""
+    trials = [t for t in point.trials if t.valid and "onchip_fail" in t.extras]
+    if not trials:
+        return None
+    repairable = [t for t in trials if t.extras["truth_repairable"]]
+    causes: dict[str, int] = {}
+    for t in trials:
+        cause = t.extras.get("cause")
+        if cause:
+            causes[cause] = causes.get(cause, 0) + 1
+    return {
+        "exact_repair_rate": len(repairable) / len(trials),
+        "onchip_repair_rate": sum(1 for t in trials if t.repaired) / len(trials),
+        "normalized_repair_rate": (sum(1 for t in repairable if t.repaired) / len(repairable)) if repairable else None,
+        "causes": dict(sorted(causes.items())),
+        "diagnosis_overflows": sum(1 for t in trials if t.extras.get("diag_overflow")),
+    }
+
+
 def _shapes_summary(point: PointResult) -> dict[str, Any] | None:
     """The shape classes summed over the point's valid trials, when the engine
     classified them: pattern counts, the expected->found confusion counts, the
@@ -300,6 +323,9 @@ def points_report(
         truth = _truth_summary(point)
         if truth is not None:
             row["observed_vs_truth"] = truth
+        onchip = _onchip_summary(point)
+        if onchip is not None:
+            row["self_repair"] = onchip
         row["trials"] = [_trial_entry(t) for t in kept]
         rows.append(row)
     return rows

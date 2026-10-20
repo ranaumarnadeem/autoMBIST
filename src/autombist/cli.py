@@ -21,7 +21,7 @@ if __package__ in {None, ""}:
         run_openram_synthesis,
     )
     from autombist.runner import SimulationError, run_simulation
-    from autombist.yield_sweep import OBSERVATIONS, RtlEngine, write_sweep_report
+    from autombist.yield_sweep import OBSERVATIONS, RtlEngine, SelfRepairEngine, write_sweep_report
     from autombist.yieldsim.model import (
         DISCLAIMER,
         ITC2020_ALPHA,
@@ -54,7 +54,7 @@ else:
         run_openram_synthesis,
     )
     from .runner import SimulationError, run_simulation
-    from .yield_sweep import OBSERVATIONS, RtlEngine, write_sweep_report
+    from .yield_sweep import OBSERVATIONS, RtlEngine, SelfRepairEngine, write_sweep_report
     from .yieldsim.model import (
         DISCLAIMER,
         ITC2020_ALPHA,
@@ -643,6 +643,9 @@ def yield_sweep_cmd(
     fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at, or transition-up/transition-down with --observe march (the functional scan sees stuck-at faults only)"),
     defects: str | None = typer.Option(None, "--defects", help=f"Inject k defects from a defect preset ({', '.join(DEFECT_PRESETS)}), each stuck at 0 or 1 over all its cells, instead of k random cells"),
     trial_detail: str = typer.Option("all", "--trial-detail", help="Per-trial records kept in the report: all, failures (trials not repaired) or none"),
+    self_repair: bool = typer.Option(False, "--self-repair", help="Run the chip's own on-chip self-repair each trial (a redundancy build with --spare-rows/--spare-cols on a fault-injectable memory model) and compare it with the exact solver"),
+    expose_spares: bool = typer.Option(False, "--expose-spares", help="With --self-repair: defects can also land in the spare rows and spare columns"),
+    diagnosis_entries: int = typer.Option(0, "--diagnosis-entries", min=0, help="With --self-repair: also build the on-chip diagnosis log with this many entries and report its overflows"),
     seed: int = typer.Option(0, "--seed", help="Base seed; every trial's own seed is derived deterministically from it"),
     json_output: bool = typer.Option(False, "--json", help="Print the sweep summary as JSON to stdout instead of a human table"),
 ) -> None:
@@ -663,6 +666,15 @@ def yield_sweep_cmd(
     the difference. A trial whose observation did not complete is reported
     invalid and left out of the repair rate.
 
+    With --self-repair each trial runs the chip's own repair instead: the
+    wrapper is built with on-chip self-repair over the spare budget, the memory
+    is a fault-injectable model whose defects can include the spares
+    (--expose-spares), and a trial is repaired when the chip reports a pass and
+    a post-repair scan reads back clean. The exact solver, which knows the spare
+    faults, gives the upper bound; the report gives the normalized repair rate
+    (repaired over exactly repairable) and the reason for each gap: the greedy
+    on-chip analyzer, a faulty allocated spare, or an observation escape.
+
     Requirements: Icarus Verilog and Cocotb must be installed. Each trial is
     a real simulation, so a sweep's runtime scales with
     len(--faults) * --trials.
@@ -671,6 +683,7 @@ def yield_sweep_cmd(
       autombist yield-sweep --config config.yml --faults 1..8 --trials 20 --spare-rows 2
       autombist yield-sweep --config config.yml --faults 2 --trials 50 --spare-rows 2 --spare-cols 1 --json
       autombist yield-sweep --config config.yml --faults 1..4 --spare-rows 1 --observe march --fault-type transition-up --algo march-raw
+      autombist yield-sweep --config config.yml --faults 1..6 --spare-rows 2 --spare-cols 1 --self-repair --expose-spares --defects ohler-d2
     """
     import json as _json
     from datetime import datetime, timezone
@@ -683,11 +696,23 @@ def yield_sweep_cmd(
     try:
         config_path = _resolve_config_path(config)
         out = out.resolve()
-        engine = RtlEngine(
-            config_path, out / "yield_sweep_dut",
-            num_spare_rows=spare_rows, num_spare_cols=spare_cols,
-            algo=algo, observe=observe, fault_type=fault_type, defects=defects,
-        )
+        if self_repair:
+            if fault_type != "stuck-at" or observe != "functional":
+                raise ValueError("--self-repair injects stuck cells and observes them through the chip's own "
+                                 "analyze pass; leave --fault-type and --observe at their defaults")
+            engine = SelfRepairEngine(
+                config_path, out / "yield_selfrepair_dut",
+                num_spare_rows=spare_rows, num_spare_cols=spare_cols, algo=algo, defects=defects,
+                expose_spares=expose_spares, diagnosis_entries=diagnosis_entries,
+            )
+        else:
+            if expose_spares or diagnosis_entries:
+                raise ValueError("--expose-spares and --diagnosis-entries need --self-repair")
+            engine = RtlEngine(
+                config_path, out / "yield_sweep_dut",
+                num_spare_rows=spare_rows, num_spare_cols=spare_cols,
+                algo=algo, observe=observe, fault_type=fault_type, defects=defects,
+            )
         total = len(fault_counts) * trials
         with fault_progress(total, "trials") as advance:
             done = 0
@@ -714,22 +739,29 @@ def yield_sweep_cmd(
         return
 
     if not _is_quiet():
+        def pct(value: float | None) -> str:
+            return f"{value * 100:.1f}%" if value is not None else "n/a"
+
         rows = []
         for point in report["points"]:
             valid = point["valid_trials"]
-            truth = point.get("observed_vs_truth") or {}
-            rows.append([
-                str(point["faults"]), str(valid + point["invalid_count"]), str(point["invalid_count"]),
-                f"{point['repair_rate'] * 100:.1f}%" if valid else "n/a",
-                f"{truth['truth_repair_rate'] * 100:.1f}%" if truth else "n/a",
-                str(truth.get("escape_trials", "n/a")),
-            ])
-        print_status_table(
-            "Repair-yield sweep",
-            ["Faults", "Trials", "Invalid", "Repair rate", "From injected cells", "Escape trials"],
-            rows, status_col=3,
-        )
-        typer.echo(f"Observed by: {OBSERVATIONS[observe]}; spares: {spare_rows} rows, {spare_cols} columns")
+            row = [str(point["faults"]), str(valid + point["invalid_count"]), str(point["invalid_count"]),
+                   pct(point["repair_rate"]) if valid else "n/a"]
+            if self_repair:
+                onchip = point.get("self_repair") or {}
+                causes = onchip.get("causes") or {}
+                row += [pct(onchip.get("exact_repair_rate")), pct(onchip.get("normalized_repair_rate")),
+                        ", ".join(f"{cause} {n}" for cause, n in causes.items()) or "none"]
+            else:
+                truth = point.get("observed_vs_truth") or {}
+                row += [pct(truth.get("truth_repair_rate")), str(truth.get("escape_trials", "n/a"))]
+            rows.append(row)
+        headers = ["Faults", "Trials", "Invalid", "Repair rate"]
+        headers += (["Exact solver", "Normalized", "Why not repaired"] if self_repair
+                    else ["From injected cells", "Escape trials"])
+        print_status_table("Repair-yield sweep", headers, rows, status_col=3)
+        observed_by = "the chip's own analyze pass and self-repair" if self_repair else OBSERVATIONS[observe]
+        typer.echo(f"Observed by: {observed_by}; spares: {spare_rows} rows, {spare_cols} columns")
         typer.echo(f"Report: {report_path}")
 
 
