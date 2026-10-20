@@ -845,6 +845,7 @@ def yield_sim_cmd(
     spare_cols: int = typer.Option(0, "--spare-cols", min=0, help="Spare columns per bank"),
     expose_spares: bool = typer.Option(False, "--expose-spares", help="Let defects land in the spares too (spare rows above the array, spare columns to its right, as OpenRAM places them); k then counts defects over the physical array"),
     min_spares: bool = typer.Option(False, "--min-spares", help="Also find each repaired trial's minimum spare count, for the rate of overused spares (slower)"),
+    classes: bool = typer.Option(False, "--classes", help="Classify each trial's fail bitmap into shapes (single, twin, segment, line, cluster, cross; after Lin et al. 2016) and report the classes, the merge rate and the match against the injected defects"),
     defects: str = typer.Option("singles", "--defects", help=f"Defect model: {', '.join(DEFECT_PRESETS)}"),
     itc_reading: str = typer.Option("each-memory", "--itc-reading", help=f"How an itc2020 preset reads the paper's open points: {', '.join(sorted(ITC2020_READINGS))}"),
     faults: list[str] = typer.Option(..., "--faults", help="Defect count k to sweep: repeatable, and each value may be a range (e.g. --faults 1..15). For itc2020 presets k is faulty cells per bank"),
@@ -887,7 +888,7 @@ def yield_sim_cmd(
         engine = BitmapEngine(
             ArrayGeometry(rows=rows, cols=cols, banks=banks),
             spare_rows=spare_rows, spare_cols=spare_cols, model=model,
-            expose_spares=expose_spares, min_spares=min_spares,
+            expose_spares=expose_spares, min_spares=min_spares, classify_shapes=classes,
         )
         total = len(fault_counts) * trials
         with fault_progress(total, "trials") as advance:
@@ -936,6 +937,23 @@ def yield_sim_cmd(
         if min_spares:
             headers.append("Overused spares")
         print_status_table("Repair-rate sweep (bitmap)", headers, table, status_col=2)
+        if classes:
+            shape_rows = []
+            for point in report["points"]:
+                shapes = point.get("shapes") or {}
+                found = shapes.get("patterns", {})
+                total = sum(found.values())
+                top = sorted(found.items(), key=lambda kv: -kv[1])[:3]
+                merge = shapes.get("merge_rate")
+                shape_rows.append([
+                    str(point["faults"]),
+                    f"{total / point['valid_trials']:.2f}" if point["valid_trials"] else "n/a",
+                    f"{merge * 100:.1f}%" if merge is not None else "n/a",
+                    ", ".join(f"{label} {n * 100 / total:.0f}%" for label, n in top) if total else "none",
+                ])
+            print_status_table("Fail-bitmap shapes", ["Defects" if result.unit == "defects" else "Cells",
+                               "Patterns per trial", "Merged defects", "Most common classes"],
+                               shape_rows, status_col=0)
         exposure = "; defects reach the spares" if expose_spares else ""
         typer.echo(f"Defect model: {defects}; spares per bank: {spare_rows} rows, {spare_cols} columns{exposure}")
         typer.echo(f"Report: {report_path}")
