@@ -1,9 +1,11 @@
 """Random defects over a memory array, for repair-rate sweeps.
 
 A defect is one physical event; it fails one or more cells. Coordinates are
-``(row, col)`` in the base array, row = word address and col = bit, the same
-``(addr, bit)`` pairs ``autombist.repair`` takes (one word per row, so a row is
-a word line and a column a bit line). The layout follows OpenRAM's port 0: the
+``(row, col)`` in the array the model is given, row = word address and col =
+bit, the ``(addr, bit)`` pairs ``autombist.repair`` takes (one word per row, so a
+row is a word line and a column a bit line). That is the base array, or the
+physical array with its spares when a sweep exposes them
+(:class:`.bitmap_engine.BitmapEngine`). The layout follows OpenRAM's port 0: the
 row decoder on the left (column 0) and the sense amplifiers below (row 0), so a
 word-line open fails its row from the open to the right end and a bit-line open
 fails its column from the open to the top.

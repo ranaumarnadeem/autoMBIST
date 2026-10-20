@@ -84,3 +84,22 @@ def test_bad_arguments_are_one_error_line(tmp_path: Path, args: list[str], fragm
 
     assert result.exit_code == 1, result.output
     assert fragment in result.output and "Traceback" not in result.output
+
+
+def test_an_exposed_sweep_hands_its_area_ratio_to_yield_multiplier(tmp_path: Path) -> None:
+    sim = _invoke(tmp_path, "--array", "16x8", "--spare-rows", "2", "--spare-cols", "2", "--defects", "ohler-d2",
+                  "--faults", "1..3", "--trials", "15", "--expose-spares", "--min-spares")
+    assert sim.exit_code == 0, sim.output
+    assert "Overused spares" in sim.output and "defects reach the spares" in sim.output
+    report = json.loads((tmp_path / "out" / "yield_sim.json").read_text(encoding="utf-8"))
+    assert report["geometry"]["area_ratio"] == pytest.approx(18 * 10 / (16 * 8))
+    assert "ros" in report["points"][0]["spares"]
+
+    def multiplier(*extra: str) -> dict:
+        result = runner.invoke(app, ["yield-multiplier", "--report", str(tmp_path / "out" / "yield_sim.json"),
+                                     "--out", str(tmp_path / "m"), "--y0", "0.5", "--alpha", "poisson", "--json", *extra])
+        assert result.exit_code == 0, result.output
+        return json.loads(result.output)["points"][0]
+
+    assert multiplier()["area_ratio"] == pytest.approx(report["geometry"]["area_ratio"])
+    assert multiplier("--area-ratio", "1")["area_ratio"] == 1.0
