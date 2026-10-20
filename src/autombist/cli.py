@@ -587,16 +587,35 @@ def grade_controller(
     _grade_controller(module_outdir, opts, run)
 
 
+def _parse_fault_counts(values: list[str]) -> list[int]:
+    """``--faults`` values: an integer, or an inclusive range ``A..B``. A range
+    gives the contiguous curve a yield multiplier needs."""
+    counts: list[int] = []
+    for value in values:
+        text = value.strip()
+        try:
+            if ".." in text:
+                low, high = (int(part) for part in text.split("..", 1))
+                if high < low:
+                    _fail(f"--faults range {text!r} is empty (the end is below the start)")
+                counts.extend(range(low, high + 1))
+            else:
+                counts.append(int(text))
+        except ValueError:
+            _fail(f"--faults {text!r} is not a number or a range like 1..15")
+    return counts
+
+
 @app.command("yield-sweep")
 def yield_sweep_cmd(
-    config: Path | None = typer.Option(None, "--config", help="YAML config file with memory parameters (defaults to ./config.yml if it exists)"),
+    config: Path | None = typer.Option(None, "--config", help="YAML config file with memory parameters (defaults to ./config.yml if it exists). It must not declare redundancy: the spare budget is --spare-rows/--spare-cols"),
     out: Path = typer.Option("out", "--out", help="Output directory for sweep trial artifacts and the summary report"),
-    faults: list[int] = typer.Option(..., "--faults", help="Fault count to sweep (repeatable, e.g. --faults 1 --faults 4 --faults 8)"),
-    trials: int = typer.Option(10, "--trials", help="Number of randomized trials per fault count"),
-    spare_rows: int = typer.Option(..., "--spare-rows", help="Spare-row budget to evaluate repairability against"),
-    spare_cols: int = typer.Option(0, "--spare-cols", help="Spare-column budget to evaluate repairability against"),
-    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm used to observe failures"),
-    fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at, transition-up, or transition-down"),
+    faults: list[str] = typer.Option(..., "--faults", help="Fault count to sweep: repeatable, and each value may be a range (e.g. --faults 1..8, or --faults 1 --faults 4)"),
+    trials: int = typer.Option(10, "--trials", min=1, help="Number of randomized trials per fault count"),
+    spare_rows: int = typer.Option(..., "--spare-rows", min=0, help="Spare-row budget to evaluate repairability against"),
+    spare_cols: int = typer.Option(0, "--spare-cols", min=0, help="Spare-column budget to evaluate repairability against"),
+    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm compiled into the wrapper. The failures are observed by a functional scan, not by the march, so this does not change what is observed"),
+    fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model. The functional scan observes stuck-at faults only, so other types are refused"),
     seed: int = typer.Option(0, "--seed", help="Base seed; every trial's own seed is derived deterministically from it"),
     json_output: bool = typer.Option(False, "--json", help="Print the sweep summary as JSON to stdout instead of a human table"),
 ) -> None:
@@ -605,27 +624,31 @@ def yield_sweep_cmd(
     against a given spare-row/-column budget.
 
     Offline, simulation-only analysis: the spare budget evaluated
-    (--spare-rows/--spare-cols) is independent of --config's own (if any)
-    redundancy: block, and every reported number comes from randomized fault
-    injection -- never calibrated against real silicon defect density. See
-    docs/diagnosis-yield-analysis-plan.md for the full scoping.
+    (--spare-rows/--spare-cols) is independent of the wrapper, and every
+    reported number comes from randomized fault injection, never calibrated
+    against real silicon defect density. Each trial injects random stuck-at
+    cells, simulates the wrapper, and reads every word back through the
+    functional port (solid 0s, then solid 1s); the repair solver then decides
+    whether the budget covers the cells that read back wrong. A trial whose scan
+    did not complete or read a word as X/Z is reported invalid and left out of
+    the repair rate.
 
     Requirements: Icarus Verilog and Cocotb must be installed. Each trial is
     a real simulation, so a sweep's runtime scales with
     len(--faults) * --trials.
 
     Examples:
-      autombist yield-sweep --config config.yml --faults 1 --faults 4 --faults 8 --trials 20 --spare-rows 2
+      autombist yield-sweep --config config.yml --faults 1..8 --trials 20 --spare-rows 2
       autombist yield-sweep --config config.yml --faults 2 --trials 50 --spare-rows 2 --spare-cols 1 --json
     """
-    config_path = _resolve_config_path(config)
-    out = out.resolve()
-
+    fault_counts = _parse_fault_counts(faults)
     try:
+        config_path = _resolve_config_path(config)
+        out = out.resolve()
         points = sweep(
             config_path,
             out / "yield_sweep_trials",
-            fault_counts=faults,
+            fault_counts=fault_counts,
             trials_per_point=trials,
             num_spare_rows=spare_rows,
             num_spare_cols=spare_cols,
@@ -657,8 +680,12 @@ def yield_sweep_cmd(
         return
 
     if not _is_quiet():
-        rows = [[str(p.faults), str(len(p.trials)), f"{p.repair_rate * 100:.1f}%"] for p in points]
-        print_status_table("Repair-yield sweep", ["Faults", "Trials", "Repair rate"], rows, status_col=2)
+        rows = [
+            [str(p.faults), str(len(p.trials)), str(len(p.trials) - p.valid_trials),
+             f"{p.repair_rate * 100:.1f}%" if p.valid_trials else "n/a"]
+            for p in points
+        ]
+        print_status_table("Repair-yield sweep", ["Faults", "Trials", "Invalid", "Repair rate"], rows, status_col=3)
         typer.echo(f"Report: {report_path}")
 
 

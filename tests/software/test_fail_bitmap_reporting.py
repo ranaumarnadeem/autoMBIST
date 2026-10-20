@@ -22,6 +22,7 @@ from autombist.reporting import (  # noqa: E402
     build_simulation_report,
     fail_scan_ran,
     parse_fail_bitmap_lines,
+    parse_fail_scan_unknown_lines,
 )
 
 
@@ -134,3 +135,45 @@ def test_report_populates_fail_bitmap_on_defects(tmp_path: Path) -> None:
     )
     report = _report(tmp_path, stdout)
     assert report["fail_bitmap"] == [{"addr": 1, "bit": 2}, {"addr": 3, "bit": 0}]
+
+
+# --------------------------------------------------------------------------- #
+# unknown (X/Z) read-backs
+# --------------------------------------------------------------------------- #
+
+def test_unknown_reads_are_parsed_sorted_and_deduplicated() -> None:
+    stdout = (
+        'FAIL_SCAN_UNKNOWN {"addr": 5}\n'
+        'FAIL_SCAN_UNKNOWN {"addr": 2}\n'
+        'FAIL_SCAN_UNKNOWN {"addr": 5}\n'
+        "FAIL_SCAN_UNKNOWN not-json\n"
+        'FAIL_SCAN_UNKNOWN {"addr": true}\n'
+        'FAIL_SCAN_UNKNOWN [1]\n'
+    )
+    assert parse_fail_scan_unknown_lines(stdout, "") == [2, 5]
+
+
+def test_report_records_unknown_reads_only_when_the_scan_ran(tmp_path: Path) -> None:
+    scanned = _report(tmp_path, 'FAIL_SCAN_UNKNOWN {"addr": 3}\nFAIL_SCAN_COMPLETE cells=0 unknown=1\n')
+    clean = _report(tmp_path, "FAIL_SCAN_COMPLETE cells=0 unknown=0\n")
+    unscanned = _report(tmp_path, "[autombist] Result: PASS\n")
+
+    assert scanned["fail_scan_unknown_addrs"] == [3]
+    assert clean["fail_scan_unknown_addrs"] == []
+    assert "fail_scan_unknown_addrs" not in unscanned
+
+
+def test_a_marker_glued_to_a_model_display_line_is_still_read() -> None:
+    """Seen on the OpenRAM-style demo model: the simulator's $display output and
+    cocotb's print share the log, so a marker can follow a model line with no
+    newline in between. A start-of-line anchor used to drop that cell."""
+    stdout = (
+        "1811 Reading input_demo_8x16_scn4m_mbis"
+        'FAIL_CELL {"addr": 3, "bit": 0}\n'
+        'FAIL_CELL {"addr": 5, "bit": 7}\n'
+        'x FAIL_SCAN_UNKNOWN {"addr": 9}\n'
+        "tail FAIL_SCAN_COMPLETE cells=2 unknown=1\n"
+    )
+    assert parse_fail_bitmap_lines(stdout, "") == [{"addr": 3, "bit": 0}, {"addr": 5, "bit": 7}]
+    assert parse_fail_scan_unknown_lines(stdout, "") == [9]
+    assert fail_scan_ran(stdout, "") is True
