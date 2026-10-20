@@ -23,11 +23,13 @@ SRC = REPO_ROOT / "src" / "autombist"
 #: package -> the sibling autombist packages it may import (one-way).
 PURE_PACKAGES: dict[str, frozenset[str]] = {
     "repair": frozenset(),
+    "yieldsim": frozenset({"repair"}),
 }
 
 #: Modules that sit in each package and must exist, so an empty glob cannot pass.
 EXPECTED_MODULES: dict[str, set[str]] = {
     "repair": {"__init__.py", "types.py", "bira.py", "bisr.py"},
+    "yieldsim": {"__init__.py", "stats.py", "sweep.py"},
 }
 
 _STDLIB = frozenset(sys.stdlib_module_names)
@@ -113,4 +115,19 @@ def test_the_guard_flags_couplings_and_passes_clean_code(tmp_path: Path, monkeyp
     (pkg / "mod.py").write_text(source, encoding="utf-8")
     monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path)
     monkeypatch.setitem(PURE_PACKAGES, "probe", frozenset())
+    assert bool(_violations("probe")) is bad
+
+
+@pytest.mark.parametrize(("source", "bad"), [
+    ("from ..repair import bira\n", False),
+    ("from ..repair.types import SpareGeometry\n", False),
+    ("import autombist.repair.bira\n", False),
+    ("from ..yield_sweep import sweep\n", True),
+])
+def test_a_declared_sibling_is_the_only_autombist_import_allowed(tmp_path: Path, monkeypatch, source: str, bad: bool) -> None:
+    pkg = tmp_path / "probe"
+    pkg.mkdir()
+    (pkg / "mod.py").write_text(source, encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path)
+    monkeypatch.setitem(PURE_PACKAGES, "probe", frozenset({"repair"}))
     assert bool(_violations("probe")) is bad

@@ -12,6 +12,7 @@ import yaml
 
 from autombist.repair.types import RepairSolution, Unrepairable
 from autombist.yield_sweep import SCHEMA_VERSION, DensityPoint, TrialResult, build_sweep_report, write_sweep_report
+from autombist.yieldsim.stats import wilson_interval
 
 CONFIG = {
     "memory_name": "sram_tiny",
@@ -97,6 +98,8 @@ def test_an_invalid_trial_is_reported_as_such_and_left_out_of_the_rate(tmp_path:
 
     point = report["points"][0]
     assert (point["repair_rate"], point["valid_trials"], point["repaired_count"]) == (1.0, 1, 1)
+    assert point["invalid_count"] == 1
+    assert point["wilson"]["confidence"] == 0.95 and point["wilson"]["high"] == 1.0
     assert point["trials"][1] == {
         "seed": 2, "fail_cell_count": 0, "status": "invalid", "repaired": False,
         "invalid_reason": "the fail scan did not complete (no FAIL_SCAN_COMPLETE marker)",
@@ -133,3 +136,17 @@ def test_write_sweep_report_writes_yield_sweep_json(tmp_path: Path) -> None:
     # `report` -- JSON object keys are always strings, so row_map's int keys
     # (e.g. {0: 0}) legitimately become {"0": 0} on the way through disk.
     assert json.loads(report_path.read_text(encoding="utf-8")) == json.loads(json.dumps(report))
+
+
+def test_the_1_1_report_names_its_engine_seeding_and_unit(tmp_path: Path) -> None:
+    report = build_sweep_report(
+        _points(), _write_config(tmp_path),
+        tool_version="0.0.0-test", num_spare_rows=1, num_spare_cols=0,
+        algo="march-c", fault_type="stuck-at", trials_per_point=1, base_seed=7,
+    )
+
+    assert report["engine"] == {"name": "rtl-functional-scan"}
+    assert report["seeding"] == {"scheme": "linear", "base_seed": 7}
+    assert report["defect_model"] == {"model": "saboteur", "fault_type": "stuck-at", "unit": "cells"}
+    low, high = wilson_interval(1, 1)
+    assert report["points"][0]["wilson"] == {"confidence": 0.95, "low": low, "high": high}
