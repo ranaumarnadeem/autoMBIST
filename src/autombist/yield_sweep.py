@@ -10,12 +10,14 @@ and the defects, not a yield: ``autombist yield-multiplier``
 (``autombist.yieldsim.model``) turns the curve into yield with redundancy for an
 ASSUMED defect-count distribution, never a silicon-calibrated one.
 
-Reuses the existing generate/simulate pipeline unchanged, per trial: each
-trial is a REAL ``generate_from_config(use_saboteur=True, ...)`` +
-``run_simulation(fail_scan=True)`` invocation, exactly the same pipeline
-every existing fault-injection test in this repo already uses (see
-``tests/integration/test_classic_fail_coordinates_e2e.py``) -- zero changes
-to ``generator.py``/``runner.py``/``reporting.py``. The spare budget under
+Two ways to run it. :class:`RtlEngine` (what ``autombist yield-sweep`` uses)
+plugs into ``autombist.yieldsim.sweep.run_sweep``: it generates and compiles
+the wrapper once, rewrites the saboteur's fault masks per trial, observes with
+the functional scan or the march's own fail log, and records each trial's
+truth next to its observation. The original :func:`sweep` / :func:`run_trial`
+keep their per-trial ``generate_from_config`` + ``run_simulation(fail_scan=True)``
+pipeline and their report (:func:`build_sweep_report`) for existing callers.
+The spare budget under
 evaluation (``num_spare_rows``/``num_spare_cols``) is a parameter INDEPENDENT
 of the wrapper's own config: this is OFFLINE analysis ("would this budget
 have repaired what was actually observed"), not on-chip self-repair, so the
@@ -25,17 +27,21 @@ without regenerating anything.
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from .bira_input import fail_cells
+from .bira_input import fail_cells, observed_cells
+from .fault_gen import FaultType, generate_fault_masks, write_fault_files
 from .generator import generate_from_config, load_config
-from .repair.bira import analyze
+from .repair.bira import analyze, analyze_detailed
 from .repair.types import RepairSolution, SpareGeometry, Unrepairable
 from .runner import run_simulation
+from .yieldsim.defects import ArrayGeometry, class_counts, defect_model
 from .yieldsim.stats import wilson_interval
+from .yieldsim.sweep import TrialRecord
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -48,6 +54,8 @@ __all__ = [
     "sweep",
     "build_sweep_report",
     "write_sweep_report",
+    "OBSERVATIONS",
+    "RtlEngine",
 ]
 
 # Independent of reporting.py's own per-simulation-run schema_version -- this
@@ -362,3 +370,178 @@ def write_sweep_report(report: dict[str, Any], report_dir: Path) -> Path:
     report_path = report_dir / "yield_sweep.json"
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     return report_path
+
+
+# --- the RTL trial engine on the yieldsim core ---------------------------------
+
+#: How a trial's failures are observed: the functional-port read-back after the
+#: faults are in place, or the march's own per-read fail strobes.
+OBSERVATIONS = {"functional": "functional-scan", "march": "march-log"}
+
+
+def _stuck_cells(sa0: list[int], sa1: list[int], data_width: int) -> set[tuple[int, int]]:
+    """Cells the stuck-at masks fault: dout = (real & sa0) | sa1, so a cell is
+    stuck unless its sa0 bit is 1 and its sa1 bit 0."""
+    return {(addr, bit) for addr, (w0, w1) in enumerate(zip(sa0, sa1)) for bit in range(data_width)
+            if not (w0 >> bit) & 1 or (w1 >> bit) & 1}
+
+
+class RtlEngine:
+    """Trials on the generated RTL, compiled once per sweep.
+
+    The wrapper and saboteur are generated once into ``workdir``; the saboteur
+    loads its fault masks with ``$readmemh`` from fixed absolute paths at
+    simulation start, so each trial only rewrites those mask files and the
+    compiled simulation is reused.
+
+    Every trial knows its truth (the injected cells) and its observation (the
+    functional scan or the march log). It counts as repaired only when the
+    repair computed from the observed cells also covers every injected cell; the
+    record also says whether the truth and the observation were each
+    repairable, how many injected cells the observed repair misses (escapes)
+    and how many observed cells were never injected (overkill, expected 0).
+
+    Without ``defects`` a trial injects k random cells exactly as the per-trial
+    sweep does (the same masks from the same seed); with a ``yieldsim.defects``
+    preset it injects k defects, each stuck at a random value over all its cells.
+    """
+
+    def __init__(
+        self,
+        config_path: Path,
+        workdir: Path,
+        *,
+        num_spare_rows: int,
+        num_spare_cols: int = 0,
+        algo: str = "march-c",
+        observe: str = "functional",
+        fault_type: str = "stuck-at",
+        defects: str | None = None,
+        pulse_width_ns: int = 2,
+    ) -> None:
+        if observe not in OBSERVATIONS:
+            raise ValueError(f"unknown observation {observe!r}: use one of {sorted(OBSERVATIONS)}")
+        if observe == "functional":
+            check_observable(fault_type)
+        if defects is not None and fault_type != "stuck-at":
+            raise ValueError("a defect preset injects stuck cells, so it needs --fault-type stuck-at")
+        self.config_path = config_path
+        self.workdir = workdir
+        self.config = load_config(config_path)
+        self.algo = algo
+        self.observe = observe
+        self.fault_type = fault_type
+        self.pulse_width_ns = pulse_width_ns
+        self.depth = 1 << self.config["addr_width"]
+        self.width = self.config["data_width"]
+        self.geometry = SpareGeometry(base_words=self.depth, word_size=self.width,
+                                      num_spare_rows=num_spare_rows, num_spare_cols=num_spare_cols)
+        self.defects = defects
+        self.model = defect_model(defects) if defects is not None else None
+        self.unit = self.model.unit if self.model is not None else "cells"
+        self.name = ENGINE if observe == "functional" else "rtl-march-log"
+        self._module: Path | None = None
+
+    def describe(self) -> dict[str, Any]:
+        defect_block: dict[str, Any] = {"model": "saboteur", "fault_type": self.fault_type}
+        if self.model is not None:
+            defect_block = {**self.model.describe(), "fault_type": self.fault_type,
+                            "polarity": "each defect stuck at 0 or 1 with equal probability"}
+        return {
+            "config": {
+                "memory_name": self.config["memory_name"],
+                "addr_width": self.config["addr_width"],
+                "data_width": self.config["data_width"],
+                "algo": self.algo,
+                "fault_type": self.fault_type,
+            },
+            "spare_budget": {"num_spare_rows": self.geometry.num_spare_rows,
+                             "num_spare_cols": self.geometry.num_spare_cols},
+            "observation": {"mode": OBSERVATIONS[self.observe], "uses_algo": self.observe == "march"},
+            "defect_model": defect_block,
+            "analyzer": {"solver": "repair.bira.analyze_detailed", "objective": "first",
+                         "repaired_means": "the repair from the observed cells covers every injected cell"},
+        }
+
+    @property
+    def module_dir(self) -> Path:
+        """The generated wrapper's directory (generated on first use)."""
+        if self._module is None:
+            wrapper = generate_from_config(
+                self.config_path, self.workdir, use_saboteur=True, faults=0, fault_seed=0,
+                fault_type=self.fault_type, pulse_width_ns=self.pulse_width_ns, algo=self.algo,
+            )
+            self._module = wrapper.parent
+        return self._module
+
+    def _inject(self, k: int, seed: int) -> tuple[set[tuple[int, int]], dict[str, int] | None]:
+        """Write the trial's masks; return the injected cells and, for a defect
+        preset, the count of each defect class drawn."""
+        classes = None
+        kind = FaultType(self.fault_type)
+        if self.model is None:
+            mask1, mask2 = generate_fault_masks(addr_width=self.config["addr_width"], data_width=self.width,
+                                                fault_type=kind, faults=k, seed=seed)
+            truth = (_stuck_cells(mask1, mask2, self.width) if kind == FaultType.STUCK_AT else
+                     {(a, b) for a, word in enumerate(mask1) for b in range(self.width) if (word >> b) & 1})
+        else:
+            rng = random.Random(seed)
+            drawn = self.model.draw(rng, ArrayGeometry(rows=self.depth, cols=self.width), k)
+            mask1, mask2 = [(1 << self.width) - 1] * self.depth, [0] * self.depth
+            for defect in drawn:
+                high = rng.randrange(2) == 1
+                for row, bit in defect.cells:
+                    if high:
+                        mask1[row] |= 1 << bit
+                        mask2[row] |= 1 << bit
+                    else:
+                        mask1[row] &= ~(1 << bit)
+                        mask2[row] &= ~(1 << bit)
+            classes = class_counts(drawn)
+            truth = _stuck_cells(mask1, mask2, self.width)
+        write_fault_files(outdir=self.module_dir / "faults", data_width=self.width, fault_type=kind,
+                          mask1_words=mask1, mask2_words=mask2)
+        return truth, classes
+
+    def _invalid_reason(self, report: dict[str, Any]) -> str | None:
+        if self.observe == "functional":
+            return _trial_invalid_reason(report)
+        if "march_log" not in report:
+            return "the march log did not complete (no MARCH_LOG_COMPLETE marker)"
+        summary = (report.get("junit") or {}).get("summary") or {}
+        if summary.get("failures") or summary.get("errors"):
+            return (f"the simulation had {summary.get('failures', 0)} failure(s) and "
+                    f"{summary.get('errors', 0)} error(s) (the march log disagreed with bist_fail?)")
+        return None
+
+    def run_trial(self, k: int, seed: int) -> TrialRecord:
+        truth, classes = self._inject(k, seed)
+        result = run_simulation(self.module_dir, fail_scan=self.observe == "functional",
+                                march_log=self.observe == "march")
+        invalid = self._invalid_reason(result.report)
+        if invalid is not None:
+            return TrialRecord(k=k, seed=seed, status="invalid", invalid_reason=invalid,
+                               extras={"truth_cells": len(truth)})
+        observed = observed_cells(result.report, self.observe)
+        from_truth = analyze_detailed(truth, self.geometry)
+        from_observed = analyze_detailed(observed, self.geometry)
+        extras: dict[str, Any] = {
+            "fail_cell_count": len(observed),
+            "truth_cells": len(truth),
+            "overkill": len(observed - truth),
+            "truth_repairable": from_truth.repaired,
+            "observed_repairable": from_observed.repaired,
+        }
+        solution = from_observed.result
+        if isinstance(solution, RepairSolution):
+            escapes = sum(1 for a, b in truth if a not in solution.row_map and b not in solution.col_map)
+            extras.update({"escapes": escapes, "row_map": solution.row_map, "col_map": solution.col_map})
+            status = "repaired" if escapes == 0 else "unrepairable"
+        else:
+            extras.update({"reason": solution.reason, "faulty_rows": list(solution.faulty_rows),
+                           "faulty_cols": list(solution.faulty_cols)})
+            status = "unrepairable"
+        if classes is not None:
+            extras["defects"] = classes
+        return TrialRecord(k=k, seed=seed, status=status, cells=len(observed),
+                           spares_used=from_observed.spares_used if status == "repaired" else None, extras=extras)

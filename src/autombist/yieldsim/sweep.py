@@ -198,6 +198,23 @@ def _trial_entry(record: TrialRecord) -> dict[str, Any]:
     return entry
 
 
+def _truth_summary(point: PointResult) -> dict[str, Any] | None:
+    """For an engine that knows each trial's truth (the injected cells) as well
+    as its observation: how often each was repairable on its own, how many
+    trials' observed repair missed an injected cell, and how many observed cells
+    were never injected."""
+    known = [t for t in point.trials if t.valid and "truth_repairable" in t.extras]
+    if not known:
+        return None
+    return {
+        "trials": len(known),
+        "truth_repair_rate": sum(1 for t in known if t.extras["truth_repairable"]) / len(known),
+        "observed_repair_rate": sum(1 for t in known if t.extras["observed_repairable"]) / len(known),
+        "escape_trials": sum(1 for t in known if t.extras.get("escapes", 0) > 0),
+        "overkill_cells": sum(t.extras.get("overkill", 0) for t in known),
+    }
+
+
 def _shapes_summary(point: PointResult) -> dict[str, Any] | None:
     """The shape classes summed over the point's valid trials, when the engine
     classified them: pattern counts, the expected->found confusion counts, the
@@ -280,6 +297,9 @@ def points_report(
         shapes = _shapes_summary(point)
         if shapes is not None:
             row["shapes"] = shapes
+        truth = _truth_summary(point)
+        if truth is not None:
+            row["observed_vs_truth"] = truth
         row["trials"] = [_trial_entry(t) for t in kept]
         rows.append(row)
     return rows
