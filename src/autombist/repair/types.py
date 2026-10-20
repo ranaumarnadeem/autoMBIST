@@ -24,6 +24,9 @@ __all__ = [
     "Unrepairable",
     "AnalysisResult",
     "RepairSignature",
+    "SpareFaults",
+    "SolverStats",
+    "Analysis",
 ]
 
 
@@ -183,3 +186,60 @@ class RepairSignature:
     # empty, so both fields are genuinely zero.
     col_repair_en: int = 0  # one bit per spare column, bit k set iff spare column k is in use
     faulty_bit: int = 0     # packed: bit_index_width bits per spare column, LSB-first by index
+
+
+@dataclass(slots=True, frozen=True)
+class SpareFaults:
+    """Faulty cells inside the spares themselves, for a spare-augmented array
+    where spare rows sit past the last logical row and spare columns past the
+    last logical bit (the OpenRAM placement ``SpareGeometry`` describes).
+
+    ``row_cells[i]`` holds the LOGICAL bits ``j`` whose cell in spare row ``i``
+    is faulty; ``col_cells[k]`` the LOGICAL rows ``a`` whose cell in spare column
+    ``k`` is faulty; ``corners`` the faulty ``(spare row, spare column)`` cells
+    where the two spare regions cross. A spare row in use serves every bit of
+    the row it replaces, so each faulty bit in it must itself be column-repaired
+    (that cell then comes from the spare column, or the corner); a spare
+    column in use likewise needs its faulty rows row-repaired, and a faulty
+    corner forbids using its spare row and spare column together.
+    """
+
+    row_cells: dict[int, frozenset[int]] = field(default_factory=dict)
+    col_cells: dict[int, frozenset[int]] = field(default_factory=dict)
+    corners: frozenset[tuple[int, int]] = frozenset()
+
+    @property
+    def empty(self) -> bool:
+        return not (any(self.row_cells.values()) or any(self.col_cells.values()) or self.corners)
+
+
+@dataclass(slots=True, frozen=True)
+class SolverStats:
+    """How ``analyze_detailed`` reached its answer, for diagnostics."""
+
+    nodes: int = 0             # residual-search nodes visited
+    forced_rows: int = 0       # rows the must-repair phase forced (winning or last attempt)
+    forced_cols: int = 0
+    spare_subsets: int = 1     # sets of faulty spares tried (1 when no spare is faulty)
+    decided_by: str = ""       # "empty", "must-repair", "early-abort", "search" or "spare-subsets"
+
+
+@dataclass(slots=True, frozen=True)
+class Analysis:
+    """``analyze_detailed``'s answer: the repair (or the verdict that none
+    fits), how many spares it uses, and how the solver got there. With the
+    ``min_spares`` objective ``spares_used`` is the minimum over every
+    feasible repair."""
+
+    result: AnalysisResult
+    objective: str
+    spares_used: int | None
+    stats: SolverStats
+
+    @property
+    def repaired(self) -> bool:
+        return isinstance(self.result, RepairSolution)
+
+    @property
+    def min_spares(self) -> int | None:
+        return self.spares_used if self.objective == "min_spares" else None
