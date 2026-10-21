@@ -62,8 +62,8 @@ spare-augmented OpenRAM macro with **redundancy analysis (BIRA)** and
 [LibreLane](https://github.com/librelane/librelane) flow — a **2D BIRA
 solver** (must-repair fixed point + backtracking), external row/column-repair
 remaps that need no special macro views, and an **autonomous on-chip
-self-repair FSM** (analyze → decide → verify, no tester) covering five of
-the project's six march algorithms.
+self-repair FSM** (analyze → decide → verify, no tester) covering all seven
+of the RTL generator's march algorithms.
 
 How good is a spare budget? `yield-sim` sweeps random defects (single cells,
 lines, clusters, word- and bit-line opens, defects in the spares themselves)
