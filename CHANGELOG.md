@@ -12,6 +12,22 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Added: on-chip self-repair retires a faulty spare and retries
+- `redundancy.onchip_spare_retry: true`: when the verify pass shows that a
+  spare the chip allocated is itself faulty, the chip marks it bad, drops its
+  claim and runs the analysis again on the remaining spares, instead of
+  reporting `self_repair_fail` straight away. Each retry retires at least one
+  spare, so it stops after at most the number of spares. Row-only and 2D
+  repair, single- and multi-port; not yet with `topology: shared-bus`. The
+  diagnosis log keeps the first analyze pass. Off by default: existing
+  configs behave exactly as before, and their wrappers only gain tie-offs for
+  the new analyzer and sequencer ports.
+- `yield-sweep --self-repair --spare-retry` builds with it, to measure the
+  gain on random defects in the spares. On the documented example sweep (16 x 8,
+  2 spare rows and 1 spare column, defects in the spares) it removes every
+  faulty-spare failure: the normalized repair rate goes from .83 to .89 at 2
+  defects and from .53 to .71 at 3.
+
 ## [0.4.0] - 2026-10-22
 
 ### Added: repair yield analysis

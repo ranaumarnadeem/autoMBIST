@@ -212,7 +212,7 @@ repairs and the chip does not, why:
 | Cause | Meaning |
 |---|---|
 | `analyzer` | the greedy on-chip analyzer gave up on a fail map the exact solver repairs |
-| `faulty_spare` | the chip's repair covers every faulty cell but allocates a faulty spare; the verify pass catches it, and the analyzer does not reallocate |
+| `faulty_spare` | the chip's repair covers every faulty cell but allocates a faulty spare; the verify pass catches it, and the analyzer does not reallocate (unless the wrapper is built with `onchip_spare_retry`) |
 | `observation_escape` | the analyze pass did not observe every faulty cell |
 | `false_pass` | the chip reported a pass but the repaired memory still reads wrong |
 
@@ -242,6 +242,22 @@ clusters, which need two spare columns or three spare rows. Faulty spares (9
 trials) cost the chip about as often as its greedy analyzer (8) here: the analyzer
 allocates a spare it has never tested, and once the verify pass fails it does
 not try another.
+
+`redundancy.onchip_spare_retry` (see the configuration page) makes it try
+another: a spare the verify pass catches is retired and the analysis re-run on
+the rest. The same sweep, the same seeds, with `--spare-retry`:
+
+| Defects | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| Repaired on chip, without retry | .90 | .75 | .45 | .00 | .00 |
+| Repaired on chip, with retry | .90 | .80 | .60 | .00 | .00 |
+| Normalized repair rate, with retry | 1.00 | .89 | .71 | .00 | .00 |
+| Not repaired because of: the analyzer | 0 | 2 | 5 | 5 | 1 |
+| Not repaired because of: a faulty allocated spare | 0 | 0 | 0 | 0 | 0 |
+
+No trial fails on a faulty spare any more. Of the nine that did, four now end
+repaired; in the other five, retiring the spare leaves too few for the greedy
+analyzer, which then gives up on a map the exact solver still repairs.
 
 ## Report files
 
