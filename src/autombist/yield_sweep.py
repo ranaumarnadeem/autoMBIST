@@ -608,6 +608,7 @@ class SelfRepairEngine:
         defects: str | None = None,
         expose_spares: bool = False,
         diagnosis_entries: int = 0,
+        spare_retry: bool = False,
     ) -> None:
         if num_spare_rows < 1:
             raise ValueError("on-chip self-repair needs at least one spare row (the wrapper's redundancy path requires one)")
@@ -630,6 +631,7 @@ class SelfRepairEngine:
         self.model = defect_model(self.defects)
         self.unit = self.model.unit
         self.diagnosis_entries = diagnosis_entries
+        self.spare_retry = spare_retry
         self.config = self._with_redundancy(base)
         self._module: Path | None = None
 
@@ -647,6 +649,8 @@ class SelfRepairEngine:
                 ports["spare_wen"] = "spare_wen0"
         if self.diagnosis_entries:
             redundancy.update(onchip_diagnosis=True, num_diagnosis_entries=self.diagnosis_entries)
+        if self.spare_retry:
+            redundancy["onchip_spare_retry"] = True
         config["redundancy"] = redundancy
         return config
 
@@ -668,6 +672,7 @@ class SelfRepairEngine:
                              "polarity": "each defect stuck at 0 or 1 with equal probability"},
             "analyzer": {
                 "on_chip": "onchip_2d_repair_analyzer (greedy)" if cols else "onchip_row_repair_analyzer",
+                "spare_retry": self.spare_retry,
                 "reference": "repair.bira.analyze_detailed with the spare faults",
                 "repaired_means": "self_repair_fail is 0 and a post-repair functional scan reads back clean",
             },
@@ -831,6 +836,10 @@ class SelfRepairEngine:
             extras["escapes"] = len(residual)
         if outcome.get("diag_overflow") is not None:
             extras["diag_overflow"] = outcome["diag_overflow"]
+        if self.diagnosis_entries and outcome.get("diag_valid") is not None:
+            addrs = _unpack(outcome.get("diag_addr"), self.geometry.addr_width, self.diagnosis_entries)
+            extras["diag_rows"] = sorted(addrs[n] for n in range(self.diagnosis_entries)
+                                         if (outcome["diag_valid"] >> n) & 1)
         if classes is not None:
             extras["defects"] = classes
         used = len(signature.row_map) + len(signature.col_map) if repaired else None

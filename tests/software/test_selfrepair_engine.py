@@ -189,3 +189,20 @@ def test_a_config_that_declares_redundancy_is_refused(tmp_path: Path) -> None:
     path.write_text(yaml.safe_dump({**CONFIG, "redundancy": {"num_spare_rows": 1}}), encoding="utf-8")
     with pytest.raises(ValueError, match="must not declare redundancy"):
         ys.SelfRepairEngine(path, tmp_path / "work", num_spare_rows=1)
+
+
+def test_spare_retry_builds_the_retrying_wrapper(config_path, monkeypatch) -> None:
+    engine = _engine(config_path, monkeypatch, spare_retry=True, num_spare_cols=1)
+    snapshot = yaml.safe_load((engine.module_dir / "config.yml").read_text(encoding="utf-8"))
+    assert snapshot["redundancy"]["onchip_spare_retry"] is True
+    assert engine.describe()["analyzer"]["spare_retry"] is True
+    wrapper = next(engine.module_dir.glob("*_mbist.v")).read_text(encoding="utf-8")
+    assert ".MAX_RETRIES(3)" in wrapper
+
+
+def test_the_diagnosis_log_rows_are_decoded(config_path, monkeypatch) -> None:
+    chip = FakeChip(lambda base: ({"self_repair_fail": 0, "unrepairable": 0, "row_repair_en": 0b11,
+                                   "faulty_row_addr": (5 << 3) | 2, "diag_valid": 0b101,
+                                   "diag_addr": (6 << 6) | (7 << 3) | 2, "diag_overflow": 0}, set()))
+    record = _engine(config_path, monkeypatch, chip, diagnosis_entries=3).run_stuck({(2, 1): 1, (5, 0): 0})
+    assert record.extras["diag_rows"] == [2, 6] and record.extras["diag_overflow"] == 0
