@@ -12,6 +12,8 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-22
+
 ### Added: repair yield analysis
 - `yield-sim`: a repair-rate sweep on the fail bitmap alone, no RTL, over the
   defect mixes of Ohler et al. (DDECS 2007) and the clustered sequential
