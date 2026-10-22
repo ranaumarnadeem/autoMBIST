@@ -7,6 +7,8 @@
 {% set has_dual_rw_col_repair = has_onchip_col_repair and (normalized_ports.values() | map(attribute='type') | list | sort) == ['rw', 'rw'] %}
 {% set has_onchip_repair_persistence = has_onchip_selfrepair and redundancy.onchip_repair_persistence %}
 {% set has_onchip_diagnosis = has_onchip_selfrepair and redundancy.onchip_diagnosis %}
+{% set has_onchip_spare_retry = has_onchip_selfrepair and redundancy.onchip_spare_retry %}
+{% set spare_retry_limit = (redundancy.num_spare_rows + (redundancy.num_spare_cols if has_onchip_col_repair else 0)) if has_onchip_spare_retry else 0 %}
 {% set mode_signal = "effective_test_mode" if has_onchip_selfrepair else "test_mode" %}
 {% set start_signal = "effective_bist_start" if has_onchip_selfrepair else "bist_start && test_mode" %}
 {# Shared-bus MBIST controller (docs/shared-hierarchical-mbist-plan.md §4a):
@@ -100,6 +102,12 @@ module {{ wrapper_module_name }} #(
     logic                  registrar_enable;
     logic                  latch_result;
     logic                  unrepairable;
+{% if has_onchip_spare_retry %}
+    logic                  verify_enable;
+    logic                  retire;
+    logic                  has_suspect;
+    logic                  diag_enable;
+{% endif %}
     logic [{{ redundancy.num_spare_rows }}-1:0]            row_repair_en;
     logic [{{ redundancy.num_spare_rows }}*ADDR_WIDTH-1:0] faulty_row_addr;
 {% if has_onchip_col_repair %}
@@ -237,7 +245,10 @@ module {{ wrapper_module_name }} #(
             .faulty_row_addr(faulty_row_addr_arr[gsr]),
             .col_repair_en(col_repair_en_arr[gsr]),
             .faulty_bit(faulty_bit_arr[gsr]),
-            .unrepairable(unrepairable_arr[gsr])
+            .unrepairable(unrepairable_arr[gsr]),
+            .verify_enable(1'b0),
+            .retire(1'b0),
+            .has_suspect()
         );
 {% else %}
         onchip_row_repair_analyzer #(
@@ -256,7 +267,10 @@ module {{ wrapper_module_name }} #(
             .repair_load_done(),
             .row_repair_en(row_repair_en_arr[gsr]),
             .faulty_row_addr(faulty_row_addr_arr[gsr]),
-            .unrepairable(unrepairable_arr[gsr])
+            .unrepairable(unrepairable_arr[gsr]),
+            .verify_enable(1'b0),
+            .retire(1'b0),
+            .has_suspect()
         );
 {% endif %}
 
@@ -274,7 +288,11 @@ module {{ wrapper_module_name }} #(
             .bist_fail(algo_bist_fail),
             .registrar_enable(registrar_enable_arr[gsr]),
             .latch_result(latch_result_arr[gsr]),
-            .unrepairable(unrepairable_arr[gsr])
+            .unrepairable(unrepairable_arr[gsr]),
+            .verify_enable(),
+            .retire(),
+            .diag_enable(),
+            .has_suspect(1'b0)
         );
 
         repair_remap_row #(
@@ -537,7 +555,16 @@ module {{ wrapper_module_name }} #(
         .faulty_row_addr(faulty_row_addr),
         .col_repair_en(col_repair_en),
         .faulty_bit(faulty_bit),
-        .unrepairable(unrepairable)
+        .unrepairable(unrepairable),
+{% if has_onchip_spare_retry %}
+        .verify_enable(verify_enable),
+        .retire(retire),
+        .has_suspect(has_suspect)
+{% else %}
+        .verify_enable(1'b0),
+        .retire(1'b0),
+        .has_suspect()
+{% endif %}
     );
 {% else %}
     onchip_row_repair_analyzer #(
@@ -563,7 +590,16 @@ module {{ wrapper_module_name }} #(
 {% endif %}
         .row_repair_en(row_repair_en),
         .faulty_row_addr(faulty_row_addr),
-        .unrepairable(unrepairable)
+        .unrepairable(unrepairable),
+{% if has_onchip_spare_retry %}
+        .verify_enable(verify_enable),
+        .retire(retire),
+        .has_suspect(has_suspect)
+{% else %}
+        .verify_enable(1'b0),
+        .retire(1'b0),
+        .has_suspect()
+{% endif %}
     );
 {% endif %}
 
@@ -574,7 +610,7 @@ module {{ wrapper_module_name }} #(
     ) u_onchip_diagnosis (
         .clk(clk),
         .rst_n(rst_n),
-        .enable(registrar_enable),
+        .enable({% if has_onchip_spare_retry %}diag_enable{% else %}registrar_enable{% endif %}),
         .fail_valid(algo_fail_valid),
         .fail_addr(algo_fail_addr),
         .latch_result(latch_result),
@@ -584,7 +620,9 @@ module {{ wrapper_module_name }} #(
     );
 
 {% endif %}
-    onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl (
+    onchip_selfrepair_ctrl{% if has_onchip_spare_retry %} #(
+        .MAX_RETRIES({{ spare_retry_limit }})
+    ){% endif %} u_onchip_selfrepair_ctrl (
         .clk(clk),
         .rst_n(rst_n),
         .self_repair_start(self_repair_start),
@@ -598,7 +636,18 @@ module {{ wrapper_module_name }} #(
         .bist_fail(bist_fail),
         .registrar_enable(registrar_enable),
         .latch_result(latch_result),
-        .unrepairable(unrepairable)
+        .unrepairable(unrepairable),
+{% if has_onchip_spare_retry %}
+        .verify_enable(verify_enable),
+        .retire(retire),
+        .diag_enable(diag_enable),
+        .has_suspect(has_suspect)
+{% else %}
+        .verify_enable(),
+        .retire(),
+        .diag_enable(),
+        .has_suspect(1'b0)
+{% endif %}
     );
 
     repair_remap_row #(
@@ -834,6 +883,12 @@ module {{ wrapper_module_name }} #(
     logic                  registrar_enable;
     logic                  latch_result;
     logic                  unrepairable;
+{% if has_onchip_spare_retry %}
+    logic                  verify_enable;
+    logic                  retire;
+    logic                  has_suspect;
+    logic                  diag_enable;
+{% endif %}
     logic [{{ redundancy.num_spare_rows }}-1:0]            row_repair_en;
     logic [{{ redundancy.num_spare_rows }}*ADDR_WIDTH-1:0] faulty_row_addr;
 {% if has_onchip_col_repair %}
@@ -1042,7 +1097,16 @@ module {{ wrapper_module_name }} #(
         .faulty_row_addr(faulty_row_addr),
         .col_repair_en(col_repair_en),
         .faulty_bit(faulty_bit),
-        .unrepairable(unrepairable)
+        .unrepairable(unrepairable),
+{% if has_onchip_spare_retry %}
+        .verify_enable(verify_enable),
+        .retire(retire),
+        .has_suspect(has_suspect)
+{% else %}
+        .verify_enable(1'b0),
+        .retire(1'b0),
+        .has_suspect()
+{% endif %}
     );
 {% else %}
     onchip_row_repair_analyzer #(
@@ -1068,7 +1132,16 @@ module {{ wrapper_module_name }} #(
 {% endif %}
         .row_repair_en(row_repair_en),
         .faulty_row_addr(faulty_row_addr),
-        .unrepairable(unrepairable)
+        .unrepairable(unrepairable),
+{% if has_onchip_spare_retry %}
+        .verify_enable(verify_enable),
+        .retire(retire),
+        .has_suspect(has_suspect)
+{% else %}
+        .verify_enable(1'b0),
+        .retire(1'b0),
+        .has_suspect()
+{% endif %}
     );
 {% endif %}
 
@@ -1079,7 +1152,7 @@ module {{ wrapper_module_name }} #(
     ) u_onchip_diagnosis (
         .clk(clk),
         .rst_n(rst_n),
-        .enable(registrar_enable),
+        .enable({% if has_onchip_spare_retry %}diag_enable{% else %}registrar_enable{% endif %}),
         .fail_valid(algo_fail_valid),
         .fail_addr(algo_fail_addr),
         .latch_result(latch_result),
@@ -1089,7 +1162,9 @@ module {{ wrapper_module_name }} #(
     );
 
 {% endif %}
-    onchip_selfrepair_ctrl u_onchip_selfrepair_ctrl (
+    onchip_selfrepair_ctrl{% if has_onchip_spare_retry %} #(
+        .MAX_RETRIES({{ spare_retry_limit }})
+    ){% endif %} u_onchip_selfrepair_ctrl (
         .clk(clk),
         .rst_n(rst_n),
         .self_repair_start(self_repair_start),
@@ -1103,7 +1178,18 @@ module {{ wrapper_module_name }} #(
         .bist_fail(bist_fail),
         .registrar_enable(registrar_enable),
         .latch_result(latch_result),
-        .unrepairable(unrepairable)
+        .unrepairable(unrepairable),
+{% if has_onchip_spare_retry %}
+        .verify_enable(verify_enable),
+        .retire(retire),
+        .diag_enable(diag_enable),
+        .has_suspect(has_suspect)
+{% else %}
+        .verify_enable(),
+        .retire(),
+        .diag_enable(),
+        .has_suspect(1'b0)
+{% endif %}
     );
 
     {% for pname, pdata in normalized_ports.items() %}
