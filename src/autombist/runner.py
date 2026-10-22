@@ -221,6 +221,7 @@ def _build_fault_command(
     algo: str,
     project_root: Path | None = None,
     fail_scan: bool = False,
+    march_log: bool = False,
 ) -> list[str]:
     if project_root is None:
         project_root = Path(__file__).resolve().parents[2]
@@ -231,7 +232,9 @@ def _build_fault_command(
     # cell through the functional port and emitting the ungated fail-bitmap
     # (FAIL_CELL lines) a BIRA step consumes. Every other cocotb test
     # early-returns for FAULT_MODE=failscan, so exactly one runs.
-    fault_mode = "failscan" if fail_scan else "faults"
+    # march_log likewise runs only test_mbist.test_march_log: the march itself,
+    # logging every read its own compare flags (MARCH_FAIL lines).
+    fault_mode = "failscan" if fail_scan else "marchlog" if march_log else "faults"
 
     command = [
         "make",
@@ -266,6 +269,7 @@ def run_simulation(
     *,
     verbose: bool = False,
     fail_scan: bool = False,
+    march_log: bool = False,
     extra_make_vars: dict[str, str] | None = None,
 ) -> SimulationResult:
     """Run the generated MBIST simulation and build its JSON report.
@@ -277,6 +281,10 @@ def run_simulation(
     no-saboteur build it is ignored. Default False keeps every existing caller
     byte-identical.
 
+    ``march_log`` (opt-in, exclusive with ``fail_scan``) runs the march and logs
+    every read its own compare flags, attaching ``march_fail_bitmap`` and
+    ``march_log``: what the BIST observes, transition faults included.
+
     ``extra_make_vars`` (opt-in) appends arbitrary ``KEY=VALUE`` overrides to the
     make command -- used by the redundancy repair-row test to select its cocotb
     module (``COCOTB_TEST_MODULES=test_repair_row``) and phase
@@ -284,6 +292,8 @@ def run_simulation(
     line byte-identical. A redundancy build additionally auto-adds
     ``USE_REPAIR_REMAP=1`` so the external remap RTL is compiled in.
     """
+    if fail_scan and march_log:
+        raise ValueError("fail_scan and march_log are separate runs; choose one")
     start_time = time.time()
     config = _load_simulation_config(module_outdir)
     wrapper_path = module_outdir / f"{_wrapper_output_stem(config)}_mbist.v"
@@ -338,6 +348,7 @@ def run_simulation(
             algo=algo,
             project_root=project_root,
             fail_scan=fail_scan,
+            march_log=march_log,
         )
     else:
         command = _build_clean_command(

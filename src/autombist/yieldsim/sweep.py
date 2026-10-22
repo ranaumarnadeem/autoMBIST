@@ -1,0 +1,357 @@
+"""The Monte Carlo sweep core shared by every trial engine.
+
+A sweep runs ``trials`` independent trials at each defect count k and records,
+per trial, whether the spare budget repaired it. A trial engine decides what a
+trial is: drawing defects and solving the bitmap directly
+(:mod:`yieldsim.bitmap_engine`), or simulating RTL (``autombist.yield_sweep``).
+This module only loops, derives seeds, counts and reports, so every engine's
+numbers are computed and written the same way.
+
+Each trial has one of three outcomes. "invalid" means the trial's observation
+could not be trusted (an RTL scan that did not complete, for example): it is
+reported, but left out of the repair rate rather than counted either way.
+"""
+from __future__ import annotations
+
+import hashlib
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol
+
+from .stats import wilson_interval
+
+__all__ = [
+    "STATUSES",
+    "SEED_SCHEMES",
+    "TrialRecord",
+    "TrialEngine",
+    "PointResult",
+    "SweepResult",
+    "derive_seed",
+    "run_sweep",
+    "points_report",
+    "REPORT_SCHEMA_VERSION",
+    "build_report",
+]
+
+STATUSES = ("repaired", "unrepairable", "invalid")
+#: "linear" is the RTL sweep's original scheme, base + k * trials + i: it keeps old
+#: seeds reproducible, but changing the trial count reshuffles every trial and
+#: different base seeds overlap. "blake2b" hashes (base, k, i) instead.
+SEED_SCHEMES = ("linear", "blake2b")
+#: The sweep report schema every engine writes (yield_sweep.json and yield_sim.json).
+REPORT_SCHEMA_VERSION = "1.1"
+TrialDetail = Literal["none", "failures", "all"]
+
+
+@dataclass(frozen=True, slots=True)
+class TrialRecord:
+    """One trial's outcome.
+
+    ``cells`` is the number of distinct failing cells the repair analysis saw;
+    ``spares_used`` and ``min_spares`` are filled in when the engine knows them;
+    ``extras`` holds engine-specific, JSON-serializable detail.
+    """
+
+    k: int
+    seed: int
+    status: str
+    invalid_reason: str | None = None
+    cells: int | None = None
+    spares_used: int | None = None
+    min_spares: int | None = None
+    extras: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.status not in STATUSES:
+            raise ValueError(f"trial status must be one of {STATUSES}, got {self.status!r}")
+        if (self.status == "invalid") != (self.invalid_reason is not None):
+            raise ValueError("an invalid trial needs an invalid_reason, and only an invalid one has it")
+
+    @property
+    def valid(self) -> bool:
+        return self.status != "invalid"
+
+    @property
+    def repaired(self) -> bool:
+        return self.status == "repaired"
+
+
+class TrialEngine(Protocol):
+    """What :func:`run_sweep` needs from an engine."""
+
+    #: Short engine name, recorded in the report ("bitmap", "rtl-functional-scan", ...).
+    name: str
+    #: What k counts: "defects" (one defect may fail many cells) or "cells".
+    unit: str
+
+    def describe(self) -> dict[str, Any]:
+        """JSON-serializable description of the engine's setup, for the report."""
+        ...
+
+    def run_trial(self, k: int, seed: int) -> TrialRecord:
+        """Run one trial with k defects (or cells) from ``seed``."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class PointResult:
+    """All trials at one k."""
+
+    k: int
+    trials: tuple[TrialRecord, ...]
+
+    @property
+    def valid_trials(self) -> int:
+        return sum(1 for t in self.trials if t.valid)
+
+    @property
+    def repaired_count(self) -> int:
+        return sum(1 for t in self.trials if t.repaired)
+
+    @property
+    def invalid_count(self) -> int:
+        return len(self.trials) - self.valid_trials
+
+    @property
+    def repair_rate(self) -> float | None:
+        """Repaired over valid trials; None when no trial is valid (unknown, not 0)."""
+        valid = self.valid_trials
+        return self.repaired_count / valid if valid else None
+
+    def wilson(self, confidence: float = 0.95) -> tuple[float, float]:
+        return wilson_interval(self.repaired_count, self.valid_trials, confidence)
+
+
+@dataclass(frozen=True, slots=True)
+class SweepResult:
+    engine: str
+    unit: str
+    description: Mapping[str, Any]
+    trials_per_point: int
+    base_seed: int
+    seed_scheme: str
+    points: tuple[PointResult, ...]
+
+
+def derive_seed(scheme: str, base_seed: int, k: int, i: int, trials_per_point: int) -> int:
+    """The seed of trial ``i`` at defect count ``k``."""
+    if scheme == "linear":
+        return base_seed + k * trials_per_point + i
+    if scheme == "blake2b":
+        digest = hashlib.blake2b(f"{base_seed}:{k}:{i}".encode(), digest_size=8).digest()
+        return int.from_bytes(digest, "big")
+    raise ValueError(f"unknown seed scheme {scheme!r}: use one of {SEED_SCHEMES}")
+
+
+def _check_sweep_arguments(ks: Sequence[int], trials: int) -> None:
+    if trials < 1:
+        raise ValueError(f"trials per point must be at least 1, got {trials}")
+    if any(k < 0 for k in ks):
+        raise ValueError(f"defect counts must be non-negative, got {list(ks)}")
+    if len(set(ks)) != len(ks):
+        raise ValueError(f"defect counts must not repeat (a repeat reruns the same seeds), got {list(ks)}")
+
+
+def run_sweep(
+    engine: TrialEngine,
+    ks: Sequence[int],
+    trials: int,
+    base_seed: int = 0,
+    *,
+    seed_scheme: str = "blake2b",
+    progress: Callable[[int, int, TrialRecord], None] | None = None,
+) -> SweepResult:
+    """Run ``trials`` trials of ``engine`` at each k in ``ks`` (in that order).
+
+    ``progress`` is called after every trial with (k, i, record). Raises
+    ValueError for bad arguments before any trial runs."""
+    _check_sweep_arguments(ks, trials)
+    if seed_scheme not in SEED_SCHEMES:
+        raise ValueError(f"unknown seed scheme {seed_scheme!r}: use one of {SEED_SCHEMES}")
+    points = []
+    for k in ks:
+        records = []
+        for i in range(trials):
+            record = engine.run_trial(k, derive_seed(seed_scheme, base_seed, k, i, trials))
+            if record.k != k:
+                raise ValueError(f"engine {engine.name!r} returned a trial for k={record.k} when asked for k={k}")
+            records.append(record)
+            if progress is not None:
+                progress(k, i, record)
+        points.append(PointResult(k=k, trials=tuple(records)))
+    return SweepResult(
+        engine=engine.name, unit=engine.unit, description=dict(engine.describe()),
+        trials_per_point=trials, base_seed=base_seed, seed_scheme=seed_scheme, points=tuple(points),
+    )
+
+
+def _trial_entry(record: TrialRecord) -> dict[str, Any]:
+    entry: dict[str, Any] = {"seed": record.seed, "status": record.status, "repaired": record.repaired}
+    if record.invalid_reason is not None:
+        entry["invalid_reason"] = record.invalid_reason
+    for key in ("cells", "spares_used", "min_spares"):
+        value = getattr(record, key)
+        if value is not None:
+            entry[key] = value
+    entry.update(record.extras)
+    return entry
+
+
+def _truth_summary(point: PointResult) -> dict[str, Any] | None:
+    """For an engine that knows each trial's truth (the injected cells) as well
+    as its observation: how often each was repairable on its own, how many
+    trials' observed repair missed an injected cell, and how many observed cells
+    were never injected."""
+    known = [t for t in point.trials if t.valid and "truth_repairable" in t.extras]
+    if not known:
+        return None
+    return {
+        "trials": len(known),
+        "truth_repair_rate": sum(1 for t in known if t.extras["truth_repairable"]) / len(known),
+        "observed_repair_rate": sum(1 for t in known if t.extras["observed_repairable"]) / len(known),
+        "escape_trials": sum(1 for t in known if t.extras.get("escapes", 0) > 0),
+        "overkill_cells": sum(t.extras.get("overkill", 0) for t in known),
+    }
+
+
+def _onchip_summary(point: PointResult) -> dict[str, Any] | None:
+    """For an engine that runs a chip's own repair: the exact solver's repair rate
+    on the truth, the chip's, Jeong et al.'s normalized repair rate (chips
+    repaired over chips the exact solver can repair), and why each chip the
+    exact solver repairs was not."""
+    trials = [t for t in point.trials if t.valid and "onchip_fail" in t.extras]
+    if not trials:
+        return None
+    repairable = [t for t in trials if t.extras["truth_repairable"]]
+    causes: dict[str, int] = {}
+    for t in trials:
+        cause = t.extras.get("cause")
+        if cause:
+            causes[cause] = causes.get(cause, 0) + 1
+    return {
+        "exact_repair_rate": len(repairable) / len(trials),
+        "onchip_repair_rate": sum(1 for t in trials if t.repaired) / len(trials),
+        "normalized_repair_rate": (sum(1 for t in repairable if t.repaired) / len(repairable)) if repairable else None,
+        "causes": dict(sorted(causes.items())),
+        "diagnosis_overflows": sum(1 for t in trials if t.extras.get("diag_overflow")),
+    }
+
+
+def _shapes_summary(point: PointResult) -> dict[str, Any] | None:
+    """The shape classes summed over the point's valid trials, when the engine
+    classified them: pattern counts, the expected->found confusion counts, the
+    merge rate (defects whose pattern also holds another defect), and the defect
+    spectrum check (patterns extracted minus defects injected, per trial)."""
+    shaped = [t.extras["shapes"] for t in point.trials if t.valid and "shapes" in t.extras]
+    if not shaped:
+        return None
+    patterns: dict[str, int] = {}
+    table: dict[str, int] = {}
+    spectrum: dict[str, int] = {}
+    for shapes in shaped:
+        for label, n in shapes["patterns"].items():
+            patterns[label] = patterns.get(label, 0) + n
+        for pair, n in shapes["confusion"].items():
+            table[pair] = table.get(pair, 0) + n
+        delta = str(shapes["extracted"] - shapes["injected"])
+        spectrum[delta] = spectrum.get(delta, 0) + 1
+    defects = sum(table.values())
+    merged = sum(n for pair, n in table.items() if pair.endswith("->merged"))
+    return {
+        "patterns": dict(sorted(patterns.items())),
+        "confusion": dict(sorted(table.items())),
+        "merge_rate": merged / defects if defects else None,
+        "spectrum": dict(sorted(spectrum.items(), key=lambda kv: int(kv[0]))),
+    }
+
+
+def _spares_summary(point: PointResult, spare_budget: int | None) -> dict[str, Any]:
+    """Spare use over the repaired trials. "ros" is Jeong et al.'s rate of
+    overused spares (TVLSI 2009), spares used over the minimum minus one, taken
+    as a ratio of sums over the point's trials (the paper does not say whether
+    it averages per trial); "utilization" is spares used over the budget."""
+    used = [t.spares_used for t in point.trials if t.repaired and t.spares_used is not None]
+    pairs = [(t.spares_used, t.min_spares) for t in point.trials
+             if t.repaired and t.spares_used is not None and t.min_spares is not None]
+    summary: dict[str, Any] = {"mean_used": sum(used) / len(used) if used else None}
+    if pairs:
+        total_min = sum(m for _, m in pairs)
+        summary["mean_min"] = total_min / len(pairs)
+        summary["ros"] = sum(u for u, _ in pairs) / total_min - 1.0 if total_min else 0.0
+    if spare_budget:
+        summary["utilization"] = summary["mean_used"] / spare_budget if used else None
+    return summary
+
+
+def points_report(
+    result: SweepResult, *, trial_detail: TrialDetail = "all", confidence: float = 0.95,
+    spare_budget: int | None = None,
+) -> list[dict[str, Any]]:
+    """The per-point part of a sweep report, in the shape ``yield_sweep.json``
+    1.1 uses: "faults" is k (its unit is the report's), "repair_rate" is over
+    valid trials (0.0 when none is valid; "valid_trials" tells that case apart),
+    plus the Wilson interval and the spare use of the repaired trials
+    (``spare_budget`` is the spares per memory, for utilization).
+    ``trial_detail`` keeps every trial, only the ones that were not repaired,
+    or none."""
+    if trial_detail not in ("none", "failures", "all"):
+        raise ValueError(f"trial_detail must be none, failures or all, got {trial_detail!r}")
+    rows = []
+    for point in result.points:
+        low, high = point.wilson(confidence)
+        if trial_detail == "all":
+            kept = point.trials
+        elif trial_detail == "failures":
+            kept = tuple(t for t in point.trials if not t.repaired)
+        else:
+            kept = ()
+        cells = [t.cells for t in point.trials if t.valid and t.cells is not None]
+        row: dict[str, Any] = {
+            "faults": point.k,
+            "repair_rate": point.repair_rate if point.repair_rate is not None else 0.0,
+            "valid_trials": point.valid_trials,
+            "repaired_count": point.repaired_count,
+            "invalid_count": point.invalid_count,
+            "wilson": {"confidence": confidence, "low": low, "high": high},
+            "mean_cells": sum(cells) / len(cells) if cells else None,
+            "spares": _spares_summary(point, spare_budget),
+        }
+        shapes = _shapes_summary(point)
+        if shapes is not None:
+            row["shapes"] = shapes
+        truth = _truth_summary(point)
+        if truth is not None:
+            row["observed_vs_truth"] = truth
+        onchip = _onchip_summary(point)
+        if onchip is not None:
+            row["self_repair"] = onchip
+        row["trials"] = [_trial_entry(t) for t in kept]
+        rows.append(row)
+    return rows
+
+
+def build_report(
+    result: SweepResult, *, trial_detail: TrialDetail = "failures", confidence: float = 0.95,
+) -> dict[str, Any]:
+    """A whole sweep report, schema 1.1: the engine's own description blocks
+    (geometry, defect_model, analyzer, ...) at the top level, the unit of k in
+    ``defect_model.unit``, the seeding, and :func:`points_report`. The caller
+    adds ``generated_at`` and ``tool_version``."""
+    description = dict(result.description)
+    defect_model = dict(description.pop("defect_model", {}))
+    defect_model["unit"] = result.unit
+    return {
+        **description,
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "engine": {"name": result.engine},
+        "defect_model": defect_model,
+        "trials_per_point": result.trials_per_point,
+        "base_seed": result.base_seed,
+        "seeding": {"scheme": result.seed_scheme, "base_seed": result.base_seed},
+        "trial_detail": trial_detail,
+        "points": points_report(
+            result, trial_detail=trial_detail, confidence=confidence,
+            spare_budget=(description.get("spare_budget") or {}).get("total"),
+        ),
+    }

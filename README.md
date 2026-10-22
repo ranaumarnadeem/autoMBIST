@@ -62,8 +62,16 @@ spare-augmented OpenRAM macro with **redundancy analysis (BIRA)** and
 [LibreLane](https://github.com/librelane/librelane) flow — a **2D BIRA
 solver** (must-repair fixed point + backtracking), external row/column-repair
 remaps that need no special macro views, and an **autonomous on-chip
-self-repair FSM** (analyze → decide → verify, no tester) covering five of
-the project's six march algorithms.
+self-repair FSM** (analyze → decide → verify, no tester) covering all seven
+of the RTL generator's march algorithms.
+
+How good is a spare budget? `yield-sim` sweeps random defects (single cells,
+lines, clusters, word- and bit-line opens, defects in the spares themselves)
+through the exact solver; `yield-sweep` does it on the RTL, repairing from what
+the BIST actually observed or running the chip's own self-repair and naming why
+it fell short of the exact solver; `yield-multiplier` turns either curve into
+yield with redundancy for an assumed defect-count distribution. See
+[Repair Yield Analysis](https://ranaumarnadeem.github.io/autoMBIST/yield-analysis.html).
 
 ```mermaid
 flowchart LR
@@ -175,6 +183,7 @@ above (March X; `checkerboard`, an address-parity test; `march_raw1`, the
 | `test` | Grade a march algorithm or controller FSM against the functional fault DSL |
 | `algo` | Interactive research shell — register algorithms/faults, run campaigns, export reports |
 | `grade-controller` | [faultflow](https://github.com/ranaumarnadeem/faultflow) scan-ATPG structural grading of the controller logic |
+| `yield-sim` / `yield-sweep` / `yield-multiplier` | Repair-rate sweeps on the fail bitmap or the RTL (including the chip's own self-repair), and yield with redundancy for assumed defect statistics |
 | `ram-synth` | Synthesize an SRAM macro through OpenRAM from a config |
 | `harden` | Drive LibreLane RTL-to-GDS hardening |
 | `fix-lef-units` / `macro-signoff` | LibreLane pre-flight and per-macro DRC/LVS signoff helpers |
@@ -257,6 +266,8 @@ published docs site:
   `march-1r1w`/`march-2rw` config shapes and port-coupling faults.
 - [Diagnosis / Fail-Bitmap Reports](https://ranaumarnadeem.github.io/autoMBIST/diagnosis-reports.html) —
   reading generated coverage/diagnosis reports.
+- [Repair Yield Analysis](https://ranaumarnadeem.github.io/autoMBIST/yield-analysis.html) —
+  repair-rate sweeps, the yield multiplier, defect models and their calibration.
 - [OpenROAD / LibreLane Macro Integration](https://ranaumarnadeem.github.io/autoMBIST/openroad-macro-integration.html) —
   how an SRAM plugs into the hard-macro flow.
 - [Demo](https://ranaumarnadeem.github.io/autoMBIST/demo.html) — a one-command,

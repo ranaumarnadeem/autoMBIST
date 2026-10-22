@@ -23,14 +23,31 @@ TRANSITION_UNVERIFIED_RE = re.compile(r"Unverified pending writes at done:\s*(\d
 TRANSITION_MAX_PENDING_RE = re.compile(r"Max pending depth:\s*(\d+)")
 TRANSITION_TOP_BLOCKED_RE = re.compile(r"Top blocked addresses \(addr:bits\):\s*(.+)")
 TRANSITION_TOP_DETECTED_RE = re.compile(r"Top detected addresses \(addr:bits\):\s*(.+)")
-FAULT_SITE_RE = re.compile(r"^FAULT_SITE (.+)$", re.MULTILINE)
+# The testbench's markers are matched anywhere in a line, not only at its start,
+# and each captures one flat JSON object. The simulator's own $display output and
+# cocotb's prints share the log without line buffering between them, so a marker
+# can land glued to the end of a model's display line ("...Reading ...mbisFAIL_CELL
+# {...}"); a start-of-line anchor silently dropped that cell.
+FAULT_SITE_RE = re.compile(r"FAULT_SITE (\{[^{}\n]*\})")
 # The opt-in functional-port fail scan (test_mbist.test_fail_scan) emits one
 # FAIL_CELL {json} line per OBSERVED-failing cell, then a FAIL_SCAN_COMPLETE
 # marker. The marker lets the report distinguish "scanned, found nothing"
 # (fail_bitmap present but empty) from "no scan ran" (key absent) -- so every
 # non-fail-scan run's report stays byte-identical.
-FAIL_CELL_RE = re.compile(r"^FAIL_CELL (.+)$", re.MULTILINE)
-FAIL_SCAN_DONE_RE = re.compile(r"^FAIL_SCAN_COMPLETE\b", re.MULTILINE)
+FAIL_CELL_RE = re.compile(r"FAIL_CELL (\{[^{}\n]*\})")
+FAIL_SCAN_DONE_RE = re.compile(r"FAIL_SCAN_COMPLETE\b")
+# One FAIL_SCAN_UNKNOWN {"addr": A} line per word the scan read back as X/Z.
+FAIL_SCAN_UNKNOWN_RE = re.compile(r"FAIL_SCAN_UNKNOWN (\{[^{}\n]*\})")
+# The opt-in march log (test_mbist.test_march_log) emits one MARCH_FAIL {json}
+# line per cell the algorithm's own compare flagged during the march, then the
+# MARCH_LOG_COMPLETE counts. (Not "..._FAIL_CELL": FAIL_CELL_RE matches anywhere
+# in a line.)
+MARCH_FAIL_RE = re.compile(r"MARCH_FAIL (\{[^{}\n]*\})")
+MARCH_LOG_DONE_RE = re.compile(r"MARCH_LOG_COMPLETE events=(\d+) cells=(\d+) unknown=(\d+) bist_fail=([01])")
+# The self-repair sweep trial (test_selfrepair_sweep) prints the on-chip outcome
+# as one SELF_REPAIR_RESULT {json} line: self_repair_fail, the analyzer's
+# unrepairable flag, the latched signature and the diagnosis status.
+SELF_REPAIR_RESULT_RE = re.compile(r"SELF_REPAIR_RESULT (\{[^{}\n]*\})")
 
 
 @dataclass(slots=True)
@@ -159,10 +176,46 @@ def parse_fail_bitmap_lines(stdout: str, stderr: str) -> list[dict[str, int]]:
     timeout), and a partial fail-bitmap is still useful to a repair-analysis
     (BIRA) consumer.
     """
+    return _parse_cell_lines(FAIL_CELL_RE, stdout, stderr)
+
+
+def parse_march_fail_lines(stdout: str, stderr: str) -> list[dict[str, int]]:
+    """The cells the march log flagged (``MARCH_FAIL {json}`` lines), in the
+    same deduplicated, sorted ``{"addr", "bit"}`` shape as the fail scan's."""
+    return _parse_cell_lines(MARCH_FAIL_RE, stdout, stderr)
+
+
+def parse_march_log_summary(stdout: str, stderr: str) -> dict[str, int] | None:
+    """The march log's completion counts, or None when no march log finished."""
+    combined = "\n".join(part for part in (stdout, stderr) if part)
+    match = MARCH_LOG_DONE_RE.search(combined)
+    if match is None:
+        return None
+    events, cells, unknown, bist_fail = (int(group) for group in match.groups())
+    return {"events": events, "cells": cells, "unknown": unknown, "bist_fail": bist_fail}
+
+
+def parse_self_repair_result(stdout: str, stderr: str) -> dict[str, int | None] | None:
+    """The on-chip self-repair outcome a sweep trial printed, or None."""
+    combined = "\n".join(part for part in (stdout, stderr) if part)
+    match = SELF_REPAIR_RESULT_RE.search(combined)
+    if match is None:
+        return None
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return {str(key): value if isinstance(value, int) and not isinstance(value, bool) else None
+            for key, value in payload.items()}
+
+
+def _parse_cell_lines(pattern: re.Pattern[str], stdout: str, stderr: str) -> list[dict[str, int]]:
     combined = "\n".join(part for part in (stdout, stderr) if part)
     seen: set[tuple[int, int]] = set()
     cells: list[dict[str, int]] = []
-    for match in FAIL_CELL_RE.finditer(combined):
+    for match in pattern.finditer(combined):
         try:
             payload = json.loads(match.group(1))
         except json.JSONDecodeError:
@@ -184,6 +237,23 @@ def parse_fail_bitmap_lines(stdout: str, stderr: str) -> list[dict[str, int]]:
         cells.append({"addr": addr, "bit": bit})
     cells.sort(key=lambda cell: (cell["addr"], cell["bit"]))
     return cells
+
+
+def parse_fail_scan_unknown_lines(stdout: str, stderr: str) -> list[int]:
+    """The addresses the fail scan read back as unknown (X/Z), sorted and
+    deduplicated. An unknown word hides its cells' state, so a consumer must not
+    treat the scan as a complete fail bitmap when this is non-empty."""
+    combined = "\n".join(part for part in (stdout, stderr) if part)
+    addrs: set[int] = set()
+    for match in FAIL_SCAN_UNKNOWN_RE.finditer(combined):
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        addr = payload.get("addr") if isinstance(payload, dict) else None
+        if isinstance(addr, int) and not isinstance(addr, bool):
+            addrs.add(addr)
+    return sorted(addrs)
 
 
 def fail_scan_ran(stdout: str, stderr: str) -> bool:
@@ -363,6 +433,16 @@ def build_simulation_report(
     # future BIRA step consumes (see bira_input.fail_cells).
     if fail_scan_ran(stdout, stderr):
         report["fail_bitmap"] = parse_fail_bitmap_lines(stdout, stderr)
+        # Addresses whose read-back was X/Z: their cells were not observed.
+        report["fail_scan_unknown_addrs"] = parse_fail_scan_unknown_lines(stdout, stderr)
+    # Likewise opt-in: the march's own fail log, only when it completed.
+    march_log = parse_march_log_summary(stdout, stderr)
+    if march_log is not None:
+        report["march_fail_bitmap"] = parse_march_fail_lines(stdout, stderr)
+        report["march_log"] = march_log
+    self_repair = parse_self_repair_result(stdout, stderr)
+    if self_repair is not None:
+        report["self_repair"] = self_repair
     report["summary"] = format_simulation_summary(report)
     return report
 

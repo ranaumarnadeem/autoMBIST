@@ -21,7 +21,19 @@ if __package__ in {None, ""}:
         run_openram_synthesis,
     )
     from autombist.runner import SimulationError, run_simulation
-    from autombist.yield_sweep import build_sweep_report, sweep, write_sweep_report
+    from autombist.yield_sweep import OBSERVATIONS, RtlEngine, SelfRepairEngine, write_sweep_report
+    from autombist.yieldsim.model import (
+        DISCLAIMER,
+        ITC2020_ALPHA,
+        ITC2020_LAM,
+        curve_from_report,
+        multiplier_report,
+        yield_points,
+    )
+    from autombist.yieldsim.bitmap_engine import BitmapEngine
+    from autombist.yieldsim.defects import ITC2020_READINGS, ArrayGeometry, defect_model
+    from autombist.yieldsim.defects import PRESETS as DEFECT_PRESETS
+    from autombist.yieldsim.sweep import build_report, run_sweep
     from autombist.signoff import (
         LIBRELANE_FLAKE_REF,
         SignoffConfigError,
@@ -42,7 +54,19 @@ else:
         run_openram_synthesis,
     )
     from .runner import SimulationError, run_simulation
-    from .yield_sweep import build_sweep_report, sweep, write_sweep_report
+    from .yield_sweep import OBSERVATIONS, RtlEngine, SelfRepairEngine, write_sweep_report
+    from .yieldsim.model import (
+        DISCLAIMER,
+        ITC2020_ALPHA,
+        ITC2020_LAM,
+        curve_from_report,
+        multiplier_report,
+        yield_points,
+    )
+    from .yieldsim.bitmap_engine import BitmapEngine
+    from .yieldsim.defects import ITC2020_READINGS, ArrayGeometry, defect_model
+    from .yieldsim.defects import PRESETS as DEFECT_PRESETS
+    from .yieldsim.sweep import build_report, run_sweep
     from .signoff import (
         LIBRELANE_FLAKE_REF,
         SignoffConfigError,
@@ -587,78 +611,403 @@ def grade_controller(
     _grade_controller(module_outdir, opts, run)
 
 
+def _parse_fault_counts(values: list[str]) -> list[int]:
+    """``--faults`` values: an integer, or an inclusive range ``A..B``. A range
+    gives the contiguous curve a yield multiplier needs."""
+    counts: list[int] = []
+    for value in values:
+        text = value.strip()
+        try:
+            if ".." in text:
+                low, high = (int(part) for part in text.split("..", 1))
+                if high < low:
+                    _fail(f"--faults range {text!r} is empty (the end is below the start)")
+                counts.extend(range(low, high + 1))
+            else:
+                counts.append(int(text))
+        except ValueError:
+            _fail(f"--faults {text!r} is not a number or a range like 1..15")
+    return counts
+
+
 @app.command("yield-sweep")
 def yield_sweep_cmd(
-    config: Path | None = typer.Option(None, "--config", help="YAML config file with memory parameters (defaults to ./config.yml if it exists)"),
-    out: Path = typer.Option("out", "--out", help="Output directory for sweep trial artifacts and the summary report"),
-    faults: list[int] = typer.Option(..., "--faults", help="Fault count to sweep (repeatable, e.g. --faults 1 --faults 4 --faults 8)"),
-    trials: int = typer.Option(10, "--trials", help="Number of randomized trials per fault count"),
-    spare_rows: int = typer.Option(..., "--spare-rows", help="Spare-row budget to evaluate repairability against"),
-    spare_cols: int = typer.Option(0, "--spare-cols", help="Spare-column budget to evaluate repairability against"),
-    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm used to observe failures"),
-    fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at, transition-up, or transition-down"),
+    config: Path | None = typer.Option(None, "--config", help="YAML config file with memory parameters (defaults to ./config.yml if it exists). It must not declare redundancy: the spare budget is --spare-rows/--spare-cols"),
+    out: Path = typer.Option("out", "--out", help="Output directory for the compiled sweep wrapper and the summary report"),
+    faults: list[str] = typer.Option(..., "--faults", help="Fault count to sweep: repeatable, and each value may be a range (e.g. --faults 1..8, or --faults 1 --faults 4)"),
+    trials: int = typer.Option(10, "--trials", min=1, help="Number of randomized trials per fault count"),
+    spare_rows: int = typer.Option(..., "--spare-rows", min=0, help="Spare-row budget to evaluate repairability against"),
+    spare_cols: int = typer.Option(0, "--spare-cols", min=0, help="Spare-column budget to evaluate repairability against"),
+    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm compiled into the wrapper; with --observe march it is also what observes the failures"),
+    observe: str = typer.Option("functional", "--observe", help="How failures are observed: functional (read every word back through the functional port) or march (the algorithm's own per-read fail log)"),
+    fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at, or transition-up/transition-down with --observe march (the functional scan sees stuck-at faults only)"),
+    defects: str | None = typer.Option(None, "--defects", help=f"Inject k defects from a defect preset ({', '.join(DEFECT_PRESETS)}), each stuck at 0 or 1 over all its cells, instead of k random cells"),
+    trial_detail: str = typer.Option("all", "--trial-detail", help="Per-trial records kept in the report: all, failures (trials not repaired) or none"),
+    self_repair: bool = typer.Option(False, "--self-repair", help="Run the chip's own on-chip self-repair each trial (a redundancy build with --spare-rows/--spare-cols on a fault-injectable memory model) and compare it with the exact solver"),
+    expose_spares: bool = typer.Option(False, "--expose-spares", help="With --self-repair: defects can also land in the spare rows and spare columns"),
+    diagnosis_entries: int = typer.Option(0, "--diagnosis-entries", min=0, help="With --self-repair: also build the on-chip diagnosis log with this many entries and report its overflows"),
     seed: int = typer.Option(0, "--seed", help="Base seed; every trial's own seed is derived deterministically from it"),
     json_output: bool = typer.Option(False, "--json", help="Print the sweep summary as JSON to stdout instead of a human table"),
 ) -> None:
-    """Monte Carlo repair-yield sweep: run randomized fault-injection trials
-    at each of several defect densities and report the fraction repairable
+    """Monte Carlo repair-yield sweep on the RTL: run randomized fault-injection
+    trials at each of several fault counts and report the fraction repaired
     against a given spare-row/-column budget.
 
     Offline, simulation-only analysis: the spare budget evaluated
-    (--spare-rows/--spare-cols) is independent of --config's own (if any)
-    redundancy: block, and every reported number comes from randomized fault
-    injection -- never calibrated against real silicon defect density. See
-    docs/diagnosis-yield-analysis-plan.md for the full scoping.
+    (--spare-rows/--spare-cols) is independent of the wrapper, and every
+    reported number comes from randomized fault injection, never calibrated
+    against real silicon defect density. The wrapper is generated and compiled
+    once; each trial rewrites the saboteur's fault masks, simulates, and observes
+    the failures either by reading every word back through the functional port
+    (solid 0s, then solid 1s) or from the march's own fail log. The repair
+    solver works from the observed cells, and a trial counts as repaired only
+    when that repair also covers every injected cell. The report also gives the
+    repair rate from the injected cells alone, so observation escapes show up as
+    the difference. A trial whose observation did not complete is reported
+    invalid and left out of the repair rate.
+
+    With --self-repair each trial runs the chip's own repair instead: the
+    wrapper is built with on-chip self-repair over the spare budget, the memory
+    is a fault-injectable model whose defects can include the spares
+    (--expose-spares), and a trial is repaired when the chip reports a pass and
+    a post-repair scan reads back clean. The exact solver, which knows the spare
+    faults, gives the upper bound; the report gives the normalized repair rate
+    (repaired over exactly repairable) and the reason for each gap: the greedy
+    on-chip analyzer, a faulty allocated spare, or an observation escape.
 
     Requirements: Icarus Verilog and Cocotb must be installed. Each trial is
     a real simulation, so a sweep's runtime scales with
     len(--faults) * --trials.
 
     Examples:
-      autombist yield-sweep --config config.yml --faults 1 --faults 4 --faults 8 --trials 20 --spare-rows 2
+      autombist yield-sweep --config config.yml --faults 1..8 --trials 20 --spare-rows 2
       autombist yield-sweep --config config.yml --faults 2 --trials 50 --spare-rows 2 --spare-cols 1 --json
+      autombist yield-sweep --config config.yml --faults 1..4 --spare-rows 1 --observe march --fault-type transition-up --algo march-raw
+      autombist yield-sweep --config config.yml --faults 1..6 --spare-rows 2 --spare-cols 1 --self-repair --expose-spares --defects ohler-d2
     """
-    config_path = _resolve_config_path(config)
-    out = out.resolve()
+    import json as _json
+    from datetime import datetime, timezone
 
+    fault_counts = _parse_fault_counts(faults)
+    if len(set(fault_counts)) != len(fault_counts):
+        _fail(f"fault counts must not repeat (a repeat reruns the same seeds), got {fault_counts}")
+    if trial_detail not in ("none", "failures", "all"):
+        _fail(f"--trial-detail must be none, failures or all, got {trial_detail!r}")
     try:
-        points = sweep(
-            config_path,
-            out / "yield_sweep_trials",
-            fault_counts=faults,
-            trials_per_point=trials,
-            num_spare_rows=spare_rows,
-            num_spare_cols=spare_cols,
-            algo=algo,
-            fault_type=fault_type,
-            base_seed=seed,
-        )
+        config_path = _resolve_config_path(config)
+        out = out.resolve()
+        if self_repair:
+            if fault_type != "stuck-at" or observe != "functional":
+                raise ValueError("--self-repair injects stuck cells and observes them through the chip's own "
+                                 "analyze pass; leave --fault-type and --observe at their defaults")
+            engine = SelfRepairEngine(
+                config_path, out / "yield_selfrepair_dut",
+                num_spare_rows=spare_rows, num_spare_cols=spare_cols, algo=algo, defects=defects,
+                expose_spares=expose_spares, diagnosis_entries=diagnosis_entries,
+            )
+        else:
+            if expose_spares or diagnosis_entries:
+                raise ValueError("--expose-spares and --diagnosis-entries need --self-repair")
+            engine = RtlEngine(
+                config_path, out / "yield_sweep_dut",
+                num_spare_rows=spare_rows, num_spare_cols=spare_cols,
+                algo=algo, observe=observe, fault_type=fault_type, defects=defects,
+            )
+        total = len(fault_counts) * trials
+        with fault_progress(total, "trials") as advance:
+            done = 0
+
+            def progress(_k: int, _i: int, _record: object) -> None:
+                nonlocal done
+                done += 1
+                if advance is not None:
+                    advance(done, total)
+
+            # The original seed formula, so a sweep's trials reproduce across versions.
+            result = run_sweep(engine, fault_counts, trials, seed, seed_scheme="linear", progress=progress)
     except (ConfigError, FileNotFoundError, NotADirectoryError, OSError, ValueError, yaml.YAMLError, SimulationError) as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    report = build_sweep_report(
-        points,
-        config_path,
-        tool_version=__version__,
-        num_spare_rows=spare_rows,
-        num_spare_cols=spare_cols,
-        algo=algo,
-        fault_type=fault_type,
-        trials_per_point=trials,
-        base_seed=seed,
-    )
+    report = build_report(result, trial_detail=trial_detail)
+    report["generated_at"] = datetime.now(timezone.utc).isoformat()
+    report["tool_version"] = __version__
     report_path = write_sweep_report(report, out)
 
     if json_output:
-        import json as _json
-
         typer.echo(_json.dumps(report, indent=2, sort_keys=True))
         return
 
     if not _is_quiet():
-        rows = [[str(p.faults), str(len(p.trials)), f"{p.repair_rate * 100:.1f}%"] for p in points]
-        print_status_table("Repair-yield sweep", ["Faults", "Trials", "Repair rate"], rows, status_col=2)
+        def pct(value: float | None) -> str:
+            return f"{value * 100:.1f}%" if value is not None else "n/a"
+
+        rows = []
+        for point in report["points"]:
+            valid = point["valid_trials"]
+            row = [str(point["faults"]), str(valid + point["invalid_count"]), str(point["invalid_count"]),
+                   pct(point["repair_rate"]) if valid else "n/a"]
+            if self_repair:
+                onchip = point.get("self_repair") or {}
+                causes = onchip.get("causes") or {}
+                row += [pct(onchip.get("exact_repair_rate")), pct(onchip.get("normalized_repair_rate")),
+                        ", ".join(f"{cause} {n}" for cause, n in causes.items()) or "none"]
+            else:
+                truth = point.get("observed_vs_truth") or {}
+                row += [pct(truth.get("truth_repair_rate")), str(truth.get("escape_trials", "n/a"))]
+            rows.append(row)
+        headers = ["Faults", "Trials", "Invalid", "Repair rate"]
+        headers += (["Exact solver", "Normalized", "Why not repaired"] if self_repair
+                    else ["From injected cells", "Escape trials"])
+        print_status_table("Repair-yield sweep", headers, rows, status_col=3)
+        observed_by = "the chip's own analyze pass and self-repair" if self_repair else OBSERVATIONS[observe]
+        typer.echo(f"Observed by: {observed_by}; spares: {spare_rows} rows, {spare_cols} columns")
+        typer.echo(f"Report: {report_path}")
+
+
+def _split_values(values: list[str]) -> list[str]:
+    """Repeatable options that also take comma-separated lists."""
+    return [part.strip() for value in values for part in value.split(",") if part.strip()]
+
+
+def _parse_number(option: str, text: str, presets: dict[str, float | None]) -> float | None:
+    lowered = text.lower()
+    if lowered in presets:
+        return presets[lowered]
+    try:
+        return float(text)
+    except ValueError:
+        names = ", ".join(sorted(presets))
+        _fail(f"{option} {text!r} is not a number or one of: {names}")
+
+
+@app.command("yield-multiplier")
+def yield_multiplier_cmd(
+    report: Path = typer.Option(..., "--report", help="A yield_sweep.json (or yield_sim.json) whose repair curve to weight; it needs every fault count from 1 to its largest"),
+    y0: list[str] = typer.Option([], "--y0", help="Assumed yield without redundancy, 0 < Y0 <= 1: repeatable or comma-separated. Default 0.9,0.7,0.5,0.3,0.1 when neither --y0 nor --lam is given"),
+    lam: list[str] = typer.Option([], "--lam", help="Assumed mean defect count per base array, instead of --y0: repeatable or comma-separated; 'itc2020' is the ITC'2020 RA Benchmarks mean (2.006)"),
+    alpha: list[str] = typer.Option([], "--alpha", help="Defect clustering: 'poisson' (none), a positive number (smaller clusters more), or 'itc2020' (0.6212): repeatable or comma-separated. Default poisson,2,0.5"),
+    area_ratio: float | None = typer.Option(None, "--area-ratio", min=1.0, help="Physical array area over the base array's, when the sweep put defects in the spares too. Default: the report's geometry.area_ratio, else 1.0"),
+    confidence: float = typer.Option(0.95, "--confidence", help="Confidence of the band, combined over every fault count (Bonferroni over Wilson intervals)"),
+    out: Path = typer.Option("out", "--out", help="Output directory for yield_multiplier.json"),
+    json_output: bool = typer.Option(False, "--json", help="Print the report as JSON to stdout instead of a human table"),
+) -> None:
+    """Yield with redundancy and the yield multiplier M from a sweep's repair
+    curve R(k): Y_red = sum over k of P(k) R(k), M = Y_red / Y0.
+
+    Every sweep point has at least one defect, so M exists only for an assumed
+    defect-count distribution: an initial yield Y0 (or mean defect count) and a
+    clustering alpha (Poisson, or a negative binomial). Each pair gives one row;
+    none of them is calibrated to silicon. Beyond the sweep's largest fault
+    count the repair rate is taken as 0 (a lower bound); the upper figure adds
+    the remaining probability at the smallest measured rate.
+
+    Examples:
+      autombist yield-multiplier --report out/yield_sweep.json
+      autombist yield-multiplier --report out/yield_sweep.json --y0 0.8,0.5 --alpha poisson,1 --json
+      autombist yield-multiplier --report out/yield_sim.json --lam itc2020 --alpha itc2020
+    """
+    import hashlib
+    import json as _json
+    from datetime import datetime, timezone
+
+    y0_values = [_parse_number("--y0", text, {}) for text in _split_values(y0)]
+    lam_values = [_parse_number("--lam", text, {"itc2020": ITC2020_LAM}) for text in _split_values(lam)]
+    if y0_values and lam_values:
+        _fail("give --y0 or --lam, not both: each fixes the defect-count distribution's mean")
+    if not y0_values and not lam_values:
+        y0_values = [0.9, 0.7, 0.5, 0.3, 0.1]
+    alphas = [
+        _parse_number("--alpha", text, {"poisson": None, "itc2020": ITC2020_ALPHA})
+        for text in _split_values(alpha) or ["poisson", "2", "0.5"]
+    ]
+
+    try:
+        raw = report.read_bytes()
+        data = _json.loads(raw)
+        curve = curve_from_report(data)
+        if area_ratio is None:
+            area_ratio = float((data.get("geometry") or {}).get("area_ratio", 1.0))
+        points = yield_points(
+            curve, alphas=alphas, y0_values=y0_values, lam_values=lam_values,
+            area_ratio=area_ratio, confidence=confidence,
+        )
+    except OSError as exc:
+        _fail(f"cannot read the sweep report: {exc}")
+    except _json.JSONDecodeError as exc:
+        _fail(f"{report} is not JSON: {exc}")
+    except (KeyError, TypeError, AttributeError) as exc:
+        _fail(f"{report} is not a sweep report (bad or missing field: {exc})")
+    except ValueError as exc:
+        _fail(str(exc))
+
+    body = multiplier_report(curve, points, source={
+        "path": str(report.resolve()),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "schema_version": data.get("schema_version"),
+    })
+    body["generated_at"] = datetime.now(timezone.utc).isoformat()
+    body["tool_version"] = __version__
+    out = out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    report_path = out / "yield_multiplier.json"
+    report_path.write_text(_json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
+
+    if json_output:
+        typer.echo(_json.dumps(body, indent=2, sort_keys=True))
+        return
+
+    if not _is_quiet():
+        band = f"M {confidence * 100:g}% band"
+        rows = []
+        for p in points:
+            y_red = f"{p.y_red * 100:.1f}%"
+            if p.y_red_high - p.y_red >= 0.0005:
+                y_red += f" to {p.y_red_high * 100:.1f}%"
+            low, high = p.m_band
+            rows.append([
+                "poisson" if p.alpha is None else f"alpha {p.alpha:g}",
+                f"{p.y0 * 100:.1f}%", f"{p.lam:.3g}", y_red, f"{p.m:.3f}", f"{low:.3f} to {high:.3f}",
+            ])
+        print_status_table(
+            "Yield with redundancy", ["Clustering", "Y0", "Mean defects", "Yield with repair", "M", band],
+            rows, status_col=0,
+        )
+        ratio_note = f"; area ratio {area_ratio:g}" if area_ratio != 1.0 else ""
+        typer.echo(f"Repair curve: k = 1..{curve.k_max} {curve.unit}, from {report}{ratio_note}")
+        typer.echo(DISCLAIMER)
+        typer.echo(f"Report: {report_path}")
+
+
+def _parse_array(text: str) -> tuple[int, int]:
+    try:
+        rows, cols = (int(part) for part in text.lower().split("x"))
+    except ValueError:
+        _fail(f"--array {text!r} is not ROWSxCOLS, e.g. 1024x1024")
+    if rows < 1 or cols < 1:
+        _fail(f"--array {text!r} needs at least one row and one column")
+    return rows, cols
+
+
+@app.command("yield-sim")
+def yield_sim_cmd(
+    array: str = typer.Option(..., "--array", help="Base array per bank as ROWSxCOLS (rows are words, columns bits), e.g. 1024x1024"),
+    banks: int = typer.Option(1, "--banks", min=1, help="Banks side by side along the columns, each --array wide with its own spares; a memory is repaired only if every bank is"),
+    spare_rows: int = typer.Option(..., "--spare-rows", min=0, help="Spare rows per bank"),
+    spare_cols: int = typer.Option(0, "--spare-cols", min=0, help="Spare columns per bank"),
+    expose_spares: bool = typer.Option(False, "--expose-spares", help="Let defects land in the spares too (spare rows above the array, spare columns to its right, as OpenRAM places them); k then counts defects over the physical array"),
+    min_spares: bool = typer.Option(False, "--min-spares", help="Also find each repaired trial's minimum spare count, for the rate of overused spares (slower)"),
+    classes: bool = typer.Option(False, "--classes", help="Classify each trial's fail bitmap into shapes (single, twin, segment, line, cluster, cross; after Lin et al. 2016) and report the classes, the merge rate and the match against the injected defects"),
+    defects: str = typer.Option("singles", "--defects", help=f"Defect model: {', '.join(DEFECT_PRESETS)}"),
+    itc_reading: str = typer.Option("each-memory", "--itc-reading", help=f"How an itc2020 preset reads the paper's open points: {', '.join(sorted(ITC2020_READINGS))}"),
+    faults: list[str] = typer.Option(..., "--faults", help="Defect count k to sweep: repeatable, and each value may be a range (e.g. --faults 1..15). For itc2020 presets k is faulty cells per bank"),
+    trials: int = typer.Option(1000, "--trials", min=1, help="Trials per defect count"),
+    seed: int = typer.Option(0, "--seed", help="Base seed; each trial's seed is a hash of (seed, k, trial)"),
+    trial_detail: str = typer.Option("failures", "--trial-detail", help="Per-trial records kept in the report: none, failures (trials not repaired) or all"),
+    confidence: float = typer.Option(0.95, "--confidence", help="Confidence of each point's Wilson interval"),
+    out: Path = typer.Option("out", "--out", help="Output directory for yield_sim.json"),
+    json_output: bool = typer.Option(False, "--json", help="Print the report as JSON to stdout instead of a human table"),
+) -> None:
+    """Repair-rate sweep on the fail bitmap alone, no RTL: draw k random
+    defects per trial, union their cells, and ask the exact repair solver
+    whether each bank's spares cover them.
+
+    This measures what a spare budget can repair against a defect model, with
+    the true fail map; it says nothing about what a BIST observes (yield-sweep
+    simulates that on the RTL). The defect models are assumptions: the mixes of
+    Ohler et al. (DDECS 2007, Table 1) and the clustered sequential placement of
+    the ITC'2020 RA Benchmarks, with shape parameters this tool fixes itself.
+    With --expose-spares a defect can also hit the spares, which the solver
+    then has to work around (a faulty spare row is usable only if its faulty
+    bits are column-repaired, and so on). Feed yield_sim.json to
+    yield-multiplier for yield with redundancy; it takes the area ratio of an
+    exposed sweep from the report.
+
+    Examples:
+      autombist yield-sim --array 1024x1024 --spare-rows 5 --spare-cols 5 --defects ohler-d2 --faults 1..15
+      autombist yield-sim --array 512x256 --banks 2 --spare-rows 3 --spare-cols 3 --defects itc2020-3050 --faults 8..12 --json
+      autombist yield-sim --array 256x64 --spare-rows 2 --spare-cols 2 --defects ohler-d2 --faults 1..8 --expose-spares --min-spares
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    rows, cols = _parse_array(array)
+    fault_counts = _parse_fault_counts(faults)
+    if trial_detail not in ("none", "failures", "all"):
+        _fail(f"--trial-detail must be none, failures or all, got {trial_detail!r}")
+    try:
+        model = defect_model(defects, reading=itc_reading)
+        engine = BitmapEngine(
+            ArrayGeometry(rows=rows, cols=cols, banks=banks),
+            spare_rows=spare_rows, spare_cols=spare_cols, model=model,
+            expose_spares=expose_spares, min_spares=min_spares, classify_shapes=classes,
+        )
+        total = len(fault_counts) * trials
+        with fault_progress(total, "trials") as advance:
+            done = 0
+
+            def progress(_k: int, _i: int, _record: object) -> None:
+                nonlocal done
+                done += 1
+                if advance is not None:
+                    advance(done, total)
+
+            result = run_sweep(engine, fault_counts, trials, seed, seed_scheme="blake2b", progress=progress)
+        report = build_report(result, trial_detail=trial_detail, confidence=confidence)
+    except ValueError as exc:
+        _fail(str(exc))
+
+    report["generated_at"] = datetime.now(timezone.utc).isoformat()
+    report["tool_version"] = __version__
+    out = out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    report_path = out / "yield_sim.json"
+    report_path.write_text(_json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+
+    if json_output:
+        typer.echo(_json.dumps(report, indent=2, sort_keys=True))
+        return
+
+    if not _is_quiet():
+        table = []
+        for point in report["points"]:
+            interval = point["wilson"]
+            valid = point["valid_trials"]
+            spares = point["spares"]
+            row = [
+                str(point["faults"]), str(valid),
+                f"{point['repair_rate'] * 100:.1f}%" if valid else "n/a",
+                f"{interval['low'] * 100:.1f}% to {interval['high'] * 100:.1f}%",
+                f"{point['mean_cells']:.1f}" if point["mean_cells"] is not None else "n/a",
+                f"{spares['mean_used']:.2f}" if spares["mean_used"] is not None else "n/a",
+            ]
+            if min_spares:
+                row.append(f"{spares['ros'] * 100:.2f}%" if spares.get("ros") is not None else "n/a")
+            table.append(row)
+        headers = ["Defects" if result.unit == "defects" else "Cells", "Trials", "Repair rate",
+                   f"{confidence * 100:g}% interval", "Mean cells", "Mean spares"]
+        if min_spares:
+            headers.append("Overused spares")
+        print_status_table("Repair-rate sweep (bitmap)", headers, table, status_col=2)
+        if classes:
+            shape_rows = []
+            for point in report["points"]:
+                shapes = point.get("shapes") or {}
+                found = shapes.get("patterns", {})
+                total = sum(found.values())
+                top = sorted(found.items(), key=lambda kv: -kv[1])[:3]
+                merge = shapes.get("merge_rate")
+                shape_rows.append([
+                    str(point["faults"]),
+                    f"{total / point['valid_trials']:.2f}" if point["valid_trials"] else "n/a",
+                    f"{merge * 100:.1f}%" if merge is not None else "n/a",
+                    ", ".join(f"{label} {n * 100 / total:.0f}%" for label, n in top) if total else "none",
+                ])
+            print_status_table("Fail-bitmap shapes", ["Defects" if result.unit == "defects" else "Cells",
+                               "Patterns per trial", "Merged defects", "Most common classes"],
+                               shape_rows, status_col=0)
+        exposure = "; defects reach the spares" if expose_spares else ""
+        typer.echo(f"Defect model: {defects}; spares per bank: {spare_rows} rows, {spare_cols} columns{exposure}")
         typer.echo(f"Report: {report_path}")
 
 

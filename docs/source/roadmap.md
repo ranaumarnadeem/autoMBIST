@@ -131,6 +131,14 @@ progress, and what's further out.
   (multi-memory)" section for the v1 measured numbers and scope cuts, and
   `docs/shared-hierarchical-mbist-plan.md` (gitignored) for the full
   design, including the redundancy follow-up (§9b).
+- Repair yield analysis (milestone 4): a solver-only repair-rate sweep with
+  published defect mixes and placements (`yield-sim`), the same on the RTL
+  from what the BIST observed or through the chip's own self-repair with
+  defects in the spares (`yield-sweep`), the yield multiplier for assumed
+  defect statistics (`yield-multiplier`), a minimum-spare and faulty-spare
+  aware solver, and fail-bitmap shape classes. Calibrated against the
+  ITC'2020 RA Benchmarks, honestly: the gate failed by 0.35 to 1.5 points, see
+  [Repair Yield Analysis](yield-analysis.md)
 
 ## Further out
 

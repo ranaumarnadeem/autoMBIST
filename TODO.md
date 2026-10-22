@@ -7,20 +7,23 @@ work it describes; don't let it silently go stale the way
 
 ## In progress
 
-- **Milestone 4 — Diagnosis & yield analysis.** Scoped in
-  `docs/diagnosis-yield-analysis-plan.md` (gitignored, local). Shipped so
-  far: the Monte Carlo repair-yield sweep harness and `autombist
-  yield-sweep` CLI (schema-versioned JSON report). Still open:
-  - Empirical yield-multiplier metric (secondary, explicitly-synthetic
-    disclaimer) — plan doc step 5.
-  - Docs (`engine/README.md`, `docs/source/roadmap.md`) once real measured
-    numbers exist against a real config — step 6.
-  - Stretch items: bitmap shape/defect-type classifier (single-cell/row/
-    column/cluster), a repair-margin metric on `bira.py`'s existing
-    solver internals, on-chip (RTL) bit-level diagnosis, an optional
-    documented `PART_FIX`-shaped JSON sidecar export.
-  - Not yet publicized anywhere (README/CHANGELOG/GitHub description) —
-    deliberate, per owner instruction, until it actually ships.
+- **Milestone 4 — Diagnosis & yield analysis.** Built on `dev` (2026-10-20),
+  not yet released: `yield-sim`, `yield-sweep` (functional or march
+  observation, `--self-repair` with defects in the spares), `yield-multiplier`,
+  `analyze_detailed()` (minimum spares, faulty spares), the shape classifier,
+  and the calibration (ITC'2020 gate failed, honestly reported). Documented in
+  `docs/source/yield-analysis.md`; README/CHANGELOG/roadmap mention it, so it
+  is public as soon as `dev` is pushed. Still open:
+  - Release, on the owner's go-ahead.
+  - The ITC'2020 gap: the per-bank reading is 0.35-1.5 points off Table II at
+    every count. Any further reading is post-hoc and must be labelled so.
+  - Deferred: shared (global/common) spares across banks, `words_per_row` > 1
+    and address scrambling, mixed fault types in one RTL sweep, parallel trials,
+    run-length names for unknown shapes, a pure-Python model of the on-chip
+    analyzer, a `PART_FIX`/SEMI G91 export, Tcl shell commands for the yield
+    commands.
+  - `docs/diagnosis-yield-analysis-plan.md` (gitignored) is superseded by
+    `docs/source/yield-analysis.md`.
 
 ## Not started (scoped as GitHub milestones, no work begun)
 
