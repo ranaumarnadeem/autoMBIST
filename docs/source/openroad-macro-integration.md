@@ -205,13 +205,13 @@ becomes ordinary synthesizable logic around it.
 
 On-chip self-repair (autonomous BIRA analyzer + BISR sequencer +
 `repair_remap_row`, config key `redundancy.onchip_selfrepair: true`) now covers
-five of the project's six march algorithms — march-C, march-raw, march-X,
-MATS+ (all single-port), and march-1r1w (the first multi-port case: a
-read-only + write-only dual-port memory steered by one `repair_remap_row`
-shared off the FSM's address register). march-2rw is **deliberately excluded**:
-its concurrent same-cycle dual compare breaks the analyzer's
-single-fail-per-cycle assumption — a documented scope boundary, not a gap to
-be closed later without new arbitration RTL.
+all seven of the RTL generator's march algorithms: march-C, march-raw,
+march-X, MATS+ and checkerboard (single-port), march-1r1w (a read-only +
+write-only dual-port memory steered by one `repair_remap_row` shared off the
+FSM's address register), and march-2rw. march-2rw needs no arbitration RTL:
+its only phase with both ports comparing in the same cycle reads the same
+address on both, so one OR-ed compare still gives the analyzer one failing
+address per cycle (an invariant `tests/hardware/test_march_2rw.py` asserts).
 
 ### Tier 2 — LibreLane-integrable repairable macro
 

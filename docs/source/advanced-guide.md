@@ -23,6 +23,11 @@ Expand any section below.
 ```
 :::
 
+:::{dropdown} Repair Yield Analysis
+```{include} yield-analysis.md
+```
+:::
+
 :::{dropdown} Demo
 ```{include} demo.md
 ```

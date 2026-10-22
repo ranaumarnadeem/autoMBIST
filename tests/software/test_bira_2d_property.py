@@ -21,6 +21,30 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from autombist.repair import RepairSolution, SpareGeometry, analyze  # noqa: E402
+from autombist.repair.bisr import encode_repair  # noqa: E402
+
+
+def _decode(enable: int, packed: int, width: int, spares: int) -> dict[int, int]:
+    """Invert encode_repair's packing: {logical line: spare index} for each enabled spare."""
+    return {
+        (packed >> (k * width)) & ((1 << width) - 1): k
+        for k in range(spares) if enable >> k & 1
+    }
+
+
+def _check_solution(result: RepairSolution, fail_cells: set[tuple[int, int]], geo: SpareGeometry) -> None:
+    """A returned solution must really repair the memory within the budget."""
+    rows, cols = result.row_map, result.col_map
+    uncovered = [(a, b) for a, b in fail_cells if a not in rows and b not in cols]
+    assert not uncovered, f"solution leaves {uncovered} unrepaired"
+    assert len(rows) <= geo.num_spare_rows and len(cols) <= geo.num_spare_cols, "solution exceeds the budget"
+    assert set(rows.values()) <= set(range(geo.num_spare_rows)), f"spare row index out of range: {rows}"
+    assert set(cols.values()) <= set(range(geo.num_spare_cols)), f"spare column index out of range: {cols}"
+    assert len(set(rows.values())) == len(rows) and len(set(cols.values())) == len(cols), "a spare used twice"
+    assert all(0 <= a < geo.base_words for a in rows) and all(0 <= b < geo.word_size for b in cols)
+    signature = encode_repair(result, geo)
+    assert _decode(signature.row_repair_en, signature.faulty_row_addr, geo.addr_width, geo.num_spare_rows) == rows
+    assert _decode(signature.col_repair_en, signature.faulty_bit, geo.bit_index_width, geo.num_spare_cols) == cols
 
 
 def _brute_force_repairable(
@@ -66,3 +90,5 @@ def test_brute_force_cross_check_small_random_instances() -> None:
             f"analyze()={'repairable' if isinstance(result, RepairSolution) else 'unrepairable'}, "
             f"brute force={'repairable' if expected_repairable else 'unrepairable'}"
         )
+        if isinstance(result, RepairSolution):
+            _check_solution(result, fail_cells, geo)

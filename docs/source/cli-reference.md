@@ -5,7 +5,8 @@ orphan: true
 # CLI Reference
 
 This page documents the **classic path**: the array-level MBIST flow built around
-`generate` / `simulate` / `run`, plus the supporting `grade-controller`, `ram-synth`,
+`generate` / `simulate` / `run`, plus the supporting `grade-controller`, the repair
+yield commands `yield-sim`, `yield-sweep` and `yield-multiplier`, `ram-synth`,
 `init`, `smoke`, `harden`, `fix-lef-units`, `macro-signoff`, `doctor`, and `shell`
 commands. For the functional fault-primitive engine and the interactive research
 shell (`autombist test`, `autombist algo`), see
@@ -428,6 +429,132 @@ autombist grade-controller --out out --no-run     # just emit the bundle
 - With `--no-run`: only the bundle is emitted; the terminal prints the bundle path
   and the exact command to run it manually on Linux/WSL
   (`FAULTFLOW_HOME=<path> bash <bundle>/run_faultflow.sh`)
+
+---
+
+## yield-sim
+
+Repair-rate sweep on the fail bitmap alone, no RTL: each trial draws k random
+defects, unions their cells, and asks the exact repair solver whether each bank's
+spares cover them. Fast enough for 100,000 trials per point. What it measures,
+the defect models and their calibration: [Repair Yield Analysis](yield-analysis.md).
+
+### Syntax
+
+```bash
+autombist yield-sim --array ROWSxCOLS --spare-rows N --faults K [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--array ROWSxCOLS` | required | Base array per bank (rows are words, columns bits) |
+| `--banks N` | 1 | Banks side by side, each with its own spares; a memory is repaired only if every bank is |
+| `--spare-rows N` / `--spare-cols N` | required / 0 | Spares per bank |
+| `--defects PRESET` | `singles` | `singles`, `ohler-d1`..`d3`, `itc2020-1020`/`1050`/`3020`/`3050` |
+| `--itc-reading NAME` | `each-memory` | How an `itc2020` preset reads the paper's two open points |
+| `--faults K` | required | Defect count to sweep; repeatable, and a value may be a range (`1..15`). For `itc2020` presets k is faulty cells per bank |
+| `--trials N` | 1000 | Trials per defect count |
+| `--expose-spares` | off | Defects can also land in the spares; the solver then works around faulty spares |
+| `--min-spares` | off | Also find each repaired trial's minimum spare count, for the rate of overused spares |
+| `--classes` | off | Classify each fail bitmap into shapes and report the classes, merge rate and match against the injected defects |
+| `--seed N` | 0 | Base seed; each trial's seed is a hash of (seed, k, trial) |
+| `--trial-detail` | `failures` | Per-trial records kept: `none`, `failures` or `all` |
+| `--confidence P` | 0.95 | Confidence of each point's Wilson interval |
+| `--out DIR` | `out` | Where `yield_sim.json` goes |
+| `--json` | off | Print the report as JSON instead of a table |
+
+### Examples
+
+```bash
+autombist yield-sim --array 1024x1024 --spare-rows 5 --spare-cols 5 --defects ohler-d2 --faults 1..15
+autombist yield-sim --array 512x256 --banks 2 --spare-rows 3 --spare-cols 3 --defects itc2020-3050 --faults 8..12 --itc-reading each-bank
+autombist yield-sim --array 256x64 --spare-rows 2 --spare-cols 2 --defects ohler-d2 --faults 1..8 --expose-spares --min-spares
+```
+
+---
+
+## yield-sweep
+
+Monte Carlo repair-yield sweep on the generated RTL. The wrapper is generated and
+compiled once; each trial rewrites the fault masks, simulates, and observes the
+failures through the functional port or the march's own fail log. A trial counts
+as repaired only when the repair computed from the observed cells also covers
+every injected cell. With `--self-repair` each trial runs the chip's own on-chip
+self-repair instead and compares it with the exact solver. Requires Icarus
+Verilog and cocotb; each trial is a real simulation.
+
+### Syntax
+
+```bash
+autombist yield-sweep --config config.yml --spare-rows N --faults K [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--config PATH` | `./config.yml` | Memory config; must not declare `redundancy:` (the spares are the options below) |
+| `--spare-rows N` / `--spare-cols N` | required / 0 | Spare budget |
+| `--faults K` | required | Fault count to sweep; repeatable, ranges allowed (`1..8`) |
+| `--trials N` | 10 | Trials per fault count |
+| `--algo NAME` | `march-c` | Algorithm compiled in; with `--observe march` or `--self-repair` it is also what observes the failures |
+| `--observe` | `functional` | `functional` (read every word back through the functional port) or `march` (the algorithm's own per-read fail log) |
+| `--fault-type` | `stuck-at` | `stuck-at`, or `transition-up`/`transition-down` with `--observe march` |
+| `--defects PRESET` | none | Inject k defects from a preset (as in `yield-sim`), each stuck at 0 or 1, instead of k random cells |
+| `--self-repair` | off | Build with on-chip self-repair over the spare budget on a fault-injectable model; compare the chip with the exact solver |
+| `--expose-spares` | off | With `--self-repair`: defects can land in the spare rows and columns |
+| `--diagnosis-entries N` | 0 | With `--self-repair`: also build the diagnosis log and count its overflows |
+| `--trial-detail` | `all` | Per-trial records kept: `all`, `failures` or `none` |
+| `--seed N` | 0 | Base seed (trial seed = seed + k x trials + i, as before) |
+| `--out DIR` | `out` | Where the build and `yield_sweep.json` go |
+| `--json` | off | Print the report as JSON instead of a table |
+
+### Examples
+
+```bash
+autombist yield-sweep --config config.yml --faults 1..8 --trials 20 --spare-rows 2
+autombist yield-sweep --config config.yml --faults 1..4 --spare-rows 1 --observe march --fault-type transition-up --algo march-raw
+autombist yield-sweep --config config.yml --faults 1..6 --spare-rows 2 --spare-cols 1 --self-repair --expose-spares --defects ohler-d2
+```
+
+### Output
+
+A table per fault count: trials, invalid trials, repair rate, and either the
+repair rate from the injected cells and the escape trials, or (with
+`--self-repair`) the exact solver's rate, the normalized repair rate and the
+reasons trials were not repaired. `out/yield_sweep.json` (schema 1.1) holds
+everything, per trial.
+
+---
+
+## yield-multiplier
+
+Yield with redundancy and the yield multiplier from a `yield_sweep.json` or
+`yield_sim.json`: Y_red = sum over k of P(k) R(k), M = Y_red / Y0, for each
+assumed initial yield (or mean defect count) and clustering. The figures depend
+on those assumptions and are not calibrated to silicon.
+
+### Syntax
+
+```bash
+autombist yield-multiplier --report PATH [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--report PATH` | required | The sweep report; it needs every fault count from 1 to its largest |
+| `--y0 VALUES` | 0.9,0.7,0.5,0.3,0.1 | Assumed yield without redundancy; repeatable or comma-separated |
+| `--lam VALUES` | none | Assumed mean defect count instead of `--y0`; `itc2020` is 2.006 |
+| `--alpha VALUES` | poisson,2,0.5 | Clustering: `poisson`, a positive number (smaller clusters more), or `itc2020` (0.6212) |
+| `--area-ratio R` | the report's | Physical over base area when defects reached the spares |
+| `--confidence P` | 0.95 | Confidence of the band (Bonferroni over the per-point Wilson intervals) |
+| `--out DIR` | `out` | Where `yield_multiplier.json` goes |
+| `--json` | off | Print the report as JSON instead of a table |
+
+### Examples
+
+```bash
+autombist yield-multiplier --report out/yield_sweep.json
+autombist yield-multiplier --report out/yield_sim.json --lam itc2020 --alpha itc2020 --json
+```
 
 ---
 

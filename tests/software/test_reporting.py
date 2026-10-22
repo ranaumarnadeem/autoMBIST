@@ -711,6 +711,13 @@ FAULT_SITE {"addr": 7, "bit": 2, "fault_value": 1, "kind": "SA1", "status": "esc
     assert sites[1]["kind"] == "SA1"
 
 
+def test_a_fault_site_glued_to_a_model_display_line_is_still_read() -> None:
+    """The simulator's $display output and cocotb's print share the log; a
+    site printed right after a model line with no newline must still count."""
+    stdout = 'Reading u_sram addr0=0011FAULT_SITE {"addr": 3, "bit": 0, "kind": "SA1", "status": "detected"}\n'
+    assert parse_fault_site_lines(stdout, "") == [{"addr": 3, "bit": 0, "kind": "SA1", "status": "detected"}]
+
+
 def test_parse_fault_site_lines_skips_malformed_json() -> None:
     stdout = (
         "FAULT_SITE not-json\n"
