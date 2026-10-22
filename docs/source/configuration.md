@@ -297,8 +297,10 @@ retry counter (Yosys at the default sizes: the row analyzer 74 to 91 cells,
 the 2D analyzer 1067 to 1137, the sequencer 62 to 80 with three retries).
 Requires `onchip_selfrepair: true`, and is not yet available with
 `topology: shared-bus`. Simulated with row-only and 2D repair on single-port
-memories and with `march-1r1w`; it is accepted with `march-2rw` and with
-`onchip_repair_persistence` but not yet simulated there. Under persistence
+memories and on `march-2rw` (whose two ports each carry a column remap; a
+retired spare column drops from both), and with row repair on `march-1r1w`.
+It is accepted with `onchip_repair_persistence` but not yet simulated there.
+Under persistence
 the persisted signature is the final allocation, but the bad marks are not
 persisted: a later self-repair after a reset may try a retired spare again,
 and retires it again when its verify pass fails.

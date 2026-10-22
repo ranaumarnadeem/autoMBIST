@@ -1,9 +1,10 @@
 """redundancy.onchip_spare_retry on real RTL: a faulty spare the on-chip verify
 pass catches is retired and the repair retried on another spare.
 
-Single-port cases run through yield_sweep.SelfRepairEngine (a fault-injectable
-model, spares included); the multi-port case through the existing
-test_onchip_selfrepair scenarios with a fixture whose spare row 0 is faulty.
+Single-port and march-2rw cases run through yield_sweep.SelfRepairEngine (a
+fault-injectable model, spares included); march-1r1w and march-2rw also through
+the existing test_onchip_selfrepair scenarios with fixtures whose spare row 0
+is faulty.
 Icarus + make gated, like every other self-repair e2e test here.
 """
 from __future__ import annotations
@@ -90,33 +91,71 @@ def test_the_diagnosis_log_keeps_the_rows_of_the_first_analyze_pass(tmp_path: Pa
     assert record.extras["diag_rows"] == [1, 3] and record.extras["diag_overflow"] == 0
 
 
-def _multi_port(tmp_path: Path, retry: bool):
+_MULTI_PORT = {
+    "march-1r1w": ("sram_spares_tiny_1r1w_badspare", {
+        "rport": {"type": "r", "clk": "clk0", "addr": "addr0", "dout": "dout0", "csb": "csb0"},
+        "wport": {"type": "w", "clk": "clk1", "addr": "addr1", "din": "din1", "csb": "csb1", "we": "web1"},
+    }),
+    "march-2rw": ("sram_spares_tiny_2rw_badspare", {
+        "porta": {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "csb": "csb0", "we": "web0"},
+        "portb": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "csb": "csb1", "we": "web1"},
+    }),
+}
+
+
+def _multi_port(tmp_path: Path, algo: str, retry: bool):
+    memory, ports = _MULTI_PORT[algo]
     config = {
-        "memory_name": "sram_spares_tiny_1r1w_badspare", "wrapper_module_name": "sram_spares_tiny_1r1w_badspare_mbist",
-        "addr_width": 2, "data_width": 4, "we_active_low": True,
-        "ports": {
-            "rport": {"type": "r", "clk": "clk0", "addr": "addr0", "dout": "dout0", "csb": "csb0"},
-            "wport": {"type": "w", "clk": "clk1", "addr": "addr1", "din": "din1", "csb": "csb1", "we": "web1"},
-        },
+        "memory_name": memory, "wrapper_module_name": f"{memory}_mbist",
+        "addr_width": 2, "data_width": 4, "we_active_low": True, "ports": ports,
         "redundancy": {"num_spare_rows": 2, "num_spare_cols": 0, "onchip_selfrepair": True,
                        "onchip_spare_retry": retry},
     }
     path = tmp_path / f"retry_{retry}.yml"
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    wrapper = generate_from_config(path, tmp_path / f"retry_{retry}", algo="march-1r1w")
+    wrapper = generate_from_config(path, tmp_path / f"retry_{retry}", algo=algo)
     return run_simulation(wrapper.parent, extra_make_vars={
         "COCOTB_TEST_MODULES": "test_onchip_selfrepair", "SELFREPAIR_SCENARIO": "repairable",
     })
 
 
-def test_a_multi_port_chip_retires_its_faulty_spare_row(tmp_path: Path) -> None:
-    repaired = _multi_port(tmp_path, retry=True)
+@pytest.mark.parametrize("algo", sorted(_MULTI_PORT))
+def test_a_multi_port_chip_retires_its_faulty_spare_row(tmp_path: Path, algo: str) -> None:
+    repaired = _multi_port(tmp_path, algo, retry=True)
     assert repaired.returncode == 0, repaired.stdout
     assert fail_cells(repaired.report) == set()
 
     # Without the retry the faulty spare fails the repairable scenario.
     with pytest.raises(SimulationError):
-        _multi_port(tmp_path, retry=False)
+        _multi_port(tmp_path, algo, retry=False)
+
+
+def _engine_2rw(tmp_path: Path, rows: int, cols: int, addr_width: int, data_width: int) -> SelfRepairEngine:
+    """A march-2rw build on the fault-injectable model, which, unlike the
+    fixtures, can fault a spare column too."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    ports = {name: dict(port) for name, port in _MULTI_PORT["march-2rw"][1].items()}
+    if cols:
+        ports["porta"]["spare_wen"] = "spare_wen0"
+        ports["portb"]["spare_wen"] = "spare_wen1"
+    path = tmp_path / "config.yml"
+    path.write_text(yaml.safe_dump({
+        "memory_name": "sram_sweep2", "wrapper_module_name": "sram_sweep2_mbist",
+        "addr_width": addr_width, "data_width": data_width, "we_active_low": True, "ports": ports,
+    }, sort_keys=False), encoding="utf-8")
+    return SelfRepairEngine(path, tmp_path / "work", num_spare_rows=rows, num_spare_cols=cols,
+                            algo="march-2rw", spare_retry=True)
+
+
+def test_march_2rw_retires_a_faulty_spare_row_and_a_faulty_spare_column(tmp_path: Path) -> None:
+    row = _engine_2rw(tmp_path / "row", 2, 0, 2, 4).run_stuck(BAD_SPARE_ROW)
+    assert row.repaired and row.extras["row_map"] == {3: 1}
+
+    # Both ports carry their own column remap; the retired spare column is
+    # dropped from both.
+    column = _engine_2rw(tmp_path / "col", 1, 2, 3, 8).run_stuck(
+        {(1, 1): 1, (4, 1): 1, (6, 1): 1, (2, 8): 0})
+    assert column.repaired and column.extras["col_map"] == {1: 1}
 
 
 @pytest.mark.skipif(shutil.which("verilator") is None, reason="needs Verilator on PATH")
