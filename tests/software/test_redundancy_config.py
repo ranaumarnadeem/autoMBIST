@@ -76,6 +76,7 @@ def test_valid_redundancy_derives_geometry(tmp_path: Path) -> None:
         "onchip_diagnosis": False,
         "num_diagnosis_entries": 0,
         "onchip_col_repair": False,
+        "onchip_spare_retry": False,
     }
 
 

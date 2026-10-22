@@ -254,6 +254,18 @@ def test_shared_bus_rejects_onchip_diagnosis(tmp_path: Path) -> None:
         generate_from_config(config_path, tmp_path / "out")
 
 
+def test_shared_bus_rejects_onchip_spare_retry(tmp_path: Path) -> None:
+    # Spare retirement isn't wired per-memory in the shared-bus generate loop
+    # either: the per-memory analyzers and sequencers are tied off.
+    config = {
+        **BASE,
+        "redundancy": {"num_spare_rows": 1, "onchip_selfrepair": True, "onchip_spare_retry": True},
+    }
+    config_path = _write_config(tmp_path, config)
+    with pytest.raises(ConfigError, match="shared-bus supports on-chip row self-repair"):
+        generate_from_config(config_path, tmp_path / "out")
+
+
 def test_shared_bus_rejects_multi_port(tmp_path: Path) -> None:
     # algo=march-c would already reject a 2-port config for an unrelated
     # reason (march-c is single-port-only) before this feature's own check

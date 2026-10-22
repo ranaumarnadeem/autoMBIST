@@ -712,6 +712,17 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
                 "when redundancy.onchip_diagnosis is true"
             )
 
+    onchip_spare_retry = block.get("onchip_spare_retry", False)
+    if not isinstance(onchip_spare_retry, bool):
+        raise ConfigError("redundancy.onchip_spare_retry must be a boolean")
+    if onchip_spare_retry and not onchip_selfrepair:
+        raise ConfigError(
+            "redundancy.onchip_spare_retry requires onchip_selfrepair: true -- "
+            "it retires a faulty spare the on-chip verify pass caught and "
+            "re-runs the on-chip analysis, which only exists when "
+            "onchip_selfrepair is enabled"
+        )
+
     onchip_col_repair = block.get("onchip_col_repair", False)
     if not isinstance(onchip_col_repair, bool):
         raise ConfigError("redundancy.onchip_col_repair must be a boolean")
@@ -1020,6 +1031,7 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         "onchip_diagnosis": onchip_diagnosis,
         "num_diagnosis_entries": num_diagnosis_entries,
         "onchip_col_repair": onchip_col_repair,
+        "onchip_spare_retry": onchip_spare_retry,
     }
 
 
@@ -1216,13 +1228,15 @@ def generate_from_config(
                 not redundancy_block.get("onchip_selfrepair")
                 or redundancy_block.get("onchip_repair_persistence")
                 or redundancy_block.get("onchip_diagnosis")
+                or redundancy_block.get("onchip_spare_retry")
             )
             if unsupported_shared_bus_redundancy:
                 raise ConfigError(
                     "topology: shared-bus supports on-chip row self-repair "
                     "and on-chip 2D (row+column) self-repair redundancy today "
                     "(redundancy.onchip_selfrepair: true, with "
-                    "onchip_repair_persistence/onchip_diagnosis both false) -- "
+                    "onchip_repair_persistence/onchip_diagnosis/"
+                    "onchip_spare_retry all false) -- "
                     "tester-driven redundancy and the remaining extended "
                     "on-chip features are not yet wired for the shared-bus "
                     "controller-select mux; see "

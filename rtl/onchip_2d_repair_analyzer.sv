@@ -116,6 +116,13 @@
 //     never by a re-trigger, for the identical reason (a hard defect never
 //     un-happens; see that module's header for the full argument, which
 //     applies unchanged here).
+//   * Spare retirement (redundancy.onchip_spare_retry), as in
+//     onchip_row_repair_analyzer.sv, for both kinds of spare: during the verify
+//     pass a fail at a row-remapped row blames that row's spare; a fail at any
+//     other row blames the spare column of each failing bit that is
+//     column-remapped (a cell where both remaps apply comes from the spare
+//     row, which is blamed). A retire pulse marks the suspects bad, drops their
+//     claims and remap enables, and allocation skips bad spares from then on.
 module onchip_2d_repair_analyzer #(
     parameter integer ADDR_WIDTH     = 10,
     parameter integer DATA_WIDTH     = 32,
@@ -143,17 +150,28 @@ module onchip_2d_repair_analyzer #(
     output logic [NUM_SPARE_ROWS*ADDR_WIDTH-1:0]    faulty_row_addr,
     output logic [NUM_SPARE_COLS-1:0]               col_repair_en,
     output logic [NUM_SPARE_COLS*BIT_IDX_WIDTH-1:0] faulty_bit,
-    output logic                                    unrepairable
+    output logic                                    unrepairable,
+
+    // --- Spare retirement (see the header), additive/optional ---
+    input  logic                                    verify_enable, // high during the verify pass
+    input  logic                                    retire,        // pulse: suspects become bad
+    output logic                                    has_suspect    // a verify fail hit a remapped spare
 );
 
     // ---- Row CAM: identical structure to onchip_row_repair_analyzer.sv ----
     logic                  live_row_valid [0:NUM_SPARE_ROWS-1];
     logic [ADDR_WIDTH-1:0] live_row_addr  [0:NUM_SPARE_ROWS-1];
     logic                  live_unrepairable;
+    logic [NUM_SPARE_ROWS-1:0] bad_row;      // retired spares, for the chip's lifetime
+    logic [NUM_SPARE_ROWS-1:0] suspect_row;  // spares the current verify pass found failing
+    logic [NUM_SPARE_COLS-1:0] bad_col;
+    logic [NUM_SPARE_COLS-1:0] suspect_col;
 
     logic   already_row_registered;
     logic   found_free_row;
     integer free_row;
+
+    assign has_suspect = (|suspect_row) || (|suspect_col);
 
     always_comb begin
         already_row_registered = 1'b0;
@@ -163,7 +181,7 @@ module onchip_2d_repair_analyzer #(
             if (live_row_valid[i] && live_row_addr[i] == fail_addr) begin
                 already_row_registered = 1'b1;
             end
-            if (!found_free_row && !live_row_valid[i]) begin
+            if (!found_free_row && !live_row_valid[i] && !bad_row[i]) begin
                 found_free_row = 1'b1;
                 free_row       = i;
             end
@@ -201,7 +219,8 @@ module onchip_2d_repair_analyzer #(
 
     always_comb begin
         for (int k = 0; k < NUM_SPARE_COLS; k++) begin
-            col_provisional_valid[k] = live_col_valid[k];
+            // A bad spare column is never free: treat it as occupied.
+            col_provisional_valid[k] = live_col_valid[k] || bad_col[k];
         end
 
         wants_row       = '0;
@@ -269,7 +288,31 @@ module onchip_2d_repair_analyzer #(
             faulty_bit        <= '0;
             unrepairable      <= 1'b0;
             repair_load_done  <= 1'b0;
+            bad_row           <= '0;
+            suspect_row       <= '0;
+            bad_col           <= '0;
+            suspect_col       <= '0;
         end else begin
+            // Verify pass: blame the spare that served the failing cell. A
+            // row-remapped row's cells all come from its spare row; at any
+            // other row, a failing column-remapped bit comes from its spare
+            // column.
+            if (verify_enable && fail_valid) begin
+                if (already_row_registered) begin
+                    for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
+                        if (live_row_valid[i] && live_row_addr[i] == fail_addr) begin
+                            suspect_row[i] <= 1'b1;
+                        end
+                    end
+                end else begin
+                    for (int k = 0; k < NUM_SPARE_COLS; k++) begin
+                        if (live_col_valid[k] && fail_bitmask[live_col_bit[k]]) begin
+                            suspect_col[k] <= 1'b1;
+                        end
+                    end
+                end
+            end
+
             // Bit bookkeeping: mark first sightings seen, commit column
             // claims decided combinationally above -- same slot index, no
             // re-computation, no race (each claimed bit writes a DIFFERENT
@@ -329,6 +372,29 @@ module onchip_2d_repair_analyzer #(
                     faulty_bit[k*BIT_IDX_WIDTH +: BIT_IDX_WIDTH] <= live_col_bit[k];
                 end
                 unrepairable <= live_unrepairable;
+                suspect_row  <= '0;  // a fresh allocation gets a fresh verify
+                suspect_col  <= '0;
+            end
+
+            // Retire: only ever pulsed between passes (the sequencer's
+            // S_RETIRE), never in the same cycle as a fail or a latch.
+            if (retire) begin
+                for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
+                    if (suspect_row[i]) begin
+                        bad_row[i]        <= 1'b1;
+                        live_row_valid[i] <= 1'b0;
+                        row_repair_en[i]  <= 1'b0;
+                    end
+                end
+                for (int k = 0; k < NUM_SPARE_COLS; k++) begin
+                    if (suspect_col[k]) begin
+                        bad_col[k]        <= 1'b1;
+                        live_col_valid[k] <= 1'b0;
+                        col_repair_en[k]  <= 1'b0;
+                    end
+                end
+                suspect_row <= '0;
+                suspect_col <= '0;
             end
         end
     end
