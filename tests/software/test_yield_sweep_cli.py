@@ -59,3 +59,13 @@ def test_zero_trials_is_refused_by_the_option_itself(tmp_path: Path) -> None:
     result = _invoke(tmp_path, "--faults", "1", "--trials", "0")
 
     assert result.exit_code != 0
+
+
+@pytest.mark.parametrize("flag", [["--spare-retry"], ["--expose-spares"], ["--diagnosis-entries", "2"]])
+def test_self_repair_options_need_self_repair(tmp_path: Path, flag: list[str]) -> None:
+    config = tmp_path / "config.yml"
+    config.write_text("memory_name: m\nwrapper_module_name: m_mbist\naddr_width: 2\ndata_width: 4\n"
+                      "ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}\n",
+                      encoding="utf-8")
+    result = _invoke(tmp_path, "--config", str(config), "--faults", "1", *flag)
+    assert result.exit_code == 1 and "need --self-repair" in result.output
