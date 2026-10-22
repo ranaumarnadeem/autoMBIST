@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from autombist.yieldsim.model import (
 )
 
 runner = CliRunner()
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 SWEEP_1_1 = {
     "schema_version": "1.1",
@@ -107,7 +109,9 @@ def test_bad_assumptions_are_one_error_line(tmp_path: Path, args: list[str], fra
     result = _invoke(tmp_path, _write(tmp_path, SWEEP_1_1), *args)
 
     assert result.exit_code != 0
-    assert fragment in result.output and "Traceback" not in result.output
+    # Typer forces colour in CI (GITHUB_ACTIONS), wrapping option names in ANSI codes.
+    output = _ANSI.sub("", result.output)
+    assert fragment in output and "Traceback" not in output
 
 
 def test_a_curve_with_a_gap_says_which_range_to_sweep(tmp_path: Path) -> None:
