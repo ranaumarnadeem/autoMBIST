@@ -502,6 +502,7 @@ autombist yield-sweep --config config.yml --spare-rows N --faults K [OPTIONS]
 | `--self-repair` | off | Build with on-chip self-repair over the spare budget on a fault-injectable model; compare the chip with the exact solver |
 | `--expose-spares` | off | With `--self-repair`: defects can land in the spare rows and columns |
 | `--diagnosis-entries N` | 0 | With `--self-repair`: also build the diagnosis log and count its overflows |
+| `--spare-retry` | off | With `--self-repair`: build with `redundancy.onchip_spare_retry`, so a faulty spare the verify pass catches is retired and the repair retried |
 | `--trial-detail` | `all` | Per-trial records kept: `all`, `failures` or `none` |
 | `--seed N` | 0 | Base seed (trial seed = seed + k x trials + i, as before) |
 | `--out DIR` | `out` | Where the build and `yield_sweep.json` go |
