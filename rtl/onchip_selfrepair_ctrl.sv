@@ -91,7 +91,24 @@
 //     still-valid repair. self_repair_done/self_repair_fail (THIS module's own
 //     per-run outputs) are still freshly cleared at S_ANALYZE_KICK below --
 //     only the analyzer's cross-run defect knowledge persists.
-module onchip_selfrepair_ctrl (
+//   * Spare retirement (redundancy.onchip_spare_retry, MAX_RETRIES > 0): the
+//     analyze pass never sees a spare's own defects (the remap is clear), so a
+//     faulty spare it allocates only shows in the verify pass. When verify
+//     fails and the analyzer has a suspect (a fail at a line it remapped),
+//     S_RETIRE pulses `retire` (the analyzer marks the suspects bad and drops
+//     their claims and remap enables), S_RETIRE_WAIT gives the algo FSM the
+//     same settle margin S_ANALYZE_LATCH/S_DECIDE give the verify kick, and the
+//     sequence re-runs from S_ANALYZE_KICK: the line's own defect shows again
+//     and takes another spare. Each retry retires at least one spare, so the
+//     loop ends; MAX_RETRIES caps it anyway. self_repair_done/fail are set only
+//     when the whole sequence ends. diag_enable is registrar_enable on the
+//     FIRST analyze pass only, so the diagnosis log still records every faulty
+//     row, not the ones a retry pass sees through the repairs that held. At
+//     MAX_RETRIES 0 (the default) the retry branch is never taken and the
+//     sequence is the one described above, cycle for cycle.
+module onchip_selfrepair_ctrl #(
+    parameter integer MAX_RETRIES = 0
+) (
     input  logic clk,
     input  logic rst_n,
 
@@ -111,7 +128,13 @@ module onchip_selfrepair_ctrl (
     // To/from onchip_row_repair_analyzer.
     output logic registrar_enable,
     output logic latch_result,
-    input  logic unrepairable
+    input  logic unrepairable,
+
+    // Spare retirement (see the header); idle at MAX_RETRIES 0.
+    output logic verify_enable,
+    output logic retire,
+    output logic diag_enable,
+    input  logic has_suspect
 );
 
     typedef enum logic [3:0] {
@@ -122,26 +145,41 @@ module onchip_selfrepair_ctrl (
         S_DECIDE        = 4'd4,
         S_VERIFY_KICK   = 4'd5,
         S_VERIFY_WAIT   = 4'd6,
-        S_DONE          = 4'd7
+        S_DONE          = 4'd7,
+        S_RETIRE        = 4'd8,
+        S_RETIRE_WAIT   = 4'd9
     } ctrl_state_t;
 
+    localparam integer RETRY_W = (MAX_RETRIES > 0) ? $clog2(MAX_RETRIES + 1) : 1;
+    // retries counts up from 0 and stops at the limit, so "not yet at the limit"
+    // is an inequality; a "< MAX_RETRIES" compare would be constant-false (an
+    // unsigned compare with 0, which Verilator rejects) at the default of 0.
+    localparam logic               RETRY_ON    = (MAX_RETRIES > 0);
+    localparam logic [RETRY_W-1:0] RETRY_LIMIT = MAX_RETRIES;
+
     ctrl_state_t ctrl_state;
+    logic [RETRY_W-1:0] retries;
 
     assign self_repair_busy        = (ctrl_state != S_IDLE);
     assign ctrl_test_mode_override = (ctrl_state != S_IDLE);
     assign ctrl_bist_start         = (ctrl_state == S_ANALYZE_KICK) || (ctrl_state == S_VERIFY_KICK);
     assign registrar_enable        = (ctrl_state == S_ANALYZE_KICK) || (ctrl_state == S_ANALYZE_WAIT);
     assign latch_result            = (ctrl_state == S_ANALYZE_LATCH);
+    assign verify_enable           = (ctrl_state == S_VERIFY_KICK) || (ctrl_state == S_VERIFY_WAIT);
+    assign retire                  = (ctrl_state == S_RETIRE);
+    assign diag_enable             = registrar_enable && (retries == '0);
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             ctrl_state       <= S_IDLE;
             self_repair_done <= 1'b0;
             self_repair_fail <= 1'b0;
+            retries          <= '0;
         end else begin
             case (ctrl_state)
                 S_IDLE: begin
                     if (self_repair_start && !mbist_busy && !bist_done) begin
+                        retries    <= '0;
                         ctrl_state <= S_ANALYZE_KICK;
                     end
                 end
@@ -188,10 +226,23 @@ module onchip_selfrepair_ctrl (
                     if (bist_done) begin
                         // MUST sample bist_fail on this exact edge -- see the
                         // module header comment on bist_fail's validity window.
-                        self_repair_done <= 1'b1;
-                        self_repair_fail <= bist_fail;
-                        ctrl_state       <= S_DONE;
+                        if (RETRY_ON && bist_fail && has_suspect && retries != RETRY_LIMIT) begin
+                            retries    <= retries + 1'b1;
+                            ctrl_state <= S_RETIRE;
+                        end else begin
+                            self_repair_done <= 1'b1;
+                            self_repair_fail <= bist_fail;
+                            ctrl_state       <= S_DONE;
+                        end
                     end
+                end
+
+                S_RETIRE: begin
+                    ctrl_state <= S_RETIRE_WAIT;
+                end
+
+                S_RETIRE_WAIT: begin
+                    ctrl_state <= S_ANALYZE_KICK;
                 end
 
                 S_DONE: begin

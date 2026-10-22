@@ -63,6 +63,10 @@ progress, and what's further out.
   sees defects the repair analyzer itself can't fit. Usable via direct
   `diag_valid`/`diag_addr`/`diag_overflow` pins, or through JTAG/IJTAG (see
   `wrap-test-access` below, which wraps the wide diagnosis-readback ports too)
+- Faulty-spare retirement (`onchip_spare_retry: true`): when the verify pass
+  shows that a spare the chip allocated is itself faulty, the chip retires it
+  and repairs again on the remaining spares, instead of failing. Measured with
+  `yield-sweep --self-repair --spare-retry` (see Repair Yield Analysis)
 - A march-test synthesizer that constructs a test directly from the fault
   model rather than only grading a hand-written one — 27n at 16 elements,
   verified 38/38 against real Verilator at both memory init values

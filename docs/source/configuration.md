@@ -261,6 +261,52 @@ row-only analyzer. It's also mutually exclusive with
 load path is row-only, and restoring it into the 2D analyzer would forget
 any previously-computed column claims on every reset.
 
+### Retiring a faulty spare (`onchip_spare_retry`)
+
+A spare is untested until the chip uses it: the analyze pass runs with the
+remap clear, so the analyzer never sees a spare's own defects, and only the
+verify pass shows that a spare it allocated is faulty. By default the chip
+then reports `self_repair_fail` and stops. With `onchip_spare_retry: true` it
+retires the spare instead and tries again:
+
+1. During the verify pass the analyzer notes each spare a failing read came
+   from: the spare row of a remapped row, or the spare column of a
+   column-remapped bit at any other row.
+2. If the verify pass failed and a spare was noted, the sequencer marks those
+   spares bad (for the chip's lifetime, like every other analyzer state),
+   drops their claims and remap enables, and runs the analyze pass again.
+   The line's own defect shows again and takes a spare that is neither in use
+   nor bad.
+3. It verifies again, and repeats while spares are left. Each retry retires
+   at least one spare, so it stops after at most `num_spare_rows` plus
+   `num_spare_cols` (with `onchip_col_repair`) retries; if it runs out, the
+   result is `self_repair_fail` as before.
+
+```yaml
+redundancy:
+  num_spare_rows: 2
+  num_spare_cols: 0
+  onchip_selfrepair: true
+  onchip_spare_retry: true
+```
+
+`self_repair_done`/`self_repair_fail` are set once, when the whole sequence
+ends. The diagnosis log (`onchip_diagnosis`) records the first analyze pass,
+so it still lists every faulty row. The cost is a few flops per spare and a
+retry counter (Yosys at the default sizes: the row analyzer 74 to 91 cells,
+the 2D analyzer 1067 to 1137, the sequencer 62 to 80 with three retries).
+Requires `onchip_selfrepair: true`, and is not yet available with
+`topology: shared-bus`. Simulated with row-only and 2D repair on single-port
+memories and on `march-2rw` (whose two ports each carry a column remap; a
+retired spare column drops from both), and with row repair on `march-1r1w`.
+It is accepted with `onchip_repair_persistence` but not yet simulated there.
+Under persistence
+the persisted signature is the final allocation, but the bad marks are not
+persisted: a later self-repair after a reset may try a retired spare again,
+and retires it again when its verify pass fails.
+`autombist yield-sweep --self-repair --spare-retry` measures what it buys on
+random defects, spares included (see Repair Yield Analysis).
+
 ### Column repair
 
 Set `num_spare_cols` to a non-zero value on the **tester-driven** path and the
@@ -384,9 +430,9 @@ instead — `out/<wrapper_module_name>/<wrapper_module_name>_mbist.v`, not
   memory, proven with real cross-memory-isolation scenarios (distinct
   defects in different memory banks repaired independently, with zero
   interference). **Tester-driven redundancy** (`repair_ports:`, no
-  `onchip_selfrepair`), **`onchip_repair_persistence`**, and
-  **`onchip_diagnosis`** are all still rejected under shared-bus — none
-  are wired per-memory yet.
+  `onchip_selfrepair`), **`onchip_repair_persistence`**,
+  **`onchip_diagnosis`** and **`onchip_spare_retry`** are all still
+  rejected under shared-bus — none are wired per-memory yet.
 
 A minimal shared-bus self-repair example:
 

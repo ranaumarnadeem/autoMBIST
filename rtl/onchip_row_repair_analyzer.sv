@@ -49,6 +49,15 @@
 //     silently erase a previously-correct repair, re-exposing a real,
 //     already-fixed defect. Since a hard defect never "un-happens," only a
 //     genuine reset (not just a re-trigger) is the correct point to forget one.
+//   * Spare retirement (redundancy.onchip_spare_retry): the analyze pass runs
+//     with the remap clear, so it never sees a spare's own defects; only the
+//     verify pass does. While verify_enable is high, a fail at a row this module
+//     remapped makes that row's spare a SUSPECT. A retire pulse (from the
+//     sequencer, after a failed verify) marks every suspect BAD for the chip's
+//     lifetime, drops its claim and its remap enable, and the sequencer re-runs
+//     the analyze pass: the row's own defect shows again and takes the next
+//     spare that is neither claimed nor bad. With verify_enable and retire tied
+//     low (the default wrapper), none of this ever fires.
 module onchip_row_repair_analyzer #(
     parameter integer ADDR_WIDTH     = 10,
     parameter integer NUM_SPARE_ROWS = 1
@@ -103,16 +112,25 @@ module onchip_row_repair_analyzer #(
 
     output logic [NUM_SPARE_ROWS-1:0]            row_repair_en,
     output logic [NUM_SPARE_ROWS*ADDR_WIDTH-1:0] faulty_row_addr,
-    output logic                                 unrepairable
+    output logic                                 unrepairable,
+
+    // --- Spare retirement (see the header), additive/optional ---
+    input  logic                                 verify_enable, // high during the verify pass
+    input  logic                                 retire,        // pulse: suspects become bad
+    output logic                                 has_suspect    // a verify fail hit a remapped row
 );
 
     logic                  live_valid [0:NUM_SPARE_ROWS-1];
     logic [ADDR_WIDTH-1:0] live_addr  [0:NUM_SPARE_ROWS-1];
     logic                  live_unrepairable;
+    logic [NUM_SPARE_ROWS-1:0] bad_row;      // retired spares, for the chip's lifetime
+    logic [NUM_SPARE_ROWS-1:0] suspect_row;  // spares the current verify pass found failing
 
     logic   already_registered;
     logic   found_free_slot;
     integer free_slot;
+
+    assign has_suspect = |suspect_row;
 
     always_comb begin
         already_registered = 1'b0;
@@ -122,7 +140,7 @@ module onchip_row_repair_analyzer #(
             if (live_valid[i] && live_addr[i] == fail_addr) begin
                 already_registered = 1'b1;
             end
-            if (!found_free_slot && !live_valid[i]) begin
+            if (!found_free_slot && !live_valid[i] && !bad_row[i]) begin
                 found_free_slot = 1'b1;
                 free_slot       = i;
             end
@@ -140,7 +158,18 @@ module onchip_row_repair_analyzer #(
             faulty_row_addr   <= '0;
             unrepairable      <= 1'b0;
             repair_load_done  <= 1'b0;
+            bad_row           <= '0;
+            suspect_row       <= '0;
         end else begin
+            // Verify pass: a fail at a remapped row blames that row's spare.
+            if (verify_enable && fail_valid) begin
+                for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
+                    if (live_valid[i] && live_addr[i] == fail_addr) begin
+                        suspect_row[i] <= 1'b1;
+                    end
+                end
+            end
+
             if (enable && fail_valid && !already_registered) begin
                 if (found_free_slot) begin
                     live_valid[free_slot] <= 1'b1;
@@ -177,6 +206,22 @@ module onchip_row_repair_analyzer #(
                     faulty_row_addr[i*ADDR_WIDTH +: ADDR_WIDTH] <= live_addr[i];
                 end
                 unrepairable <= live_unrepairable;
+                suspect_row  <= '0;  // a fresh allocation gets a fresh verify
+            end
+
+            // Retire: only ever pulsed between passes (the sequencer's
+            // S_RETIRE), never in the same cycle as a fail or a latch. Dropping
+            // the remap enable now lets the next analyze pass see the row's own
+            // defect again instead of the bad spare's.
+            if (retire) begin
+                for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
+                    if (suspect_row[i]) begin
+                        bad_row[i]       <= 1'b1;
+                        live_valid[i]    <= 1'b0;
+                        row_repair_en[i] <= 1'b0;
+                    end
+                end
+                suspect_row <= '0;
             end
         end
     end
