@@ -41,7 +41,7 @@ def test_without_retry_the_new_ports_are_tied_off(tmp_path: Path) -> None:
 
 def test_with_retry_the_sequencer_retires_up_to_one_spare_per_retry(tmp_path: Path) -> None:
     text = _render(tmp_path, {**BASE, "redundancy": _redundancy(onchip_spare_retry=True)})
-    assert "onchip_selfrepair_ctrl #(\n        .MAX_RETRIES(2)\n    ) u_onchip_selfrepair_ctrl (" in text
+    assert "onchip_selfrepair_ctrl #(\n        .MAX_RETRIES(2),\n        .TWO_PASS(0)\n    ) u_onchip_selfrepair_ctrl (" in text
     for net in ("verify_enable", "retire", "has_suspect", "diag_enable"):
         assert f"logic                  {net};" in text
     assert text.count(".verify_enable(verify_enable),") == 2  # analyzer and sequencer

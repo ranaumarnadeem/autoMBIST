@@ -106,8 +106,16 @@
 //     row, not the ones a retry pass sees through the repairs that held. At
 //     MAX_RETRIES 0 (the default) the retry branch is never taken and the
 //     sequence is the one described above, cycle for cycle.
+//   * Two-pass analysis (redundancy.onchip_analyzer: deferred, TWO_PASS = 1):
+//     S_DECIDE after the FIRST analyze pass goes back to S_ANALYZE_KICK instead
+//     of S_VERIFY_KICK, with the first pass's claims latched into the remap.
+//     `defer` is high during that first pass only, which is the deferred 2D
+//     analyzer's pass one; the second pass (and any retry pass after it) runs
+//     its greedy rules. diag_enable stays on the first pass only. At TWO_PASS 0
+//     `defer` never asserts and S_DECIDE behaves as before.
 module onchip_selfrepair_ctrl #(
-    parameter integer MAX_RETRIES = 0
+    parameter integer MAX_RETRIES = 0,
+    parameter integer TWO_PASS    = 0   // 1: two analyze passes for the deferred 2D analyzer
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -134,7 +142,11 @@ module onchip_selfrepair_ctrl #(
     output logic verify_enable,
     output logic retire,
     output logic diag_enable,
-    input  logic has_suspect
+    input  logic has_suspect,
+
+    // Two-pass analysis (TWO_PASS = 1): high during the first analyze pass,
+    // the deferred analyzer's pass one; idle at TWO_PASS 0.
+    output logic defer
 );
 
     typedef enum logic [3:0] {
@@ -156,9 +168,11 @@ module onchip_selfrepair_ctrl #(
     // unsigned compare with 0, which Verilator rejects) at the default of 0.
     localparam logic               RETRY_ON    = (MAX_RETRIES > 0);
     localparam logic [RETRY_W-1:0] RETRY_LIMIT = MAX_RETRIES;
+    localparam logic               TWO_PASS_ON = (TWO_PASS != 0);
 
     ctrl_state_t ctrl_state;
     logic [RETRY_W-1:0] retries;
+    logic               second_pass;  // TWO_PASS: the first analyze pass is done
 
     assign self_repair_busy        = (ctrl_state != S_IDLE);
     assign ctrl_test_mode_override = (ctrl_state != S_IDLE);
@@ -167,7 +181,8 @@ module onchip_selfrepair_ctrl #(
     assign latch_result            = (ctrl_state == S_ANALYZE_LATCH);
     assign verify_enable           = (ctrl_state == S_VERIFY_KICK) || (ctrl_state == S_VERIFY_WAIT);
     assign retire                  = (ctrl_state == S_RETIRE);
-    assign diag_enable             = registrar_enable && (retries == '0);
+    assign diag_enable             = registrar_enable && (retries == '0) && !second_pass;
+    assign defer                   = registrar_enable && TWO_PASS_ON && !second_pass;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -175,11 +190,13 @@ module onchip_selfrepair_ctrl #(
             self_repair_done <= 1'b0;
             self_repair_fail <= 1'b0;
             retries          <= '0;
+            second_pass      <= 1'b0;
         end else begin
             case (ctrl_state)
                 S_IDLE: begin
                     if (self_repair_start && !mbist_busy && !bist_done) begin
                         retries    <= '0;
+                        second_pass <= 1'b0;
                         ctrl_state <= S_ANALYZE_KICK;
                     end
                 end
@@ -213,6 +230,12 @@ module onchip_selfrepair_ctrl #(
                         self_repair_done <= 1'b1;
                         self_repair_fail <= 1'b1;
                         ctrl_state       <= S_DONE;
+                    end else if (TWO_PASS_ON && !second_pass) begin
+                        // Pass one's claims are latched into the remap; the
+                        // second analyze pass sees only what they left
+                        // uncovered. Same settle margin as the verify kick.
+                        second_pass <= 1'b1;
+                        ctrl_state  <= S_ANALYZE_KICK;
                     end else begin
                         ctrl_state <= S_VERIFY_KICK;
                     end

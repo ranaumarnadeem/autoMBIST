@@ -38,6 +38,28 @@
 // to the row CAM exactly once -- never once per bit, which would
 // multiply-drive the same registered row slot.
 //
+// Lenient: when a word wants a row and none is free, nothing is decided. A
+// later read of the same word (the march reads every word several times) can
+// still claim columns for its bits, since they now count as seen, and the
+// sequencer's verify pass decides whether the repair holds. So `unrepairable`
+// is never asserted by this module. (Until 2026-10 the first row request with
+// no row left set a sticky unrepairable flag and skipped the verify pass,
+// even when the very next read would have covered the bit with a free column:
+// with 3 spare rows and 3 spare columns, 4 isolated single cells failed.)
+//
+// Deferred mode (DEFERRED = 1, with the sequencer's TWO_PASS): two analyze
+// passes. In pass one (`defer` high) a bit takes a column only when it fails
+// at a DIFFERENT row from the one it first failed at (rule 3 tightened), a
+// word takes a row only when two or more of its failing bits are left
+// uncovered, and a lone first sighting is remembered (first_seen/first_row)
+// instead of taking a row. Pass two (`defer` low) applies the greedy rules
+// above to what pass one left uncovered, through pass one's latched remap,
+// with every remembered bit counting as seen. This repairs most of the fail
+// maps the greedy single pass gives up on (src/autombist/yieldsim/onchip_model.py
+// models both modes decision for decision; docs/source/yield-analysis.md has
+// the measured rates), at the cost of DATA_WIDTH x (ADDR_WIDTH + 1) flops and
+// one more analyze march.
+//
 // Output packing: row_repair_en/faulty_row_addr match
 // rtl/repair_remap_row.sv exactly (same convention as
 // onchip_row_repair_analyzer.sv). col_repair_en/faulty_bit match
@@ -53,8 +75,8 @@
 //     consumed a row spare can cost strictly more total spares than
 //     repair.bira.analyze()'s exact solution would have needed for the
 //     IDENTICAL fault set and budget -- and in some visitation orders, this
-//     can exhaust the row+column budget entirely and report a chip
-//     UNREPAIRABLE that the tester-driven exact path would have fully
+//     can exhaust the row+column budget entirely and leave a chip failing
+//     its verify pass that the tester-driven exact path would have fully
 //     repaired. tests/hardware/test_onchip_col_repair.py's gap_demo
 //     scenario pins a real, hand-verified example of exactly this gap
 //     (cross-checked against repair.bira.analyze() directly) rather than
@@ -128,6 +150,7 @@ module onchip_2d_repair_analyzer #(
     parameter integer DATA_WIDTH     = 32,
     parameter integer NUM_SPARE_ROWS = 1,
     parameter integer NUM_SPARE_COLS = 1,
+    parameter integer DEFERRED       = 0,   // 1: the two-pass deferred mode (see the header)
     parameter integer BIT_IDX_WIDTH  = (DATA_WIDTH > 1) ? $clog2(DATA_WIDTH) : 1
 ) (
     input  logic clk,
@@ -155,13 +178,17 @@ module onchip_2d_repair_analyzer #(
     // --- Spare retirement (see the header), additive/optional ---
     input  logic                                    verify_enable, // high during the verify pass
     input  logic                                    retire,        // pulse: suspects become bad
-    output logic                                    has_suspect    // a verify fail hit a remapped spare
+    output logic                                    has_suspect,   // a verify fail hit a remapped spare
+
+    // --- Deferred mode (DEFERRED = 1): high during the first of the two analyze
+    // passes, from the sequencer (onchip_selfrepair_ctrl TWO_PASS); ignored at
+    // DEFERRED = 0 ---
+    input  logic                                    defer
 );
 
     // ---- Row CAM: identical structure to onchip_row_repair_analyzer.sv ----
     logic                  live_row_valid [0:NUM_SPARE_ROWS-1];
     logic [ADDR_WIDTH-1:0] live_row_addr  [0:NUM_SPARE_ROWS-1];
-    logic                  live_unrepairable;
     logic [NUM_SPARE_ROWS-1:0] bad_row;      // retired spares, for the chip's lifetime
     logic [NUM_SPARE_ROWS-1:0] suspect_row;  // spares the current verify pass found failing
     logic [NUM_SPARE_COLS-1:0] bad_col;
@@ -201,6 +228,12 @@ module onchip_2d_repair_analyzer #(
     // failure was specific to DATA_WIDTH-sized unpacked arrays, not small
     // ones.
     logic [DATA_WIDTH-1:0]    seen_once;
+    // Deferred mode: per bit, whether it has failed yet and at which row
+    // (packed, like seen_once). Never written at DEFERRED = 0.
+    logic [DATA_WIDTH-1:0]            first_seen;
+    logic [DATA_WIDTH*ADDR_WIDTH-1:0] first_row;
+    logic                             defer_mode;
+    assign defer_mode = (DEFERRED != 0) && defer;
     logic                     live_col_valid        [0:NUM_SPARE_COLS-1];
     logic [BIT_IDX_WIDTH-1:0] live_col_bit          [0:NUM_SPARE_COLS-1];
     logic                     col_provisional_valid [0:NUM_SPARE_COLS-1];
@@ -243,8 +276,10 @@ module onchip_2d_repair_analyzer #(
 
                 if (already_col_covered) begin
                     // rule 2: already covered, no action.
-                end else if (seen_once[b]) begin
-                    // rule 3: recurrence -- try to claim a column now, against
+                end else if (defer_mode ? (first_seen[b] && first_row[b*ADDR_WIDTH +: ADDR_WIDTH] != fail_addr)
+                                        : seen_once[b]) begin
+                    // rule 3 (deferred pass one: only a recurrence at a
+                    // DIFFERENT row counts): try to claim a column now, against
                     // THIS-cycle provisional occupancy (earlier bits' claims
                     // already reserved above), not a stale snapshot.
                     claimed = 1'b0;
@@ -267,8 +302,18 @@ module onchip_2d_repair_analyzer #(
         end
     end
 
+    // Greedy: any bit left wanting a row asks for one. Deferred pass one: only a
+    // word with two or more such bits does (a lone first sighting is
+    // remembered instead, below).
     logic word_wants_row;
-    assign word_wants_row = enable && fail_valid && !already_row_registered && (|wants_row);
+    logic word_takes_row;
+    assign word_wants_row = enable && fail_valid && !already_row_registered
+                            && (defer_mode ? ((wants_row & (wants_row - 1'b1)) != '0) : (|wants_row));
+    assign word_takes_row = word_wants_row && found_free_row;
+
+    // The 2D analyzer never declares a chip unrepairable itself: it is lenient,
+    // and the sequencer's verify pass decides (see the header).
+    assign unrepairable = 1'b0;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -276,17 +321,17 @@ module onchip_2d_repair_analyzer #(
                 live_row_valid[i] <= 1'b0;
                 live_row_addr[i]  <= '0;
             end
-            seen_once <= '0;
+            seen_once  <= '0;
+            first_seen <= '0;
+            first_row  <= '0;
             for (int k = 0; k < NUM_SPARE_COLS; k++) begin
                 live_col_valid[k] <= 1'b0;
                 live_col_bit[k]   <= '0;
             end
-            live_unrepairable <= 1'b0;
             row_repair_en     <= '0;
             faulty_row_addr   <= '0;
             col_repair_en     <= '0;
             faulty_bit        <= '0;
-            unrepairable      <= 1'b0;
             repair_load_done  <= 1'b0;
             bad_row           <= '0;
             suspect_row       <= '0;
@@ -322,8 +367,16 @@ module onchip_2d_repair_analyzer #(
             if (enable && fail_valid && !already_row_registered) begin
                 for (int b = 0; b < DATA_WIDTH; b++) begin
                     if (fail_bitmask[b]) begin
-                        if (wants_row[b]) begin
+                        if (wants_row[b] && !defer_mode) begin
                             seen_once[b] <= 1'b1;
+                        end
+                        // Deferred pass one: a bit left over in a word that
+                        // takes no row is remembered with the row it first
+                        // failed at; pass two treats it as seen.
+                        if (wants_row[b] && defer_mode && !word_takes_row && !first_seen[b]) begin
+                            first_seen[b]                         <= 1'b1;
+                            first_row[b*ADDR_WIDTH +: ADDR_WIDTH] <= fail_addr;
+                            seen_once[b]                          <= 1'b1;
                         end
                         if (col_claim_valid[b]) begin
                             commit_slot = col_claim_slot[b*BIT_IDX_WIDTH +: BIT_IDX_WIDTH];
@@ -338,13 +391,12 @@ module onchip_2d_repair_analyzer #(
             // applied ONCE per word (word_wants_row), never once per bit --
             // multiple bits wanting a row this cycle still only ever spend
             // ONE row slot on their shared address.
-            if (word_wants_row) begin
-                if (found_free_row) begin
-                    live_row_valid[free_row] <= 1'b1;
-                    live_row_addr[free_row]  <= fail_addr;
-                end else begin
-                    live_unrepairable <= 1'b1;  // sticky for the chip's lifetime
-                end
+            // With no row left nothing is decided here: a later read of the
+            // same word may still claim columns for its bits, and the verify
+            // pass says whether the repair holds (see the header).
+            if (word_takes_row) begin
+                live_row_valid[free_row] <= 1'b1;
+                live_row_addr[free_row]  <= fail_addr;
             end
 
             // Placed after the live-fail blocks above, same last-write-wins
@@ -371,7 +423,6 @@ module onchip_2d_repair_analyzer #(
                     col_repair_en[k] <= live_col_valid[k];
                     faulty_bit[k*BIT_IDX_WIDTH +: BIT_IDX_WIDTH] <= live_col_bit[k];
                 end
-                unrepairable <= live_unrepairable;
                 suspect_row  <= '0;  // a fresh allocation gets a fresh verify
                 suspect_col  <= '0;
             end
