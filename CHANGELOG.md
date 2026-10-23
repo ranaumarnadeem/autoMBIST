@@ -12,6 +12,29 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Changed: the on-chip 2D analyzer no longer gives up early
+- When a failing word asked for a spare row and none was left, the 2D
+  analyzer used to declare the chip unrepairable at once and skip the verify
+  pass, even though march-c reads every word again and the next read would
+  have covered the bit with a free spare column: with 3 spare rows and 3 spare
+  columns, 4 isolated single cells failed. It now decides nothing there,
+  keeps allocating, and lets the verify pass decide. It never repairs fewer
+  chips than before; a chip that ends up unrepairable runs one more verify
+  march before reporting it. The row-only analyzer is unchanged.
+
+### Added: a deferred two-pass on-chip analyzer
+- `redundancy.onchip_analyzer: deferred` (with `onchip_col_repair`): the first
+  analyze pass claims a spare column only for a bit that fails at two
+  different rows and a spare row only for a word with two or more uncovered
+  failing bits, remembering lone first sightings; the second pass applies the
+  greedy rules to what is left. On Ohler's mix d2 with 3 spare rows and 3
+  spare columns it repairs .88 of the exactly repairable fail maps at 5
+  defects, against .46 for the greedy analyzer (.22 before the change above).
+  Costs DATA_WIDTH x (ADDR_WIDTH + 1) flops and one more analyze march.
+- `autombist.yieldsim.onchip_model` models both analyzer modes decision for
+  decision under march-c (checked against the RTL on random fail maps), and
+  `yield-sweep --self-repair --analyzer deferred` measures it on the RTL.
+
 ### Added: on-chip self-repair retires a faulty spare and retries
 - `redundancy.onchip_spare_retry: true`: when the verify pass shows that a
   spare the chip allocated is itself faulty, the chip marks it bad, drops its
@@ -26,7 +49,8 @@ everything that predates the migration.
   gain on random defects in the spares. On the documented example sweep (16 x 8,
   2 spare rows and 1 spare column, defects in the spares) it removes every
   faulty-spare failure: the normalized repair rate goes from .83 to .89 at 2
-  defects and from .53 to .71 at 3.
+  defects and from .65 to .82 at 3 (with the lenient greedy analyzer above;
+  .88 at 3 with `--analyzer deferred` as well).
 
 ## [0.4.0] - 2026-10-22
 

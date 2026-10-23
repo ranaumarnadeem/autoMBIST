@@ -227,10 +227,11 @@ Set `onchip_col_repair: true` alongside `onchip_selfrepair: true` and
 `num_spare_cols` non-zero, and the autonomous path repairs both rows and
 columns entirely on-chip — no tester, same `self_repair_start`/`_done`/
 `_fail`/`_busy` handshake as row-only repair. Swaps in
-`onchip_2d_repair_analyzer` (a single-pass heuristic, not a hardware
-implementation of `bira.py`'s exact backtracking search — it can report a
-repairable chip unrepairable in some cases, but never the reverse, since
-verify-by-re-execution is independent of the analyzer's own bookkeeping)
+`onchip_2d_repair_analyzer` (a heuristic, not a hardware implementation of
+`bira.py`'s exact backtracking search — it can leave a repairable chip
+failing its verify pass, but never the reverse, since verify-by-re-execution
+is independent of the analyzer's own bookkeeping; see "The on-chip 2D
+analyzer" below for its two modes)
 driven by a per-bit `fail_bitmask` stream from the algorithm controller,
 plus a `repair_remap_col` instance on the data path. Same `--algo`
 restriction as row-only on-chip self-repair (the list above) — no
@@ -260,6 +261,56 @@ row-only analyzer. It's also mutually exclusive with
 `onchip_repair_persistence: true` (see below): the persisted-signature
 load path is row-only, and restoring it into the 2D analyzer would forget
 any previously-computed column claims on every reset.
+
+### The on-chip 2D analyzer (`onchip_analyzer`)
+
+The on-chip analyzer decides each failing read as the march streams it,
+without storing the fail map, so it cannot always find the repair
+`bira.py`'s exact solver finds. Two modes, with `onchip_col_repair: true`:
+
+- **`greedy`** (the default): one analyze pass. A failing bit already
+  column-mapped is covered; a bit that failed before takes a free spare
+  column; otherwise the word asks for a spare row. When no row is left
+  nothing is decided yet: march-c reads every word several times, and on a
+  later read the bit counts as seen and can still take a column. The verify
+  pass decides whether the repair holds. (Up to 0.4.0 the analyzer gave up at
+  the first row request with no row left and skipped the verify pass, so 3
+  spare rows and 3 spare columns could not repair 4 isolated single cells.)
+- **`deferred`**: two analyze passes. In the first, a bit takes a column only
+  when it fails at a different row from the one it first failed at, a word
+  takes a row only when two or more of its failing bits are left uncovered,
+  and a lone first sighting is only remembered. The second pass, through the
+  first pass's repair, applies the greedy rules to what is left.
+
+```yaml
+redundancy:
+  num_spare_rows: 2
+  num_spare_cols: 1
+  onchip_selfrepair: true
+  onchip_col_repair: true
+  onchip_analyzer: deferred
+```
+
+The share of exactly repairable fail maps each mode repairs, measured on the
+Python model of the analyzer (`autombist.yieldsim.onchip_model`, which makes
+the RTL's decisions; checked against the RTL on random fail maps), march-c,
+defects from Ohler et al.'s mix d2:
+
+| Array, spares | Defects | greedy up to 0.4.0 | `greedy` | `deferred` |
+|---|---|---|---|---|
+| 32 x 8, 2 rows + 1 column | 3 | .38 | .52 | .98 |
+| 64 x 16, 3 rows + 3 columns | 5 | .22 | .46 | .88 |
+| 64 x 16, 3 rows + 3 columns | 8 | .04 | .10 | .76 |
+| 256 x 32, 5 rows + 5 columns | 8 | .12 | .31 | .84 |
+
+`deferred` costs DATA_WIDTH x (ADDR_WIDTH + 1) flops (per bit, whether and at
+which row it first failed) and one more analyze march; at 2 spare rows, 2
+spare columns, 16 words of 8 bits Yosys counts 809 cells against 614. It
+requires `onchip_col_repair` (the row-only analyzer has no row-or-column
+choice to make), combines with `onchip_spare_retry` (a retry pass uses the
+greedy rules), and is not yet available with `topology: shared-bus`. It is
+simulated on single-port memories and on `march-2rw`; the model covers
+march-c's read order only.
 
 ### Retiring a faulty spare (`onchip_spare_retry`)
 
