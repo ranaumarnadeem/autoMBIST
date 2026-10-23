@@ -9,6 +9,7 @@
 {% set has_onchip_diagnosis = has_onchip_selfrepair and redundancy.onchip_diagnosis %}
 {% set has_onchip_spare_retry = has_onchip_selfrepair and redundancy.onchip_spare_retry %}
 {% set spare_retry_limit = (redundancy.num_spare_rows + (redundancy.num_spare_cols if has_onchip_col_repair else 0)) if has_onchip_spare_retry else 0 %}
+{% set onchip_analyzer_deferred = has_onchip_col_repair and redundancy.onchip_analyzer == 'deferred' %}
 {% set mode_signal = "effective_test_mode" if has_onchip_selfrepair else "test_mode" %}
 {% set start_signal = "effective_bist_start" if has_onchip_selfrepair else "bist_start && test_mode" %}
 {# Shared-bus MBIST controller (docs/shared-hierarchical-mbist-plan.md §4a):
@@ -102,6 +103,9 @@ module {{ wrapper_module_name }} #(
     logic                  registrar_enable;
     logic                  latch_result;
     logic                  unrepairable;
+{% if onchip_analyzer_deferred %}
+    logic                  defer;
+{% endif %}
 {% if has_onchip_spare_retry %}
     logic                  verify_enable;
     logic                  retire;
@@ -248,7 +252,8 @@ module {{ wrapper_module_name }} #(
             .unrepairable(unrepairable_arr[gsr]),
             .verify_enable(1'b0),
             .retire(1'b0),
-            .has_suspect()
+            .has_suspect(),
+            .defer(1'b0)
         );
 {% else %}
         onchip_row_repair_analyzer #(
@@ -292,7 +297,8 @@ module {{ wrapper_module_name }} #(
             .verify_enable(),
             .retire(),
             .diag_enable(),
-            .has_suspect(1'b0)
+            .has_suspect(1'b0),
+            .defer()
         );
 
         repair_remap_row #(
@@ -531,7 +537,12 @@ module {{ wrapper_module_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
         .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }}),
+{% if onchip_analyzer_deferred %}
+        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }}),
+        .DEFERRED(1)
+{% else %}
         .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+{% endif %}
     ) u_onchip_analyzer (
         .clk(clk),
         .rst_n(rst_n),
@@ -559,12 +570,13 @@ module {{ wrapper_module_name }} #(
 {% if has_onchip_spare_retry %}
         .verify_enable(verify_enable),
         .retire(retire),
-        .has_suspect(has_suspect)
+        .has_suspect(has_suspect),
 {% else %}
         .verify_enable(1'b0),
         .retire(1'b0),
-        .has_suspect()
+        .has_suspect(),
 {% endif %}
+        .defer({% if onchip_analyzer_deferred %}defer{% else %}1'b0{% endif %})
     );
 {% else %}
     onchip_row_repair_analyzer #(
@@ -620,8 +632,9 @@ module {{ wrapper_module_name }} #(
     );
 
 {% endif %}
-    onchip_selfrepair_ctrl{% if has_onchip_spare_retry %} #(
-        .MAX_RETRIES({{ spare_retry_limit }})
+    onchip_selfrepair_ctrl{% if has_onchip_spare_retry or onchip_analyzer_deferred %} #(
+        .MAX_RETRIES({{ spare_retry_limit }}),
+        .TWO_PASS({{ 1 if onchip_analyzer_deferred else 0 }})
     ){% endif %} u_onchip_selfrepair_ctrl (
         .clk(clk),
         .rst_n(rst_n),
@@ -641,13 +654,14 @@ module {{ wrapper_module_name }} #(
         .verify_enable(verify_enable),
         .retire(retire),
         .diag_enable(diag_enable),
-        .has_suspect(has_suspect)
+        .has_suspect(has_suspect),
 {% else %}
         .verify_enable(),
         .retire(),
         .diag_enable(),
-        .has_suspect(1'b0)
+        .has_suspect(1'b0),
 {% endif %}
+        .defer({% if onchip_analyzer_deferred %}defer{% endif %})
     );
 
     repair_remap_row #(
@@ -883,6 +897,9 @@ module {{ wrapper_module_name }} #(
     logic                  registrar_enable;
     logic                  latch_result;
     logic                  unrepairable;
+{% if onchip_analyzer_deferred %}
+    logic                  defer;
+{% endif %}
 {% if has_onchip_spare_retry %}
     logic                  verify_enable;
     logic                  retire;
@@ -1073,7 +1090,12 @@ module {{ wrapper_module_name }} #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .DATA_WIDTH(DATA_WIDTH),
         .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }}),
+{% if onchip_analyzer_deferred %}
+        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }}),
+        .DEFERRED(1)
+{% else %}
         .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+{% endif %}
     ) u_onchip_analyzer (
         .clk(clk),
         .rst_n(rst_n),
@@ -1101,12 +1123,13 @@ module {{ wrapper_module_name }} #(
 {% if has_onchip_spare_retry %}
         .verify_enable(verify_enable),
         .retire(retire),
-        .has_suspect(has_suspect)
+        .has_suspect(has_suspect),
 {% else %}
         .verify_enable(1'b0),
         .retire(1'b0),
-        .has_suspect()
+        .has_suspect(),
 {% endif %}
+        .defer({% if onchip_analyzer_deferred %}defer{% else %}1'b0{% endif %})
     );
 {% else %}
     onchip_row_repair_analyzer #(
@@ -1162,8 +1185,9 @@ module {{ wrapper_module_name }} #(
     );
 
 {% endif %}
-    onchip_selfrepair_ctrl{% if has_onchip_spare_retry %} #(
-        .MAX_RETRIES({{ spare_retry_limit }})
+    onchip_selfrepair_ctrl{% if has_onchip_spare_retry or onchip_analyzer_deferred %} #(
+        .MAX_RETRIES({{ spare_retry_limit }}),
+        .TWO_PASS({{ 1 if onchip_analyzer_deferred else 0 }})
     ){% endif %} u_onchip_selfrepair_ctrl (
         .clk(clk),
         .rst_n(rst_n),
@@ -1183,13 +1207,14 @@ module {{ wrapper_module_name }} #(
         .verify_enable(verify_enable),
         .retire(retire),
         .diag_enable(diag_enable),
-        .has_suspect(has_suspect)
+        .has_suspect(has_suspect),
 {% else %}
         .verify_enable(),
         .retire(),
         .diag_enable(),
-        .has_suspect(1'b0)
+        .has_suspect(1'b0),
 {% endif %}
+        .defer({% if onchip_analyzer_deferred %}defer{% endif %})
     );
 
     {% for pname, pdata in normalized_ports.items() %}

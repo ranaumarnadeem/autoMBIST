@@ -732,6 +732,17 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
             "the on-chip 2D analyzer extends the on-chip row analyzer's fail "
             "stream, which only exists when onchip_selfrepair is enabled"
         )
+    onchip_analyzer = block.get("onchip_analyzer", "greedy")
+    if onchip_analyzer not in ("greedy", "deferred"):
+        raise ConfigError(
+            f"redundancy.onchip_analyzer must be 'greedy' or 'deferred', got {onchip_analyzer!r}"
+        )
+    if onchip_analyzer == "deferred" and not onchip_col_repair:
+        raise ConfigError(
+            "redundancy.onchip_analyzer: deferred needs onchip_col_repair: true -- "
+            "it decides between spare rows and spare columns; the row-only "
+            "analyzer has no such choice (every faulty row takes a spare row)"
+        )
     if onchip_col_repair and onchip_repair_persistence:
         raise ConfigError(
             "redundancy.onchip_col_repair is not supported with "
@@ -1032,6 +1043,7 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         "num_diagnosis_entries": num_diagnosis_entries,
         "onchip_col_repair": onchip_col_repair,
         "onchip_spare_retry": onchip_spare_retry,
+        "onchip_analyzer": onchip_analyzer,
     }
 
 
@@ -1229,6 +1241,7 @@ def generate_from_config(
                 or redundancy_block.get("onchip_repair_persistence")
                 or redundancy_block.get("onchip_diagnosis")
                 or redundancy_block.get("onchip_spare_retry")
+                or redundancy_block.get("onchip_analyzer", "greedy") != "greedy"
             )
             if unsupported_shared_bus_redundancy:
                 raise ConfigError(
@@ -1236,7 +1249,7 @@ def generate_from_config(
                     "and on-chip 2D (row+column) self-repair redundancy today "
                     "(redundancy.onchip_selfrepair: true, with "
                     "onchip_repair_persistence/onchip_diagnosis/"
-                    "onchip_spare_retry all false) -- "
+                    "onchip_spare_retry all false, onchip_analyzer greedy) -- "
                     "tester-driven redundancy and the remaining extended "
                     "on-chip features are not yet wired for the shared-bus "
                     "controller-select mux; see "

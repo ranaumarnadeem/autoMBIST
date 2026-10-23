@@ -647,6 +647,7 @@ def yield_sweep_cmd(
     expose_spares: bool = typer.Option(False, "--expose-spares", help="With --self-repair: defects can also land in the spare rows and spare columns"),
     diagnosis_entries: int = typer.Option(0, "--diagnosis-entries", min=0, help="With --self-repair: also build the on-chip diagnosis log with this many entries and report its overflows"),
     spare_retry: bool = typer.Option(False, "--spare-retry", help="With --self-repair: build with redundancy.onchip_spare_retry, so a faulty spare the verify pass catches is retired and the repair retried"),
+    analyzer: str = typer.Option("greedy", "--analyzer", help="With --self-repair and spare columns: the on-chip 2D analyzer, greedy (one pass) or deferred (two passes, redundancy.onchip_analyzer: deferred)"),
     seed: int = typer.Option(0, "--seed", help="Base seed; every trial's own seed is derived deterministically from it"),
     json_output: bool = typer.Option(False, "--json", help="Print the sweep summary as JSON to stdout instead of a human table"),
 ) -> None:
@@ -705,10 +706,11 @@ def yield_sweep_cmd(
                 config_path, out / "yield_selfrepair_dut",
                 num_spare_rows=spare_rows, num_spare_cols=spare_cols, algo=algo, defects=defects,
                 expose_spares=expose_spares, diagnosis_entries=diagnosis_entries, spare_retry=spare_retry,
+                analyzer=analyzer,
             )
         else:
-            if expose_spares or diagnosis_entries or spare_retry:
-                raise ValueError("--expose-spares, --diagnosis-entries and --spare-retry need --self-repair")
+            if expose_spares or diagnosis_entries or spare_retry or analyzer != "greedy":
+                raise ValueError("--expose-spares, --diagnosis-entries, --spare-retry and --analyzer need --self-repair")
             engine = RtlEngine(
                 config_path, out / "yield_sweep_dut",
                 num_spare_rows=spare_rows, num_spare_cols=spare_cols,
