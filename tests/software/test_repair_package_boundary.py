@@ -29,7 +29,8 @@ PURE_PACKAGES: dict[str, frozenset[str]] = {
 #: Modules that sit in each package and must exist, so an empty glob cannot pass.
 EXPECTED_MODULES: dict[str, set[str]] = {
     "repair": {"__init__.py", "types.py", "bira.py", "bisr.py"},
-    "yieldsim": {"__init__.py", "stats.py", "sweep.py", "model.py", "defects.py", "bitmap_engine.py", "shapes.py"},
+    "yieldsim": {"__init__.py", "stats.py", "sweep.py", "model.py", "defects.py", "bitmap_engine.py", "shapes.py",
+                 "onchip_model.py"},
 }
 
 _STDLIB = frozenset(sys.stdlib_module_names)
