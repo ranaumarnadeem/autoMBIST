@@ -198,7 +198,7 @@ all seven algorithms.
 ## On-chip self-repair
 
 `yield-sweep --self-repair` builds the wrapper with on-chip self-repair over the
-spare budget (the 2D analyzer when there are spare columns) on a
+spare budget (the 2D analyzer when there are spare columns, greedy or `--analyzer deferred`) on a
 fault-injectable memory model: stuck-at masks over the whole physical array,
 spare rows and spare lanes included, loaded when the simulation starts. Each
 trial logs what the analyze pass saw, runs the self-repair, decodes the latched
@@ -211,8 +211,8 @@ repairs and the chip does not, why:
 
 | Cause | Meaning |
 |---|---|
-| `analyzer` | the greedy on-chip analyzer gave up on a fail map the exact solver repairs |
-| `faulty_spare` | the chip's repair covers every faulty cell but allocates a faulty spare; the verify pass catches it, and the analyzer does not reallocate |
+| `analyzer` | the on-chip analyzer's repair leaves a cell it observed uncovered, on a fail map the exact solver repairs (`--analyzer deferred` closes most of these) |
+| `faulty_spare` | the chip's repair covers every faulty cell but allocates a faulty spare; the verify pass catches it, and the analyzer does not reallocate (unless the wrapper is built with `onchip_spare_retry`) |
 | `observation_escape` | the analyze pass did not observe every faulty cell |
 | `false_pass` | the chip reported a pass but the repaired memory still reads wrong |
 
@@ -231,17 +231,40 @@ autombist yield-sweep --config config.yml --faults 1..5 --trials 20 --spare-rows
 
 | Defects | 1 | 2 | 3 | 4 | 5 |
 |---|---|---|---|---|---|
-| Repaired on chip | .90 | .75 | .45 | .00 | .00 |
+| Repaired on chip | .90 | .75 | .55 | .05 | .00 |
 | Repairable (exact solver, spare faults known) | .90 | .90 | .85 | .25 | .05 |
-| Normalized repair rate | 1.00 | .83 | .53 | .00 | .00 |
-| Not repaired because of: the analyzer | 0 | 1 | 3 | 3 | 1 |
+| Normalized repair rate | 1.00 | .83 | .65 | .20 | .00 |
+| Not repaired because of: the analyzer | 0 | 1 | 1 | 2 | 1 |
 | Not repaired because of: a faulty allocated spare | 0 | 2 | 5 | 2 | 0 |
 
 Every gap is accounted for. The two single defects nothing repairs are 3 x 2
 clusters, which need two spare columns or three spare rows. Faulty spares (9
-trials) cost the chip about as often as its greedy analyzer (8) here: the analyzer
+trials) cost the chip more than its greedy analyzer does (5) here: the analyzer
 allocates a spare it has never tested, and once the verify pass fails it does
-not try another.
+not try another. (The greedy analyzer up to 0.4.0, which gave up at its first
+row request with no row left, repaired .45 at 3 defects on the same seeds.)
+
+`redundancy.onchip_spare_retry` (see the configuration page) makes it try
+another: a spare the verify pass catches is retired and the analysis re-run on
+the rest. `redundancy.onchip_analyzer: deferred` replaces the greedy single
+pass with two passes that defer lone first sightings. The same sweep, the same
+seeds, with `--spare-retry`, then with `--spare-retry --analyzer deferred`:
+
+| Defects | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| Repaired on chip, greedy | .90 | .75 | .55 | .05 | .00 |
+| Repaired on chip, greedy with retry | .90 | .80 | .70 | .05 | .00 |
+| Repaired on chip, deferred with retry | .90 | .85 | .75 | .05 | .05 |
+| Normalized repair rate, deferred with retry | 1.00 | .94 | .88 | .20 | 1.00 |
+| Not repaired because of the analyzer: greedy with retry | 0 | 2 | 3 | 4 | 1 |
+| Not repaired because of the analyzer: deferred with retry | 0 | 1 | 2 | 4 | 0 |
+
+With retry no trial fails on a faulty spare any more; some of the trials it
+saves then fall to the analyzer instead, because retiring a spare leaves fewer
+for it to work with. The deferred analyzer recovers about half of those. At 4
+defects only 5 of the 20 trials are repairable at all, and none of the
+analyzers repairs more than one of them: with defects in the spares and the
+spares retired, the remaining budget leaves no slack for a heuristic.
 
 ## Report files
 

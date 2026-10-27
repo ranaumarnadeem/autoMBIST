@@ -558,7 +558,7 @@ class RtlEngine:
 SELF_REPAIR_TEST_MODULE = "test_selfrepair_sweep"
 #: Why a trial the exact solver repairs was not repaired on chip.
 CAUSES = {
-    "analyzer": "the on-chip analyzer gave up on a fail map the exact solver repairs",
+    "analyzer": "the on-chip analyzer's allocation leaves a cell it observed uncovered, on a fail map the exact solver repairs",
     "faulty_spare": "the on-chip repair covers every faulty cell but allocates a faulty spare",
     "observation_escape": "the analyze pass did not observe every faulty cell",
     "false_pass": "the chip reported a pass but the repaired memory still reads wrong",
@@ -569,6 +569,10 @@ CAUSES = {
 def _unpack(value: int | None, width: int, count: int) -> list[int]:
     value = value or 0
     return [(value >> (width * i)) & ((1 << width) - 1) for i in range(count)]
+
+
+def _uncovered(cells: set[tuple[int, int]], solution: RepairSolution) -> bool:
+    return any(row not in solution.row_map and bit not in solution.col_map for row, bit in cells)
 
 
 def _flat_ports(ports: dict[str, Any]) -> bool:
@@ -608,6 +612,8 @@ class SelfRepairEngine:
         defects: str | None = None,
         expose_spares: bool = False,
         diagnosis_entries: int = 0,
+        spare_retry: bool = False,
+        analyzer: str = "greedy",
     ) -> None:
         if num_spare_rows < 1:
             raise ValueError("on-chip self-repair needs at least one spare row (the wrapper's redundancy path requires one)")
@@ -630,6 +636,12 @@ class SelfRepairEngine:
         self.model = defect_model(self.defects)
         self.unit = self.model.unit
         self.diagnosis_entries = diagnosis_entries
+        self.spare_retry = spare_retry
+        if analyzer not in ("greedy", "deferred"):
+            raise ValueError(f"unknown on-chip analyzer {analyzer!r}: use greedy or deferred")
+        if analyzer == "deferred" and not num_spare_cols:
+            raise ValueError("the deferred analyzer chooses between spare rows and spare columns; it needs spare columns")
+        self.analyzer = analyzer
         self.config = self._with_redundancy(base)
         self._module: Path | None = None
 
@@ -647,6 +659,10 @@ class SelfRepairEngine:
                 ports["spare_wen"] = "spare_wen0"
         if self.diagnosis_entries:
             redundancy.update(onchip_diagnosis=True, num_diagnosis_entries=self.diagnosis_entries)
+        if self.spare_retry:
+            redundancy["onchip_spare_retry"] = True
+        if self.analyzer != "greedy":
+            redundancy["onchip_analyzer"] = self.analyzer
         config["redundancy"] = redundancy
         return config
 
@@ -667,7 +683,8 @@ class SelfRepairEngine:
             "defect_model": {**self.model.describe(), "fault_type": "stuck-at",
                              "polarity": "each defect stuck at 0 or 1 with equal probability"},
             "analyzer": {
-                "on_chip": "onchip_2d_repair_analyzer (greedy)" if cols else "onchip_row_repair_analyzer",
+                "on_chip": f"onchip_2d_repair_analyzer ({self.analyzer})" if cols else "onchip_row_repair_analyzer",
+                "spare_retry": self.spare_retry,
                 "reference": "repair.bira.analyze_detailed with the spare faults",
                 "repaired_means": "self_repair_fail is 0 and a post-repair functional scan reads back clean",
             },
@@ -805,13 +822,16 @@ class SelfRepairEngine:
         elif not repaired and exact.repaired:
             if not failed:
                 cause = "false_pass"
-            elif outcome.get("unrepairable"):
-                cause = "analyzer" if observed_exact.repaired else (
-                    "observation_escape" if observed != base else "unexplained")
-            elif verify_solution(base, self.geometry, signature) == []:
-                cause = "faulty_spare" if verify_solution(base, self.geometry, signature, faults) else "unexplained"
+            elif _uncovered(observed, signature) or outcome.get("unrepairable"):
+                # it saw these cells and its allocation leaves some uncovered
+                # (the row-only analyzer also says so with its unrepairable flag)
+                cause = "analyzer"
+            elif _uncovered(base, signature):
+                cause = "observation_escape"
+            elif verify_solution(base, self.geometry, signature, faults):
+                cause = "faulty_spare"
             else:
-                cause = "observation_escape" if observed != base else "unexplained"
+                cause = "unexplained"
 
         extras: dict[str, Any] = {
             "truth_cells": len(base),
@@ -831,6 +851,10 @@ class SelfRepairEngine:
             extras["escapes"] = len(residual)
         if outcome.get("diag_overflow") is not None:
             extras["diag_overflow"] = outcome["diag_overflow"]
+        if self.diagnosis_entries and outcome.get("diag_valid") is not None:
+            addrs = _unpack(outcome.get("diag_addr"), self.geometry.addr_width, self.diagnosis_entries)
+            extras["diag_rows"] = sorted(addrs[n] for n in range(self.diagnosis_entries)
+                                         if (outcome["diag_valid"] >> n) & 1)
         if classes is not None:
             extras["defects"] = classes
         used = len(signature.row_map) + len(signature.col_map) if repaired else None

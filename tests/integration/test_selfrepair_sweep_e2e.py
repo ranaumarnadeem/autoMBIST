@@ -51,16 +51,19 @@ def test_one_defect_is_repaired_with_a_spare_row_and_the_build_is_reused(tmp_pat
     assert second.repaired and second.extras["row_map"] == {1: 0}
 
 
-def test_the_gap_demo_shows_the_greedy_analyzer_giving_up(tmp_path: Path) -> None:
+def test_the_gap_demo_shows_the_greedy_analyzer_falling_short(tmp_path: Path) -> None:
     """The five cells of tests/hardware/sram_spares_col_gap_demo.v: the exact
-    solver repairs them with rows 5 and 30 and column 2; the on-chip 2D analyzer
-    spends its rows on first sightings and runs out."""
+    solver repairs them with rows 5 and 30 and column 2; the greedy on-chip 2D
+    analyzer spends its rows on first sightings and runs out. It does not flag
+    unrepairable itself (it is lenient); its repair leaves a cell it saw
+    uncovered and the verify pass fails."""
     engine = SelfRepairEngine(_config(tmp_path, 5, 8), tmp_path / "work", num_spare_rows=2, num_spare_cols=1)
     record = engine.run_stuck({(5, 0): 1, (5, 1): 1, (9, 2): 1, (20, 2): 1, (30, 5): 1})
 
     assert record.status == "unrepairable"
     assert record.extras["truth_repairable"] and record.extras["observed_repairable"]
-    assert record.extras["onchip_unrepairable"] == 1 and record.extras["cause"] == "analyzer"
+    assert record.extras["onchip_fail"] == 1 and record.extras["onchip_unrepairable"] == 0
+    assert record.extras["cause"] == "analyzer"
 
 
 def test_a_defect_in_the_allocated_spare_fails_verify_and_one_elsewhere_does_not(tmp_path: Path) -> None:
