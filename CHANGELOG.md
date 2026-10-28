@@ -12,6 +12,8 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-28
+
 ### Testing: golden files for `generate`
 - `tests/software/test_golden_rtl.py` compares what `generate` writes for 24
   reference configs (`tests/golden/cases.yml`: every algorithm, single-port,
