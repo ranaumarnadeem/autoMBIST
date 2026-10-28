@@ -1,0 +1,310 @@
+# Reference configs for tests/software/test_golden_rtl.py.
+#
+# Each case is a config as a user writes it, plus the options `generate` is given
+# (the generate_from_config keywords: algo, use_saboteur, faults, fault_seed,
+# fault_type). tests/golden/<case>/ holds what generate writes for it, except the
+# rtl/ sources it only copies (listed in rtl_copied.txt instead), the config.yml
+# snapshot, and the saboteur's random fault lists.
+#
+# Add a case for every new template branch. After an intended change to the
+# output, regenerate and review the diff:
+#   AUTOMBIST_UPDATE_GOLDEN=1 python -m pytest tests/software/test_golden_rtl.py
+
+march-c:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_1rw
+    wrapper_module_name: sram_1rw_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+
+march-c-rl0-we-high:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_rl0
+    wrapper_module_name: sram_rl0_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: false
+    read_latency: 0
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: we0, csb: csb0}
+
+march-c-rl2-fixed-geometry:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_fixed
+    wrapper_module_name: sram_fixed_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    read_latency: 2
+    memory_has_fixed_geometry: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+
+march-raw:
+  generate: {algo: march-raw}
+  config:
+    memory_name: sram_raw
+    wrapper_module_name: sram_raw_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+
+march-x:
+  generate: {algo: march-x}
+  config:
+    memory_name: sram_x
+    wrapper_module_name: sram_x_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+
+mats-plus:
+  generate: {algo: mats-plus}
+  config:
+    memory_name: sram_mats
+    wrapper_module_name: sram_mats_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+
+checkerboard:
+  generate: {algo: checkerboard}
+  config:
+    memory_name: sram_ckb
+    wrapper_module_name: sram_ckb_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+
+march-1r1w:
+  generate: {algo: march-1r1w}
+  config:
+    memory_name: sram_1r1w
+    wrapper_module_name: sram_1r1w_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports:
+      rport: {type: r, clk: clk0, addr: addr0, dout: dout0, csb: csb0}
+      wport: {type: w, clk: clk1, addr: addr1, din: din1, csb: csb1, we: web1}
+
+march-2rw:
+  generate: {algo: march-2rw}
+  config:
+    memory_name: sram_2rw
+    wrapper_module_name: sram_2rw_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports:
+      porta: {type: rw, clk: clk0, addr: addr0, din: din0, dout: dout0, csb: csb0, we: web0}
+      portb: {type: rw, clk: clk1, addr: addr1, din: din1, dout: dout1, csb: csb1, we: web1}
+
+spare-wen-tied-off:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_swen
+    wrapper_module_name: sram_swen_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0, spare_wen: spare_wen0}
+
+tester-row-repair:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_trow
+    wrapper_module_name: sram_trow_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+    redundancy: {num_spare_rows: 2, num_spare_cols: 0}
+    repair_ports:
+      - {name: row_repair_en, width: 2, dir: input}
+      - {name: faulty_row_addr, width: 8, dir: input}
+
+tester-row-col-repair:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_tcol
+    wrapper_module_name: sram_tcol_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0, spare_wen: spare_wen0}
+    redundancy: {num_spare_rows: 1, num_spare_cols: 1}
+    repair_ports:
+      - {name: row_repair_en, width: 1, dir: input}
+      - {name: faulty_row_addr, width: 4, dir: input}
+      - {name: col_repair_en, width: 1, dir: input}
+      - {name: faulty_bit, width: 3, dir: input}
+
+selfrepair-row:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_srow
+    wrapper_module_name: sram_srow_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+    redundancy: {num_spare_rows: 2, num_spare_cols: 0, onchip_selfrepair: true}
+
+selfrepair-row-persistence-diagnosis:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_spd
+    wrapper_module_name: sram_spd_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+    redundancy:
+      num_spare_rows: 2
+      num_spare_cols: 0
+      onchip_selfrepair: true
+      onchip_repair_persistence: true
+      onchip_diagnosis: true
+      num_diagnosis_entries: 4
+
+selfrepair-row-retry:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_sret
+    wrapper_module_name: sram_sret_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+    redundancy: {num_spare_rows: 2, num_spare_cols: 0, onchip_selfrepair: true, onchip_spare_retry: true}
+
+selfrepair-2d:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_s2d
+    wrapper_module_name: sram_s2d_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0, spare_wen: spare_wen0}
+    redundancy: {num_spare_rows: 2, num_spare_cols: 1, onchip_selfrepair: true, onchip_col_repair: true}
+
+selfrepair-2d-deferred-retry-diagnosis:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_sdef
+    wrapper_module_name: sram_sdef_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0, spare_wen: spare_wen0}
+    redundancy:
+      num_spare_rows: 2
+      num_spare_cols: 1
+      onchip_selfrepair: true
+      onchip_col_repair: true
+      onchip_analyzer: deferred
+      onchip_spare_retry: true
+      onchip_diagnosis: true
+      num_diagnosis_entries: 4
+
+selfrepair-1r1w-2d:
+  generate: {algo: march-1r1w}
+  config:
+    memory_name: sram_s1r1w
+    wrapper_module_name: sram_s1r1w_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports:
+      rport: {type: r, clk: clk0, addr: addr0, dout: dout0, csb: csb0}
+      wport: {type: w, clk: clk1, addr: addr1, din: din1, csb: csb1, we: web1, spare_wen: spare_wen1}
+    redundancy: {num_spare_rows: 2, num_spare_cols: 1, onchip_selfrepair: true, onchip_col_repair: true}
+
+selfrepair-2rw-2d-retry:
+  generate: {algo: march-2rw}
+  config:
+    memory_name: sram_s2rw
+    wrapper_module_name: sram_s2rw_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports:
+      porta: {type: rw, clk: clk0, addr: addr0, din: din0, dout: dout0, csb: csb0, we: web0, spare_wen: spare_wen0}
+      portb: {type: rw, clk: clk1, addr: addr1, din: din1, dout: dout1, csb: csb1, we: web1, spare_wen: spare_wen1}
+    redundancy:
+      num_spare_rows: 2
+      num_spare_cols: 1
+      onchip_selfrepair: true
+      onchip_col_repair: true
+      onchip_spare_retry: true
+
+shared-bus:
+  generate: {algo: march-c}
+  config:
+    topology: shared-bus
+    memory_name: sram_bank
+    wrapper_module_name: shared_bus_ctrl
+    memories:
+      - {name: mem_bank0}
+      - {name: mem_bank1}
+      - {name: mem_bank2}
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+
+shared-bus-selfrepair-2d:
+  generate: {algo: march-c}
+  config:
+    topology: shared-bus
+    memory_name: sram_bank_spares
+    wrapper_module_name: shared_selfrepair_ctrl
+    memories:
+      - {name: mem_bank0}
+      - {name: mem_bank1}
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0, spare_wen: spare_wen0}
+    redundancy: {num_spare_rows: 2, num_spare_cols: 1, onchip_selfrepair: true, onchip_col_repair: true}
+
+saboteur-stuck-at:
+  generate: {algo: march-c, use_saboteur: true, faults: 2, fault_seed: 7, fault_type: stuck-at}
+  config:
+    memory_name: sram_sab
+    wrapper_module_name: sram_sab_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+
+saboteur-transition-up:
+  generate: {algo: march-c, use_saboteur: true, faults: 2, fault_seed: 7, fault_type: transition-up}
+  config:
+    memory_name: sram_sabtf
+    wrapper_module_name: sram_sabtf_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+
+saboteur-port-coupling-1r1w:
+  generate: {algo: march-1r1w, use_saboteur: true, faults: 1, fault_seed: 3, fault_type: port-coupling}
+  config:
+    memory_name: sram_sabpc
+    wrapper_module_name: sram_sabpc_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports:
+      rport: {type: r, clk: clk0, addr: addr0, dout: dout0, csb: csb0}
+      wport: {type: w, clk: clk1, addr: addr1, din: din1, csb: csb1, we: web1}
