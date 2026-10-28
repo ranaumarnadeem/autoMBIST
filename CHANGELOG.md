@@ -12,6 +12,8 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-28
+
 ### Testing: area and test-time limits for the golden cases
 - `tests/integration/test_golden_metrics.py` synthesizes each golden case's
   wrapper with Yosys (the memory a blackbox) and runs its BIST and its on-chip
