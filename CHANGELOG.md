@@ -12,6 +12,8 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-10-28
+
 ### Added
 - The Tcl shell's `generate` and `run` take `-emit-manifest`, as their CLI
   counterparts take `--emit-manifest`. The shell section of the CLI reference
