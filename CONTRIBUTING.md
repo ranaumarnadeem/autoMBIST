@@ -270,6 +270,10 @@ tests/golden/            Reference configs (cases.yml) and the exact RTL,
   `tests/integration` with coverage locally before opening a PR (see above).
 - Add tests for new behavior in the appropriate tier (`tests/software` if it's pure
   Python; `tests/integration` or `tests/hardware` if it needs a simulator).
+- A new CLI command or option needs its section or row in
+  `docs/source/cli-reference.md` (`test` and `algo` in `algo-shell-guide.md`), and
+  the Tcl shell's counterpart command takes the same option as a `-flag`;
+  `tests/software/test_cli_reference.py` fails until both are there.
 - Scope PRs to one logical change; keep unrelated formatting/refactoring out of
   functional PRs.
 - This repo has a sibling project, [FaultFlow](https://github.com/ranaumarnadeem/faultflow),
