@@ -1,0 +1,13 @@
+march_x/march_x_algo.sv
+march_x/march_x_fsm.sv
+march_x/march_x_top.sv
+onchip_2d_repair_analyzer.sv
+onchip_diagnosis_log.sv
+onchip_row_repair_analyzer.sv
+onchip_selfrepair_ctrl.sv
+repair_remap_col.sv
+repair_remap_row.sv
+sram_model.sv
+sram_model_1r1w.sv
+sram_model_2rw.sv
+sram_model_spares.sv
