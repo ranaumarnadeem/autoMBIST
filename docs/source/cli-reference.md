@@ -1146,6 +1146,12 @@ autombist fix-lef-units macro.lef                  # overwrite in place
 autombist fix-lef-units macro.lef --out fixed.lef  # write a copy
 ```
 
+| Option | Default | Description |
+|---|---|---|
+| `LEF` (argument) | required | The LEF file to normalize |
+| `--out PATH` | none (overwrite in place) | Write the fixed LEF here instead |
+| `--target-dbu INTEGER` | `1000` | The `DATABASE MICRONS` value to declare |
+
 ## macro-signoff
 
 Run magic DRC + netgen LVS on generated OpenRAM macros — the macro-internal
@@ -1164,6 +1170,12 @@ autombist macro-signoff                          # the multimem macro set
 autombist macro-signoff sky130_sram_32b256w      # a specific macro dir
 autombist macro-signoff --show-command           # print, don't run
 ```
+
+| Option | Default | Description |
+|---|---|---|
+| `MACROS...` (arguments) | every macro in the multimem set | Macro directory names to check |
+| `--script PATH` | `flow/multimem/signoff/run_macro_signoff.sh` | The signoff script to run |
+| `--show-command` | off | Print the command instead of running it |
 
 For this repo's own demo macros, this currently does not produce a clean
 signoff answer — a stale vendored OpenRAM checkout, not a defect in this
@@ -1201,7 +1213,9 @@ corresponding Typer CLI command calls (`generate_from_config`,
 from the CLI, not duplicated. Ten commands are registered: `generate`,
 `simulate`, `run`, `test`, `harden`, `fix_lef_units`, `macro_signoff`,
 `grade_controller`, `ram_synth`, `doctor` — same options as their CLI
-counterparts, but EDA `-flag value` syntax instead of `--flag value`.
+counterparts, but EDA `-flag value` syntax instead of `--flag value`, except
+`--json` (`run`, `simulate`, `test`): a shell command returns its result as a
+Tcl value instead. `tests/software/test_cli_reference.py` checks both.
 
 ### Syntax
 

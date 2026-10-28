@@ -41,6 +41,8 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
+
 try:
     import tkinter
 
@@ -288,6 +290,7 @@ class TclShell:
         fault_type = _pop_str(flags, "-fault-type", "stuck-at")
         pulse_width_ns = _pop_int(flags, "-pulse-width-ns", 2)
         algo = _pop_str(flags, "-algo", "march-c")
+        emit_manifest = _pop_bool(flags, "-emit-manifest", False)
         _reject_unknown(flags)
 
         try:
@@ -298,6 +301,8 @@ class TclShell:
         except (ConfigError, FileNotFoundError, OSError, ValueError) as exc:
             raise RuntimeError(str(exc)) from exc
         self._puts(f"Generated MBIST wrapper: {wrapper_path}")
+        if emit_manifest:
+            self._emit_manifest(wrapper_path.parent, config)
         return str(wrapper_path)
 
     def _cmd_simulate(self, *args: str) -> Any:
@@ -353,6 +358,7 @@ class TclShell:
         faultflow_repo = _pop_str(flags, "-faultflow-repo", None)
         cell_lib = _pop_str(flags, "-cell-lib", "sky130")
         scan_chains = _pop_int(flags, "-scan-chains", 1)
+        emit_manifest = _pop_bool(flags, "-emit-manifest", False)
         _reject_unknown(flags)
 
         try:
@@ -373,7 +379,31 @@ class TclShell:
                 cell_lib=cell_lib, scan_chains=scan_chains, threshold=90.0, max_rounds=20,
             )
             self._grade_and_merge(wrapper_path.parent, opts, run=True)
+        if emit_manifest:
+            self._emit_manifest(wrapper_path.parent, config)
         return coverage
+
+    def _emit_manifest(self, module_outdir: Path, config_path: Path) -> None:
+        """-emit-manifest: write manifest.json from the config.yml snapshot generate
+        wrote next to the wrapper, as the CLI's --emit-manifest does."""
+        from . import __version__
+        from .manifest import ManifestError, build_instance_manifest, write_instance_manifest
+
+        snapshot_path = module_outdir / "config.yml"
+        try:
+            loaded = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise RuntimeError(str(exc)) from exc
+        if not isinstance(loaded, dict):
+            raise RuntimeError(f"{snapshot_path} must be a YAML mapping")
+        try:
+            manifest = build_instance_manifest(
+                loaded, module_outdir, tool_version=__version__, config_path=config_path,
+            )
+            manifest_path = write_instance_manifest(manifest, module_outdir)
+        except (ManifestError, KeyError, ValueError, OSError) as exc:
+            raise RuntimeError(str(exc)) from exc
+        self._puts(f"Emitted instance manifest: {manifest_path}")
 
     def _cmd_test(self, *args: str) -> Any:
         import json
