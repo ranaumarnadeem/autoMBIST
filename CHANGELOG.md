@@ -12,6 +12,8 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-10-28
+
 ### Testing: RTL coverage
 - `tests/integration/test_rtl_coverage.py` measures line and branch coverage of
   the `rtl/` sources with Verilator, which the Python coverage gate never did:
