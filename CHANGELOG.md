@@ -12,6 +12,10 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-28
+
+The release after 0.4.0; there is no 0.5.0.
+
 ### Changed: the on-chip 2D analyzer no longer gives up early
 - When a failing word asked for a spare row and none was left, the 2D
   analyzer used to declare the chip unrepairable at once and skip the verify
@@ -42,9 +46,9 @@ everything that predates the migration.
   reporting `self_repair_fail` straight away. Each retry retires at least one
   spare, so it stops after at most the number of spares. Row-only and 2D
   repair, single- and multi-port; not yet with `topology: shared-bus`. The
-  diagnosis log keeps the first analyze pass. Off by default: existing
-  configs behave exactly as before, and their wrappers only gain tie-offs for
-  the new analyzer and sequencer ports.
+  diagnosis log keeps the first analyze pass. Off by default: without it a
+  verify failure is still final, and wrappers only gain tie-offs for the new
+  analyzer and sequencer ports.
 - `yield-sweep --self-repair --spare-retry` builds with it, to measure the
   gain on random defects in the spares. On the documented example sweep (16 x 8,
   2 spare rows and 1 spare column, defects in the spares) it removes every
