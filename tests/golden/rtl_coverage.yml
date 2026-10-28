@@ -1,0 +1,124 @@
+# Verilator line and branch coverage of rtl/, checked by
+# tests/integration/test_rtl_coverage.py (see its docstring for what runs).
+# Per file: its coverage points, how many the runs reach, and the ones they do
+# not ("line:column type kind"). Rewritten by:
+#   AUTOMBIST_UPDATE_GOLDEN=1 python -m pytest tests/integration/test_rtl_coverage.py
+files:
+  rtl/checkerboard/checkerboard_algo.sv:
+    covered: 9
+    points: 10
+    uncovered:
+    - 75:13 line case
+  rtl/checkerboard/checkerboard_fsm.sv:
+    covered: 35
+    points: 38
+    uncovered:
+    - 170:33 branch if
+    - 194:37 branch if
+    - 219:17 line case
+  rtl/march_1r1w/march_1r1w_algo.sv:
+    covered: 7
+    points: 8
+    uncovered:
+    - 136:13 line case
+  rtl/march_1r1w/march_1r1w_fsm.sv:
+    covered: 34
+    points: 38
+    uncovered:
+    - 173:22 branch else
+    - 176:33 branch if
+    - 197:37 branch if
+    - 220:17 line case
+  rtl/march_2rw/march_2rw_algo.sv:
+    covered: 7
+    points: 8
+    uncovered:
+    - 169:13 line case
+  rtl/march_2rw/march_2rw_fsm.sv:
+    covered: 42
+    points: 46
+    uncovered:
+    - 221:22 branch else
+    - 224:33 branch if
+    - 245:37 branch if
+    - 268:17 line case
+  rtl/march_c/march_c_algo.sv:
+    covered: 15
+    points: 16
+    uncovered:
+    - 94:13 line case
+  rtl/march_c/march_c_fsm.sv:
+    covered: 35
+    points: 38
+    uncovered:
+    - 160:33 branch if
+    - 184:37 branch if
+    - 209:17 line case
+  rtl/march_raw/march_raw_algo.sv:
+    covered: 19
+    points: 20
+    uncovered:
+    - 126:13 line case
+  rtl/march_raw/march_raw_fsm.sv:
+    covered: 35
+    points: 38
+    uncovered:
+    - 160:33 branch if
+    - 184:37 branch if
+    - 209:17 line case
+  rtl/march_x/march_x_algo.sv:
+    covered: 9
+    points: 10
+    uncovered:
+    - 71:13 line case
+  rtl/march_x/march_x_fsm.sv:
+    covered: 35
+    points: 38
+    uncovered:
+    - 166:33 branch if
+    - 190:37 branch if
+    - 215:17 line case
+  rtl/mats_plus/mats_plus_algo.sv:
+    covered: 8
+    points: 9
+    uncovered:
+    - 65:13 line case
+  rtl/mats_plus/mats_plus_fsm.sv:
+    covered: 33
+    points: 38
+    uncovered:
+    - 167:33 branch if
+    - 186:34 branch else
+    - 191:37 branch if
+    - 191:38 branch else
+    - 216:17 line case
+  rtl/onchip_2d_repair_analyzer.sv:
+    covered: 63
+    points: 65
+    uncovered:
+    - 407:13 branch if
+    - 408:17 line block
+  rtl/onchip_diagnosis_log.sv:
+    covered: 20
+    points: 20
+    uncovered: []
+  rtl/onchip_row_repair_analyzer.sv:
+    covered: 30
+    points: 30
+    uncovered: []
+  rtl/onchip_selfrepair_ctrl.sv:
+    covered: 26
+    points: 27
+    uncovered:
+    - 277:17 line case
+  rtl/repair_remap_col.sv:
+    covered: 6
+    points: 6
+    uncovered: []
+  rtl/repair_remap_row.sv:
+    covered: 4
+    points: 4
+    uncovered: []
+total:
+  covered: 472
+  points: 507
