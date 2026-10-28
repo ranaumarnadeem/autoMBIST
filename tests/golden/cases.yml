@@ -7,11 +7,14 @@
 # snapshot, and the saboteur's random fault lists.
 #
 # metrics.yml holds each case's area and test time, except the saboteur's
-# simulation-only builds (tests/integration/test_golden_metrics.py).
+# simulation-only builds (tests/integration/test_golden_metrics.py), and
+# rtl_coverage.yml the rtl/ coverage the same cases reach under Verilator
+# (tests/integration/test_rtl_coverage.py).
 #
 # Add a case for every new template branch. After an intended change to the
 # output, regenerate and review the diff:
-#   AUTOMBIST_UPDATE_GOLDEN=1 python -m pytest tests/software/test_golden_rtl.py tests/integration/test_golden_metrics.py
+#   AUTOMBIST_UPDATE_GOLDEN=1 python -m pytest tests/software/test_golden_rtl.py \
+#       tests/integration/test_golden_metrics.py tests/integration/test_rtl_coverage.py
 
 march-c:
   generate: {algo: march-c}

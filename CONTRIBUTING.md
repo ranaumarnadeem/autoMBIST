@@ -150,9 +150,20 @@ rewrites `metrics.yml`, whose diff then shows the cost:
 
 ```bash
 AUTOMBIST_UPDATE_GOLDEN=1 PYTHONPATH=src ~/cocotb/bin/python -m pytest \
-    tests/software/test_golden_rtl.py tests/integration/test_golden_metrics.py
+    tests/software/test_golden_rtl.py tests/integration/test_golden_metrics.py \
+    tests/integration/test_rtl_coverage.py
 git diff tests/golden
 ```
+
+`tests/integration/test_rtl_coverage.py` measures the RTL's own coverage, which the
+90% gate above (Python only) says nothing about. It builds the same cases, plus
+read-latency 0 and 2 variants of each algorithm, under Verilator with line and branch
+coverage, runs each clean and with defects (BIST, self-repair, a faulty spare, an
+unrepairable map, a persisted-repair load), checks every run's verdict, and compares
+the coverage of every `rtl/` file with `tests/golden/rtl_coverage.yml`, which lists the
+points nothing reaches. A point that loses coverage, or new RTL no run exercises,
+fails it; add a run that reaches it, or, if the point is unreachable, record it with
+the update run above and say why in the test's docstring.
 
 One custom pytest marker (registered in `pyproject.toml`) labels the tests that
 need a full FaultFlow checkout:

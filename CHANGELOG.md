@@ -12,6 +12,25 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Testing: RTL coverage
+- `tests/integration/test_rtl_coverage.py` measures line and branch coverage of
+  the `rtl/` sources with Verilator, which the Python coverage gate never did:
+  the 21 golden cases that build silicon plus read-latency 0 and 2 variants of
+  six algorithms, each run clean and with defects (BIST; on-chip self-repair of
+  a cell, a row, a column, a faulty spare row and spare column, an unrepairable
+  map; a persisted-repair load). 472 of 507 points are reached; the record,
+  `tests/golden/rtl_coverage.yml`, lists the 35 that are not, all unreachable:
+  default arms, branches an algorithm's element order cannot take, and the 2D
+  analyzer's `repair_load` branch, which no valid config drives
+  (`onchip_repair_persistence` is rejected with `onchip_col_repair`). A point
+  that loses coverage, or new RTL no run exercises, fails; dropping the
+  faulty-spare-column run fails it on the 2D analyzer's column-retirement
+  branches.
+- Every run's verdict is checked too, so Verilator now cross-checks Icarus: a
+  good memory passes, a stuck cell fails the BIST, repairable maps repair, and
+  the clean BIST and self-repair take the cycles `tests/golden/metrics.yml`
+  records. Verilator 5.048 and 5.049 report identical points.
+
 ## [0.5.3] - 2026-10-28
 
 ### Testing: area and test-time limits for the golden cases
