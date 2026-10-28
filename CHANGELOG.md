@@ -12,6 +12,19 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Testing: area and test-time limits for the golden cases
+- `tests/integration/test_golden_metrics.py` synthesizes each golden case's
+  wrapper with Yosys (the memory a blackbox) and runs its BIST and its on-chip
+  self-repair with Icarus, then checks the result against
+  `tests/golden/metrics.yml`: cells within 5%, flip-flops exact, no latches, the
+  BIST's clock cycles exact and within the bound the PDL's run loop uses, and
+  self-repair's clock cycles exact. Both directions fail: a drop in area can
+  mean logic was pruned. Two wiring mistakes in the wrapper template, the
+  deferred analyzer switched on for every 2D config and the spare-retry limit
+  wired to 0, fail it in five cases; the second moves only two flip-flops and
+  no cell count by 5%. The saboteur's simulation-only builds are not measured.
+  `AUTOMBIST_UPDATE_GOLDEN=1` rewrites the file.
+
 ## [0.5.2] - 2026-10-28
 
 ### Testing: golden files for `generate`

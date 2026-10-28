@@ -140,6 +140,20 @@ in `cases.yml`; the update run writes its directory. The golden files cover
 `generate` only: `wrap-test-access` output passes through Yosys, so it would depend
 on the Yosys version.
 
+`tests/integration/test_golden_metrics.py` checks what the same cases cost, the way
+OpenROAD checks a flow's metrics against limits: Yosys cells (within 5%), flip-flops
+(exact) and latches (none) of the synthesized wrapper, the BIST's length in clock
+cycles (exact, and within the bound the PDL's run loop uses), and on-chip
+self-repair's length (exact), against `tests/golden/metrics.yml`. It needs Yosys
+and Icarus. A change that moves area or test time fails it until the update run
+rewrites `metrics.yml`, whose diff then shows the cost:
+
+```bash
+AUTOMBIST_UPDATE_GOLDEN=1 PYTHONPATH=src ~/cocotb/bin/python -m pytest \
+    tests/software/test_golden_rtl.py tests/integration/test_golden_metrics.py
+git diff tests/golden
+```
+
 One custom pytest marker (registered in `pyproject.toml`) labels the tests that
 need a full FaultFlow checkout:
 

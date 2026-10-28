@@ -1,0 +1,96 @@
+# Area and test time of the golden cases, checked by
+# tests/integration/test_golden_metrics.py (see its docstring for each metric and
+# its tolerance). Rewritten by:
+#   AUTOMBIST_UPDATE_GOLDEN=1 python -m pytest tests/integration/test_golden_metrics.py
+checkerboard:
+  bist_cycles: 241
+  cells: 193
+  flops: 15
+march-1r1w:
+  bist_cycles: 273
+  cells: 160
+  flops: 14
+march-2rw:
+  bist_cycles: 241
+  cells: 188
+  flops: 15
+march-c:
+  bist_cycles: 401
+  cells: 185
+  flops: 15
+march-c-rl0-we-high:
+  bist_cycles: 321
+  cells: 179
+  flops: 14
+march-c-rl2-fixed-geometry:
+  bist_cycles: 481
+  cells: 201
+  flops: 17
+march-raw:
+  bist_cycles: 577
+  cells: 193
+  flops: 16
+march-x:
+  bist_cycles: 241
+  cells: 176
+  flops: 15
+mats-plus:
+  bist_cycles: 193
+  cells: 141
+  flops: 15
+selfrepair-1r1w-2d:
+  bist_cycles: 273
+  cells: 562
+  flops: 54
+  selfrepair_cycles: 551
+selfrepair-2d:
+  bist_cycles: 401
+  cells: 580
+  flops: 55
+  selfrepair_cycles: 807
+selfrepair-2d-deferred-retry-diagnosis:
+  bist_cycles: 401
+  cells: 1045
+  flops: 147
+  selfrepair_cycles: 1211
+selfrepair-2rw-2d-retry:
+  bist_cycles: 241
+  cells: 729
+  flops: 63
+  selfrepair_cycles: 487
+selfrepair-row:
+  bist_cycles: 401
+  cells: 330
+  flops: 41
+  selfrepair_cycles: 807
+selfrepair-row-persistence-diagnosis:
+  bist_cycles: 401
+  cells: 534
+  flops: 85
+  selfrepair_cycles: 807
+selfrepair-row-retry:
+  bist_cycles: 401
+  cells: 383
+  flops: 47
+  selfrepair_cycles: 807
+shared-bus:
+  bist_cycles: 1209
+  cells: 246
+  flops: 22
+shared-bus-selfrepair-2d:
+  bist_cycles: 806
+  cells: 1021
+  flops: 104
+  selfrepair_cycles: 1618
+spare-wen-tied-off:
+  bist_cycles: 401
+  cells: 185
+  flops: 15
+tester-row-col-repair:
+  bist_cycles: 401
+  cells: 253
+  flops: 15
+tester-row-repair:
+  bist_cycles: 401
+  cells: 211
+  flops: 15
