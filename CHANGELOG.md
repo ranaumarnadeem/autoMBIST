@@ -12,6 +12,18 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Testing: golden files for `generate`
+- `tests/software/test_golden_rtl.py` compares what `generate` writes for 24
+  reference configs (`tests/golden/cases.yml`: every algorithm, single-port,
+  `march-1r1w` and `march-2rw` ports, read latency 0 to 2, tester-driven and
+  on-chip repair in each mode, shared-bus, the saboteur's three fault types)
+  with checked-in copies in `tests/golden/`, byte for byte: the wrapper, the
+  blackbox stub, the saboteur and its Makefile, the `tb/` testbench, model and
+  run script, and the list of copied `rtl/` sources. An unintended change to the
+  generated output now fails a test; an intended one shows up as a diff of the
+  golden files. `AUTOMBIST_UPDATE_GOLDEN=1` regenerates them (see
+  CONTRIBUTING.md). No change to `generate` itself.
+
 ## [0.5.1] - 2026-10-28
 
 The release after 0.4.0; there is no 0.5.0.
