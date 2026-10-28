@@ -51,8 +51,8 @@ _CYCLES_PER_ADDRESS: dict[str, tuple[int, int]] = {
 # controller's switch to its next memory.
 _CYCLES_PER_MEMORY = 3
 # Margin on the computed BIST length: the timeout and the PDL's run loop need
-# an upper bound, and a configuration no test measured (column repair,
-# diagnosis) may add a few cycles.
+# an upper bound. Repair and diagnosis add no cycles in the configurations
+# tests/golden/metrics.yml measures, but one it does not measure may.
 _BOUND_MARGIN = 1.25
 _BOUND_SLACK = 16
 
