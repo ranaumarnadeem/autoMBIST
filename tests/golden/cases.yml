@@ -6,9 +6,12 @@
 # rtl/ sources it only copies (listed in rtl_copied.txt instead), the config.yml
 # snapshot, and the saboteur's random fault lists.
 #
+# metrics.yml holds each case's area and test time, except the saboteur's
+# simulation-only builds (tests/integration/test_golden_metrics.py).
+#
 # Add a case for every new template branch. After an intended change to the
 # output, regenerate and review the diff:
-#   AUTOMBIST_UPDATE_GOLDEN=1 python -m pytest tests/software/test_golden_rtl.py
+#   AUTOMBIST_UPDATE_GOLDEN=1 python -m pytest tests/software/test_golden_rtl.py tests/integration/test_golden_metrics.py
 
 march-c:
   generate: {algo: march-c}
