@@ -117,6 +117,29 @@ If you only want the fast, tool-independent slice while iterating:
 PYTHONPATH=src ~/cocotb/bin/python -m pytest tests/software -q
 ```
 
+### Golden files
+
+`tests/software/test_golden_rtl.py` runs `generate` on every reference config in
+`tests/golden/cases.yml` and compares what it writes (the wrapper, the memory's
+blackbox stub, the saboteur and its Makefile, the `tb/` testbench, model and run
+script, and the list of copied `rtl/` sources) with `tests/golden/<case>/`, byte
+for byte. The behavioural tests check that the RTL works; this one checks that it
+did not change by accident.
+
+A template change that alters the output fails it, by design. If the change is
+intended, regenerate the golden files and review their diff before committing it
+with the template change:
+
+```bash
+AUTOMBIST_UPDATE_GOLDEN=1 PYTHONPATH=src ~/cocotb/bin/python -m pytest tests/software/test_golden_rtl.py
+git diff tests/golden
+```
+
+A new template branch (a config option, an algorithm, a port shape) gets a new case
+in `cases.yml`; the update run writes its directory. The golden files cover
+`generate` only: `wrap-test-access` output passes through Yosys, so it would depend
+on the Yosys version.
+
 One custom pytest marker (registered in `pyproject.toml`) labels the tests that
 need a full FaultFlow checkout:
 
@@ -209,6 +232,9 @@ tests/integration/       Tool-gated tests (Icarus/Verilator/Yosys), written to
                          skip cleanly when a tool is absent.
 tests/hardware/          cocotb testbenches + the Makefile that drives them
                          through Icarus Verilog.
+tests/golden/            Reference configs (cases.yml) and the exact RTL,
+                         testbench and scripts `generate` writes for each,
+                         checked by tests/software/test_golden_rtl.py.
 ```
 
 ## Contribution Etiquette
