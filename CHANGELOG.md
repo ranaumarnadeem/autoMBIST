@@ -12,6 +12,8 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-10-29
+
 ### Fixed
 - The Tcl shell's `fix_lef_units` without a LEF argument, and its `test` with
   an `-addr-width` or `-data-width` that is not an integer, now fail with one
