@@ -12,6 +12,30 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-10-28
+
+### Added
+- The Tcl shell's `generate` and `run` take `-emit-manifest`, as their CLI
+  counterparts take `--emit-manifest`. The shell section of the CLI reference
+  said every shell command had its CLI counterpart's options; these two lacked
+  it, which the check below found.
+
+### Documentation
+- The CLI reference documents `fix-lef-units --target-dbu` and
+  `macro-signoff --script` (and their arguments), which it never mentioned, and
+  says the shell has no `-json`: a shell command returns its result as a Tcl
+  value instead.
+
+### Testing: the CLI reference matches the CLI
+- `tests/software/test_cli_reference.py`, after OpenSTA's command-help check:
+  every command the CLI has has a section in `cli-reference.md` (or, for `test`
+  and `algo`, `algo-shell-guide.md`), every section a command, every option is
+  mentioned in its command's section, every flag an option table names exists,
+  and the top-level options are in the overview. For the Tcl shell, the
+  commands it registers are the ones its section lists, and each takes exactly
+  its CLI counterpart's options except `--json`. The commands come from the
+  Typer app and the shell's flags from its source, so no Tcl is needed.
+
 ## [0.5.4] - 2026-10-28
 
 ### Testing: RTL coverage

@@ -285,6 +285,69 @@ def test_run_command_generates_then_simulates(shell: TclShell, tmp_path: Path, m
     assert result == "100.0"
 
 
+_REAL_CONFIG = """\
+memory_name: sram_1rw
+wrapper_module_name: sram_1rw_mbist
+addr_width: 4
+data_width: 8
+we_active_low: true
+ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
+"""
+
+
+def test_generate_command_emit_manifest_writes_the_manifest(shell: TclShell, tmp_path: Path) -> None:
+    """-emit-manifest is the CLI's --emit-manifest: generate for real, then
+    manifest.json from the config.yml snapshot next to the wrapper."""
+    import json
+
+    from autombist import __version__
+
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(_REAL_CONFIG, encoding="utf-8")
+
+    plain = shell.eval(f"generate -config {_q(config_path)} -out {_q(tmp_path / 'plain')}")
+    assert not (Path(plain).parent / "manifest.json").exists()
+
+    result = shell.eval(f"generate -config {_q(config_path)} -out {_q(tmp_path / 'out')} -emit-manifest")
+    manifest = json.loads((Path(result).parent / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["tool_version"] == __version__
+    assert any(i["hierarchical_path"].endswith("u_algo_top") for i in manifest["instances"])
+
+
+def test_run_command_emit_manifest_writes_it_after_simulating(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(_REAL_CONFIG, encoding="utf-8")
+
+    class _FakeResult:
+        report = {"fault_metrics": {"coverage_percent": 100.0}, "status": "pass"}
+
+    monkeypatch.setattr(tcl_shell_mod, "run_simulation", lambda outdir, **kwargs: _FakeResult())
+    monkeypatch.setattr(tcl_shell_mod, "format_simulation_summary", lambda report: "SUMMARY")
+
+    result = shell.eval(f"run -config {_q(config_path)} -out {_q(tmp_path / 'out')} -emit-manifest")
+
+    assert result == "100.0"
+    assert (tmp_path / "out" / "sram_1rw" / "manifest.json").is_file()
+
+
+def test_emit_manifest_without_a_config_snapshot_is_a_tcl_error(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.yml"
+    config_path.write_text("memory_name: sram_1rw\n", encoding="utf-8")
+    module_outdir = tmp_path / "out" / "sram_1rw"
+
+    def fake_generate_from_config(config, out, **kwargs):
+        module_outdir.mkdir(parents=True, exist_ok=True)
+        return module_outdir / "sram_1rw_mbist.v"
+
+    monkeypatch.setattr(tcl_shell_mod, "generate_from_config", fake_generate_from_config)
+
+    caught = shell.eval(
+        f"if {{[catch {{generate -config {_q(config_path)} -out {_q(tmp_path / 'out')} -emit-manifest}} err]}}"
+        " { set result $err } else { set result {NO ERROR} }"
+    )
+    assert caught.startswith("generate: ") and "config.yml" in caught
+
+
 def test_run_command_faultflow_grades_controller_after_simulate(
     shell: TclShell, tmp_path: Path, monkeypatch
 ) -> None:
