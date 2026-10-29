@@ -12,6 +12,12 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Changed
+- The Nix dev shell, and so CI, pins warptap 0.0.5 (from 0.0.4). In the modules
+  autoMBIST uses, 0.0.5 changed only docstrings; what it adds (IEEE 1500
+  wrappers, the continuous-decompressor retarget) autoMBIST does not use yet.
+  autoMBIST still needs 0.0.4 or later.
+
 ### Fixed
 - `wrap-test-access` works out the BIST's run length from `--config` before
   the test-access insertion, so a config it cannot size (an algorithm with no
