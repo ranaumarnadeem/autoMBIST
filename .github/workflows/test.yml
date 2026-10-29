@@ -70,3 +70,41 @@ jobs:
           nix develop --command \
             pytest tests/software tests/integration \
               --cov=autombist --cov-report=term-missing --cov-fail-under=90
+
+  # The same suite in the same flake dev shell on Apple Silicon macOS (Intel macOS
+  # is out: nixpkgs' iverilog does not build for x86_64-darwin). The coverage gate
+  # stays with the Linux job, since the suite and so its coverage are the same.
+  # The first run builds cocotb, which the flake un-marks as broken on darwin and
+  # so cache.nixos.org does not have; magic-nix-cache keeps it after that.
+  pytest-macos:
+    name: pytest (macOS)
+    runs-on: macos-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Enable Nix binary cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # ccache's default directory on macOS is ~/Library/Caches/ccache.
+      - name: Cache verilator build artifacts (ccache + engine build cache)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/ccache
+            /tmp/autombist-engine-cache
+          key: ${{ runner.os }}-autombist-buildcache-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-autombist-buildcache-
+
+      - name: Run test suite
+        run: |
+          nix develop --command pytest tests/software tests/integration
