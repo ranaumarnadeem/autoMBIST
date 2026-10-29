@@ -12,6 +12,35 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-10-29
+
+### Fixed
+- The Tcl shell's `fix_lef_units` without a LEF argument, and its `test` with
+  an `-addr-width` or `-data-width` that is not an integer, now fail with one
+  Tcl error like any other usage mistake. Both printed a Python traceback
+  first, and the first named the command twice
+  (`fix_lef_units: fix_lef_units: ...`).
+
+### Testing: the least-tested modules
+- `cli_render.py` (66% before), `tcl_shell.py` (79%), `main.py` and
+  `__main__.py` are at 100% line coverage and `cli.py` (88%) at 99%; the
+  package is at 97.22% (94.33%). The new tests render the rich table and check
+  its colours, and run the spinner and the progress bar with rich and without
+  it; take every Tcl shell command through its error paths, and the shell
+  through its REPL and batch modes; and take each CLI command through its error
+  exits and its less common branches (`fix-lef-units` had no test at all, nor
+  `smoke` without `--out`, the self-repair columns of the `yield-sweep` table,
+  or `shell` reading a piped script).
+- `tests/software/test_entry_points.py` starts the CLI every way it can be
+  started (the console script's module, `python -m autombist`,
+  `python -m autombist.cli`, and `cli.py` or `main.py` run as a plain script)
+  and checks that each prints the version. It also checks that the imports
+  `cli.py` and `tcl_shell.py` fall back to as a plain script name the same
+  things as their package imports.
+- The `shell` command no longer wraps an import that cannot fail in a `try`.
+- Still uncovered: three error exits of `wrap-test-access` that run only after
+  a real test-access insertion (6 lines of `cli.py`).
+
 ## [0.5.5] - 2026-10-28
 
 ### Added
