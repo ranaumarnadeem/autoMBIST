@@ -31,11 +31,52 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
 
         # cocotb 2.0.1 supports Python up to 3.13; pin 3.11 explicitly rather
         # than a bare python3 that could resolve to >= 3.14 (where the nixpkgs
         # cocotb package is disabled).
-        python = pkgs.python311;
+        #
+        # On macOS, nixpkgs marks cocotb broken (`broken = isDarwin`, no reason
+        # given), though cocotb's own CI tests macOS with Icarus and Verilator.
+        # Lift that, and skip cocotb's own test suite there; this project's
+        # suite, run by the macOS CI job, is what checks it. Linux keeps the
+        # unmodified package, so its closure still comes from the binary cache.
+        python =
+          if isDarwin then
+            pkgs.python311.override {
+              self = python;
+              packageOverrides = pyself: pysuper: {
+                cocotb = pysuper.cocotb.overridePythonAttrs (old: {
+                  doCheck = false;
+                  meta = old.meta // { broken = false; };
+                });
+              };
+            }
+          else
+            pkgs.python311;
+
+        # Verilator's generated C++ is compiled with the compiler that built
+        # Verilator: gcc on Linux, the stdenv's clang on macOS (pkgs.gcc there
+        # would put gcc 15 beside it).
+        cxx = if isDarwin then pkgs.stdenv.cc else pkgs.gcc;
+
+        # Verilator 5.048 does not build on macOS 26 in this nixpkgs release (Hydra's
+        # aarch64-darwin builds all fail): its src/flexfix rewrites the lexer's
+        # LexerInput/LexerOutput to size_t on macOS 26+, for Apple's own flex,
+        # but nixpkgs' flex declares them with int. nixpkgs master turns that
+        # rewrite off on darwin (2b396535ad, "verilator: fix build on darwin");
+        # the same one line here keeps Verilator at 5.048 on both platforms.
+        verilator =
+          if isDarwin then
+            pkgs.verilator.overrideAttrs (old: {
+              postPatch = old.postPatch + ''
+                substituteInPlace src/flexfix \
+                  --replace-fail 'if platform.system() == "Darwin":' 'if False:'
+              '';
+            })
+          else
+            pkgs.verilator;
 
         pythonEnv = python.withPackages (ps: with ps; [
           cocotb        # 2.x -- provides cocotb_tools/cocotb-config in the same wheel
@@ -86,7 +127,7 @@
 
           postFixup = ''
             wrapProgram $out/bin/autombist               --prefix PATH : ${pkgs.lib.makeBinPath [
-                pkgs.verilator pkgs.iverilog pkgs.yosys pkgs.gnumake pkgs.gcc
+                verilator pkgs.iverilog pkgs.yosys pkgs.gnumake cxx
               ]}
           '';
 
@@ -110,11 +151,11 @@
         devShells.default = pkgs.mkShell {
           packages = [
             pythonEnv
-            pkgs.verilator
+            verilator
             pkgs.iverilog
             pkgs.yosys
             pkgs.gnumake   # runner.py drives cocotb's Makefile.sim via `make`
-            pkgs.gcc       # verilator emits C++ that must be compiled
+            cxx            # verilator emits C++ that must be compiled
             pkgs.ccache    # verilated.mk reads $OBJCACHE, empty by default (see below)
           ];
 
