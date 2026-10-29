@@ -176,6 +176,12 @@ def _pop_int(flags: dict[str, str], name: str, default: int | None = None) -> in
         raise RuntimeError(f"flag {name} expects an integer, got {value!r}") from None
 
 
+def _pop_required_int(flags: dict[str, str], name: str) -> int:
+    """A required integer flag: _pop_required's message when it is missing,
+    _pop_int's when its value is not an integer."""
+    return _pop_int({name: _pop_required(flags, name)}, name)
+
+
 def _pop_float(flags: dict[str, str], name: str, default: float | None = None) -> float | None:
     value = flags.pop(name, None)
     if value is None:
@@ -422,8 +428,8 @@ class TclShell:
         from .fsm_harness import FsmPortError, check_ports, gather_sibling_sources
 
         flags = _parse_flags(args)
-        addr_width = int(_pop_required(flags, "-addr-width"))
-        data_width = int(_pop_required(flags, "-data-width"))
+        addr_width = _pop_required_int(flags, "-addr-width")
+        data_width = _pop_required_int(flags, "-data-width")
         algo = _pop_str(flags, "-algo", "march_c")
         fsm = _pop_str(flags, "-fsm", None)
         faults_path = Path(_pop_required(flags, "-faults"))
@@ -554,7 +560,7 @@ class TclShell:
         # LEF path is the one positional argument, expected first (before any
         # flags) -- mirrors "fix_lef_units path/to.lef -target-dbu 1000".
         if not args or args[0].startswith("-"):
-            raise ValueError("fix_lef_units: missing LEF path argument")
+            raise RuntimeError("missing LEF path argument")
         lef, *rest = args
         flags = _parse_flags(tuple(rest))
         out = _pop_str(flags, "-out", None)
