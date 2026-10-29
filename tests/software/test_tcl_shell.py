@@ -802,6 +802,17 @@ def test_pop_float_bad_value_raises_runtimeerror_not_bare_valueerror() -> None:
         _pop_float({"-min-coverage": "abc"}, "-min-coverage")
 
 
+def test_test_command_non_integer_width_is_a_clean_tcl_error(shell: TclShell, capsys) -> None:
+    """-addr-width and -data-width are required integers: a value that is not
+    one gets _pop_int's message, not a bare int() ValueError's traceback."""
+    caught = shell.eval(
+        "if {[catch {test -addr-width eight -data-width 8 -faults x.txt} err]} "
+        "{ set result $err } else { set result {NO ERROR} }"
+    )
+    assert caught == "test: flag -addr-width expects an integer, got 'eight'"
+    assert "Traceback" not in capsys.readouterr().err
+
+
 def test_doctor_command_returns_missing_tools_list(shell: TclShell, monkeypatch) -> None:
     fake_rows = [
         ("make", "OK", "simulate, run", "/usr/bin/make"),
@@ -867,3 +878,516 @@ def test_autombist_cli_still_imports_when_tkinter_stubbed_absent(monkeypatch) ->
     # Restore real state for any tests that run after this one.
     monkeypatch.undo()
     importlib.reload(cli_mod)
+
+
+# ---------------------------------------------------------------------------
+# Error paths: every failure a command can meet comes back as a catchable Tcl
+# error with a clean message, never a Python traceback.
+# ---------------------------------------------------------------------------
+
+
+def _tcl_error(shell: TclShell, command: str) -> str:
+    """Run ``command`` under Tcl's catch and return its error message."""
+    return shell.eval(
+        f"if {{[catch {{{command}}} err]}} {{ set result $err }} else {{ set result {{NO ERROR}} }}"
+    )
+
+
+def _module_outdir(tmp_path: Path) -> Path:
+    module_outdir = tmp_path / "out" / "sram_1rw"
+    module_outdir.mkdir(parents=True)
+    (module_outdir / "sram_1rw_mbist.v").write_text("// stub\n", encoding="utf-8")
+    (module_outdir / "config.yml").write_text("memory_name: sram_1rw\n", encoding="utf-8")
+    return module_outdir
+
+
+def _config(tmp_path: Path) -> Path:
+    config_path = tmp_path / "config.yml"
+    config_path.write_text("memory_name: sram_1rw\n", encoding="utf-8")
+    return config_path
+
+
+def _raise(exc: BaseException):
+    def fake(*args, **kwargs):
+        raise exc
+
+    return fake
+
+
+class _FakeSpec:
+    name = "march_c"
+    length_n = 10
+
+
+class _FakeCampaign:
+    total = 4
+    detected = 3
+    coverage_percent = 75.0
+    sequence = None
+
+
+def _faults_file(tmp_path: Path) -> Path:
+    faults_path = tmp_path / "faults.txt"
+    faults_path.write_text("SA0 3 0 0 0 0 0\n", encoding="ascii")
+    return faults_path
+
+
+def test_generate_command_config_error_is_a_clean_tcl_error(
+    shell: TclShell, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(
+        tcl_shell_mod, "generate_from_config", _raise(tcl_shell_mod.ConfigError("addr_width must be > 0"))
+    )
+
+    caught = _tcl_error(shell, f"generate -config {_q(_config(tmp_path))}")
+
+    assert caught == "generate: addr_width must be > 0"
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_simulate_command_missing_out_directory_is_a_tcl_error(shell: TclShell, tmp_path: Path) -> None:
+    caught = _tcl_error(shell, f"simulate -out {_q(tmp_path / 'nowhere')}")
+    assert caught.startswith("simulate: Output directory not found")
+
+
+def test_simulate_command_simulation_error_is_a_tcl_error(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    _module_outdir(tmp_path)
+    monkeypatch.setattr(tcl_shell_mod, "run_simulation", _raise(tcl_shell_mod.SimulationError("make exited 2")))
+
+    caught = _tcl_error(shell, f"simulate -out {_q(tmp_path / 'out')}")
+
+    assert caught == "simulate: make exited 2"
+
+
+def test_run_command_generate_error_stops_before_simulating(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tcl_shell_mod, "generate_from_config", _raise(ValueError("unknown algo 'march-q'")))
+    monkeypatch.setattr(
+        tcl_shell_mod, "run_simulation", _raise(AssertionError("run must not simulate after a failed generate"))
+    )
+
+    caught = _tcl_error(shell, f"run -config {_q(_config(tmp_path))}")
+
+    assert caught == "run: unknown algo 'march-q'"
+
+
+def test_emit_manifest_snapshot_that_is_not_a_mapping_is_a_tcl_error(
+    shell: TclShell, tmp_path: Path, monkeypatch
+) -> None:
+    module_outdir = tmp_path / "out" / "sram_1rw"
+
+    def fake_generate_from_config(config, out, **kwargs):
+        module_outdir.mkdir(parents=True, exist_ok=True)
+        (module_outdir / "config.yml").write_text("- not\n- a mapping\n", encoding="utf-8")
+        return module_outdir / "sram_1rw_mbist.v"
+
+    monkeypatch.setattr(tcl_shell_mod, "generate_from_config", fake_generate_from_config)
+
+    caught = _tcl_error(shell, f"generate -config {_q(_config(tmp_path))} -out {_q(tmp_path / 'out')} -emit-manifest")
+
+    assert caught.startswith("generate: ") and caught.endswith("must be a YAML mapping")
+
+
+def test_emit_manifest_build_error_is_a_tcl_error(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    from autombist.manifest import ManifestError
+
+    config_path = tmp_path / "real.yml"
+    config_path.write_text(_REAL_CONFIG, encoding="utf-8")
+    monkeypatch.setattr(
+        "autombist.manifest.build_instance_manifest", _raise(ManifestError("no u_algo_top in the wrapper"))
+    )
+
+    caught = _tcl_error(shell, f"generate -config {_q(config_path)} -out {_q(tmp_path / 'out')} -emit-manifest")
+
+    assert caught == "generate: no u_algo_top in the wrapper"
+
+
+def test_test_command_writes_the_report_and_the_diagnosis(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("autombist.alg_spec.resolve_algo", lambda name: _FakeSpec())
+    monkeypatch.setattr("autombist.algo_engine.run_algo_campaign", lambda *args, **kwargs: _FakeCampaign())
+    monkeypatch.setattr(
+        "autombist.algo_reporting.write_campaign_report",
+        lambda result, path, *, fmt: captured.update(report=(path, fmt)),
+    )
+    monkeypatch.setattr(
+        "autombist.algo_reporting.write_diagnosis_report",
+        lambda result, path, *, fmt: captured.update(diagnosis=(path, fmt)),
+    )
+
+    result = shell.eval(
+        f"test -addr-width 4 -data-width 8 -faults {_q(_faults_file(tmp_path))} "
+        f"-report {_q(tmp_path / 'cov.json')} -fmt json -diagnosis {_q(tmp_path / 'diag.md')}"
+    )
+
+    assert result == "75.0"
+    assert captured["report"] == (tmp_path / "cov.json", "json")
+    assert captured["diagnosis"] == (tmp_path / "diag.md", "md")
+
+
+@pytest.mark.parametrize(
+    ("flags", "fragment"),
+    [
+        ("-report r.md -fmt docx", "unknown report format 'docx'"),
+        ("-diagnosis d.md -diagnosis-fmt docx", "unknown diagnosis report format 'docx'"),
+    ],
+)
+def test_test_command_bad_format_fails_before_the_campaign_runs(
+    shell: TclShell, tmp_path: Path, monkeypatch, flags: str, fragment: str
+) -> None:
+    monkeypatch.setattr(
+        "autombist.algo_engine.run_algo_campaign", _raise(AssertionError("the campaign must not run"))
+    )
+
+    caught = _tcl_error(shell, f"test -addr-width 4 -data-width 8 -faults {_q(_faults_file(tmp_path))} {flags}")
+
+    assert caught.startswith("test: ") and fragment in caught
+
+
+def test_test_command_fault_types_that_is_not_a_list_is_a_tcl_error(shell: TclShell, tmp_path: Path) -> None:
+    fault_types_path = tmp_path / "types.json"
+    fault_types_path.write_text('{"name": "custom_flip"}', encoding="utf-8")
+
+    caught = _tcl_error(
+        shell,
+        f"test -addr-width 4 -data-width 8 -faults {_q(_faults_file(tmp_path))} -fault-types {_q(fault_types_path)}",
+    )
+
+    assert caught == "test: -fault-types file must contain a JSON list of fault-primitive specs"
+
+
+def _fake_fsm(monkeypatch, tmp_path: Path, *, matches: bool) -> dict[str, object]:
+    captured: dict[str, object] = {}
+
+    class _Ports:
+        module_name = "march_c_top"
+
+    class _Sequence:
+        observed_count = 10
+
+        def message(self) -> str:
+            return "op 4: expected r1, observed r0"
+
+    _Sequence.matches = matches
+
+    class _FsmCampaign(_FakeCampaign):
+        sequence = _Sequence()
+
+    def fake_run_fsm_campaign(mem, sources, module_name, records, **kwargs):
+        captured.update(sources=sources, module_name=module_name, kwargs=kwargs)
+        return _FsmCampaign()
+
+    monkeypatch.setattr("autombist.fsm_harness.gather_sibling_sources", lambda path: [path, path.parent / "pkg.sv"])
+    monkeypatch.setattr("autombist.fsm_harness.check_ports", lambda text: _Ports())
+    monkeypatch.setattr("autombist.alg_spec.resolve_algo", lambda name: _FakeSpec())
+    monkeypatch.setattr("autombist.algo_engine.run_fsm_campaign", fake_run_fsm_campaign)
+    fsm_path = tmp_path / "march_c_top.sv"
+    fsm_path.write_text("module march_c_top; endmodule\n", encoding="utf-8")
+    captured["fsm"] = fsm_path
+    return captured
+
+
+def test_test_command_fsm_with_check_sequence_reports_a_match(
+    shell: TclShell, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    captured = _fake_fsm(monkeypatch, tmp_path, matches=True)
+
+    result = shell.eval(
+        f"test -addr-width 4 -data-width 8 -faults {_q(_faults_file(tmp_path))} "
+        f"-fsm {_q(captured['fsm'])} -check-sequence"
+    )
+
+    assert result == "75.0"
+    assert captured["module_name"] == "march_c_top"
+    assert len(captured["sources"]) == 2
+    assert isinstance(captured["kwargs"]["expected_spec"], _FakeSpec)
+    out = capsys.readouterr().out
+    assert "FSM:march_c_top (2 source file(s))" in out
+    assert "sequence: OK (10 ops match march_c)" in out
+
+
+def test_test_command_fsm_sequence_mismatch_is_a_tcl_error(
+    shell: TclShell, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    captured = _fake_fsm(monkeypatch, tmp_path, matches=False)
+
+    caught = _tcl_error(
+        shell,
+        f"test -addr-width 4 -data-width 8 -faults {_q(_faults_file(tmp_path))} "
+        f"-fsm {_q(captured['fsm'])} -check-sequence",
+    )
+
+    assert caught == "test: controller does not implement its specified march sequence"
+    out = capsys.readouterr().out
+    assert "sequence: MISMATCH vs march_c" in out
+    assert "op 4: expected r1, observed r0" in out
+
+
+def test_test_command_check_sequence_without_fsm_is_a_tcl_error(shell: TclShell, tmp_path: Path) -> None:
+    caught = _tcl_error(
+        shell, f"test -addr-width 4 -data-width 8 -faults {_q(_faults_file(tmp_path))} -check-sequence"
+    )
+    assert caught == "test: -check-sequence requires -fsm"
+
+
+def test_test_command_min_coverage_gate_is_a_tcl_error(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("autombist.alg_spec.resolve_algo", lambda name: _FakeSpec())
+    monkeypatch.setattr("autombist.algo_engine.run_algo_campaign", lambda *args, **kwargs: _FakeCampaign())
+
+    caught = _tcl_error(
+        shell, f"test -addr-width 4 -data-width 8 -faults {_q(_faults_file(tmp_path))} -min-coverage 90"
+    )
+
+    assert caught == "test: coverage 75.00% is below -min-coverage 90.00%"
+
+
+def test_harden_command_invalid_config_is_a_tcl_error(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "harden.yml"
+    config_path.write_text("design_name: stub\n", encoding="utf-8")
+    monkeypatch.setattr(
+        tcl_shell_mod, "build_librelane_config", _raise(tcl_shell_mod.SignoffConfigError("die_area is required"))
+    )
+
+    caught = _tcl_error(shell, f"harden -config {_q(config_path)} -out {_q(tmp_path / 'll.json')}")
+
+    assert caught == "harden: die_area is required"
+
+
+def _harden_run(shell: TclShell, tmp_path: Path, monkeypatch, *, nix: str | None, returncode: int = 0) -> str:
+    config_path = tmp_path / "harden.yml"
+    config_path.write_text("design_name: stub\n", encoding="utf-8")
+
+    class _Completed:
+        pass
+
+    _Completed.returncode = returncode
+    monkeypatch.setattr(tcl_shell_mod, "build_librelane_config", lambda loaded: {"DESIGN_NAME": "stub"})
+    monkeypatch.setattr("shutil.which", lambda name: nix)
+    monkeypatch.setattr("subprocess.run", lambda cmd: _Completed())
+    return _tcl_error(shell, f"harden -config {_q(config_path)} -out {_q(tmp_path / 'll.json')} -run")
+
+
+def test_harden_command_run_without_nix_is_a_tcl_error(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    caught = _harden_run(shell, tmp_path, monkeypatch, nix=None)
+    assert caught.startswith("harden: 'nix' not found on PATH")
+
+
+def test_harden_command_run_librelane_failure_is_a_tcl_error(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    caught = _harden_run(shell, tmp_path, monkeypatch, nix="/usr/bin/nix", returncode=3)
+    assert caught == "harden: LibreLane exited with code 3"
+
+
+@pytest.mark.parametrize("command", ["fix_lef_units", "fix_lef_units -target-dbu 1000"])
+def test_fix_lef_units_without_a_lef_is_a_clean_tcl_error(shell: TclShell, capsys, command: str) -> None:
+    """A usage mistake, like a typo'd flag: one message naming the command
+    once, and no traceback."""
+    caught = _tcl_error(shell, command)
+
+    assert caught == "fix_lef_units: missing LEF path argument"
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_fix_lef_units_missing_lef_file_is_a_tcl_error(shell: TclShell, tmp_path: Path) -> None:
+    caught = _tcl_error(shell, f"fix_lef_units {_q(tmp_path / 'missing.lef')}")
+    assert caught == f"fix_lef_units: LEF not found: {tmp_path / 'missing.lef'}"
+
+
+def test_macro_signoff_missing_script_is_a_tcl_error(shell: TclShell, tmp_path: Path) -> None:
+    caught = _tcl_error(shell, f"macro_signoff -script {_q(tmp_path / 'missing.sh')}")
+    assert caught == f"macro_signoff: signoff script not found: {tmp_path / 'missing.sh'}"
+
+
+@pytest.mark.parametrize(
+    ("bash", "returncode", "expected"),
+    [
+        (None, 0, "macro_signoff: 'bash' not found on PATH -- macro_signoff runs the script via bash"),
+        ("/usr/bin/bash", 2, "macro_signoff: macro-signoff exited with code 2"),
+    ],
+)
+def test_macro_signoff_run_failures_are_tcl_errors(
+    shell: TclShell, tmp_path: Path, monkeypatch, bash: str | None, returncode: int, expected: str
+) -> None:
+    script = tmp_path / "run_macro_signoff.sh"
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    class _Completed:
+        pass
+
+    _Completed.returncode = returncode
+    monkeypatch.setattr("shutil.which", lambda name: bash)
+    monkeypatch.setattr("subprocess.run", lambda cmd: _Completed())
+
+    assert _tcl_error(shell, f"macro_signoff -script {_q(script)}") == expected
+
+
+def test_grade_controller_faultflow_error_is_a_tcl_error(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    from autombist.faultflow_flow import FaultFlowError
+
+    _module_outdir(tmp_path)
+    monkeypatch.setattr(tcl_shell_mod, "run_controller_grading", _raise(FaultFlowError("FAULTFLOW_HOME is not set")))
+
+    caught = _tcl_error(shell, f"grade_controller -out {_q(tmp_path / 'out')}")
+
+    assert caught == "grade_controller: FAULTFLOW_HOME is not set"
+
+
+def test_grade_controller_without_run_returns_the_bundle(
+    shell: TclShell, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module_outdir = _module_outdir(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_run_controller_grading(outdir, opts, *, run=True):
+        captured["run"] = run
+        return None
+
+    monkeypatch.setattr(tcl_shell_mod, "run_controller_grading", fake_run_controller_grading)
+
+    result = shell.eval(f"grade_controller -out {_q(tmp_path / 'out')} -run 0")
+
+    assert result == str(module_outdir / "faultflow")
+    assert captured["run"] is False
+    assert f"Emitted FaultFlow bundle: {module_outdir / 'faultflow'}" in capsys.readouterr().out
+
+
+def test_grade_controller_leaves_an_unreadable_report_alone(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    """A corrupt reports/latest.json is not grading's to fix: the coverage is
+    still returned and the file is left as it was."""
+    module_outdir = _module_outdir(tmp_path)
+    (module_outdir / "reports").mkdir()
+    latest = module_outdir / "reports" / "latest.json"
+    latest.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(
+        tcl_shell_mod,
+        "run_controller_grading",
+        lambda outdir, opts, *, run=True: {"coverage_percent": 91.0, "detected": 9, "denominator": 10},
+    )
+
+    result = shell.eval(f"grade_controller -out {_q(tmp_path / 'out')}")
+
+    assert result == "91.0"
+    assert latest.read_text(encoding="utf-8") == "{not json"
+
+
+def test_grade_controller_missing_out_directory_is_a_tcl_error(shell: TclShell, tmp_path: Path) -> None:
+    caught = _tcl_error(shell, f"grade_controller -out {_q(tmp_path / 'nowhere')}")
+    assert caught.startswith("grade_controller: Output directory not found")
+
+
+def test_ram_synth_show_command_prints_the_command_and_the_output(
+    shell: TclShell, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    config_path = tmp_path / "openram.yml"
+    config_path.write_text("num_words: 256\n", encoding="utf-8")
+
+    class _Completed:
+        stdout = "OpenRAM: done\n"
+        stderr = ""
+        returncode = 0
+
+    monkeypatch.setattr(tcl_shell_mod, "load_openram_config", lambda path: {"num_words": 256})
+    monkeypatch.setattr(
+        tcl_shell_mod, "build_openram_command_args", lambda cfg, path: ["python3", "synthesize_sram.py", 256]
+    )
+    monkeypatch.setattr(tcl_shell_mod, "run_openram_synthesis", lambda path: _Completed())
+
+    result = shell.eval(f"ram_synth -config {_q(config_path)} -show-command")
+
+    assert result == "0"
+    out = capsys.readouterr().out
+    assert "$ python3 synthesize_sram.py 256" in out
+    assert "OpenRAM: done" in out
+
+
+def test_ram_synth_invalid_config_is_a_tcl_error(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "openram.yml"
+    config_path.write_text("num_words: -1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        tcl_shell_mod, "load_openram_config", _raise(tcl_shell_mod.OpenRAMConfigError("num_words must be > 0"))
+    )
+
+    caught = _tcl_error(shell, f"ram_synth -config {_q(config_path)}")
+
+    assert caught == "ram_synth: num_words must be > 0"
+
+
+# ---------------------------------------------------------------------------
+# REPL and batch entry points (what `autombist shell` runs).
+# ---------------------------------------------------------------------------
+
+
+def _feed_input(monkeypatch, lines: list[str]) -> None:
+    """input() returns ``lines`` in turn, then raises EOFError (Ctrl-D)."""
+    remaining = iter(lines)
+
+    def fake_input(prompt: str = "") -> str:
+        try:
+            return next(remaining)
+        except StopIteration:
+            raise EOFError from None
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    # readline is Unix-only; the REPL runs without it, so the tests do too.
+    monkeypatch.setitem(sys.modules, "readline", None)
+
+
+def test_repl_prints_results_and_errors_and_stops_at_exit(shell: TclShell, monkeypatch, capsys) -> None:
+    _feed_input(monkeypatch, ["", "   ", "set x 5", "no_such_command", "set unset_result {}", "exit", "set x 9"])
+
+    shell.run_repl()
+
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == ["autombist Tcl shell. Type 'exit' or Ctrl-D to quit.", "5"]
+    assert 'error: invalid command name "no_such_command"' in captured.err
+    # The line after `exit` was never read.
+    assert shell.eval("set x") == "5"
+
+
+def test_repl_quit_also_stops_it(shell: TclShell, monkeypatch, capsys) -> None:
+    _feed_input(monkeypatch, ["quit", "set x 1"])
+
+    shell.run_repl()
+
+    assert capsys.readouterr().out.splitlines() == ["autombist Tcl shell. Type 'exit' or Ctrl-D to quit."]
+
+
+def test_repl_stops_at_end_of_input(shell: TclShell, monkeypatch, capsys) -> None:
+    _feed_input(monkeypatch, ["set y 7"])
+
+    shell.run_repl()
+
+    assert capsys.readouterr().out.splitlines() == ["autombist Tcl shell. Type 'exit' or Ctrl-D to quit.", "7", ""]
+
+
+def test_source_runs_a_script_file(shell: TclShell, tmp_path: Path) -> None:
+    script = tmp_path / "session.tcl"
+    script.write_text("set a 2\nset b [expr {$a * 21}]\n", encoding="utf-8")
+
+    shell.source(script)
+
+    assert shell.eval("set b") == "42"
+
+
+def test_run_batch_returns_0_for_a_script_that_succeeds(shell: TclShell, tmp_path: Path) -> None:
+    script = tmp_path / "session.tcl"
+    script.write_text("set done 1\n", encoding="utf-8")
+
+    assert shell.run_batch(script) == 0
+    assert shell.eval("set done") == "1"
+
+
+def test_run_batch_returns_1_and_reports_a_failing_script(shell: TclShell, tmp_path: Path, capsys) -> None:
+    script = tmp_path / "session.tcl"
+    script.write_text('error "coverage too low"\nset never 1\n', encoding="utf-8")
+
+    assert shell.run_batch(script) == 1
+    assert "error: coverage too low" in capsys.readouterr().err
+    assert _tcl_error(shell, "set never") == "can't read \"never\": no such variable"
+
+
+def test_run_batch_without_a_path_reads_stdin(shell: TclShell, monkeypatch) -> None:
+    import io
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("set piped 3\n"))
+
+    assert shell.run_batch(None) == 0
+    assert shell.eval("set piped") == "3"

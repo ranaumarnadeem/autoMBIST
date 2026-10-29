@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -128,3 +129,101 @@ def test_fault_progress_callback_is_callable_and_safe_when_rich_active(monkeypat
         assert callback is not None
         for i in range(1, 11):
             callback(i, 10)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# The rich paths: a forced terminal Console renders the table with ANSI
+# colour, so the status styling is checked on the escape codes themselves.
+# ---------------------------------------------------------------------------
+
+
+def _tty(monkeypatch) -> None:
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+
+
+def _forced_console(monkeypatch) -> None:
+    """Every Console() the helpers build renders as a 16-colour terminal 200
+    columns wide, whatever the environment (TERM, FORCE_COLOR) says."""
+    import rich.console
+
+    real_console = rich.console.Console
+
+    def make_console(*args, **kwargs):
+        kwargs.setdefault("force_terminal", True)
+        kwargs.setdefault("color_system", "standard")
+        kwargs.setdefault("width", 200)
+        return real_console(*args, **kwargs)
+
+    monkeypatch.setattr(rich.console, "Console", make_console)
+
+
+def test_print_status_table_rich_path_colours_the_status_by_its_leading_word(monkeypatch, capsys) -> None:
+    _tty(monkeypatch)
+    _forced_console(monkeypatch)
+
+    print_status_table(
+        "my title",
+        ["Tool", "Status", "Detail"],
+        [
+            ["make", "OK", "/usr/bin/make"],
+            ["verilator", "MISSING", "not found on PATH"],
+            ["yosys", "WARN old", "0.9"],
+            ["iverilog", "SKIP", "n/a"],
+        ],
+        status_col=1,
+    )
+
+    out = capsys.readouterr().out
+    assert "my title" in out
+    assert "\x1b[32mOK" in out
+    assert "\x1b[31mMISSING" in out
+    assert "\x1b[33mWARN old" in out
+    # A status with no style of its own is printed plain, and the markup the
+    # styled ones use never reaches the output as text.
+    assert re.search(r"\x1b\[3[0-7]mSKIP", out) is None and "SKIP" in out
+    assert "[green]" not in out and "[red]" not in out and "[yellow]" not in out
+
+
+def test_print_status_table_falls_back_to_plain_when_rich_is_unavailable(monkeypatch, capsys) -> None:
+    _tty(monkeypatch)
+    monkeypatch.setitem(sys.modules, "rich.console", None)
+
+    print_status_table("t", ["Tool", "Status"], [["make", "OK"]], status_col=1)
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "t"
+    assert lines[1].split() == ["Tool", "Status"]
+    assert lines[3].split() == ["make", "OK"]
+
+
+def test_spinner_rich_path_shows_the_message_and_runs_the_block(monkeypatch, capsys) -> None:
+    _tty(monkeypatch)
+    _forced_console(monkeypatch)
+    ran = []
+
+    with spinner("doing a thing"):
+        ran.append(1)
+
+    assert ran == [1]
+    assert "doing a thing" in capsys.readouterr().out
+
+
+def test_spinner_is_a_noop_when_rich_is_unavailable(monkeypatch, capsys) -> None:
+    _tty(monkeypatch)
+    monkeypatch.setitem(sys.modules, "rich.console", None)
+    ran = []
+
+    with spinner("doing a thing"):
+        ran.append(1)
+
+    assert ran == [1]
+    assert capsys.readouterr().out == ""
+
+
+def test_fault_progress_yields_none_when_rich_is_unavailable(monkeypatch) -> None:
+    _tty(monkeypatch)
+    monkeypatch.setitem(sys.modules, "rich.progress", None)
+
+    with fault_progress(10) as callback:
+        assert callback is None

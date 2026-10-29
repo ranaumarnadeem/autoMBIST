@@ -2142,13 +2142,8 @@ def shell(
       autombist shell --file session.tcl
       printf 'puts \\[generate -config config.yml -out out]\\n' | autombist shell
     """
-    from .tcl_shell import TclShellUnavailable
-
-    try:
-        from .tcl_shell import TclShell
-    except ImportError as exc:
-        typer.secho(f"autombist: Tcl shell unavailable: {exc}", err=True, fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+    # tcl_shell imports without tkinter; TclShell() is what reports it missing.
+    from .tcl_shell import TclShell, TclShellUnavailable
 
     try:
         tcl = TclShell()
