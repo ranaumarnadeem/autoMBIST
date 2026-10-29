@@ -1356,7 +1356,7 @@ def wrap_test_access_cmd(
     internal wires never promoted to the boundary; see
     src/autombist/testaccess.py's own module docstring.
 
-    Requirements (Linux/WSL): warptap 0.0.4, which the Nix dev shell pins, plus Yosys
+    Requirements (Linux/WSL): warptap 0.0.4 or later (the Nix dev shell pins 0.0.5), plus Yosys
     and Icarus Verilog on PATH (warptap shells out to both; neither is bundled).
 
     Examples:
