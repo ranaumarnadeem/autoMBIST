@@ -12,6 +12,19 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Fixed
+- `wrap-test-access` works out the BIST's run length from `--config` before
+  the test-access insertion, so a config it cannot size (an algorithm with no
+  known BIST length) now fails before Yosys runs, with nothing written. It used
+  to fail only after writing the inserted Verilog (and, with `--emit-icl`, the
+  ICL and the BSDL).
+
+### Testing
+- `wrap-test-access`'s last three uncovered error exits are tested, each with a
+  real trigger: a config it cannot size, a directory where the PDL file goes,
+  and a `manifest.json` it cannot write. Each is one error line, and the
+  manifest is left as it was. `cli.py` is at 100% line coverage.
+
 ## [0.5.6] - 2026-10-29
 
 ### Fixed

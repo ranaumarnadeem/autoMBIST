@@ -831,6 +831,23 @@ def test_wrap_test_access_rejects_a_config_that_is_not_a_snapshot(
     assert not (tmp_path / "ta").exists()
 
 
+def test_wrap_test_access_config_it_cannot_size_fails_before_the_insertion(tmp_path: Path, monkeypatch) -> None:
+    """The BIST's run length comes from the config, and is worked out before the
+    insertion: a config it cannot size fails before Yosys runs, and nothing is
+    written. It used to fail after writing the inserted Verilog."""
+    config_path = tmp_path / "snapshot.yml"
+    config_path.write_text("wrapper_module_name: sram_1rw_mbist\naddr_width: 4\nalgo: march-zz\n", encoding="utf-8")
+    monkeypatch.setattr("autombist.testaccess.wrap_test_access",
+                        _raise(AssertionError("the insertion must not run for a config the BIST cannot be sized from")))
+
+    result = runner.invoke(cli_mod.app, ["wrap-test-access", "--source", str(tmp_path / "w.v"),
+                                         "--top", "sram_1rw_mbist", "--config", str(config_path),
+                                         "--out", str(tmp_path / "ta")])
+
+    _assert_one_error_line(result, "autombist: no BIST length known for algorithm 'march-zz'")
+    assert not (tmp_path / "ta").exists()
+
+
 def test_test_fault_types_that_is_not_a_list_is_one_error_line(tmp_path: Path) -> None:
     faults_path = tmp_path / "faults.txt"
     faults_path.write_text("SA0 3 0 0 0 0 0\n", encoding="ascii")

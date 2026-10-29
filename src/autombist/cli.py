@@ -1141,6 +1141,18 @@ def _wrap_test_access(
             "onchip_diagnosis": onchip_diagnosis,
         }
 
+    # The BIST's run length for the PDL/JTAG testbench and the STIL below: from
+    # the config (its algorithm and size), or --bist-cycles. Worked out before the
+    # insertion, so a config it cannot size fails before Yosys runs and before
+    # anything is written.
+    from autombist.testbench import TestbenchError, bist_cycle_bound, bist_cycles as bist_length
+
+    try:
+        exact = bist_length(bist_config) if bist_config is not None else None
+        run_cycles = bist_cycles or (bist_cycle_bound(bist_config) if bist_config is not None else None)
+    except (TestbenchError, KeyError, ValueError) as exc:
+        _fail(str(exc))
+
     try:
         inserted_verilog, graph, root = wrap_test_access(
             sources, top, idcode_value=idcode, capture_sync=True, chip_reset=CHIP_RESET,
@@ -1202,15 +1214,7 @@ def _wrap_test_access(
         typer.echo(f"BSDL:             {bsdl_path} (TAP only; TCK max {tck_hz / 1e6:g} MHz{assumed})")
 
     # Running the BIST over JTAG: the PDL procedure, its retargeted vectors and
-    # a self-checking testbench. The run loop's length comes from the config
-    # (the BIST's length for its algorithm and size), or --bist-cycles.
-    from autombist.testbench import TestbenchError, bist_cycle_bound, bist_cycles as bist_length
-
-    try:
-        exact = bist_length(bist_config) if bist_config is not None else None
-        run_cycles = bist_cycles or (bist_cycle_bound(bist_config) if bist_config is not None else None)
-    except (TestbenchError, KeyError, ValueError) as exc:
-        _fail(str(exc))
+    # a self-checking testbench, with the run loop's length worked out above.
     stil_record: dict | None = None
     if run_cycles is None:
         typer.echo(
