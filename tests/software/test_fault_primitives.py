@@ -342,7 +342,7 @@ def test_from_dict_defaults_agg_pre_to_x_when_absent() -> None:
 # ---------------------------------------------------------------------------
 # sensitize.prev: the last-op gate (VTS 2002 dynamic/2-operation faults).
 # No built-in sets this yet -- the DSL field lands ahead of the primitives
-# (same split as agg_pre: 74c637a added the field, e6db4de the 10 types).
+# (same split as agg_pre: 45c68c7 added the field, f2dbefe the 10 types).
 # ---------------------------------------------------------------------------
 
 

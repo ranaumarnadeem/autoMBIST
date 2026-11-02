@@ -4,8 +4,8 @@ OpenRAM sky130 macros (behavioral models) behind one synchronous bus.
 Run via tests/hardware/run_mem_subsystem_tb.py (see that file's header for the
 exact invocation), e.g.:
 
-    wsl -- bash -lc "cd /mnt/c/Users/Potato/Desktop/openMBIST && \
-        PYTHONPATH=src ~/cocotb/bin/python tests/hardware/run_mem_subsystem_tb.py"
+    cd <repo root>
+    PYTHONPATH=src python tests/hardware/run_mem_subsystem_tb.py
 
 Proves three things about the subsystem:
   a) PER-SLOT INTEGRITY: writes/reads round-trip on every slot at boundary

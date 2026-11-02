@@ -2,10 +2,12 @@
 
 Proves the same claim `flow/multimem/mbist/` already proved for march-C --
 that autoMBIST's on-chip self-repair (BIRA analyzer + BISR sequencer +
-external row remap) closes DRC/LVS/timing through the full LibreLane
-RTL-to-GDS flow -- generalizes to the two algorithms hand-written this
+external row remap) completes the full LibreLane RTL-to-GDS flow with a
+passing top-level LVS -- generalizes to the two algorithms hand-written this
 session (Workstream B1), each wrapping a REAL sky130 OpenRAM macro (not the
-toy behavioral fixtures).
+toy behavioral fixtures). No timing result is recorded for these designs,
+and no DRC or cell counts are recorded for `selfrepair_x` / `selfrepair_mp`;
+only march-1r1w below has counts.
 
 Each design is a single generated self-repair wrapper used directly as the
 LibreLane `DESIGN_NAME` (no multi-macro subsystem needed): `selfrepair_x`
@@ -98,9 +100,11 @@ passes.** DRC does not:
   already documents and sets `ERROR_ON_KLAYOUT_DRC=False` for (see that
   file's comment, and `librelane/librelane#519`). Not new, not concerning.
 - **Magic (~539 errors, `nwell.4` -- "nwells must contain metal-connected
-  N+ taps"):** this one is real and NOT macro-internal noise -- the
-  surviving march-C real-macro run log shows genuinely zero Magic/KLayout
-  violations, so clean is the actual bar, not something to round down from.
+  N+ taps"):** this one is real and NOT macro-internal noise. The march-C
+  subsystem reports 589 Magic / 3194 KLayout counts
+  (`flow/multimem/mbist/README.md`), attributed there to macro-internal OpenRAM
+  layer/datatype noise; whether any `nwell.4` violations are among those 589 is
+  not recorded, so no zero baseline is claimed.
   Three independent, targeted attempts failed to clear it:
   - Bigger die/more margin (1000x850->1200x1000): Magic's count got
     *worse* (539->837, roughly proportional to added area), KLayout's

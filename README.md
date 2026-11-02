@@ -25,7 +25,7 @@ It generates synthesizable MBIST controllers and repair logic around OpenRAM mem
 | Physical closure | OpenRAM sky130 macros hardened with LibreLane, including self-repair-wrapped macros |
 | System proof | Unmodified PicoRV32 boots and runs a program through self-repaired memory |
 | Test-access | JTAG/IJTAG wrapping via [warptap](https://github.com/ranaumarnadeem/warptap) |
-| Tests | 3,022 tests; CI fails below 90% line coverage |
+| Tests | Over 4,400 tests; CI fails below 90% line coverage |
 | Reproducible env | `nix develop` from a clone (the flake's devShell; CI runs the test suite inside it) |
 
 ## Table of Contents
@@ -81,7 +81,7 @@ flowchart LR
   wrap --> sim["cocotb + Icarus:<br/>fault sim + repair loop"]
   wrap --> harden["LibreLane 3.0.5:<br/>RTL to GDS (sky130)"]
   sim --> rep["coverage /<br/>diagnosis reports"]
-  harden --> gds["signed-off GDS<br/>(DRT 0, LVS clean)"]
+  harden --> gds["hardened GDS<br/>(DRT 0, top-level LVS clean)"]
 ```
 
 **Proven RTL-to-GDS closure:** a realistic 3-memory sky130 subsystem
