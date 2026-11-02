@@ -12,6 +12,8 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-11-02
+
 ### Changed
 - The Nix dev shell, and so CI, pins warptap 0.0.5 (from 0.0.4). In the modules
   autoMBIST uses, 0.0.5 changed only docstrings; what it adds (IEEE 1500
