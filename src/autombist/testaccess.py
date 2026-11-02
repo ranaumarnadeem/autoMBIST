@@ -149,7 +149,7 @@ def _require_warptap() -> None:
         raise TestAccessUnavailable(
             "warptap is not installed. Test-access wrapping (JTAG/TAP/IJTAG/ICL/PDL) is "
             "an optional capability: run it in the Nix dev shell (`nix develop`), which "
-            f"pins warptap 0.0.4. Import error was: {_WARPTAP_IMPORT_ERROR}"
+            f"pins warptap 0.0.5. Import error was: {_WARPTAP_IMPORT_ERROR}"
         )
 
 
@@ -362,7 +362,7 @@ _NO_BSDL_SUPPORT = (
 _NO_HARDENING_SUPPORT = (
     "the installed warptap cannot harden the inserted network (TCK synchronizers on the "
     "status reads, the chip-reset clear on the control writes, the IJTAG_ACCESS "
-    "instruction) -- it needs warptap 0.0.4, which the Nix dev shell pins"
+    "instruction) -- it needs warptap 0.0.4 or later; the Nix dev shell pins 0.0.5"
 )
 
 

@@ -44,7 +44,7 @@ def test_build_simulation_report_falls_back_to_requested_faults(tmp_path: Path) 
             "we_active_low": True,
         },
         command=["make", "-C", "out/input_demo_8x16_scn4m", "fault-test"],
-        cwd=Path("/mnt/c/Users/Potato/Desktop/openMBIST"),
+        cwd=tmp_path,
         log_path=tmp_path / "simulate.log",
         report_path=tmp_path / "reports" / "latest.json",
         returncode=0,

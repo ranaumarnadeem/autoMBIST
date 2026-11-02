@@ -3,8 +3,8 @@
 Run via tests/hardware/run_march_1r1w_tb.py (see that file's header comment
 for the exact invocation), e.g.:
 
-    wsl -- bash -lc "cd /mnt/c/Users/Potato/Desktop/openMBIST && \
-        PYTHONPATH=src ~/cocotb/bin/python tests/hardware/run_march_1r1w_tb.py"
+    cd <repo root>
+    PYTHONPATH=src python tests/hardware/run_march_1r1w_tb.py
 
 This test produces hard evidence for three things:
   a) CONCURRENCY: the FSM's read-enable-for-port-0 and write-enable-for-

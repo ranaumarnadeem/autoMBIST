@@ -72,8 +72,10 @@ progress, and what's further out.
   lenient greedy default that no longer gives up before the verify pass; both
   modelled decision for decision in `autombist.yieldsim.onchip_model`
 - A march-test synthesizer that constructs a test directly from the fault
-  model rather than only grading a hand-written one — 27n at 16 elements,
-  verified 38/38 against real Verilator at both memory init values
+  model rather than only grading a hand-written one — 27n in 14 elements at
+  the default memory init value of 1, covering all 37 targeted fault types
+  (50/50 fault records detected in a Verilator campaign); at init 0 it is 28n
+  and leaves one type, CFWD1, uncovered
 - A `checkerboard` built-in for the research shell (logical address-LSB
   parity, not physical row/column adjacency — no consumer in this toolkit
   has physical geometry). Needed a genuinely new capability, not just a new

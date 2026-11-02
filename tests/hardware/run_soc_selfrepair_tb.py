@@ -11,11 +11,10 @@ flow/soc/soc_top.sv + the vendored picorv32 core via Icarus + cocotb. The
 firmware image itself is backdoor-loaded by the cocotb test at the right
 simulated moment (see test_soc_selfrepair.py), not built here.
 
-Invoke exactly like this (from the repo root, via WSL and a cocotb-capable
-Python):
+Invoke exactly like this (from the repo root, inside `nix develop`):
 
-    wsl -- bash -lc "cd /mnt/c/Users/Potato/Desktop/openMBIST && \
-        PYTHONPATH=src python3 tests/hardware/run_soc_selfrepair_tb.py"
+    cd <repo root>
+    PYTHONPATH=src python tests/hardware/run_soc_selfrepair_tb.py
 
 Exits non-zero if any cocotb test fails or if the build fails.
 """

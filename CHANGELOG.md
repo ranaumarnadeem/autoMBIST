@@ -12,6 +12,47 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-11-02
+
+### Changed
+- The Nix dev shell, and so CI, pins warptap 0.0.5 (from 0.0.4). In the modules
+  autoMBIST uses, 0.0.5 changed only docstrings; what it adds (IEEE 1500
+  wrappers, the continuous-decompressor retarget) autoMBIST does not use yet.
+  autoMBIST still needs 0.0.4 or later.
+
+### Fixed
+- `wrap-test-access` works out the BIST's run length from `--config` before
+  the test-access insertion, so a config it cannot size (an algorithm with no
+  known BIST length) now fails before Yosys runs, with nothing written. It used
+  to fail only after writing the inserted Verilog (and, with `--emit-icl`, the
+  ICL and the BSDL).
+
+### Documentation
+- The README test count was 3,022 and is now "over 4,400". The flow diagram
+  said "signed-off GDS (DRT 0, LVS clean)"; it now says "hardened GDS (DRT 0,
+  top-level LVS clean)", because per-macro DRC/LVS signoff is still open.
+- The march-test synthesizer claim ("27n at 16 elements, verified 38/38")
+  matched neither the code nor its tests. It now reads: 27n in 14 elements at
+  the default memory init value of 1, covering all 37 targeted fault types, and
+  28n with one type (CFWD1) uncovered at init 0.
+- `flow/newalgo/README.md` no longer says the march-X and MATS+ designs close
+  timing (no timing result is recorded) and no longer says the march-C run had
+  zero Magic/KLayout violations (`flow/multimem/mbist/README.md` records 589
+  and 3194).
+- `flow/multimem/README.md` no longer points to "repo memory notes" that are
+  not in the repository.
+- The run commands in the `tests/hardware` docstrings and in `flow/soc` and
+  `flow/multimem` no longer hardcode `/mnt/c/Users/Potato/Desktop/openMBIST` or
+  a personal virtualenv; they say to run from the repo root inside `nix develop`.
+- The contact address in `CITATION.cff`, `SECURITY.md` and `CODE_OF_CONDUCT.md`
+  is now `ranaumarnadeem.work@gmail.com`.
+
+### Testing
+- `wrap-test-access`'s last three uncovered error exits are tested, each with a
+  real trigger: a config it cannot size, a directory where the PDL file goes,
+  and a `manifest.json` it cannot write. Each is one error line, and the
+  manifest is left as it was. `cli.py` is at 100% line coverage.
+
 ## [0.5.6] - 2026-10-29
 
 ### Fixed

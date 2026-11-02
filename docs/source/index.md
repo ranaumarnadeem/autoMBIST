@@ -40,8 +40,9 @@ autoMBIST is:
 
 - **Synthesizes march tests, not just grades them** — the research
   platform can construct a new march test directly from the fault model
-  instead of only grading one you wrote (27n at 16 elements, verified 38/38
-  against real Verilator at both memory init values).
+  instead of only grading one you wrote (27n in 14 elements at the default
+  memory init value of 1, covering all 37 targeted fault types; at init 0 it
+  is 28n and leaves one type, CFWD1, uncovered).
 
 - **Reproducible** — simulation and coverage-gated CI run inside a Nix flake
   (pinned Icarus/Verilator/Yosys/cocotb) that also puts the CLI on `PATH` with

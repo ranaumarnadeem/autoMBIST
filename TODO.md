@@ -144,7 +144,7 @@ Yosys and at gate level (BIST passes a good memory, fails a stuck-bit one).
 `wrap-test-access --emit-icl` now writes the BSDL its ICL `AccessLink` names, plus
 `--tck-max-freq-mhz`, `--idcode`, and `bsdl_path`/`tap` in the manifest.
 
-- **warptap in CI** is done through the flake: `flake.nix` pins warptap `v0.0.4` as a
+- **warptap in CI** is done through the flake: `flake.nix` pins warptap `v0.0.5` as a
   source input (`flake.lock` fixes the commit), so CI runs the wrap-test-access, BSDL and
   IDCODE tests instead of skipping them. Move it with
   `nix flake lock --update-input warptap`. `nix run` (the packaged CLI) still has no

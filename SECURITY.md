@@ -26,7 +26,7 @@ receive security fixes.
 Please report suspected vulnerabilities **privately**, not via a public issue:
 
 - Preferred: open a [GitHub private security advisory](https://github.com/ranaumarnadeem/autoMBIST/security/advisories/new).
-- Or email **rana.umar.nadeem21@gmail.com** with a description, affected version,
+- Or email **ranaumarnadeem.work@gmail.com** with a description, affected version,
   and reproduction steps.
 
 You can expect an acknowledgement within a few days. Once a fix is available, a

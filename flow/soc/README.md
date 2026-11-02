@@ -87,9 +87,10 @@ were loaded by a bootloader or DMA engine only after POST completes.
 
 ## Running it
 
+From the repo root, inside `nix develop`:
+
 ```bash
-wsl -- bash -lc "cd /mnt/c/Users/Potato/Desktop/openMBIST && \
-    PYTHONPATH=src python3 tests/hardware/run_soc_selfrepair_tb.py"
+PYTHONPATH=src python tests/hardware/run_soc_selfrepair_tb.py
 ```
 
 The test checks three independent things, matching this project's existing
