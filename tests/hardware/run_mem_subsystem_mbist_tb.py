@@ -11,10 +11,10 @@ generator default of 1 is tuned for this project's toy fixtures and would make
 march-C sample one cycle too late, spuriously flagging a defect-free real macro
 unrepairable). See test_mem_subsystem_mbist.py's docstring for the full story.
 
-Invoke exactly like this (from the repo root, via WSL and a cocotb Python):
+Invoke exactly like this (from the repo root, inside `nix develop`):
 
-    wsl -- bash -lc "cd /mnt/c/Users/Potato/Desktop/openMBIST && \
-        PYTHONPATH=src python3 tests/hardware/run_mem_subsystem_mbist_tb.py"
+    cd <repo root>
+    PYTHONPATH=src python tests/hardware/run_mem_subsystem_mbist_tb.py
 
 Exits non-zero if any cocotb test fails or if the build fails.
 """

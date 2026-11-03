@@ -6,10 +6,10 @@ march_2rw_tb_top.sv + sram_model_2rw.sv using cocotb's Python Runner API
 (cocotb_tools.runner), so no hand-written Makefile is required. Mirrors
 tests/hardware/run_march_1r1w_tb.py exactly.
 
-Invoke exactly like this (from the repo root, via WSL and the project venv):
+Invoke exactly like this (from the repo root, inside `nix develop`):
 
-    wsl -- bash -lc "cd /mnt/c/Users/Potato/Desktop/openMBIST && \
-        PYTHONPATH=src ~/cocotb/bin/python tests/hardware/run_march_2rw_tb.py"
+    cd <repo root>
+    PYTHONPATH=src python tests/hardware/run_march_2rw_tb.py
 
 Exits non-zero if any cocotb test fails or if the build fails.
 """
@@ -56,7 +56,7 @@ def main() -> int:
         results_xml="results.xml",
     )
 
-    # Fail the process (and thus the WSL invocation) on any cocotb test
+    # Fail the process (and thus the invocation) on any cocotb test
     # failure -- get_runner().test() does not raise on its own for a failed
     # testcase, it only raises for a build/harness error, so we must parse
     # the JUnit-style results.xml to detect real test failures. cocotb 2.0's

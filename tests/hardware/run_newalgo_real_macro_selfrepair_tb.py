@@ -12,10 +12,10 @@ defect-free real macro unrepairable). See test_mem_subsystem_mbist.py's
 docstring for the full story; flow/newalgo/README.md documents the same
 caveat for these two designs.
 
-Invoke exactly like this (from the repo root, via WSL and a cocotb Python):
+Invoke exactly like this (from the repo root, inside `nix develop`):
 
-    wsl -- bash -lc "cd /mnt/c/Users/Potato/Desktop/openMBIST && \
-        PYTHONPATH=src python3 tests/hardware/run_newalgo_real_macro_selfrepair_tb.py"
+    cd <repo root>
+    PYTHONPATH=src python tests/hardware/run_newalgo_real_macro_selfrepair_tb.py
 
 Exits non-zero if any cocotb test fails or if either build fails.
 """

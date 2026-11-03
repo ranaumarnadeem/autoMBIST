@@ -98,7 +98,7 @@
         # fail at the first real command.
         autombist = python.pkgs.buildPythonApplication {
           pname = "autombist";
-          version = "0.5.6";
+          version = "0.5.7";
           src = ./.;
           format = "pyproject";
 

@@ -8,11 +8,10 @@ generated wrappers -- including it twice would be a duplicate-module error),
 and compiles everything together with mem2_subsystem_selfrepair.sv via
 Icarus + cocotb.
 
-Invoke exactly like this (from the repo root, via WSL and a cocotb-capable
-Python):
+Invoke exactly like this (from the repo root, inside `nix develop`):
 
-    wsl -- bash -lc "cd /mnt/c/Users/Potato/Desktop/openMBIST && \
-        PYTHONPATH=src python3 tests/hardware/run_mem_subsystem_selfrepair_tb.py"
+    cd <repo root>
+    PYTHONPATH=src python tests/hardware/run_mem_subsystem_selfrepair_tb.py
 
 Exits non-zero if any cocotb test fails or if the build fails.
 """

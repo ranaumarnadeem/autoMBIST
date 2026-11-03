@@ -97,8 +97,8 @@ blackboxes, and `mem_subsystem_mbist.sv`.
   DRC/LVS check) was found to have never actually run against real PDK
   data — `PDK_ROOT` was set but not `export`ed, so magic's "clean" 0-count
   result meant "nothing was checked," not "nothing was found" (fixed in
-  commit `fb2c1a3`). Fixing that surfaced a real LVS mismatch, root-caused
-  (not merely worked around, commit `64076af`) to the vendored `OpenRAM/`
+  commit `ab22cd6`). Fixing that surfaced a real LVS mismatch, root-caused
+  (not merely worked around, commit `4ea312b`) to the vendored `OpenRAM/`
   checkout predating two upstream fixes (2026-04-28, 2026-05-14) for a
   wordline-pin-numbering defect in the sky130 replica bitcell array.
   Reproducing OpenRAM's own authoritative regeneration flow independently

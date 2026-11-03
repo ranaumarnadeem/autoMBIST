@@ -70,9 +70,10 @@ by this directory's testbench and are patched in the checked-in model copies):
 
 ## Testing
 
+From the repo root, inside `nix develop`:
+
 ```bash
-wsl -- bash -lc "cd /mnt/c/Users/Potato/Desktop/openMBIST && \
-    PYTHONPATH=src ~/cocotb/bin/python tests/hardware/run_mem_subsystem_tb.py"
+PYTHONPATH=src python tests/hardware/run_mem_subsystem_tb.py
 ```
 
 Covers per-slot write/read integrity at boundary addresses (including the first
@@ -85,8 +86,8 @@ mux alignment).
 The subsystem hardens **clean** in LibreLane 3.0.5: detailed routing 0
 violations, **LVS clean including power**, antenna/overlap clear, 43.5 MB GDS,
 die 784,000 µm² (0.78 mm², ~51% macro area, 4,158 std cells). The four fixes
-that got there (each independently necessary — full war story in the repo
-memory notes):
+that got there (each independently necessary; the rationale for each is
+below, and `docs/source/librelane.md` has the general recipe):
 
 1. **LEF units declaration**: OpenRAM's LEF says `DATABASE MICRONS 2000` but
    every coordinate — and the GDS — is already on the 1 nm grid. Sed the LEF

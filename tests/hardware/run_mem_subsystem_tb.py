@@ -9,10 +9,10 @@ NOTE: the synthesis blackboxes (flow/multimem/sky130_srams_bb.v) must NOT be
 compiled here -- their module names deliberately collide with the behavioral
 models.
 
-Invoke exactly like this (from the repo root, via WSL and the cocotb venv):
+Invoke exactly like this (from the repo root, inside `nix develop`):
 
-    wsl -- bash -lc "cd /mnt/c/Users/Potato/Desktop/openMBIST && \
-        PYTHONPATH=src ~/cocotb/bin/python tests/hardware/run_mem_subsystem_tb.py"
+    cd <repo root>
+    PYTHONPATH=src python tests/hardware/run_mem_subsystem_tb.py
 
 Exits non-zero if any cocotb test fails or if the build fails.
 """
