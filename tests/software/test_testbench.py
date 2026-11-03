@@ -176,6 +176,19 @@ def test_pdl_addresses_the_icl_registers() -> None:
     assert "iTarget" not in text  # IEEE 1687 has no iTarget; paths are absolute
 
 
+def test_pdl_says_when_its_run_loop_is_shorter_than_the_bist() -> None:
+    names = ("test_mode", "bist_start", "bist_done", "bist_fail")
+    kwargs = dict(widths={n: 1 for n in names}, register_path={n: f"warptap_instr_{n}.DR" for n in names},
+                  icl_file="x.icl", access=IJTAG_ACCESS, bist_cycles=403)
+
+    short = render_pdl("x_ctrl", run_mbist_steps(10), **kwargs)
+    long_enough = render_pdl("x_ctrl", run_mbist_steps(520), **kwargs)
+
+    assert "up to 403 clk cycles; the run loop is shorter, so bist_done reads back 0" in short
+    assert "adds a margin" not in short
+    assert "up to 403 clk cycles; the run loop adds a margin" in long_enough
+
+
 def test_pdl_points_at_the_icl_and_the_bsdl_its_access_link_names() -> None:
     names = ("test_mode", "bist_start", "bist_done", "bist_fail")
     kwargs = dict(

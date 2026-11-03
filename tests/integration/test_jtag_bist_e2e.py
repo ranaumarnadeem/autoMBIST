@@ -96,12 +96,38 @@ def test_jtag_testbench_fails_a_stuck_bit_on_the_bist_fail_read(tmp_path: Path) 
 
 
 def test_a_run_loop_shorter_than_the_bist_fails_the_bist_done_read(tmp_path: Path) -> None:
-    access, _, _ = _wrap(tmp_path, BASE, "--bist-cycles", "20")
+    access, _, output = _wrap(tmp_path, BASE, "--bist-cycles", "20")
 
     run = _run(access, HW / "sram_1rw.v")
 
     assert run.returncode != 0
     assert "TDO did not read back bist_done = 1" in run.stdout + run.stderr
+    assert "autombist: warning: --bist-cycles 20 is shorter than the BIST" in output
+    pdl = (access / f"{BASE['wrapper_module_name']}_run_mbist.pdl").read_text(encoding="utf-8")
+    assert "the run loop is shorter, so bist_done reads back 0" in pdl
+
+
+def test_a_config_that_names_no_memory_still_writes_the_pdl(tmp_path: Path) -> None:
+    """A --config without memory_name is treated like no config for the memory
+    model: the run completes, instead of a KeyError after the Verilog is written."""
+    config_path = tmp_path / "c.yml"
+    config_path.write_text(yaml.safe_dump(BASE, sort_keys=False), encoding="utf-8")
+    result = runner.invoke(app, ["generate", "--config", str(config_path), "--out",
+                                 str(tmp_path / "out"), "--emit-manifest"])
+    assert result.exit_code == 0, result.output
+    module_outdir = tmp_path / "out" / BASE["memory_name"]
+    snapshot = yaml.safe_load((module_outdir / "config.yml").read_text(encoding="utf-8"))
+    del snapshot["memory_name"]
+    nameless = tmp_path / "nameless.yml"
+    nameless.write_text(yaml.safe_dump(snapshot, sort_keys=False), encoding="utf-8")
+
+    result = runner.invoke(app, ["wrap-test-access", "--manifest", str(module_outdir), "--config", str(nameless)])
+
+    assert result.exit_code == 0, result.output
+    top = BASE["wrapper_module_name"]
+    assert (module_outdir / "test-access" / f"{top}_run_mbist.pdl").is_file()
+    run = _run(module_outdir / "test-access", HW / "sram_1rw.v")
+    assert run.returncode == 0, run.stdout + run.stderr
 
 
 def test_jtag_testbench_runs_a_shared_controller(tmp_path: Path) -> None:
