@@ -94,17 +94,10 @@ jobs:
       - name: Enable Nix binary cache
         uses: DeterminateSystems/magic-nix-cache-action@main
 
-      # ccache's default directory on macOS is ~/Library/Caches/ccache.
-      - name: Cache verilator build artifacts (ccache + engine build cache)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/Library/Caches/ccache
-            /tmp/autombist-engine-cache
-          key: ${{ runner.os }}-autombist-buildcache-${{ github.run_id }}
-          restore-keys: |
-            ${{ runner.os }}-autombist-buildcache-
-
+      # No build cache step, unlike the Linux job: the dev shell leaves ccache
+      # off on macOS (see flake.nix), and inside `nix develop` macOS sets
+      # TMPDIR to a per-shell directory, so the engine cache is never under
+      # /tmp/autombist-engine-cache for a cache step to save.
       - name: Run test suite
         run: |
           nix develop --command pytest tests/software tests/integration

@@ -182,13 +182,22 @@
           # pinned here, so CI's cache step (test.yml) and local dev share the
           # same convention with nothing to keep in sync.
           #
+          # Linux only. On macOS the compiler is clang, and verilated.mk's own
+          # CCACHE_SLOPPINESS=pch_defines,time_macros lets ccache cache its
+          # precompiled header (Vmarch_engine__pch.h.fast.gch). A clang PCH
+          # records the absolute path of the header it was built from, so a
+          # cache hit in any other build directory fails once the first one is
+          # gone ("could not find file ... referenced by AST file") -- which
+          # every engine build does, from a temporary directory. gcc's PCH does
+          # not check that path.
+          #
           # warptap is resolved the same way, from its pinned source (the `warptap`
           # input above) rather than packaged: it has no dependencies of its own, and
           # its RTL templates sit next to its modules in that tree. It needs yosys and
           # iverilog on PATH, which this shell already provides.
           shellHook = ''
             export PYTHONPATH="$PWD/src:${warptap}/src''${PYTHONPATH:+:$PYTHONPATH}"
-            export OBJCACHE=ccache
+            ${pkgs.lib.optionalString (!isDarwin) "export OBJCACHE=ccache"}
             echo "autombist toolchain:"
             echo "  verilator $(verilator --version 2>/dev/null | head -1)"
             echo "  $(iverilog -V 2>/dev/null | head -1)"
