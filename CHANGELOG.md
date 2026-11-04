@@ -12,6 +12,20 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Fixed
+- `wrap-test-access --config` with a config that has no `memory_name` no
+  longer dies with a `KeyError` traceback after writing the inserted Verilog;
+  it is treated like no config for the memory model, and the run completes
+  (#28).
+- `wrap-test-access --bist-cycles` shorter than the BIST's known length now
+  warns that the pattern fails on a good memory, and the PDL no longer says
+  its run loop "adds a margin" when it is shorter than the BIST. It is still
+  taken: a cut-short run loop is how the testbench and STIL are shown to
+  catch one (#29).
+- `wrap-test-access --bist-cycles` now works with a config whose algorithm has
+  no known BIST length, instead of failing on that length it does not need
+  (#30).
+
 ## [0.5.7] - 2026-11-02
 
 ### Changed
