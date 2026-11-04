@@ -12,6 +12,20 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Added
+- Apple Silicon macOS support. The Nix flake's dev shell and package now
+  evaluate on `aarch64-darwin`, and CI runs the full test suite in the dev
+  shell there (`pytest (macOS)` on `macos-latest`) as well as on Linux; the
+  coverage gate
+  stays with the Linux job. On macOS the flake lifts nixpkgs' `broken` flag on
+  cocotb (and skips cocotb's own tests), compiles Verilator's C++ with the
+  stdenv's clang, patches Verilator 5.048's `flexfix` so it builds on macOS 26,
+  and leaves ccache off: clang's precompiled headers record the directory they
+  were built in, so a ccache hit from another build directory fails. Intel
+  macOS is not supported (nixpkgs' Icarus Verilog does not build for
+  `x86_64-darwin`), and the physical-design flow and FaultFlow are tested on
+  Linux only.
+
 ### Fixed
 - `wrap-test-access --config` with a config that has no `memory_name` no
   longer dies with a `KeyError` traceback after writing the inserted Verilog;

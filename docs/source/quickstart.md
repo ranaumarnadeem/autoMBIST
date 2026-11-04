@@ -7,7 +7,7 @@ command below was run against the exact scaffold `autombist init` produces,
 so there is nothing to edit first.
 
 ```bash
-# Inside WSL/Linux, from the repo root (see Installation):
+# Inside Linux, WSL or Apple Silicon macOS, from the repo root (see Installation):
 nix develop
 ```
 

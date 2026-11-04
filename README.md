@@ -108,7 +108,7 @@ Full writeup, the BIRA/BISR internals, and the reproducible hardening flow:
 ## Quick Start
 
 ```bash
-# 1. Inside WSL/Linux, from the repo root:
+# 1. Inside Linux, WSL or Apple Silicon macOS, from the repo root:
 nix develop
 
 # 2. Scaffold a starter config in the current directory
@@ -201,8 +201,9 @@ Every command's full flags: [CLI Reference](https://ranaumarnadeem.github.io/aut
 > **Platform.** `autombist generate` and config/algorithm-spec tooling run
 > anywhere Python 3.10+ runs. Everything that invokes a simulator or synthesis
 > tool (`simulate`, `run`, `test`, `algo`'s `run`/`compare_algo`,
-> `grade-controller --run`) needs the Unix EDA toolchain and only works on
-> Linux or WSL.
+> `grade-controller --run`) needs the Unix EDA toolchain: Linux, WSL, or Apple
+> Silicon macOS through Nix (CI runs the full test suite on Linux and macOS).
+> The physical-design flow is tested on Linux only.
 
 Recommended — [Nix](flake.nix) pins the exact toolchain CI uses and puts the
 `autombist` CLI on `PATH` immediately, no separate `pip install` step:

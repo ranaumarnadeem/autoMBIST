@@ -39,8 +39,9 @@ autombist -q simulate --out out
 
 > **Platform note.** `autombist generate` (wrapper/RTL emission) and config parsing
 > run anywhere Python 3.10+ runs. `simulate`, `run`, and `grade-controller --run`
-> invoke Icarus Verilog / Cocotb / Yosys / FaultFlow and only work on Linux or WSL,
-> using a venv created inside WSL/Linux. Run `autombist doctor` for a quick check
+> invoke Icarus Verilog / Cocotb / Yosys / FaultFlow and only work on Linux or WSL
+> (using a venv created inside WSL/Linux), or on Apple Silicon macOS through the
+> Nix dev shell; FaultFlow is tested on Linux only. Run `autombist doctor` for a quick check
 > of which of these tools (plus nix/bash/magic/netgen) autombist can currently
 > find on `PATH`.
 
