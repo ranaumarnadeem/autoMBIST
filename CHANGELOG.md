@@ -12,6 +12,8 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-04
+
 ### Added
 - Apple Silicon macOS support. The Nix flake's dev shell and package now
   evaluate on `aarch64-darwin`, and CI runs the full test suite in the dev
