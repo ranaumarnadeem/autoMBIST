@@ -1,7 +1,7 @@
 """`wrap-test-access` failures that come after a real test-access insertion: each
 is one "autombist: ..." line with exit code 1, and the manifest is left as it
-was. The triggers are real ones, not stand-ins: a directory where the PDL file
-goes, and a manifest.json the run cannot write.
+was. Two triggers are real ones: a directory where the PDL file goes, and a
+manifest.json the run cannot write. The render failure is a stand-in.
 
 Skips without warptap (optional dependency) or Yosys.
 """
@@ -58,6 +58,28 @@ def test_a_run_mbist_file_it_cannot_write_is_one_error_line(tmp_path: Path) -> N
 
     _assert_one_error_line(result, f"{TOP}_run_mbist.pdl")
     assert (module_outdir / "test-access" / f"{TOP}_test_access.v").is_file()
+    assert manifest.read_text(encoding="utf-8") == before
+
+
+def test_a_run_mbist_file_it_cannot_render_leaves_nothing_written(tmp_path: Path, monkeypatch) -> None:
+    """The run_mbist files are rendered before anything is written, like the ICL
+    and BSDL. They used to be written one by one, after the inserted Verilog, the
+    ICL and the BSDL, so a failure left a PDL with no vectors or testbench. The
+    failure here is a stand-in: no real netlist the insertion writes trips it."""
+    from autombist.testbench import TestbenchError
+
+    module_outdir = _generate(tmp_path)
+    manifest = module_outdir / "manifest.json"
+    before = manifest.read_text(encoding="utf-8")
+
+    def fail(*args, **kwargs):
+        raise TestbenchError(f"wrapped {TOP!r} has no tdo port")
+
+    monkeypatch.setattr("autombist.jtag_bist.parse_netlist_ports", fail)
+    result = runner.invoke(app, ["wrap-test-access", "--manifest", str(module_outdir), "--emit-icl", "--emit-stil"])
+
+    _assert_one_error_line(result, "has no tdo port")
+    assert not (module_outdir / "test-access").exists()
     assert manifest.read_text(encoding="utf-8") == before
 
 

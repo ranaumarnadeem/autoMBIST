@@ -1155,9 +1155,9 @@ def _wrap_test_access(
         except TestbenchError as exc:
             if bist_cycles is None:
                 _fail(str(exc))
-        except (KeyError, ValueError) as exc:
+        except ValueError as exc:  # a malformed config, which --bist-cycles does not cover
             _fail(str(exc))
-    run_cycles = bist_cycles or (bist_cycle_bound(bist_config) if exact is not None else None)
+    run_cycles =bist_cycles or (bist_cycle_bound(bist_config) if exact is not None else None)
     if bist_cycles is not None and exact is not None and bist_cycles < exact:
         # Not refused: a run loop cut short is how the testbench and the STIL are
         # shown to catch one (bist_done reads back 0).
@@ -1197,9 +1197,39 @@ def _wrap_test_access(
         except (TestAccessUnavailable, ValueError) as exc:
             _fail(str(exc))
     tap = tap_facts(idcode_value=idcode, description=description, access_instruction=access_instruction)
+    verilog_path = out / f"{top}_test_access.v"
+    icl_path = out / f"{top}_test_access.icl" if description is not None else None
+    bsdl_path = out / f"{top}_test_access.bsd" if description is not None else None
+
+    # Running the BIST over JTAG: the PDL procedure, its retargeted vectors and
+    # a self-checking testbench, with the run loop's length worked out above.
+    # Rendered here too, for the same reason, and written below.
+    rendered = None
+    stil = None
+    if run_cycles is not None:
+        from autombist.jtag_bist import DEFAULT_STIL_CLK_PERIOD_NS, StilTiming, render_jtag_bist
+
+        # The STIL's TCK period is the BSDL's TCK limit, so the two can't disagree.
+        stil = (
+            StilTiming(tck_period_ns=1e9 / tck_hz,
+                       clk_period_ns=stil_clk_period_ns or DEFAULT_STIL_CLK_PERIOD_NS)
+            if emit_stil else None
+        )
+        try:
+            rendered = render_jtag_bist(
+                out, top=top, graph=graph, root=root,
+                wrapped_verilog=inserted_verilog, wrapped_file=verilog_path.name,
+                memory_name=str(memory_name) if memory_name is not None else None,
+                run_cycles=run_cycles, bist_cycles=exact,
+                icl_file=icl_path.name if icl_path is not None else None,
+                access=access,
+                bsdl_file=bsdl_path.name if bsdl_path is not None else None,
+                stil=stil,
+            )
+        except TestbenchError as exc:
+            _fail(str(exc))
 
     out.mkdir(parents=True, exist_ok=True)
-    verilog_path = out / f"{top}_test_access.v"
     verilog_path.write_text(inserted_verilog, encoding="utf-8")
 
     ports = classify_test_access_ports(**ta_kwargs)
@@ -1220,46 +1250,25 @@ def _wrap_test_access(
         f"({'warptap placeholder -- --idcode sets your own' if tap['idcode_is_placeholder'] else 'set by --idcode'})"
     )
 
-    icl_path: Path | None = None
-    bsdl_path: Path | None = None
     if description is not None:
-        icl_path = out / f"{top}_test_access.icl"
         icl_path.write_text(description.icl, encoding="utf-8")
-        bsdl_path = out / f"{top}_test_access.bsd"
         bsdl_path.write_text(description.bsdl, encoding="utf-8")
         typer.echo(f"ICL:              {icl_path}")
         assumed = " -- assumed, set --tck-max-freq-mhz" if tck_max_freq_mhz is None else ""
         typer.echo(f"BSDL:             {bsdl_path} (TAP only; TCK max {tck_hz / 1e6:g} MHz{assumed})")
 
-    # Running the BIST over JTAG: the PDL procedure, its retargeted vectors and
-    # a self-checking testbench, with the run loop's length worked out above.
     stil_record: dict | None = None
-    if run_cycles is None:
+    if rendered is None:
         typer.echo(
             "PDL/JTAG testbench: skipped -- pass --config or --manifest (or --bist-cycles) "
             "so the BIST's run length is known"
         )
     else:
-        from autombist.jtag_bist import DEFAULT_STIL_CLK_PERIOD_NS, StilTiming, write_jtag_bist
+        from autombist.jtag_bist import write_jtag_bist
 
-        # The STIL's TCK period is the BSDL's TCK limit, so the two can't disagree.
-        stil = (
-            StilTiming(tck_period_ns=1e9 / tck_hz,
-                       clk_period_ns=stil_clk_period_ns or DEFAULT_STIL_CLK_PERIOD_NS)
-            if emit_stil else None
-        )
         try:
-            files = write_jtag_bist(
-                out, top=top, graph=graph, root=root,
-                wrapped_verilog=inserted_verilog, wrapped_file=verilog_path.name,
-                memory_name=str(memory_name) if memory_name is not None else None,
-                run_cycles=run_cycles, bist_cycles=exact,
-                icl_file=icl_path.name if icl_path is not None else None,
-                access=access,
-                bsdl_file=bsdl_path.name if bsdl_path is not None else None,
-                stil=stil,
-            )
-        except (TestbenchError, OSError) as exc:
+            files = write_jtag_bist(rendered)
+        except OSError as exc:
             _fail(str(exc))
         typer.echo(f"PDL (run_mbist):  {files.pdl}")
         typer.echo(f"JTAG vectors:     {files.vectors}")

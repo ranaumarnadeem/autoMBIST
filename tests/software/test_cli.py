@@ -879,7 +879,19 @@ def test_wrap_test_access_bist_cycles_does_not_cover_a_malformed_config(tmp_path
         "--bist-cycles", "5000",
     )
 
-    _assert_one_error_line(result, "autombist: negative shift count")
+    _assert_one_error_line(result, "autombist: config addr_width must not be negative, not -1")
+    assert "the insertion ran" not in result.output
+
+
+@pytest.mark.parametrize("extra", [(), ("--bist-cycles", "5000")])
+def test_wrap_test_access_malformed_config_value_is_one_error_line(tmp_path: Path, monkeypatch, extra) -> None:
+    """read_latency: null used to escape as a TypeError traceback."""
+    result = _wrap_up_to_the_insertion(
+        tmp_path, monkeypatch,
+        "wrapper_module_name: sram_1rw_mbist\naddr_width: 4\nalgo: march-c\nread_latency: null\n", *extra,
+    )
+
+    _assert_one_error_line(result, "autombist: config read_latency must be an integer, not None")
     assert "the insertion ran" not in result.output
 
 

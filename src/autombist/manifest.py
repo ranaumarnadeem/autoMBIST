@@ -26,6 +26,8 @@ would be a guess.
 from __future__ import annotations
 
 import json
+import os
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -389,8 +391,27 @@ def write_instance_manifest(manifest: dict[str, Any], module_outdir: Path) -> Pa
     module_outdir = Path(module_outdir)
     module_outdir.mkdir(parents=True, exist_ok=True)
     path = module_outdir / MANIFEST_FILENAME
-    path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    _replace_manifest(path, manifest)
     return path
+
+
+def _replace_manifest(path: Path, manifest: dict[str, Any]) -> None:
+    """Writes manifest.json to a temporary file beside it and renames that over
+    it, so a write that fails partway (a full disk) leaves the old manifest.json
+    whole. The new file keeps the old one's permission bits. The rename needs
+    only the directory to be writable, so a read-only manifest.json is refused
+    here rather than replaced."""
+    if path.exists() and not os.access(path, os.W_OK):
+        raise ManifestError(f"{path} is not writable")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        if path.exists():
+            os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # warptap's own primitive modules (its rtl/*.v) -> manifest category. A scan mux
@@ -546,7 +567,7 @@ def build_test_access_block(
 
 
 def update_manifest_with_test_access(module_outdir: Path, test_access_block: dict[str, Any]) -> Path:
-    """Patches an existing manifest.json's "test_access" key in place -- called
+    """Patches an existing manifest.json's "test_access" key -- called
     after wrap-test-access actually runs. Raises ManifestError if generate
     --emit-manifest was never run for this output directory."""
     path = Path(module_outdir) / MANIFEST_FILENAME
@@ -561,5 +582,5 @@ def update_manifest_with_test_access(module_outdir: Path, test_access_block: dic
         raise ManifestError(f"could not read {path}: {exc}") from exc
 
     manifest["test_access"] = test_access_block
-    path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    _replace_manifest(path, manifest)
     return path

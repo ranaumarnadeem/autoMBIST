@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -124,6 +125,32 @@ def test_bist_cycles_model(config: dict, expected: int) -> None:
 def test_bist_cycles_rejects_an_unknown_algorithm() -> None:
     with pytest.raises(TestbenchError, match="no BIST length"):
         bist_cycles({**BASE, "algo": "galpat"})
+
+
+@pytest.mark.parametrize(
+    ("change", "fragment"),
+    [
+        ({"read_latency": None}, "config read_latency must be an integer, not None"),
+        ({"read_latency": "two"}, "config read_latency must be an integer, not 'two'"),
+        ({"read_latency": -1}, "config read_latency must not be negative, not -1"),
+        ({"addr_width": -1}, "config addr_width must not be negative, not -1"),
+        ({"addr_width": None}, "config addr_width must be an integer, not None"),
+        ({"memories": 4}, "config memories must be a list, not 4"),
+    ],
+)
+def test_bist_cycles_names_a_malformed_field(change: dict, fragment: str) -> None:
+    """A ValueError naming the field, not a TypeError traceback. Not a
+    TestbenchError either: wrap-test-access --bist-cycles passes over an unknown
+    algorithm, but never over a malformed config."""
+    with pytest.raises(ValueError, match=re.escape(fragment)) as raised:
+        bist_cycles({**BASE, "algo": "march-c", **change})
+    assert not isinstance(raised.value, TestbenchError)
+
+
+def test_bist_cycles_names_a_missing_addr_width() -> None:
+    config = {key: value for key, value in BASE.items() if key != "addr_width"}
+    with pytest.raises(ValueError, match="config has no addr_width"):
+        bist_cycles(config)
 
 
 def test_testbench_renders_its_timeout() -> None:

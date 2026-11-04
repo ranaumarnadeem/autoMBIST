@@ -12,6 +12,22 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Fixed
+- `wrap-test-access` with a malformed config value (`read_latency: null`,
+  `memories: 4`, a negative `addr_width`) now fails with one error line naming
+  the field, before the insertion. `read_latency: null` and `memories: 4` were
+  a `TypeError` traceback. `--bist-cycles` still does not cover a malformed
+  config (#31).
+- `wrap-test-access` renders the `run_mbist` PDL, vectors, STIL and JTAG
+  testbench before writing anything, as it already did the ICL and BSDL. A
+  failure while rendering them used to come after the inserted Verilog, the
+  ICL, the BSDL and the PDL were written (#32).
+- `manifest.json` is written to a temporary file and renamed into place, by
+  both `generate --emit-manifest` and `wrap-test-access --manifest`, so a write
+  that fails partway (a full disk) leaves the old one whole instead of
+  truncated. It keeps its permission bits, and a read-only `manifest.json` is
+  still refused, not replaced (#33).
+
 ## [0.6.0] - 2026-11-04
 
 ### Added
