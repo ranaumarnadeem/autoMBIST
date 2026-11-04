@@ -77,11 +77,13 @@ def render_pdl(
     """The ``run_mbist`` procedure as IEEE 1687 PDL, addressing each
     instrument's ICL register."""
     runloop = next(s.count for s in steps if s.kind == "runloop")
-    length = (
-        f"the BIST needs up to {bist_cycles} {SYSTEM_CLOCK} cycles; the run loop adds a margin"
-        if bist_cycles is not None
-        else "the run loop is an upper bound on the BIST's length"
-    )
+    if bist_cycles is None:
+        length = "the run loop is an upper bound on the BIST's length"
+    elif runloop < bist_cycles:
+        length = (f"the BIST needs up to {bist_cycles} {SYSTEM_CLOCK} cycles; the run loop is shorter, "
+                  "so bist_done reads back 0")
+    else:
+        length = f"the BIST needs up to {bist_cycles} {SYSTEM_CLOCK} cycles; the run loop adds a margin"
     load = f"{access.instruction} (IR {access.ir_width}'b{access.opcode_bits})"
     if icl_file and bsdl_file:
         reach = [

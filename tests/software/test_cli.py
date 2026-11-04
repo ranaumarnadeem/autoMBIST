@@ -848,6 +848,63 @@ def test_wrap_test_access_config_it_cannot_size_fails_before_the_insertion(tmp_p
     assert not (tmp_path / "ta").exists()
 
 
+def _wrap_up_to_the_insertion(tmp_path: Path, monkeypatch, config_text: str, *extra: str):
+    """Runs wrap-test-access with the insertion replaced by a ValueError, so
+    "autombist: the insertion ran" in the output means every check before it passed."""
+    config_path = tmp_path / "snapshot.yml"
+    config_path.write_text(config_text, encoding="utf-8")
+    monkeypatch.setattr("autombist.testaccess.wrap_test_access", _raise(ValueError("the insertion ran")))
+    return runner.invoke(cli_mod.app, ["wrap-test-access", "--source", str(tmp_path / "w.v"),
+                                       "--top", "sram_1rw_mbist", "--config", str(config_path),
+                                       "--out", str(tmp_path / "ta"), *extra])
+
+
+def test_wrap_test_access_bist_cycles_runs_a_config_it_cannot_size(tmp_path: Path, monkeypatch) -> None:
+    """--bist-cycles gives the run length itself, so a config whose algorithm has
+    no known BIST length no longer stops the run."""
+    result = _wrap_up_to_the_insertion(
+        tmp_path, monkeypatch, "wrapper_module_name: sram_1rw_mbist\naddr_width: 4\nalgo: march-zz\n",
+        "--bist-cycles", "5000",
+    )
+
+    _assert_one_error_line(result, "autombist: the insertion ran")
+    assert "no BIST length known" not in result.output
+
+
+def test_wrap_test_access_bist_cycles_does_not_cover_a_malformed_config(tmp_path: Path, monkeypatch) -> None:
+    """Only an unknown algorithm is passed over with --bist-cycles; a config that
+    is wrong in itself still fails before the insertion."""
+    result = _wrap_up_to_the_insertion(
+        tmp_path, monkeypatch, "wrapper_module_name: sram_1rw_mbist\naddr_width: -1\nalgo: march-c\n",
+        "--bist-cycles", "5000",
+    )
+
+    _assert_one_error_line(result, "autombist: negative shift count")
+    assert "the insertion ran" not in result.output
+
+
+def test_wrap_test_access_warns_when_bist_cycles_is_shorter_than_the_bist(tmp_path: Path, monkeypatch) -> None:
+    """march-c on 16 words takes 403 clk cycles: --bist-cycles 10 is still taken
+    (a short run loop is how the testbench is shown to catch one), with a warning."""
+    result = _wrap_up_to_the_insertion(
+        tmp_path, monkeypatch, "wrapper_module_name: sram_1rw_mbist\naddr_width: 4\nalgo: march-c\n",
+        "--bist-cycles", "10",
+    )
+
+    assert "autombist: warning: --bist-cycles 10 is shorter than the BIST, which takes 403 clk cycles" in result.output
+    _assert_one_error_line(result, "autombist: the insertion ran")
+
+
+def test_wrap_test_access_does_not_warn_when_bist_cycles_covers_the_bist(tmp_path: Path, monkeypatch) -> None:
+    result = _wrap_up_to_the_insertion(
+        tmp_path, monkeypatch, "wrapper_module_name: sram_1rw_mbist\naddr_width: 4\nalgo: march-c\n",
+        "--bist-cycles", "403",
+    )
+
+    assert "warning" not in result.output
+    _assert_one_error_line(result, "autombist: the insertion ran")
+
+
 def test_test_fault_types_that_is_not_a_list_is_one_error_line(tmp_path: Path) -> None:
     faults_path = tmp_path / "faults.txt"
     faults_path.write_text("SA0 3 0 0 0 0 0\n", encoding="ascii")

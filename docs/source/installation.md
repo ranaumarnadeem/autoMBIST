@@ -3,12 +3,18 @@
 ## Platform
 
 autoMBIST's Python package runs anywhere Python 3.10+ runs. The RTL simulation
-and physical-design tooling it drives (Icarus Verilog, Verilator, cocotb,
-Yosys, LibreLane, magic, OpenRAM) is Linux-only — on Windows, run inside **WSL**.
-A [Nix flake](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flake.nix)
+toolchain it drives (Icarus Verilog, Verilator, cocotb, Yosys, warptap) runs on
+Linux and on Apple Silicon macOS; on Windows, run inside **WSL**. A
+[Nix flake](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flake.nix)
 is provided that pins the entire simulation toolchain (Icarus 13.0, Verilator
 5.048, Yosys 0.62, Python 3.11, cocotb 2.x) for reproducible builds; this is
-also what CI uses.
+also what CI uses, and CI runs the full test suite on both Linux and Apple
+Silicon macOS.
+
+- **macOS:** Apple Silicon only, through the Nix flake. Intel macOS is not
+  supported: nixpkgs' Icarus Verilog does not build for `x86_64-darwin`.
+- **Physical design** (LibreLane, magic, OpenRAM) and FaultFlow are tested on
+  Linux only.
 
 ## Install (Nix — recommended, matches CI exactly)
 

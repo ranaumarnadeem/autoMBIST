@@ -1144,14 +1144,32 @@ def _wrap_test_access(
     # The BIST's run length for the PDL/JTAG testbench and the STIL below: from
     # the config (its algorithm and size), or --bist-cycles. Worked out before the
     # insertion, so a config it cannot size fails before Yosys runs and before
-    # anything is written.
+    # anything is written. With --bist-cycles, a config whose algorithm has no
+    # known length is fine: the exact length only names it in the PDL.
     from autombist.testbench import TestbenchError, bist_cycle_bound, bist_cycles as bist_length
 
-    try:
-        exact = bist_length(bist_config) if bist_config is not None else None
-        run_cycles = bist_cycles or (bist_cycle_bound(bist_config) if bist_config is not None else None)
-    except (TestbenchError, KeyError, ValueError) as exc:
-        _fail(str(exc))
+    exact: int | None = None
+    if bist_config is not None:
+        try:
+            exact = bist_length(bist_config)
+        except TestbenchError as exc:
+            if bist_cycles is None:
+                _fail(str(exc))
+        except (KeyError, ValueError) as exc:
+            _fail(str(exc))
+    run_cycles = bist_cycles or (bist_cycle_bound(bist_config) if exact is not None else None)
+    if bist_cycles is not None and exact is not None and bist_cycles < exact:
+        # Not refused: a run loop cut short is how the testbench and the STIL are
+        # shown to catch one (bist_done reads back 0).
+        typer.secho(
+            f"autombist: warning: --bist-cycles {bist_cycles} is shorter than the BIST, which takes "
+            f"{exact} clk cycles -- the run_mbist pattern reads bist_done before the BIST is done, "
+            "so it fails on a good memory",
+            err=True, fg=typer.colors.YELLOW,
+        )
+    # Not every config passed with --config is a generate snapshot; one that names
+    # no memory is treated like no config at all here (the model stays optional).
+    memory_name = bist_config.get("memory_name") if bist_config is not None else None
 
     try:
         inserted_verilog, graph, root = wrap_test_access(
@@ -1234,7 +1252,7 @@ def _wrap_test_access(
             files = write_jtag_bist(
                 out, top=top, graph=graph, root=root,
                 wrapped_verilog=inserted_verilog, wrapped_file=verilog_path.name,
-                memory_name=str(bist_config["memory_name"]) if bist_config is not None else None,
+                memory_name=str(memory_name) if memory_name is not None else None,
                 run_cycles=run_cycles, bist_cycles=exact,
                 icl_file=icl_path.name if icl_path is not None else None,
                 access=access,

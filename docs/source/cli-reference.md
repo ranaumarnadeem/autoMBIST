@@ -39,8 +39,9 @@ autombist -q simulate --out out
 
 > **Platform note.** `autombist generate` (wrapper/RTL emission) and config parsing
 > run anywhere Python 3.10+ runs. `simulate`, `run`, and `grade-controller --run`
-> invoke Icarus Verilog / Cocotb / Yosys / FaultFlow and only work on Linux or WSL,
-> using a venv created inside WSL/Linux. Run `autombist doctor` for a quick check
+> invoke Icarus Verilog / Cocotb / Yosys / FaultFlow and only work on Linux or WSL
+> (using a venv created inside WSL/Linux), or on Apple Silicon macOS through the
+> Nix dev shell; FaultFlow is tested on Linux only. Run `autombist doctor` for a quick check
 > of which of these tools (plus nix/bash/magic/netgen) autombist can currently
 > find on `PATH`.
 
@@ -588,7 +589,7 @@ autombist wrap-test-access [OPTIONS]
 | `--idcode TEXT` | warptap's placeholder `0x1A5A5003` | The TAP's 32-bit IDCODE, e.g. `0x5CA1AB1F`; bit 0 must be 1, as IEEE 1149.1 requires. The default is not a registered manufacturer ID (its manufacturer field falls in an assigned JEP106 slot), so ship your own |
 | `--access-instruction TEXT` | `ijtag-access` | The TAP instruction that selects the IJTAG network: `ijtag-access`, warptap's dedicated `IJTAG_ACCESS` (`IR 4'b1100`), under which EXTEST, SAMPLE and PRELOAD select BYPASS; or `extest`, the network behind EXTEST as 0.2.0 inserted it (see *Hardened for silicon* below) |
 | `--manifest PATH` | none | A `generate --emit-manifest` output directory. Records every instance of the wrapped netlist in its `manifest.json`'s `test_access` block, and on its own supplies `--source` (wrapper + instrument RTL, with the memory's `<memory_name>_bbox.v` stub in place of a model), `--top`, `--config` and `--out` |
-| `--bist-cycles INTEGER` | the BIST-length bound for the config | Length, in clk cycles, of the BIST run loop in the emitted PDL and JTAG testbench. Without `--config`/`--manifest` there is no config to compute it from, so the PDL and testbench are skipped unless this is given |
+| `--bist-cycles INTEGER` | the BIST-length bound for the config | Length, in clk cycles, of the BIST run loop in the emitted PDL and JTAG testbench. Without `--config`/`--manifest` there is no config to compute it from, so the PDL and testbench are skipped unless this is given. It also covers a config whose algorithm has no known BIST length. A value shorter than the BIST's known length is taken with a warning: the pattern then reads `bist_done` before the BIST is done, and fails on a good memory |
 
 Without `--config`: wraps exactly the always-1-bit control/status ports a
 generated wrapper exposes — `test_mode`, `bist_start`, `bist_done`,
