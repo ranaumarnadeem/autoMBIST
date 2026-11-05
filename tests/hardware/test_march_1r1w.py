@@ -4,7 +4,7 @@ Run via tests/hardware/run_march_1r1w_tb.py (see that file's header comment
 for the exact invocation), e.g.:
 
     cd <repo root>
-    PYTHONPATH=src python tests/hardware/run_march_1r1w_tb.py
+    python tests/hardware/run_march_1r1w_tb.py
 
 This test produces hard evidence for three things:
   a) CONCURRENCY: the FSM's read-enable-for-port-0 and write-enable-for-

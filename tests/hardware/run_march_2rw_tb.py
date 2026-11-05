@@ -9,7 +9,7 @@ tests/hardware/run_march_1r1w_tb.py exactly.
 Invoke exactly like this (from the repo root, inside `nix develop`):
 
     cd <repo root>
-    PYTHONPATH=src python tests/hardware/run_march_2rw_tb.py
+    python tests/hardware/run_march_2rw_tb.py
 
 Exits non-zero if any cocotb test fails or if the build fails.
 """

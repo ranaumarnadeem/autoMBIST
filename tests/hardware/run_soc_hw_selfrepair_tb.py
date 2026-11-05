@@ -12,7 +12,7 @@ already hardens clean -- not a divergent one.
 Invoke exactly like this (from the repo root, inside `nix develop`):
 
     cd <repo root>
-    PYTHONPATH=src python tests/hardware/run_soc_hw_selfrepair_tb.py
+    python tests/hardware/run_soc_hw_selfrepair_tb.py
 
 Exits non-zero if any cocotb test fails or if the build fails.
 """

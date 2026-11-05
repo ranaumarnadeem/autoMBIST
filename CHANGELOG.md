@@ -27,6 +27,22 @@ everything that predates the migration.
   that fails partway (a full disk) leaves the old one whole instead of
   truncated. It keeps its permission bits, and a read-only `manifest.json` is
   still refused, not replaced (#33).
+- The error messages for a missing or too-old warptap name only the minimum
+  autoMBIST checks (0.0.4), not the version the Nix dev shell pins, so they no
+  longer go stale on the next warptap bump (#36).
+- The hardware testbench run commands (the `tests/hardware` docstrings and the
+  `flow/soc` and `flow/multimem` READMEs) no longer set `PYTHONPATH=src`
+  inside `nix develop`, which replaced the dev shell's own path and dropped
+  warptap from it (#38).
+
+### Testing
+- The CLI's error contract (one error line on stderr, no traceback) is one
+  shared helper, `tests/cli_errors.py`, instead of two copies that had drifted
+  apart. It checks the fragment is on the error line itself, not anywhere in
+  the output, where a success line naming the same file could satisfy it
+  (#34, #37).
+- The march-test synthesizer's lengths (27n in 14 elements at init 1, 28n at
+  init 0) are pinned by a test that also checks the docs quote them (#35).
 
 ## [0.6.0] - 2026-11-04
 

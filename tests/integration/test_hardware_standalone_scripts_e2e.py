@@ -64,7 +64,8 @@ def test_standalone_cocotb_script_passes(script: str) -> None:
     env = {
         key: value for key, value in os.environ.items() if key != "PYTEST_CURRENT_TEST"
     }
-    env["PYTHONPATH"] = str(REPO_ROOT / "src")
+    # src first, keeping the rest (the dev shell adds warptap there)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(REPO_ROOT / "src"), os.environ.get("PYTHONPATH")]))
     result = subprocess.run(
         [sys.executable, str(HW_DIR / script)],
         cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False, timeout=600,

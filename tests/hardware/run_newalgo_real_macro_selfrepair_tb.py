@@ -15,7 +15,7 @@ caveat for these two designs.
 Invoke exactly like this (from the repo root, inside `nix develop`):
 
     cd <repo root>
-    PYTHONPATH=src python tests/hardware/run_newalgo_real_macro_selfrepair_tb.py
+    python tests/hardware/run_newalgo_real_macro_selfrepair_tb.py
 
 Exits non-zero if any cocotb test fails or if either build fails.
 """

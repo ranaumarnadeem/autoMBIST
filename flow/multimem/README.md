@@ -73,7 +73,7 @@ by this directory's testbench and are patched in the checked-in model copies):
 From the repo root, inside `nix develop`:
 
 ```bash
-PYTHONPATH=src python tests/hardware/run_mem_subsystem_tb.py
+python tests/hardware/run_mem_subsystem_tb.py
 ```
 
 Covers per-slot write/read integrity at boundary addresses (including the first

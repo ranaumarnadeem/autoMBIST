@@ -5,7 +5,7 @@ Run via tests/hardware/run_mem_subsystem_tb.py (see that file's header for the
 exact invocation), e.g.:
 
     cd <repo root>
-    PYTHONPATH=src python tests/hardware/run_mem_subsystem_tb.py
+    python tests/hardware/run_mem_subsystem_tb.py
 
 Proves three things about the subsystem:
   a) PER-SLOT INTEGRITY: writes/reads round-trip on every slot at boundary

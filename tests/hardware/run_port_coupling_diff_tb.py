@@ -11,7 +11,7 @@ required. Mirrors tests/hardware/run_march_1r1w_tb.py's structure.
 Invoke exactly like this (from the repo root, inside `nix develop`):
 
     cd <repo root>
-    PYTHONPATH=src python tests/hardware/run_port_coupling_diff_tb.py
+    python tests/hardware/run_port_coupling_diff_tb.py
 
 Exits non-zero if any cocotb test fails or if the build fails.
 """

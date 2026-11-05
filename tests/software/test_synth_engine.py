@@ -4,11 +4,14 @@ the pure-Python reference-memory oracle and the greedy walk directly.
 """
 from __future__ import annotations
 
+import io
 import itertools
+from pathlib import Path
 
 import pytest
 
 from autombist.alg_spec import DIR_MAP, OP_MAP, WAIT_BASE, Element, parse_alg
+from autombist.algo_shell import AlgoShell, Session
 from autombist.fault_primitives import (
     Effect,
     FIXED_TYPE_NAMES,
@@ -676,3 +679,27 @@ def test_resolved_params_differ_from_the_shipped_fault_lists_and_that_is_load_be
         "22/29 vs 27/29 gap documented in resolve_params' docstring before "
         "updating this pin -- the docstring must not outlive the measurement."
     )
+
+
+@pytest.mark.parametrize(
+    ("set_memory", "summary", "covered", "doc_claim"),
+    [
+        ("set_memory 8 8", "synthesized 'mytest': 27n, 14 elements", "covered: 37/37",
+         "27n in 14 elements at the default memory init value of 1"),
+        ("set_memory 8 8 --init 0", "synthesized 'mytest': 28n, 15 elements", "covered: 36/37", "at init 0 it is 28n"),
+    ],
+)
+def test_the_synthesized_length_matches_the_docs(set_memory, summary, covered, doc_claim):
+    """docs/source/index.md and roadmap.md quote these lengths. A change to the
+    greedy walk that moves them fails here, not silently in the docs."""
+    shell = AlgoShell(Session())
+    shell.stdout = io.StringIO()
+    for line in (set_memory, "synth mytest"):
+        shell.onecmd(shell.precmd(line))
+    out = shell.stdout.getvalue()
+
+    assert summary in out
+    assert covered in out
+    docs = Path(__file__).resolve().parents[2] / "docs" / "source"
+    for page in ("index.md", "roadmap.md"):
+        assert doc_claim in " ".join((docs / page).read_text(encoding="utf-8").split()), page

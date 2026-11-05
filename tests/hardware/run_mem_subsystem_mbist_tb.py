@@ -14,7 +14,7 @@ unrepairable). See test_mem_subsystem_mbist.py's docstring for the full story.
 Invoke exactly like this (from the repo root, inside `nix develop`):
 
     cd <repo root>
-    PYTHONPATH=src python tests/hardware/run_mem_subsystem_mbist_tb.py
+    python tests/hardware/run_mem_subsystem_mbist_tb.py
 
 Exits non-zero if any cocotb test fails or if the build fails.
 """

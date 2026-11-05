@@ -686,7 +686,7 @@ by this version. Regenerate them with the netlist, or pass `--access-instruction
 extest` to keep the network behind EXTEST (the other two fixes stay on).
 
 Requires (Linux/WSL only): warptap 0.0.4 or later (the Nix dev shell, `nix develop`,
-and so CI pin 0.0.5 in `flake.lock`), plus Yosys and Icarus Verilog on PATH. warptap
+and so CI pin a release in `flake.lock`), plus Yosys and Icarus Verilog on PATH. warptap
 shells out to both; neither is bundled. An older warptap is refused with the
 version it needs. warptap 0.0.3 also fixed the network moving under **any** TAP
 instruction: before it, two all-ones DR scans under IDCODE or BYPASS (a board

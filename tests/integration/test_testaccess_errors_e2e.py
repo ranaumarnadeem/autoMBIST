@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from cli_errors import assert_one_error_line
 from typer.testing import CliRunner
 
 from autombist.cli import app
@@ -42,12 +43,6 @@ def _generate(tmp_path: Path) -> Path:
     return tmp_path / "out" / CONFIG["memory_name"]
 
 
-def _assert_one_error_line(result, fragment: str) -> None:
-    assert result.exit_code == 1, result.output
-    assert "autombist: " in result.output and fragment in result.output
-    assert "Traceback" not in result.output
-
-
 def test_a_run_mbist_file_it_cannot_write_is_one_error_line(tmp_path: Path) -> None:
     module_outdir = _generate(tmp_path)
     manifest = module_outdir / "manifest.json"
@@ -56,7 +51,7 @@ def test_a_run_mbist_file_it_cannot_write_is_one_error_line(tmp_path: Path) -> N
 
     result = runner.invoke(app, ["wrap-test-access", "--manifest", str(module_outdir)])
 
-    _assert_one_error_line(result, f"{TOP}_run_mbist.pdl")
+    assert_one_error_line(result, f"{TOP}_run_mbist.pdl")
     assert (module_outdir / "test-access" / f"{TOP}_test_access.v").is_file()
     assert manifest.read_text(encoding="utf-8") == before
 
@@ -78,7 +73,7 @@ def test_a_run_mbist_file_it_cannot_render_leaves_nothing_written(tmp_path: Path
     monkeypatch.setattr("autombist.jtag_bist.parse_netlist_ports", fail)
     result = runner.invoke(app, ["wrap-test-access", "--manifest", str(module_outdir), "--emit-icl", "--emit-stil"])
 
-    _assert_one_error_line(result, "has no tdo port")
+    assert_one_error_line(result, "has no tdo port")
     assert not (module_outdir / "test-access").exists()
     assert manifest.read_text(encoding="utf-8") == before
 
@@ -94,6 +89,6 @@ def test_a_manifest_it_cannot_update_is_one_error_line(tmp_path: Path) -> None:
     finally:
         manifest.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
 
-    _assert_one_error_line(result, "manifest.json")
+    assert_one_error_line(result, "manifest.json")
     assert "Updated manifest:" not in result.output
     assert manifest.read_text(encoding="utf-8") == before
