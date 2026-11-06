@@ -149,6 +149,10 @@ progress, and what's further out.
   aware solver, and fail-bitmap shape classes. Calibrated against the
   ITC'2020 RA Benchmarks, honestly: the gate failed by 0.35 to 1.5 points, see
   [Repair Yield Analysis](yield-analysis.md)
+- Evidence for a functional-safety analysis (milestone 6): `safety-report` gives
+  measured coverage per fault class, and diagnostic coverage from failure rates
+  you supply. It makes no ISO 26262-5 Annex D mapping, rating or ASIL claim, see
+  [Using the Safety Report in an FMEDA](safety-report.md)
 
 ## Further out
 

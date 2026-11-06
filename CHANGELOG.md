@@ -21,6 +21,9 @@ everything that predates the migration.
   Annex D; it prints no rating and makes no ASIL claim (#39, #40).
 - The JSON campaign report (`autombist test --report x.json --fmt json`) records
   `tool_versions` (#40).
+- [Using the Safety Report in an FMEDA](docs/source/safety-report.md): the inputs a
+  safety engineer must supply, unweighted coverage against diagnostic coverage, a
+  worked example a test re-runs, and what autoMBIST does not provide (#41).
 
 ### Fixed
 - `wrap-test-access` with a malformed config value (`read_latency: null`,

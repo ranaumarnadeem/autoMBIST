@@ -269,6 +269,9 @@ published docs site:
   reading generated coverage/diagnosis reports.
 - [Repair Yield Analysis](https://ranaumarnadeem.github.io/autoMBIST/yield-analysis.html) —
   repair-rate sweeps, the yield multiplier, defect models and their calibration.
+- [Using the Safety Report in an FMEDA](https://ranaumarnadeem.github.io/autoMBIST/safety-report.html) —
+  measured coverage per fault class, the inputs you must supply, and what it does
+  not cover.
 - [OpenROAD / LibreLane Macro Integration](https://ranaumarnadeem.github.io/autoMBIST/openroad-macro-integration.html) —
   how an SRAM plugs into the hard-macro flow.
 - [Demo](https://ranaumarnadeem.github.io/autoMBIST/demo.html) — a one-command,

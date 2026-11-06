@@ -568,7 +568,8 @@ analysis. The coverage a campaign reports counts fault records equally, while
 diagnostic coverage (DC) is weighted by failure rate, so a DC figure appears only
 when you give failure rates. The fault classes come from the memory-test
 literature, not ISO 26262-5 Annex D. The report prints no rating and makes no
-ASIL claim.
+ASIL claim. For how to use it, see
+[Using the Safety Report in an FMEDA](safety-report.md).
 
 ### Syntax
 

@@ -27,8 +27,6 @@ work it describes; don't let it silently go stale the way
 
 ## Not started (scoped as GitHub milestones, no work begun)
 
-- **ISO 26262 diagnostic-coverage mapping** — map fault-model coverage
-  onto ISO 26262's diagnostic-coverage metrics for automotive use.
 - **IEEE 1450.6.2 memory modeling (CTL)** — describe a memory core's test
   structure/repair mechanism in CTL for EDA-tool interop. (Confirmed
   during milestone-4 scoping: this is a different problem from diagnosis
