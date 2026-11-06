@@ -12,6 +12,16 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Added
+- `autombist safety-report` turns a campaign report into coverage per fault
+  class, with what the figures depend on (algorithm, memory, fault list, tool
+  versions). It gives a diagnostic coverage figure only when you pass
+  `--failure-rates`, since the coverage a campaign reports counts fault records
+  equally. The classes come from the memory-test literature, not ISO 26262-5
+  Annex D; it prints no rating and makes no ASIL claim (#39, #40).
+- The JSON campaign report (`autombist test --report x.json --fmt json`) records
+  `tool_versions` (#40).
+
 ### Fixed
 - `wrap-test-access` with a malformed config value (`read_latency: null`,
   `memories: 4`, a negative `addr_width`) now fails with one error line naming

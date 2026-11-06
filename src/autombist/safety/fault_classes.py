@@ -31,6 +31,8 @@ _BY_CLASS: dict[str, tuple[str, ...]] = {
     "half_select": ("HSD",),
 }
 
+CLASS_NAMES: tuple[str, ...] = tuple(_BY_CLASS)
+
 FAULT_CLASSES: dict[str, str] = {
     fault_type: fault_class_name for fault_class_name, fault_types in _BY_CLASS.items() for fault_type in fault_types
 }

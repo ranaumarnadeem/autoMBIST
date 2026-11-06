@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .algo_engine import CampaignResult
+from . import __version__
+from .algo_engine import CampaignResult, _verilator_version
 
 SCHEMA_VERSION = "1.0.0"
 VALID_FORMATS = ("md", "csv", "json")
@@ -102,8 +103,17 @@ def render_campaign_md(result: CampaignResult) -> str:
     return header + _render_pipe_table(columns, rows)
 
 
+def _tool_versions(result: CampaignResult) -> dict[str, str]:
+    """Read when the report is written, in the process that ran the campaign."""
+    try:
+        simulator = _verilator_version() if result.sim == "verilator" else "unknown"
+    except OSError:  # a CampaignResult built without running Verilator
+        simulator = "unknown"
+    return {"autombist": __version__, "simulator": simulator}
+
+
 def render_campaign_json(result: CampaignResult) -> str:
-    payload = {"schema_version": SCHEMA_VERSION, **result.to_dict()}
+    payload = {"schema_version": SCHEMA_VERSION, "tool_versions": _tool_versions(result), **result.to_dict()}
     return json.dumps(payload, indent=2, sort_keys=False)
 
 

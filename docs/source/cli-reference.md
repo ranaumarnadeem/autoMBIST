@@ -6,7 +6,7 @@ orphan: true
 
 This page documents the **classic path**: the array-level MBIST flow built around
 `generate` / `simulate` / `run`, plus the supporting `grade-controller`, the repair
-yield commands `yield-sim`, `yield-sweep` and `yield-multiplier`, `ram-synth`,
+yield commands `yield-sim`, `yield-sweep` and `yield-multiplier`, `safety-report`, `ram-synth`,
 `init`, `smoke`, `harden`, `fix-lef-units`, `macro-signoff`, `doctor`, and `shell`
 commands. For the functional fault-primitive engine and the interactive research
 shell (`autombist test`, `autombist algo`), see
@@ -558,6 +558,57 @@ autombist yield-multiplier --report PATH [OPTIONS]
 autombist yield-multiplier --report out/yield_sweep.json
 autombist yield-multiplier --report out/yield_sim.json --lam itc2020 --alpha itc2020 --json
 ```
+
+---
+
+## safety-report
+
+Measured fault coverage per class from a campaign, as evidence for a safety
+analysis. The coverage a campaign reports counts fault records equally, while
+diagnostic coverage (DC) is weighted by failure rate, so a DC figure appears only
+when you give failure rates. The fault classes come from the memory-test
+literature, not ISO 26262-5 Annex D. The report prints no rating and makes no
+ASIL claim.
+
+### Syntax
+
+```bash
+autombist safety-report --campaign PATH [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--campaign PATH` | required | Campaign report in JSON, from `autombist test --report x.json --fmt json` |
+| `--failure-rates PATH` | none | YAML or JSON mapping of fault class to failure rate; without it there is no DC figure |
+| `--out DIR` | `safety` | Where `safety_report.json` and `safety_report.md` go |
+
+The classes are `stuck_at`, `stuck_open`, `transition`, `addressing`, `coupling`,
+`read_write`, `dynamic`, `retention` and `half_select`. Only the ratios of the
+rates matter, so any unit works:
+
+- Every class the campaign measured needs a rate. Give 0 to leave one out of DC.
+- A rate given for a class the campaign did not measure counts as undetected.
+- A user-defined fault type has no class. It is listed as unmapped and counts in
+  the unweighted coverage only.
+
+A campaign whose golden run was not clean, or whose controller failed
+`--check-sequence`, is refused. Percentages are rounded down, so a figure just
+under full never prints as 100.00%.
+
+### Examples
+
+```bash
+autombist test -aw 8 -dw 8 --algo march_ss --faults faults.txt --report campaign.json --fmt json
+autombist safety-report --campaign campaign.json
+autombist safety-report --campaign campaign.json --failure-rates rates.yml --out safety
+```
+
+### Output
+
+`safety_report.md` and `safety_report.json` give coverage per class, with a class
+the campaign has no records for shown as not measured. They also record what the
+figures depend on (algorithm, memory, tool versions, and the fault list's size and
+SHA-256, which ignores the order of the list) and what the report does not cover.
 
 ---
 

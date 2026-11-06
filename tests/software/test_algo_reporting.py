@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import autombist
 from autombist.algo_engine import CampaignResult, FaultRecord, FaultResult, MemoryParams
 from autombist.algo_reporting import (
     SYNDROME_VALID_FORMATS,
@@ -80,6 +81,21 @@ def test_render_campaign_json_roundtrips() -> None:
     assert payload["algo_name"] == "march_c"
     assert payload["detected"] == 1 and payload["total"] == 2
     assert len(payload["faults"]) == 2
+
+
+def test_render_campaign_json_records_the_tool_versions(monkeypatch) -> None:
+    monkeypatch.setattr("autombist.algo_reporting._verilator_version", lambda: "Verilator 5.048")
+    payload = json.loads(render_campaign_json(_result("march_c", [("SA0", 1, 0, True)])))
+    assert payload["tool_versions"] == {"autombist": autombist.__version__, "simulator": "Verilator 5.048"}
+
+
+def test_render_campaign_json_without_verilator_says_unknown(monkeypatch) -> None:
+    def no_verilator():
+        raise FileNotFoundError("verilator")
+
+    monkeypatch.setattr("autombist.algo_reporting._verilator_version", no_verilator)
+    payload = json.loads(render_campaign_json(_result("march_c", [("SA0", 1, 0, True)])))
+    assert payload["tool_versions"]["simulator"] == "unknown"
 
 
 def test_write_campaign_report_rejects_bad_format(tmp_path: Path) -> None:

@@ -1417,6 +1417,80 @@ def wrap_test_access_cmd(
     )
 
 
+@app.command("safety-report")
+def safety_report(
+    campaign: Path = typer.Option(..., "--campaign", help="Campaign report in JSON (autombist test --report x.json --fmt json)"),
+    failure_rates: Path | None = typer.Option(None, "--failure-rates", help="YAML or JSON mapping of fault class to failure rate; without it the report gives no DC figure"),
+    out: Path = typer.Option(Path("safety"), "--out", help="Output directory for safety_report.json and safety_report.md"),
+) -> None:
+    """Report measured fault coverage per class, as evidence for a safety analysis.
+
+    Takes the results of a real campaign (autombist test) and writes coverage per
+    fault class, plus what the numbers depend on: algorithm, memory, fault list
+    and tool versions. A diagnostic coverage figure appears only with
+    --failure-rates, since autoMBIST has no failure rates of its own; without
+    them the figure is unweighted coverage, labelled as not DC.
+
+    The fault classes come from the memory-test literature, not ISO 26262-5
+    Annex D. The report prints no rating and makes no ASIL claim.
+
+    Examples:
+      autombist test -aw 8 -dw 8 --algo march_ss --faults faults.txt --report c.json --fmt json
+      autombist safety-report --campaign c.json
+      autombist safety-report --campaign c.json --failure-rates rates.yml --out safety
+    """
+
+    import json
+
+    from autombist.safety.report import SafetyReportError, build_safety_report, format_percent, render_safety_report_md
+
+    try:
+        campaign_data = json.loads(campaign.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        _fail(f"campaign report not found: {campaign}")
+    except ValueError as exc:
+        _fail(f"{campaign} is not JSON: {exc}")
+    except OSError as exc:
+        _fail(str(exc))
+
+    rates = None
+    if failure_rates is not None:
+        try:
+            # An empty file is no rates at all, which is not the same as not asking for DC.
+            rates = yaml.safe_load(failure_rates.read_text(encoding="utf-8")) or {}
+        except FileNotFoundError:
+            _fail(f"failure rates not found: {failure_rates}")
+        except (yaml.YAMLError, ValueError):
+            _fail(f"{failure_rates} is not YAML")
+        except OSError as exc:
+            _fail(str(exc))
+
+    try:
+        report = build_safety_report(campaign_data, rates)
+        rendered = render_safety_report_md(report)
+    except SafetyReportError as exc:
+        _fail(str(exc))
+
+    json_path = out / "safety_report.json"
+    md_path = out / "safety_report.md"
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        md_path.write_text(rendered, encoding="utf-8")
+    except OSError as exc:
+        _fail(str(exc))
+
+    typer.echo(f"Safety report: {md_path}")
+    typer.echo(f"Safety report (JSON): {json_path}")
+    if report["diagnostic_coverage_percent"] is None:
+        typer.echo(f"  unweighted coverage: {format_percent(report['unweighted_coverage_percent'])} (not diagnostic coverage)")
+    else:
+        typer.echo(f"  diagnostic coverage: {format_percent(report['diagnostic_coverage_percent'])}")
+        typer.echo(f"  unweighted coverage: {format_percent(report['unweighted_coverage_percent'])}")
+    for row in report["unmapped"]:
+        typer.echo(f"  unmapped fault type: {row['fault_type']}")
+
+
 @app.command()
 def test(
     addr_width: int = typer.Option(..., "--addr-width", "-aw", help="Memory address width in bits"),
