@@ -27,8 +27,11 @@ count and its uncovered points. A point that loses coverage, or new RTL nothing
 here exercises, fails; so does a point that gains coverage, until the record is
 updated. Rewrite it after an intended change, and review the diff:
     AUTOMBIST_UPDATE_GOLDEN=1 python -m pytest tests/integration/test_rtl_coverage.py
-Verilator 5.048 (the flake's) and 5.049 report identical points. The generated
-wrapper, the testbench and the memory model are not measured.
+Verilator 5.048 (the flake's) and 5.049 report identical points. Another version
+can classify them differently, so on a version tests/golden/tool_versions.yml does
+not list, coverage off its record is a warning, not a failure; the verdicts and
+cycle counts still fail (see tests/golden_tools.py). The generated wrapper, the
+testbench and the memory model are not measured.
 
 What the record leaves uncovered is unreachable here: the default arm of every
 case statement; the branches an algorithm's element order cannot take (each
@@ -65,6 +68,7 @@ from autombist.generator import _find_rtl_dir, generate_from_config  # noqa: E40
 from autombist.manifest import _memory_connection_widths, _redundancy_flags  # noqa: E402
 from autombist.memory_model import render_memory_model  # noqa: E402
 from autombist.testbench import bist_cycle_bound, parse_wrapper_ports, rtl_sources  # noqa: E402
+from golden_tools import failing, record_tool_version  # noqa: E402
 
 GOLDEN = REPO_ROOT / "tests" / "golden"
 RECORD = GOLDEN / "rtl_coverage.yml"
@@ -362,22 +366,25 @@ def test_rtl_coverage_matches_the_record(coverage_run: dict[str, dict]) -> None:
                  "covered": sum(f["covered"] for f in actual.values())}
         RECORD.write_text(RECORD_HEADER + yaml.safe_dump({"total": total, "files": actual}, sort_keys=True),
                           encoding="utf-8", newline="\n")
+        record_tool_version("verilator")
     recorded = (yaml.safe_load(RECORD.read_text(encoding="utf-8")) or {}).get("files", {}) if RECORD.exists() else {}
 
-    problems = []
+    # Which files are measured is the RTL's; their points are Verilator's.
+    files, points = [], []
     for path in sorted(actual.keys() | recorded.keys()):
         got, want = actual.get(path), recorded.get(path)
         if got is None or want is None:
-            problems.append(f"{path}: {'no longer measured' if got is None else 'not in the record'}")
+            files.append(f"{path}: {'no longer measured' if got is None else 'not in the record'}")
             continue
         lost = sorted(set(got["uncovered"]) - set(want["uncovered"]))
         gained = sorted(set(want["uncovered"]) - set(got["uncovered"]))
         if lost:
-            problems.append(f"{path}: newly uncovered: {', '.join(lost)}")
+            points.append(f"{path}: newly uncovered: {', '.join(lost)}")
         if gained:
-            problems.append(f"{path}: newly covered: {', '.join(gained)}")
+            points.append(f"{path}: newly covered: {', '.join(gained)}")
         if not lost and not gained and got["points"] != want["points"]:
-            problems.append(f"{path}: {got['points']} points, recorded {want['points']}")
+            points.append(f"{path}: {got['points']} points, recorded {want['points']}")
+    problems = files + failing("verilator", points, "RTL coverage")
     assert not problems, (
         "RTL coverage moved from tests/golden/rtl_coverage.yml:\n  " + "\n  ".join(problems)
         + f"\nIf the change is intended, rerun with {REGENERATE} and review the diff."

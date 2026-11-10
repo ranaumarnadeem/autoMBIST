@@ -165,6 +165,17 @@ points nothing reaches. A point that loses coverage, or new RTL no run exercises
 fails it; add a run that reaches it, or, if the point is unreachable, record it with
 the update run above and say why in the test's docstring.
 
+Two of these figures belong to a tool, not to the design: the cell count is
+Yosys's, and the coverage points are Verilator's. `tests/golden/tool_versions.yml`
+lists the versions the records were checked with (the flake's, and the WSL builds
+that agree with them). On any other version, such as a Homebrew or distro install,
+a cell count or coverage point off its record is a pytest warning, not a failure.
+Flip-flops, latches, clock cycles and verdicts still fail on every version. CI sets
+`AUTOMBIST_GOLDEN_STRICT=1`, which makes them fail on any version, so a pin bump
+that moves a figure is caught. The update run records only the version it ran on.
+To add another, run the two tests on it with `AUTOMBIST_GOLDEN_STRICT=1` and, if
+they pass, add it to the list by hand.
+
 One custom pytest marker (registered in `pyproject.toml`) labels the tests that
 need a full FaultFlow checkout:
 

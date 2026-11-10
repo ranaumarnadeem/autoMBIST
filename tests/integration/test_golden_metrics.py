@@ -7,8 +7,10 @@ compare with tests/golden/metrics.yml.
 - cells: Yosys generic cells of the flattened wrapper, the memory a blackbox.
   Within CELL_TOLERANCE of the recorded count, in both directions: growth is
   area, and a drop can mean logic was pruned because something got
-  disconnected. The tolerance absorbs optimizer drift across Yosys versions
-  (0.61 and 0.62 agree exactly on every case).
+  disconnected. The tolerance absorbs small optimizer drift (0.61 and 0.62 agree
+  exactly on every case, but a later version can move further). On a Yosys version
+  tests/golden/tool_versions.yml does not list, a cell count off its record is a
+  warning, not a failure (see tests/golden_tools.py).
 - flops: exact. They are the design's state, which synthesis keeps unless it is
   constant or unused.
 - latches: none, always.
@@ -47,6 +49,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from autombist.generator import generate_from_config  # noqa: E402
 from autombist.testbench import bist_cycle_bound, parse_wrapper_ports, rtl_sources  # noqa: E402
+from golden_tools import failing, record_tool_version  # noqa: E402
 
 GOLDEN = REPO_ROOT / "tests" / "golden"
 METRICS = GOLDEN / "metrics.yml"
@@ -191,20 +194,21 @@ def _record(entries: dict[str, dict[str, int]]) -> None:
     METRICS.write_text(METRICS_HEADER + yaml.safe_dump(entries, sort_keys=True), encoding="utf-8", newline="\n")
 
 
-def _deviations(actual: dict[str, int], recorded: dict[str, int]) -> list[str]:
+def _deviations(actual: dict[str, int], recorded: dict[str, int]) -> list[tuple[str, str]]:
+    """(metric, what is wrong) for each metric off its record."""
     problems = []
     for name in sorted(actual.keys() | recorded.keys()):
         if name == "latches":
             continue
         got, want = actual.get(name), recorded.get(name)
         if got is None or want is None:
-            problems.append(f"{name}: measured {got}, recorded {want}")
+            problems.append((name, f"{name}: measured {got}, recorded {want}"))
         elif name == "cells":
             if abs(got - want) > CELL_TOLERANCE * want:
-                problems.append(f"cells: {got}, recorded {want} ({(got - want) / want:+.1%}, "
-                                f"tolerance {CELL_TOLERANCE:.0%})")
+                problems.append((name, f"cells: {got}, recorded {want} ({(got - want) / want:+.1%}, "
+                                       f"tolerance {CELL_TOLERANCE:.0%})"))
         elif got != want:
-            problems.append(f"{name}: {got}, recorded {want} ({got - want:+d})")
+            problems.append((name, f"{name}: {got}, recorded {want} ({got - want:+d})"))
     return problems
 
 
@@ -223,9 +227,13 @@ def test_area_and_test_time_match_the_recorded_metrics(case: str, tmp_path: Path
         entries = _recorded()
         entries[case] = {k: v for k, v in metrics.items() if k != "latches"}
         _record(entries)
+        record_tool_version("yosys")
     recorded = _recorded().get(case)
     assert recorded is not None, f"no recorded metrics for {case!r}; record them with {REGENERATE}"
-    problems = _deviations(metrics, recorded)
+    deviations = _deviations(metrics, recorded)
+    # The cell count is Yosys's; the flops and the cycle counts are the design's.
+    problems = [problem for name, problem in deviations if name != "cells"]
+    problems += failing("yosys", [problem for name, problem in deviations if name == "cells"], f"{case}: area")
     assert not problems, (
         f"{case}: area or test time moved from tests/golden/metrics.yml:\n  " + "\n  ".join(problems)
         + f"\nIf the change is intended, rerun with {REGENERATE} and review the diff."
