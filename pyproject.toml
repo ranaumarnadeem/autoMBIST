@@ -72,6 +72,8 @@ Documentation = "https://ranaumarnadeem.github.io/autoMBIST/"
 Issues = "https://github.com/ranaumarnadeem/autoMBIST/issues"
 
 [tool.pytest.ini_options]
+# tests/cli_errors.py: the CLI error contract the test files share
+pythonpath = ["tests"]
 markers = [
   "faultflow: needs a built FaultFlow repo + Yosys on PATH (grade-controller tests)",
 ]

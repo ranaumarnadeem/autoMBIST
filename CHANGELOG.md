@@ -12,6 +12,51 @@ everything that predates the migration.
 
 ## [Unreleased]
 
+### Added
+- `autombist safety-report` turns a campaign report into coverage per fault
+  class, with what the figures depend on (algorithm, memory, fault list, tool
+  versions). It gives a diagnostic coverage figure only when you pass
+  `--failure-rates`, since the coverage a campaign reports counts fault records
+  equally. The classes come from the memory-test literature, not ISO 26262-5
+  Annex D; it prints no rating and makes no ASIL claim (#39, #40).
+- The JSON campaign report (`autombist test --report x.json --fmt json`) records
+  `tool_versions` (#40).
+- [Using the Safety Report in an FMEDA](docs/source/safety-report.md): the inputs a
+  safety engineer must supply, unweighted coverage against diagnostic coverage, a
+  worked example a test re-runs, and what autoMBIST does not provide (#41).
+
+### Fixed
+- `wrap-test-access` with a malformed config value (`read_latency: null`,
+  `memories: 4`, a negative `addr_width`) now fails with one error line naming
+  the field, before the insertion. `read_latency: null` and `memories: 4` were
+  a `TypeError` traceback. `--bist-cycles` still does not cover a malformed
+  config (#31).
+- `wrap-test-access` renders the `run_mbist` PDL, vectors, STIL and JTAG
+  testbench before writing anything, as it already did the ICL and BSDL. A
+  failure while rendering them used to come after the inserted Verilog, the
+  ICL, the BSDL and the PDL were written (#32).
+- `manifest.json` is written to a temporary file and renamed into place, by
+  both `generate --emit-manifest` and `wrap-test-access --manifest`, so a write
+  that fails partway (a full disk) leaves the old one whole instead of
+  truncated. It keeps its permission bits, and a read-only `manifest.json` is
+  still refused, not replaced (#33).
+- The error messages for a missing or too-old warptap name only the minimum
+  autoMBIST checks (0.0.4), not the version the Nix dev shell pins, so they no
+  longer go stale on the next warptap bump (#36).
+- The hardware testbench run commands (the `tests/hardware` docstrings and the
+  `flow/soc` and `flow/multimem` READMEs) no longer set `PYTHONPATH=src`
+  inside `nix develop`, which replaced the dev shell's own path and dropped
+  warptap from it (#38).
+
+### Testing
+- The CLI's error contract (one error line on stderr, no traceback) is one
+  shared helper, `tests/cli_errors.py`, instead of two copies that had drifted
+  apart. It checks the fragment is on the error line itself, not anywhere in
+  the output, where a success line naming the same file could satisfy it
+  (#34, #37).
+- The march-test synthesizer's lengths (27n in 14 elements at init 1, 28n at
+  init 0) are pinned by a test that also checks the docs quote them (#35).
+
 ## [0.6.0] - 2026-11-04
 
 ### Added

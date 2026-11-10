@@ -24,11 +24,13 @@ SRC = REPO_ROOT / "src" / "autombist"
 PURE_PACKAGES: dict[str, frozenset[str]] = {
     "repair": frozenset(),
     "yieldsim": frozenset({"repair"}),
+    "safety": frozenset(),
 }
 
 #: Modules that sit in each package and must exist, so an empty glob cannot pass.
 EXPECTED_MODULES: dict[str, set[str]] = {
     "repair": {"__init__.py", "types.py", "bira.py", "bisr.py"},
+    "safety": {"__init__.py", "fault_classes.py", "report.py"},
     "yieldsim": {"__init__.py", "stats.py", "sweep.py", "model.py", "defects.py", "bitmap_engine.py", "shapes.py",
                  "onchip_model.py"},
 }

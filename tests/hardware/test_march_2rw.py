@@ -4,7 +4,7 @@ Run via tests/hardware/run_march_2rw_tb.py (see that file's header comment
 for the exact invocation), e.g.:
 
     cd <repo root>
-    PYTHONPATH=src python tests/hardware/run_march_2rw_tb.py
+    python tests/hardware/run_march_2rw_tb.py
 
 This test produces hard evidence for four things:
   a) WRITE/WRITE CONCURRENCY: a cycle where both ports' write-enables are

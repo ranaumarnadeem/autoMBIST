@@ -27,8 +27,6 @@ work it describes; don't let it silently go stale the way
 
 ## Not started (scoped as GitHub milestones, no work begun)
 
-- **ISO 26262 diagnostic-coverage mapping** — map fault-model coverage
-  onto ISO 26262's diagnostic-coverage metrics for automotive use.
 - **IEEE 1450.6.2 memory modeling (CTL)** — describe a memory core's test
   structure/repair mechanism in CTL for EDA-tool interop. (Confirmed
   during milestone-4 scoping: this is a different problem from diagnosis
@@ -144,7 +142,7 @@ Yosys and at gate level (BIST passes a good memory, fails a stuck-bit one).
 `wrap-test-access --emit-icl` now writes the BSDL its ICL `AccessLink` names, plus
 `--tck-max-freq-mhz`, `--idcode`, and `bsdl_path`/`tap` in the manifest.
 
-- **warptap in CI** is done through the flake: `flake.nix` pins warptap `v0.0.5` as a
+- **warptap in CI** is done through the flake: `flake.nix` pins a warptap release tag as a
   source input (`flake.lock` fixes the commit), so CI runs the wrap-test-access, BSDL and
   IDCODE tests instead of skipping them. Move it with
   `nix flake lock --update-input warptap`. `nix run` (the packaged CLI) still has no

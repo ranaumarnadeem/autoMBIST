@@ -106,10 +106,29 @@ def bist_cycles(config: dict[str, Any]) -> int:
         fixed, reads = _CYCLES_PER_ADDRESS[algo]
     except KeyError:
         raise TestbenchError(f"no BIST length known for algorithm {algo!r}") from None
-    words = 1 << int(config["addr_width"])
-    memories = len(config.get("memories") or []) or 1
-    per_address = fixed + reads * int(config.get("read_latency", 1))
+    if "addr_width" not in config:
+        raise ValueError("config has no addr_width")
+    words = 1 << _config_count(config, "addr_width")
+    listed = config.get("memories") or []
+    if not isinstance(listed, list):
+        raise ValueError(f"config memories must be a list, not {listed!r}")
+    memories = len(listed) or 1
+    per_address = fixed + reads * _config_count(config, "read_latency", 1)
     return memories * (words * per_address + _CYCLES_PER_MEMORY)
+
+
+def _config_count(config: dict[str, Any], key: str, default: int | None = None) -> int:
+    """A non-negative integer field of the config. A malformed one is a plain
+    ValueError, not a TestbenchError: wrap-test-access --bist-cycles passes over
+    an algorithm with no known length, never over a malformed config."""
+    value = config.get(key, default)
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"config {key} must be an integer, not {value!r}") from None
+    if count < 0:
+        raise ValueError(f"config {key} must not be negative, not {value!r}")
+    return count
 
 
 def bist_cycle_bound(config: dict[str, Any]) -> int:

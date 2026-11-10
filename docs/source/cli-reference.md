@@ -6,7 +6,7 @@ orphan: true
 
 This page documents the **classic path**: the array-level MBIST flow built around
 `generate` / `simulate` / `run`, plus the supporting `grade-controller`, the repair
-yield commands `yield-sim`, `yield-sweep` and `yield-multiplier`, `ram-synth`,
+yield commands `yield-sim`, `yield-sweep` and `yield-multiplier`, `safety-report`, `ram-synth`,
 `init`, `smoke`, `harden`, `fix-lef-units`, `macro-signoff`, `doctor`, and `shell`
 commands. For the functional fault-primitive engine and the interactive research
 shell (`autombist test`, `autombist algo`), see
@@ -561,6 +561,58 @@ autombist yield-multiplier --report out/yield_sim.json --lam itc2020 --alpha itc
 
 ---
 
+## safety-report
+
+Measured fault coverage per class from a campaign, as evidence for a safety
+analysis. The coverage a campaign reports counts fault records equally, while
+diagnostic coverage (DC) is weighted by failure rate, so a DC figure appears only
+when you give failure rates. The fault classes come from the memory-test
+literature, not ISO 26262-5 Annex D. The report prints no rating and makes no
+ASIL claim. For how to use it, see
+[Using the Safety Report in an FMEDA](safety-report.md).
+
+### Syntax
+
+```bash
+autombist safety-report --campaign PATH [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--campaign PATH` | required | Campaign report in JSON, from `autombist test --report x.json --fmt json` |
+| `--failure-rates PATH` | none | YAML or JSON mapping of fault class to failure rate; without it there is no DC figure |
+| `--out DIR` | `safety` | Where `safety_report.json` and `safety_report.md` go |
+
+The classes are `stuck_at`, `stuck_open`, `transition`, `addressing`, `coupling`,
+`read_write`, `dynamic`, `retention` and `half_select`. Only the ratios of the
+rates matter, so any unit works:
+
+- Every class the campaign measured needs a rate. Give 0 to leave one out of DC.
+- A rate given for a class the campaign did not measure counts as undetected.
+- A user-defined fault type has no class. It is listed as unmapped and counts in
+  the unweighted coverage only.
+
+A campaign whose golden run was not clean, or whose controller failed
+`--check-sequence`, is refused. Percentages are rounded down, so a figure just
+under full never prints as 100.00%.
+
+### Examples
+
+```bash
+autombist test -aw 8 -dw 8 --algo march_ss --faults faults.txt --report campaign.json --fmt json
+autombist safety-report --campaign campaign.json
+autombist safety-report --campaign campaign.json --failure-rates rates.yml --out safety
+```
+
+### Output
+
+`safety_report.md` and `safety_report.json` give coverage per class, with a class
+the campaign has no records for shown as not measured. They also record what the
+figures depend on (algorithm, memory, tool versions, and the fault list's size and
+SHA-256, which ignores the order of the list) and what the report does not cover.
+
+---
+
 ## wrap-test-access
 
 Wrap a generated design's control/status ports with an IEEE 1149.1 (JTAG/TAP) +
@@ -686,7 +738,7 @@ by this version. Regenerate them with the netlist, or pass `--access-instruction
 extest` to keep the network behind EXTEST (the other two fixes stay on).
 
 Requires (Linux/WSL only): warptap 0.0.4 or later (the Nix dev shell, `nix develop`,
-and so CI pin 0.0.5 in `flake.lock`), plus Yosys and Icarus Verilog on PATH. warptap
+and so CI pin a release in `flake.lock`), plus Yosys and Icarus Verilog on PATH. warptap
 shells out to both; neither is bundled. An older warptap is refused with the
 version it needs. warptap 0.0.3 also fixed the network moving under **any** TAP
 instruction: before it, two all-ones DR scans under IDCODE or BYPASS (a board

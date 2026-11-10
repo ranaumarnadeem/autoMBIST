@@ -28,6 +28,11 @@ Expand any section below.
 ```
 :::
 
+:::{dropdown} Using the Safety Report in an FMEDA
+```{include} safety-report.md
+```
+:::
+
 :::{dropdown} Demo
 ```{include} demo.md
 ```

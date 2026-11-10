@@ -11,6 +11,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from cli_errors import assert_one_error_line
 from typer.testing import CliRunner
 
 import autombist.cli as cli_mod
@@ -585,16 +586,10 @@ def _raise(exc: BaseException):
     return fake
 
 
-def _assert_one_error_line(result, fragment: str, exit_code: int = 1) -> None:
-    assert result.exit_code == exit_code, result.output
-    assert fragment in result.output
-    assert "Traceback" not in result.output
-
-
 def test_generate_missing_config_is_one_error_line(tmp_path: Path) -> None:
     result = runner.invoke(cli_mod.app, ["generate", "--config", str(tmp_path / "missing.yml"),
                                          "--out", str(tmp_path / "out")])
-    _assert_one_error_line(result, "autombist:")
+    assert_one_error_line(result, "autombist:")
 
 
 def test_simulate_takes_the_module_directory_itself_and_verbose_prints_the_raw_output(
@@ -668,7 +663,7 @@ def test_generate_emit_manifest_needs_a_mapping_snapshot(
     result = runner.invoke(cli_mod.app, ["generate", "--config", str(_real_config(tmp_path)),
                                          "--out", str(tmp_path / "out"), "--emit-manifest"])
 
-    _assert_one_error_line(result, fragment)
+    assert_one_error_line(result, fragment)
     assert not (module_outdir / "manifest.json").exists()
 
 
@@ -681,7 +676,7 @@ def test_generate_emit_manifest_build_error_is_one_error_line(tmp_path: Path, mo
     result = runner.invoke(cli_mod.app, ["generate", "--config", str(_real_config(tmp_path)),
                                          "--out", str(tmp_path / "out"), "--emit-manifest"])
 
-    _assert_one_error_line(result, "autombist: no u_algo_top in the wrapper")
+    assert_one_error_line(result, "autombist: no u_algo_top in the wrapper")
 
 
 def test_run_test_names_the_fault_files_and_refuses_a_manifest_for_them(tmp_path: Path, monkeypatch) -> None:
@@ -696,7 +691,7 @@ def test_run_test_names_the_fault_files_and_refuses_a_manifest_for_them(tmp_path
     assert f"Generated fault masks in: {module_outdir / 'faults'}" in result.output
     assert f"Generated fault-sim Makefile: {module_outdir / 'Makefile'}" in result.output
     assert "simulation PASS" in result.output
-    _assert_one_error_line(result, "generated with --test (fault-injection saboteur in place of the memory)")
+    assert_one_error_line(result, "generated with --test (fault-injection saboteur in place of the memory)")
     assert not (module_outdir / "manifest.json").exists()
 
 
@@ -719,13 +714,13 @@ def _yield_sweep(tmp_path: Path, *args: str):
 
 def test_yield_sweep_bad_trial_detail_is_one_error_line(tmp_path: Path) -> None:
     result = _yield_sweep(tmp_path, "--trial-detail", "some")
-    _assert_one_error_line(result, "--trial-detail must be none, failures or all, got 'some'")
+    assert_one_error_line(result, "--trial-detail must be none, failures or all, got 'some'")
 
 
 @pytest.mark.parametrize("flag", [["--observe", "march"], ["--fault-type", "transition-up", "--observe", "march"]])
 def test_yield_sweep_self_repair_keeps_its_own_observation(tmp_path: Path, flag: list[str]) -> None:
     result = _yield_sweep(tmp_path, "--self-repair", *flag)
-    _assert_one_error_line(result, "leave --fault-type and --observe at their defaults")
+    assert_one_error_line(result, "leave --fault-type and --observe at their defaults")
 
 
 def _recording_progress(monkeypatch, calls: list) -> None:
@@ -827,7 +822,7 @@ def test_wrap_test_access_rejects_a_config_that_is_not_a_snapshot(
                                          "--top", "sram_1rw_mbist", "--config", str(config_path),
                                          "--out", str(tmp_path / "ta")])
 
-    _assert_one_error_line(result, fragment)
+    assert_one_error_line(result, fragment)
     assert not (tmp_path / "ta").exists()
 
 
@@ -844,7 +839,7 @@ def test_wrap_test_access_config_it_cannot_size_fails_before_the_insertion(tmp_p
                                          "--top", "sram_1rw_mbist", "--config", str(config_path),
                                          "--out", str(tmp_path / "ta")])
 
-    _assert_one_error_line(result, "autombist: no BIST length known for algorithm 'march-zz'")
+    assert_one_error_line(result, "autombist: no BIST length known for algorithm 'march-zz'")
     assert not (tmp_path / "ta").exists()
 
 
@@ -867,7 +862,7 @@ def test_wrap_test_access_bist_cycles_runs_a_config_it_cannot_size(tmp_path: Pat
         "--bist-cycles", "5000",
     )
 
-    _assert_one_error_line(result, "autombist: the insertion ran")
+    assert_one_error_line(result, "autombist: the insertion ran")
     assert "no BIST length known" not in result.output
 
 
@@ -879,7 +874,19 @@ def test_wrap_test_access_bist_cycles_does_not_cover_a_malformed_config(tmp_path
         "--bist-cycles", "5000",
     )
 
-    _assert_one_error_line(result, "autombist: negative shift count")
+    assert_one_error_line(result, "autombist: config addr_width must not be negative, not -1")
+    assert "the insertion ran" not in result.output
+
+
+@pytest.mark.parametrize("extra", [(), ("--bist-cycles", "5000")])
+def test_wrap_test_access_malformed_config_value_is_one_error_line(tmp_path: Path, monkeypatch, extra) -> None:
+    """read_latency: null used to escape as a TypeError traceback."""
+    result = _wrap_up_to_the_insertion(
+        tmp_path, monkeypatch,
+        "wrapper_module_name: sram_1rw_mbist\naddr_width: 4\nalgo: march-c\nread_latency: null\n", *extra,
+    )
+
+    assert_one_error_line(result, "autombist: config read_latency must be an integer, not None")
     assert "the insertion ran" not in result.output
 
 
@@ -892,7 +899,7 @@ def test_wrap_test_access_warns_when_bist_cycles_is_shorter_than_the_bist(tmp_pa
     )
 
     assert "autombist: warning: --bist-cycles 10 is shorter than the BIST, which takes 403 clk cycles" in result.output
-    _assert_one_error_line(result, "autombist: the insertion ran")
+    assert_one_error_line(result, "autombist: the insertion ran")
 
 
 def test_wrap_test_access_does_not_warn_when_bist_cycles_covers_the_bist(tmp_path: Path, monkeypatch) -> None:
@@ -902,7 +909,7 @@ def test_wrap_test_access_does_not_warn_when_bist_cycles_covers_the_bist(tmp_pat
     )
 
     assert "warning" not in result.output
-    _assert_one_error_line(result, "autombist: the insertion ran")
+    assert_one_error_line(result, "autombist: the insertion ran")
 
 
 def test_test_fault_types_that_is_not_a_list_is_one_error_line(tmp_path: Path) -> None:
@@ -914,7 +921,7 @@ def test_test_fault_types_that_is_not_a_list_is_one_error_line(tmp_path: Path) -
     result = runner.invoke(cli_mod.app, ["test", "--addr-width", "4", "--data-width", "8", "--faults", str(faults_path),
                                          "--fault-types", str(fault_types_path)])
 
-    _assert_one_error_line(result, "--fault-types file must contain a JSON list of fault-primitive specs")
+    assert_one_error_line(result, "--fault-types file must contain a JSON list of fault-primitive specs")
 
 
 def _fake_openram(monkeypatch, *, stdout: str = "", stderr: str = "", returncode: int = 0) -> None:
@@ -959,13 +966,13 @@ def test_ram_synth_invalid_config_is_one_error_line(tmp_path: Path, monkeypatch)
 
     result = runner.invoke(cli_mod.app, ["ram-synth", "--config", str(config_path)])
 
-    _assert_one_error_line(result, "autombist: num_words must be > 0")
+    assert_one_error_line(result, "autombist: num_words must be > 0")
 
 
 def test_harden_missing_config_is_one_error_line(tmp_path: Path) -> None:
     missing = tmp_path / "harden.yml"
     result = runner.invoke(cli_mod.app, ["harden", "--config", str(missing), "--out", str(tmp_path / "ll.json")])
-    _assert_one_error_line(result, f"autombist: harden config not found: {missing}")
+    assert_one_error_line(result, f"autombist: harden config not found: {missing}")
 
 
 def test_harden_invalid_config_is_one_error_line(tmp_path: Path, monkeypatch) -> None:
@@ -977,7 +984,7 @@ def test_harden_invalid_config_is_one_error_line(tmp_path: Path, monkeypatch) ->
 
     result = runner.invoke(cli_mod.app, ["harden", "--config", str(harden_config), "--out", str(tmp_path / "ll.json")])
 
-    _assert_one_error_line(result, "autombist: die_area is required")
+    assert_one_error_line(result, "autombist: die_area is required")
     assert not (tmp_path / "ll.json").exists()
 
 
@@ -1034,13 +1041,13 @@ def test_fix_lef_units_out_and_target_dbu_leave_the_source_alone(tmp_path: Path)
 def test_fix_lef_units_missing_lef_is_one_error_line(tmp_path: Path) -> None:
     missing = tmp_path / "missing.lef"
     result = runner.invoke(cli_mod.app, ["fix-lef-units", str(missing)])
-    _assert_one_error_line(result, f"autombist: LEF not found: {missing}")
+    assert_one_error_line(result, f"autombist: LEF not found: {missing}")
 
 
 def test_macro_signoff_missing_script_is_one_error_line(tmp_path: Path) -> None:
     missing = tmp_path / "missing.sh"
     result = runner.invoke(cli_mod.app, ["macro-signoff", "--script", str(missing)])
-    _assert_one_error_line(result, f"autombist: signoff script not found: {missing}")
+    assert_one_error_line(result, f"autombist: signoff script not found: {missing}")
 
 
 @pytest.mark.parametrize("returncode", [0, 3])
@@ -1112,7 +1119,7 @@ def test_smoke_fails_when_the_saboteur_lacks_its_transition_mask(
 
     result = runner.invoke(cli_mod.app, ["smoke", "--no-sim", "--out", str(tmp_path / "ws")])
 
-    _assert_one_error_line(result, f"[smoke] FAIL: saboteur missing {mask}")
+    assert_one_error_line(result, f"[smoke] FAIL: saboteur missing {mask}")
 
 
 def test_smoke_fails_when_the_openram_config_does_not_parse(tmp_path: Path, monkeypatch) -> None:
@@ -1122,7 +1129,7 @@ def test_smoke_fails_when_the_openram_config_does_not_parse(tmp_path: Path, monk
 
     result = runner.invoke(cli_mod.app, ["smoke", "--no-sim", "--out", str(tmp_path / "ws")])
 
-    _assert_one_error_line(result, "autombist: smoke ram-synth config parse failed: num_words must be > 0")
+    assert_one_error_line(result, "autombist: smoke ram-synth config parse failed: num_words must be > 0")
 
 
 def test_smoke_fails_when_the_faultflow_bundle_cannot_be_emitted(tmp_path: Path, monkeypatch) -> None:
@@ -1132,7 +1139,7 @@ def test_smoke_fails_when_the_faultflow_bundle_cannot_be_emitted(tmp_path: Path,
 
     result = runner.invoke(cli_mod.app, ["smoke", "--no-sim", "--faultflow", "--out", str(tmp_path / "ws")])
 
-    _assert_one_error_line(result, "[smoke] FAIL: FaultFlow bundle emit failed: no cells/sky130")
+    assert_one_error_line(result, "[smoke] FAIL: FaultFlow bundle emit failed: no cells/sky130")
 
 
 def test_shell_file_exits_with_the_script_status(tmp_path: Path) -> None:

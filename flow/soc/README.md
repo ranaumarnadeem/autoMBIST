@@ -90,7 +90,7 @@ were loaded by a bootloader or DMA engine only after POST completes.
 From the repo root, inside `nix develop`:
 
 ```bash
-PYTHONPATH=src python tests/hardware/run_soc_selfrepair_tb.py
+python tests/hardware/run_soc_selfrepair_tb.py
 ```
 
 The test checks three independent things, matching this project's existing

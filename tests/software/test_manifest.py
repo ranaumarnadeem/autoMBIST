@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import errno
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -210,6 +213,53 @@ def test_update_manifest_with_test_access_patches_in_place(tmp_path: Path) -> No
 def test_update_manifest_with_test_access_requires_existing_manifest(tmp_path: Path) -> None:
     with pytest.raises(ManifestError):
         update_manifest_with_test_access(tmp_path, {"wrapped": True})
+
+
+@pytest.mark.parametrize("rewrite", [
+    lambda d: update_manifest_with_test_access(d, {"wrapped": True}),
+    lambda d: write_instance_manifest(_manifest(_config(), d), d),
+], ids=["update_manifest_with_test_access", "write_instance_manifest"])
+def test_a_manifest_rewrite_that_fails_partway_leaves_the_old_one(tmp_path: Path, monkeypatch, rewrite) -> None:
+    """A disk that fills up halfway through the write. Writing manifest.json in
+    place truncated it first, so it was left half-written."""
+    path = write_instance_manifest(_manifest(_config(), tmp_path), tmp_path)
+    before = path.read_text(encoding="utf-8")
+    real_write_text = Path.write_text
+
+    def half_then_full(self, data, *args, **kwargs):
+        real_write_text(self, data[: len(data) // 2], *args, **kwargs)
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_text", half_then_full)
+    with pytest.raises(OSError, match="No space left"):
+        rewrite(tmp_path)
+    monkeypatch.undo()
+
+    assert path.read_text(encoding="utf-8") == before
+    assert [p.name for p in tmp_path.iterdir()] == ["manifest.json"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_a_manifest_rewrite_keeps_its_permissions(tmp_path: Path) -> None:
+    path = write_instance_manifest(_manifest(_config(), tmp_path), tmp_path)
+    path.chmod(0o640)
+    update_manifest_with_test_access(tmp_path, {"wrapped": True})
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX permission bits; root writes anyway")
+def test_a_read_only_manifest_is_not_replaced(tmp_path: Path) -> None:
+    """Renaming a new file over manifest.json needs only the directory to be
+    writable, so a read-only manifest.json is refused rather than replaced."""
+    path = write_instance_manifest(_manifest(_config(), tmp_path), tmp_path)
+    before = path.read_text(encoding="utf-8")
+    path.chmod(0o444)
+    try:
+        with pytest.raises(ManifestError, match="is not writable"):
+            update_manifest_with_test_access(tmp_path, {"wrapped": True})
+    finally:
+        path.chmod(0o644)
+    assert path.read_text(encoding="utf-8") == before
 
 
 def _enumerated(*, memory_blackbox: bool = True, tdr_type: str = "instrument_write", bits=(0,),

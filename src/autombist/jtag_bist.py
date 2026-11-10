@@ -415,7 +415,21 @@ class JtagBistFiles:
     stil: Path | None = None
 
 
-def write_jtag_bist(
+@dataclass(frozen=True)
+class RenderedJtagBist:
+    files: JtagBistFiles
+    texts: dict[Path, str]  # every file's contents, keyed by its path
+
+
+def write_jtag_bist(rendered: RenderedJtagBist) -> JtagBistFiles:
+    """Write the files ``render_jtag_bist`` rendered."""
+    for path, text in rendered.texts.items():
+        path.write_text(text, encoding="utf-8")
+    _chmod_x(rendered.files.run_script)
+    return rendered.files
+
+
+def render_jtag_bist(
     out: Path,
     *,
     top: str,
@@ -430,10 +444,11 @@ def write_jtag_bist(
     access: NetworkAccess,
     bsdl_file: str | None = None,
     stil: StilTiming | None = None,
-) -> JtagBistFiles:
-    """Write ``<top>_run_mbist.pdl``, ``<top>_run_mbist.vec``,
-    ``tb_<top>_jtag.sv`` and ``run_tb_jtag.sh`` into ``out`` (the directory
-    holding ``wrapped_file``), and with ``stil`` also ``<top>_run_mbist.stil``.
+) -> RenderedJtagBist:
+    """Render ``<top>_run_mbist.pdl``, ``<top>_run_mbist.vec``,
+    ``tb_<top>_jtag.sv`` and ``run_tb_jtag.sh`` for ``out`` (the directory
+    holding ``wrapped_file``), and with ``stil`` also ``<top>_run_mbist.stil``,
+    writing nothing, so a failure here leaves no partial set on disk.
     ``access`` is the instruction the TAP was inserted with to select the network."""
     from warptap.icl_emit import INSTRUMENT_MODULE_PREFIX
 
@@ -446,31 +461,26 @@ def write_jtag_bist(
     register_path = {name: f"{INSTRUMENT_MODULE_PREFIX}{name}.DR" for name in used}
 
     out = Path(out)
+    texts: dict[Path, str] = {}
     pdl = out / f"{top}_run_mbist.pdl"
-    pdl.write_text(
-        render_pdl(top, steps, widths=widths, register_path=register_path, icl_file=icl_file,
-                   access=access, bist_cycles=bist_cycles, bsdl_file=bsdl_file),
-        encoding="utf-8",
-    )
+    texts[pdl] = render_pdl(top, steps, widths=widths, register_path=register_path, icl_file=icl_file,
+                            access=access, bist_cycles=bist_cycles, bsdl_file=bsdl_file)
     ops = run_mbist_ops(graph, root, steps, access=access)
     vectors = vectors_from_ops(ops, steps)
     vec = out / f"{top}_run_mbist.vec"
-    vec.write_text("".join(v.line() + "\n" for v in vectors), encoding="utf-8")
+    texts[vec] = "".join(v.line() + "\n" for v in vectors)
 
     ports = parse_netlist_ports(wrapped_verilog, top)
     stil_path = None
     if stil is not None:
         stil_path = out / f"{top}_run_mbist.stil"
-        stil_path.write_text(render_stil(top, ops, ports, stil, access), encoding="utf-8")
+        texts[stil_path] = render_stil(top, ops, ports, stil, access)
 
     labels = [f"{s.instrument} = {s.value}" for s in steps if s.kind == "read"]
     tb_file = f"tb_{top}_jtag.sv"
     tb = out / tb_file
-    tb.write_text(
-        render_jtag_testbench(top, ports, vectors_file=vec.name, pdl_file=pdl.name, read_labels=labels,
-                              instruction=access.instruction),
-        encoding="utf-8",
-    )
+    texts[tb] = render_jtag_testbench(top, ports, vectors_file=vec.name, pdl_file=pdl.name, read_labels=labels,
+                                      instruction=access.instruction)
     # Wrapped from the memory's blackbox stub (wrap-test-access --manifest), the
     # netlist has no memory module and needs the model; wrapped from sources
     # that included the model, it already has it. With no config to name the
@@ -487,22 +497,18 @@ def write_jtag_bist(
         if generated.is_file():
             default_model = f"../{TB_DIRNAME}/{generated.name}"
     run_sh = out / "run_tb_jtag.sh"
-    run_sh.write_text(
-        render_run_script(
-            what="JTAG MBIST testbench",
-            top=top,
-            memory_name=memory_name or "the memory",
-            script=f"{out.name}/run_tb_jtag.sh",
-            tb_module=f"tb_{top}_jtag",
-            tb_file=tb_file,
-            out_rel=".",
-            sources=[wrapped_file],
-            timeout_define=False,
-            model_required=not model_inside,
-            default_model=default_model,
-            data_files=(vec.name,),
-        ),
-        encoding="utf-8",
+    texts[run_sh] = render_run_script(
+        what="JTAG MBIST testbench",
+        top=top,
+        memory_name=memory_name or "the memory",
+        script=f"{out.name}/run_tb_jtag.sh",
+        tb_module=f"tb_{top}_jtag",
+        tb_file=tb_file,
+        out_rel=".",
+        sources=[wrapped_file],
+        timeout_define=False,
+        model_required=not model_inside,
+        default_model=default_model,
+        data_files=(vec.name,),
     )
-    _chmod_x(run_sh)
-    return JtagBistFiles(pdl, vec, tb, run_sh, stil_path)
+    return RenderedJtagBist(JtagBistFiles(pdl, vec, tb, run_sh, stil_path), texts)
