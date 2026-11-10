@@ -56,6 +56,11 @@ everything that predates the migration.
   (#34, #37).
 - The march-test synthesizer's lengths (27n in 14 elements at init 1, 28n at
   init 0) are pinned by a test that also checks the docs quote them (#35).
+- On a Yosys or Verilator version that `tests/golden/tool_versions.yml` does not
+  list, such as a Homebrew install, the golden cell counts and RTL coverage points
+  give a warning instead of failing, since they depend on the tool. Flip-flops,
+  latches, clock cycles and verdicts still fail on any version. CI sets
+  `AUTOMBIST_GOLDEN_STRICT=1`, so there a deviation fails on any version.
 
 ## [0.6.0] - 2026-11-04
 

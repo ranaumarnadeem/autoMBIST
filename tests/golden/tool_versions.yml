@@ -1,0 +1,11 @@
+# The tool versions the tool-dependent golden records were checked with: Yosys
+# for metrics.yml's cell counts, Verilator for rtl_coverage.yml. On another
+# version a deviation in those is a warning, not a failure, unless
+# AUTOMBIST_GOLDEN_STRICT=1. Quote a version added by hand, so 5.050 stays
+# 5.050. See tests/golden_tools.py.
+verilator:
+- '5.048'
+- '5.049'
+yosys:
+- 0.61+129
+- '0.62'
