@@ -26,6 +26,11 @@ everything that predates the migration.
   worked example a test re-runs, and what autoMBIST does not provide (#41).
 
 ### Fixed
+- The ICL `wrap-test-access --emit-icl` writes declares `clk` as a `ClockPort`
+  of the top module. The `run_mbist` PDL's run loop counts `clk`
+  (`iRunLoop N -sck clk`), and IEEE 1687 needs that port to be a clock port, so a
+  strict retargeting tool could refuse the procedure, or count TCK instead and
+  never clock the BIST.
 - `march-1r1w`, and element E3 of `march-2rw`, no longer read an address in the
   cycle the other port writes it. A compiled two-port macro, OpenRAM's
   included, does not define that read, so on silicon a good memory could fail

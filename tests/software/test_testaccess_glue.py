@@ -52,7 +52,8 @@ def fake_warptap(monkeypatch):
 
     def to_icl(graph, root, *, include_access_link, bsdl_entity_name, **extra):
         calls.to_icl.append((root.name, include_access_link, bsdl_entity_name, extra))
-        return f"ICL {root.name} link={include_access_link} entity={bsdl_entity_name}"
+        return (f"// link={include_access_link} entity={bsdl_entity_name}\n"
+                f"Module {root.name} {{\n    TCKPort tck;\n    TRSTPort trst_n;\n}}\n")
 
     def idcode_value_error(value):
         if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < 1 << 32:
@@ -86,7 +87,9 @@ def test_describe_renders_the_icl_and_bsdl_under_one_entity(fake_warptap) -> Non
     described = describe_test_access_tap(object(), _root("x_ctrl"))
 
     assert described == TapDescription(
-        icl="ICL x_ctrl link=True entity=x_ctrl",
+        # the PDL's run loop clocks clk, so the top module declares it
+        icl=("// link=True entity=x_ctrl\n"
+             "Module x_ctrl {\n    TCKPort tck;\n    TRSTPort trst_n;\n    ClockPort clk;\n}\n"),
         bsdl=f"BSDL x_ctrl {DEFAULT_TCK_MAX_FREQ_HZ} {{'ijtag_access_opcode': 12}}",
         entity="x_ctrl",
         tck_max_freq_hz=DEFAULT_TCK_MAX_FREQ_HZ,
@@ -95,6 +98,29 @@ def test_describe_renders_the_icl_and_bsdl_under_one_entity(fake_warptap) -> Non
     # all when none was asked for
     assert fake_warptap.to_bsdl == [("x_ctrl", DEFAULT_TCK_MAX_FREQ_HZ, {"ijtag_access_opcode": 0b1100})]
     assert fake_warptap.to_icl == [("x_ctrl", True, "x_ctrl", {"ijtag_access": True})]
+
+
+_ICL = (
+    "Module SIB { ScanInPort si; TRSTPort trst_n; }\n\n"
+    "Module x_ctrl {\n    ScanInPort tdi;\n    TCKPort tck;\n    TMSPort tms;\n    TRSTPort trst_n;\n"
+    "    ScanInterface tap { Port tdi; }\n}\n"
+)
+
+
+def test_the_icl_top_module_declares_the_clock_the_pdl_runs_on() -> None:
+    icl = testaccess.declare_system_clock(_ICL, "x_ctrl")
+
+    top = icl[icl.index("Module x_ctrl {"):]
+    assert "    TRSTPort trst_n;\n    ClockPort clk;\n    ScanInterface" in top
+    assert icl.count("ClockPort") == 1  # only the top module, not another module's TRSTPort
+    assert testaccess.declare_system_clock(icl, "x_ctrl") == icl  # already declared: unchanged
+
+
+def test_declaring_the_clock_refuses_an_icl_it_cannot_place_it_in() -> None:
+    with pytest.raises(ValueError, match="no module 'y_ctrl'"):
+        testaccess.declare_system_clock(_ICL, "y_ctrl")
+    with pytest.raises(ValueError, match="no TRSTPort"):
+        testaccess.declare_system_clock("Module x_ctrl {\n    TCKPort tck;\n}\n", "x_ctrl")
 
 
 def test_describe_behind_extest_asks_nothing_extra(fake_warptap) -> None:

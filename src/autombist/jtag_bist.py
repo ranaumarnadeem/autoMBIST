@@ -19,11 +19,11 @@ from pathlib import Path
 from typing import Any
 
 from .generator import _render_template
+from .testaccess import SYSTEM_CLOCK as SYSTEM_CLOCK  # re-exported: the PDL's run-loop clock
 from .testaccess import NetworkAccess
 from .testbench import TB_DIRNAME, TestbenchError, _chmod_x, _idles_high, render_run_script
 
-# The clock the MBIST runs on, as the PDL's iRunLoop -sck names it.
-SYSTEM_CLOCK = "clk"
+# SYSTEM_CLOCK (testaccess) is the clock the PDL's iRunLoop -sck names; the ICL declares it.
 _JTAG_INPUTS = ("tck", "tms", "tdi", "trst_n")
 _DRIVEN = ("clk", "rst_n", *_JTAG_INPUTS)
 # Control ports wrapping makes JTAG-only: their pins are held at 0, unused.
