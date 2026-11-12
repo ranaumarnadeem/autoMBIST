@@ -72,33 +72,30 @@ def render_memory_model(config: dict[str, Any], *, stuck_masks: tuple[str, str] 
         if ptype in ("r", "rw"):
             add(pdata["dout"], f"output reg  [{data_w - 1}:0] {pdata['dout']}")
 
-    # A multi-port controller's algorithm expects a read concurrent with a same-address
-    # write on another port to return the NEW data (march_1r1w_algo.sv, "write-forwarding").
-    # The registered-read style gets that from write-then-read ordering; the falling-edge
-    # style does both on one edge, so each reading port forwards the other ports' pending
-    # writes explicitly, from the registered values (stable at the falling edge, so the
-    # result does not depend on the order the ports' blocks run in).
-    forward = latency == 0 and len(ports) > 1
+    # A compiled multi-port macro (OpenRAM's among them) does not define a read of the
+    # address another port writes in the same cycle, so neither does this model: such a
+    # read returns X, and a controller that relies on one fails here instead of on
+    # silicon. The access is identified from the ports' registered values, which hold
+    # the cycle the read was issued in for both read styles.
+    collide = len(ports) > 1
     body: list[str] = []
     for i, pdata in enumerate(ports):
         body += _port_behavior(i, pdata, addr_w=addr_w, data_w=data_w, lanes=lanes,
-                               latency=latency, we_active_low=we_active_low, forward=forward,
+                               latency=latency, we_active_low=we_active_low, collide=collide,
                                masked=stuck_masks is not None)
-    if forward:
+    if collide:
         for i, pdata in enumerate(ports):
             if pdata["type"] in ("r", "rw"):
-                body += _forward_function(i, ports, addr_w=addr_w, data_w=data_w, lanes=lanes,
-                                          we_active_low=we_active_low)
+                body += _read_function(i, ports, addr_w=addr_w, data_w=data_w,
+                                       we_active_low=we_active_low)
 
+    collision = ", a read of an address another port writes in the same cycle X" if collide else ""
     style = (
         "inputs registered on the rising clock edge, the write and the read done on the "
-        "falling edge, a read forwarding a same-edge write from another port (read_latency 0)"
-        if latency == 0 and forward
-        else "inputs registered on the rising clock edge, the write and the read done on the "
-        "falling edge (read_latency 0)"
+        f"falling edge{collision} (read_latency 0)"
         if latency == 0
         else "writes on the rising edge, reads one clock after the registered access, data held "
-        f"until the next read (read_latency {latency})"
+        f"until the next read{collision} (read_latency {latency})"
     )
     lines = [
         "`timescale 1ns/1ps",
@@ -171,43 +168,31 @@ def _store(addr: str, din: str, spare_wen: str | None, lanes: int, k: str) -> li
     ]
 
 
-def _forward_function(
-    r: int, ports: list[dict[str, Any]], *, addr_w: int, data_w: int, lanes: int, we_active_low: bool
+def _read_function(
+    r: int, ports: list[dict[str, Any]], *, addr_w: int, data_w: int, we_active_low: bool
 ) -> list[str]:
-    """``p<r>_read(a)``: the stored word at ``a`` with the write each OTHER port makes on
-    this same falling edge applied (a spare lane only where its ``spare_wen`` bit is set)."""
+    """``p<r>_read(a)``: the stored word at ``a``, or X when another port wrote ``a`` in
+    the cycle this read was issued (its registered csb/we/addr are that cycle's)."""
     p = f"p{r}"
     out = [
-        f"    // port {r}'s read: the stored word, with the write another port makes on this edge",
+        f"    // port {r}'s read: X if another port wrote the same address in the same cycle",
         f"    function [{data_w - 1}:0] {p}_read(input [{addr_w - 1}:0] a);",
-        f"        reg [{data_w - 1}:0] v;",
-        "        integer k;",
         "        begin",
-        "            v = mem[a];",
+        f"            {p}_read = mem[a];",
     ]
     for w, wdata in enumerate(ports):
         if w == r or wdata["type"] not in ("w", "rw"):
             continue
         q = f"p{w}"
         write_q, _ = _terms(True, f"{q}_we_q", we_active_low)
-        spare = wdata.get("spare_wen") if lanes else None
-        out.append(f"            if (!{q}_csb_q && {write_q} && {q}_addr_q == a) begin")
-        if spare is None:
-            out.append(f"                v = {q}_din_q;")
-        else:
-            out += [
-                f"                v[LOGICAL_W-1:0] = {q}_din_q[LOGICAL_W-1:0];",
-                f"                for (k = 0; k < {lanes}; k = k + 1)",
-                f"                    if ({q}_spare_q[k]) v[LOGICAL_W + k] = {q}_din_q[LOGICAL_W + k];",
-            ]
-        out.append("            end")
-    out += [f"            {p}_read = v;", "        end", "    endfunction", ""]
+        out.append(f"            if (!{q}_csb_q && {write_q} && {q}_addr_q == a) {p}_read = {{{data_w}{{1'bx}}}};")
+    out += ["        end", "    endfunction", ""]
     return out
 
 
 def _port_behavior(
     i: int, pdata: dict[str, Any], *, addr_w: int, data_w: int, lanes: int, latency: int,
-    we_active_low: bool, forward: bool = False, masked: bool = False,
+    we_active_low: bool, collide: bool = False, masked: bool = False,
 ) -> list[str]:
     p = f"p{i}"
     ptype = pdata["type"]
@@ -251,7 +236,7 @@ def _port_behavior(
         out += [f"            {s}" for s in _store(addr, din, spare_wen, lanes, k)]
         out.append("        end")
     if does_read:
-        word = f"{p}_read({p}_addr_q)" if forward else f"mem[{p}_addr_q]"
+        word = f"{p}_read({p}_addr_q)" if collide else f"mem[{p}_addr_q]"
         if masked:
             word = f"(({word}) & sa0_mask[{p}_addr_q]) | sa1_mask[{p}_addr_q]"
         out.append(f"        if (!{p}_csb_q && {read_q}) {dout} <= {word};")

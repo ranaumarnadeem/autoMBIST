@@ -251,9 +251,9 @@ def _validate_port_topology(normalized_ports: dict[str, dict[str, Any]], algo: s
 
 
 def _validate_port_coupling_topology(normalized_ports: dict[str, dict[str, Any]], algo: str) -> None:
-    """fault_type="port-coupling" models an inter-port bridging defect (an
-    aggressor write disturbing a victim read on a genuinely concurrent same-
-    address access) and is only meaningful -- and only implemented -- for the
+    """fault_type="port-coupling" models an inter-port bridging defect (a write
+    made while the other port reads stores a corrupted word) and is only
+    meaningful -- and only implemented -- for the
     march-1r1w topology: exactly one read-only ("r") port and one write-only
     ("w") port. Reject it for single-port configs or any other port topology;
     a future phase may generalize this to march-2rw.

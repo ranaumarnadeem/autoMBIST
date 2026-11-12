@@ -20,28 +20,24 @@ files:
     covered: 7
     points: 8
     uncovered:
-    - 136:13 line case
+    - 124:13 line case
   rtl/march_1r1w/march_1r1w_fsm.sv:
     covered: 34
-    points: 38
+    points: 36
     uncovered:
-    - 173:22 branch else
-    - 176:33 branch if
-    - 197:37 branch if
-    - 220:17 line case
+    - 201:21 line elsif
+    - 240:17 line case
   rtl/march_2rw/march_2rw_algo.sv:
     covered: 7
     points: 8
     uncovered:
-    - 169:13 line case
+    - 163:13 line case
   rtl/march_2rw/march_2rw_fsm.sv:
     covered: 42
-    points: 46
+    points: 44
     uncovered:
-    - 221:22 branch else
-    - 224:33 branch if
-    - 245:37 branch if
-    - 268:17 line case
+    - 247:21 line elsif
+    - 286:17 line case
   rtl/march_c/march_c_algo.sv:
     covered: 15
     points: 16
@@ -121,4 +117,4 @@ files:
     uncovered: []
 total:
   covered: 472
-  points: 507
+  points: 503

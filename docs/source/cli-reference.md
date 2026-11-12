@@ -197,12 +197,12 @@ names and widths as the blackbox stub the wrapper is synthesized against
 1R1W or 2RW memory, one instance per memory of a shared-bus controller). It is
 idealized: fault-free, no timing checks, contents power up unknown. It follows
 `read_latency`: `0` registers the inputs on the rising edge and does the write
-and read on the falling edge, as OpenRAM's own models do (a multi-port model
-also forwards a write to a concurrent read of the same address, which the
-two-port algorithms expect); `1` or more registers the address and presents
-`dout` one clock later and holds it. A passing run shows the generated RTL and
-a model built to its configuration agree; it says nothing about the macro,
-whose own model you should still run.
+and read on the falling edge, as OpenRAM's own models do; `1` or more registers the
+address and presents `dout` one clock later and holds it. In a multi-port model,
+a read of the address another port writes in the same cycle returns X: a
+compiled macro does not define it, and the two-port algorithms never do it.
+A passing run shows the generated RTL and a model built to its configuration
+agree; it says nothing about the macro, whose own model you should still run.
 
 The testbench resets the design with `test_mode=1`, sets `bist_start=1` and
 holds it (the controller keeps its result only while start stays high, just

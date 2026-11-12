@@ -4,11 +4,17 @@
 // Structured like march_c_fsm.sv (ST_IDLE/ST_ISSUE/ST_WAIT/ST_CHECK/
 // ST_DONE), but drives BOTH ports out of the SAME ST_ISSUE cycle: the
 // read-port (port 0) and write-port (port 1) control/address signals are
-// combinationally derived from the identical state_q==ST_ISSUE condition
-// and the identical address register addr_q, not sequenced across
-// separate states. This is what makes the concurrency real rather than
-// merely claimed -- there is exactly one address register and exactly one
-// "issue" state driving both ports.
+// combinationally derived from the identical state_q==ST_ISSUE condition,
+// not sequenced across separate states.
+//
+// The two ports never touch the same address in one cycle. A compiled
+// two-port macro (OpenRAM's among them) leaves a read of the address the
+// other port is writing undefined, so an element that both reads and
+// writes ("lagged") reads addr_q on port 0 while port 1 writes the address
+// port 0 read on the previous step (prev_addr_q). After the element's last
+// read, one write-only tail step writes the last address. Each cell is
+// therefore read, then written one step later, as in the element's
+// single-port form.
 module march_1r1w_fsm #(
     parameter integer ADDR_WIDTH   = 10,
     parameter integer DATA_WIDTH   = 32,
@@ -67,6 +73,11 @@ module march_1r1w_fsm #(
     logic [ADDR_WIDTH-1:0] addr_q;
     logic [DATA_WIDTH-1:0] expected_q;
     logic                  fail_q;
+    // Lagged elements: the address port 1 writes next, whether that write
+    // is due, and whether this is the element's write-only tail step.
+    logic [ADDR_WIDTH-1:0] prev_addr_q;
+    logic                  prev_valid_q;
+    logic                  tail_q;
 
     localparam integer WAIT_CNT_W = (READ_LATENCY < 2) ? 1 : $clog2(READ_LATENCY + 1);
     logic [WAIT_CNT_W-1:0] wait_cnt_q;
@@ -97,13 +108,20 @@ module march_1r1w_fsm #(
         phase_is_up = (phase <= 3'd2);
     endfunction
 
-    // Both ports are driven from the SAME state_q==ST_ISSUE condition and
-    // the SAME addr_q register -- this is the concurrency guarantee.
-    assign mem_en0    = (state_q == ST_ISSUE) && do_read[0];
+    // An element that reads on port 0 and writes on port 1 runs lagged.
+    logic lagged;
+    logic step_reads;
+    logic step_writes;
+    assign lagged      = do_read[0] && do_write[1];
+    assign step_reads  = do_read[0] && !tail_q;
+    assign step_writes = do_write[1] && (!lagged || prev_valid_q);
+
+    // Both ports are driven from the SAME state_q==ST_ISSUE condition.
+    assign mem_en0    = (state_q == ST_ISSUE) && step_reads;
     assign mem_addr0  = addr_q;
 
-    assign mem_en1    = (state_q == ST_ISSUE) && do_write[1];
-    assign mem_addr1  = addr_q;
+    assign mem_en1    = (state_q == ST_ISSUE) && step_writes;
+    assign mem_addr1  = lagged ? prev_addr_q : addr_q;
     assign mem_wdata1 = write_data[1];
 
     assign busy = (state_q != ST_IDLE) && (state_q != ST_DONE);
@@ -112,39 +130,49 @@ module march_1r1w_fsm #(
 
     // Exactly the ST_CHECK compare condition below (fail_q's own trigger),
     // just also exposed live instead of only latched into a sticky bit.
-    assign fail_valid = (state_q == ST_CHECK) && do_read[0] && (mem_rdata0 !== expected_q);
+    assign fail_valid = (state_q == ST_CHECK) && step_reads && (mem_rdata0 !== expected_q);
     assign fail_addr  = addr_q;
 
     genvar gb;
     generate
         for (gb = 0; gb < DATA_WIDTH; gb++) begin : g_fail_bitmask
-            assign fail_bitmask[gb] = (state_q == ST_CHECK) && do_read[0] && (mem_rdata0[gb] !== expected_q[gb]);
+            assign fail_bitmask[gb] = (state_q == ST_CHECK) && step_reads && (mem_rdata0[gb] !== expected_q[gb]);
         end
     endgenerate
 
+    // Where the element's sweep ends.
+    logic at_last_addr;
+    assign at_last_addr = phase_dir_up ? (addr_q == MAX_ADDR) : (addr_q == '0);
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state_q    <= ST_IDLE;
-            phase_q    <= '0;
-            addr_q     <= '0;
-            expected_q <= '0;
-            fail_q     <= 1'b0;
-            wait_cnt_q <= '0;
+            state_q      <= ST_IDLE;
+            phase_q      <= '0;
+            addr_q       <= '0;
+            expected_q   <= '0;
+            fail_q       <= 1'b0;
+            wait_cnt_q   <= '0;
+            prev_addr_q  <= '0;
+            prev_valid_q <= 1'b0;
+            tail_q       <= 1'b0;
         end else begin
             case (state_q)
                 ST_IDLE: begin
-                    phase_q    <= '0;
-                    addr_q     <= '0;
-                    expected_q <= '0;
-                    fail_q     <= 1'b0;
-                    wait_cnt_q <= '0;
+                    phase_q      <= '0;
+                    addr_q       <= '0;
+                    expected_q   <= '0;
+                    fail_q       <= 1'b0;
+                    wait_cnt_q   <= '0;
+                    prev_addr_q  <= '0;
+                    prev_valid_q <= 1'b0;
+                    tail_q       <= 1'b0;
                     if (start) begin
                         state_q <= ST_ISSUE;
                     end
                 end
 
                 ST_ISSUE: begin
-                    if (do_read[0]) begin
+                    if (step_reads) begin
                         expected_q <= expected_data[0];
                         if (READ_LATENCY == 0) begin
                             state_q <= ST_CHECK;
@@ -166,48 +194,40 @@ module march_1r1w_fsm #(
                 end
 
                 ST_CHECK: begin
-                    if (do_read[0] && (mem_rdata0 !== expected_q)) begin
+                    if (step_reads && (mem_rdata0 !== expected_q)) begin
                         fail_q <= 1'b1;
                     end
 
-                    if (last_substep) begin
-                        if (phase_dir_up) begin
-                            if (addr_q == MAX_ADDR) begin
-                                if (phase_q == LAST_PHASE) begin
-                                    state_q <= ST_DONE;
-                                end else begin
-                                    phase_q <= phase_q + 1'b1;
-                                    if (phase_is_up(phase_q + 1'b1)) begin
-                                        addr_q <= '0;
-                                    end else begin
-                                        addr_q <= MAX_ADDR;
-                                    end
-                                    state_q <= ST_ISSUE;
-                                end
-                            end else begin
-                                addr_q  <= addr_q + 1'b1;
-                                state_q <= ST_ISSUE;
-                            end
+                    if (!last_substep) begin
+                        state_q <= ST_ISSUE;
+                    end else if (lagged && !tail_q && at_last_addr) begin
+                        // The last address has been read: write it in a
+                        // write-only tail step before the next element.
+                        prev_addr_q  <= addr_q;
+                        prev_valid_q <= 1'b1;
+                        tail_q       <= 1'b1;
+                        state_q      <= ST_ISSUE;
+                    end else if (at_last_addr) begin
+                        prev_valid_q <= 1'b0;
+                        tail_q       <= 1'b0;
+                        if (phase_q == LAST_PHASE) begin
+                            state_q <= ST_DONE;
                         end else begin
-                            if (addr_q == '0) begin
-                                if (phase_q == LAST_PHASE) begin
-                                    state_q <= ST_DONE;
-                                end else begin
-                                    phase_q <= phase_q + 1'b1;
-                                    if (phase_is_up(phase_q + 1'b1)) begin
-                                        addr_q <= '0;
-                                    end else begin
-                                        addr_q <= MAX_ADDR;
-                                    end
-                                    state_q <= ST_ISSUE;
-                                end
+                            phase_q <= phase_q + 1'b1;
+                            if (phase_is_up(phase_q + 1'b1)) begin
+                                addr_q <= '0;
                             end else begin
-                                addr_q  <= addr_q - 1'b1;
-                                state_q <= ST_ISSUE;
+                                addr_q <= MAX_ADDR;
                             end
+                            state_q <= ST_ISSUE;
                         end
                     end else begin
-                        state_q <= ST_ISSUE;
+                        // The address just read is the one port 1 writes
+                        // on the next step.
+                        prev_addr_q  <= addr_q;
+                        prev_valid_q <= lagged;
+                        addr_q       <= phase_dir_up ? addr_q + 1'b1 : addr_q - 1'b1;
+                        state_q      <= ST_ISSUE;
                     end
                 end
 

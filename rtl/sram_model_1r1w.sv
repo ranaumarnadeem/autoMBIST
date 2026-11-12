@@ -27,10 +27,10 @@
 // on the very same edge observe write-forwarding: by the time port 0's
 // dout0 is actually driven (one edge later), port 1's same-cycle write has
 // already landed in mem[]. So a same-address, same-cycle concurrent access
-// reads that write's own new value, not whatever preceded it. See
-// march_1r1w_algo.sv's header comment for why this is the correct (and
-// more interesting) definition of same-address concurrent 1R1W access to
-// verify against.
+// reads that write's own new value, not whatever preceded it. A compiled
+// macro does not define that read, so march_1r1w never issues one (port 1
+// writes the address port 0 read on the step before); the generated
+// behavioral model (memory_model.py) reads X there instead.
 module sram_model_1r1w #(
     parameter integer ADDR_WIDTH = 10,
     parameter integer DATA_WIDTH = 32

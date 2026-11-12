@@ -111,20 +111,23 @@ def test_read_latency_selects_the_timing_style(latency: int, falling_edge: bool)
 
 
 @pytest.mark.parametrize(
-    ("shape", "forwards"),
-    [("1r1w-rl0", True), ("2rw-rl0", True), ("spare-cols-2rw-rl0", True),
-     ("single-port-rl0", False), ("1r1w", False), ("2rw", False), ("single-port", False)],
+    ("shape", "checks"),
+    [("1r1w-rl0", True), ("2rw-rl0", True), ("spare-cols-2rw-rl0", True), ("1r1w", True), ("2rw", True),
+     ("single-port-rl0", False), ("single-port", False)],
 )
-def test_only_a_multi_port_falling_edge_model_forwards_a_same_edge_write(shape: str, forwards: bool) -> None:
-    """The two-port algorithms expect a read concurrent with a same-address write to
-    return the new data. The registered-read style gets that for free; the falling-edge
-    style must forward it."""
+def test_a_multi_port_model_reads_x_where_another_port_writes_the_same_cycle(shape: str, checks: bool) -> None:
+    """A compiled two-port macro leaves a read of the address another port writes in
+    the same cycle undefined, so the model returns X for it, in both read styles, and
+    never forwards the written data."""
     model = render_memory_model(SHAPES[shape])
 
-    assert ("function" in model and "p0_read(" in model) is forwards
+    assert ("function" in model and "p0_read(" in model) is checks
+    if checks:
+        assert re.search(r"p0_read = \{\d+\{1'bx\}\};", model)
+        assert "_din_q;" not in model.split("function", 1)[1]
 
 
-def test_a_port_never_forwards_its_own_write_to_its_own_read() -> None:
+def test_a_port_never_flags_its_own_write_to_its_own_read() -> None:
     model = render_memory_model(SHAPES["2rw-rl0"])
 
     port0_read = model[model.index("function [3:0] p0_read"):model.index("endfunction")]

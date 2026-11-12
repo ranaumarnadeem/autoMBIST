@@ -9,37 +9,25 @@
 // uniformity with the later march_2rw generalization, where both ports
 // can do either.
 //
-// Timing note (why expected_data looks the way it does below): in
-// sram_model_1r1w, a port-1 write to address A commits (as a nonblocking
-// assignment) on the SAME edge that a concurrent port-0 read captures
-// addr0_q = A. Port 0's registered read then drives dout0 <= mem[addr0_q]
-// on the FOLLOWING edge -- by which point that write has already landed in
-// mem[]. The net effect: a read issued on the same cycle as a same-address
-// write observes that write's OWN new data (write-forwarding), not
-// whatever was there before. This is a legitimate, and in fact the more
-// interesting, definition of same-address concurrent 1R1W access -- it
-// means the read path and the write path must be correctly bridged through
-// the SAME shared storage cell on the SAME cycle for the check to pass,
-// which is exactly the port-coupling property this phase exists to prove.
-// A stuck-at bit on the shared cell, or a broken address/data route
-// between port 1's write and port 0's read, both show up immediately as a
-// same-cycle mismatch.
+// The two ports never access one address in the same cycle: a compiled
+// two-port macro (OpenRAM's among them) leaves a read of the address the
+// other port is writing undefined. In an element with both a read and a
+// write, march_1r1w_fsm.sv has port 0 read the address the sweep is at
+// while port 1 writes the address read on the previous step, so a read
+// sees what the PREVIOUS element left in that cell. The reads go through
+// port 0 and the writes through port 1, so the read path and the write
+// path must both reach the same storage cells for the checks to pass.
 //
-// Algorithm (march-C-sized, 6 elements):
-//   E0 (up,   port1 only):            write 0
-//   E1 (up,   CONCURRENT r0+w1):      write 1 while reading that same
-//                                      same-cycle write back (expect 1)
-//   E2 (up,   CONCURRENT r0+w1):      write 0 while reading that same
-//                                      same-cycle write back (expect 0)
-//   E3 (down, CONCURRENT r0+w1):      write 1 while reading that same
-//                                      same-cycle write back (expect 1)
-//   E4 (down, CONCURRENT r0+w1):      write 0 while reading that same
-//                                      same-cycle write back (expect 0)
-//   E5 (down, port0 only):            read back E4's final value (expect 0)
+// Algorithm (March C-, its reads on port 0 and writes on port 1):
+//   E0 (up,   port1 only):            w0
+//   E1 (up,   CONCURRENT r0+w1):      r0, then w1 one step later
+//   E2 (up,   CONCURRENT r0+w1):      r1, then w0 one step later
+//   E3 (down, CONCURRENT r0+w1):      r0, then w1 one step later
+//   E4 (down, CONCURRENT r0+w1):      r1, then w0 one step later
+//   E5 (down, port0 only):            r0
 //
-// Elements 1-4 exercise genuine same-address, same-cycle read(port0) +
-// write(port1) concurrency -- exactly the condition an inter-port coupling
-// fault needs to be sensitized.
+// In elements 1-4 every step reads one address on port 0 while port 1
+// writes the neighbouring one in the same cycle.
 // Ports below use packed (not unpacked) 2-element vectors -- Yosys's
 // read_verilog frontend rejects unpacked-array port declarations
 // (`do_read [0:1]`) with a syntax error; packed `[1:0]` indexes identically
@@ -81,45 +69,45 @@ module march_1r1w_algo #(
                 last_step    = 1'b1;
             end
 
-            // E1: write 1 (port1) while reading that same write back
-            // (port0), ascending, CONCURRENT.
+            // E1: read 0 (port0) while port1 writes 1 one address behind,
+            // ascending, CONCURRENT.
             3'd1: begin
                 phase_dir_up     = 1'b1;
                 do_read[0]       = 1'b1;
-                expected_data[0] = ALL_ONE;
+                expected_data[0] = ALL_ZERO;
                 do_write[1]      = 1'b1;
                 write_data[1]    = ALL_ONE;
                 last_step        = 1'b1;
             end
 
-            // E2: write 0 (port1) while reading that same write back
-            // (port0), ascending, CONCURRENT.
+            // E2: read 1 (port0) while port1 writes 0 one address behind,
+            // ascending, CONCURRENT.
             3'd2: begin
                 phase_dir_up     = 1'b1;
                 do_read[0]       = 1'b1;
-                expected_data[0] = ALL_ZERO;
+                expected_data[0] = ALL_ONE;
                 do_write[1]      = 1'b1;
                 write_data[1]    = ALL_ZERO;
                 last_step        = 1'b1;
             end
 
-            // E3: write 1 (port1) while reading that same write back
-            // (port0), descending, CONCURRENT.
+            // E3: read 0 (port0) while port1 writes 1 one address behind,
+            // descending, CONCURRENT.
             3'd3: begin
                 phase_dir_up     = 1'b0;
                 do_read[0]       = 1'b1;
-                expected_data[0] = ALL_ONE;
+                expected_data[0] = ALL_ZERO;
                 do_write[1]      = 1'b1;
                 write_data[1]    = ALL_ONE;
                 last_step        = 1'b1;
             end
 
-            // E4: write 0 (port1) while reading that same write back
-            // (port0), descending, CONCURRENT.
+            // E4: read 1 (port0) while port1 writes 0 one address behind,
+            // descending, CONCURRENT.
             3'd4: begin
                 phase_dir_up     = 1'b0;
                 do_read[0]       = 1'b1;
-                expected_data[0] = ALL_ZERO;
+                expected_data[0] = ALL_ONE;
                 do_write[1]      = 1'b1;
                 write_data[1]    = ALL_ZERO;
                 last_step        = 1'b1;

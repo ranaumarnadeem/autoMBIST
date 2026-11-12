@@ -110,6 +110,15 @@ async def _run_until_done(
                     "_SELFREPAIR_ALGOS gate."
                 )
 
+            # A compiled two-port macro leaves a read of the address the other
+            # port writes in the same cycle undefined: the controller must never
+            # issue one (E3 writes one address behind its reads).
+            read_write = both_active and mem_we0 != mem_we1
+            assert not (read_write and mem_addr0 == mem_addr1), (
+                f"march_2rw_fsm read and wrote address 0x{mem_addr0:x} in the same cycle "
+                f"(phase={phase}, mem_we0={mem_we0}, mem_we1={mem_we1})"
+            )
+
             if ww_events is not None and both_write and mem_addr0 != mem_addr1:
                 ww_events.append(
                     {

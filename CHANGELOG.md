@@ -26,6 +26,21 @@ everything that predates the migration.
   worked example a test re-runs, and what autoMBIST does not provide (#41).
 
 ### Fixed
+- `march-1r1w`, and element E3 of `march-2rw`, no longer read an address in the
+  cycle the other port writes it. A compiled two-port macro, OpenRAM's
+  included, does not define that read, so on silicon a good memory could fail
+  the BIST and on-chip self-repair could spend spares on good rows. The write
+  port now writes the address the read port read on the previous step, and
+  each read checks the value the previous element left: `march-1r1w` is March
+  C- with its reads on the read port and its writes on the write port. Each
+  such element takes one extra write-only step (8 cycles for `march-1r1w`, 2
+  for `march-2rw`).
+  - The behavioral model `generate` writes for a multi-port memory returns X
+    for a read of an address another port writes in the same cycle, where it
+    used to pass the written data through.
+  - The `port-coupling` fault is now triggered by a write made while the read
+    port reads (any address), the access the algorithm makes, instead of a
+    same-address one.
 - A `topology: shared-bus` wrapper gives each memory its own functional port,
   `func_csb_<name>`, `func_addr_<name>`, `func_din_<name>`, `func_we_<name>`
   and `func_dout_<name>`, in place of the single `func_*` port. That port was

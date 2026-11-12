@@ -25,8 +25,8 @@
 // instantiating testbench/wrapper (this module makes no such assumption
 // itself).
 //
-// Write-forwarding timing note (mirrors march_1r1w_algo.sv's header
-// comment, generalized to either port): because a read is REGISTERED
+// Write-forwarding timing note (the same as sram_model_1r1w.sv's,
+// generalized to either port): because a read is REGISTERED
 // (addrN is captured into addrN_q on the issuing edge; doutN <= mem[addrN_q]
 // is driven on the FOLLOWING edge) while a write on the OTHER port commits
 // immediately (as a non-blocking assignment on the SAME edge), a same-
@@ -34,7 +34,9 @@
 // observes write-forwarding: by the time the reading port's doutN is
 // actually driven (one edge later), the other port's same-cycle write has
 // already landed in mem[]. So such an access reads that write's own new
-// value, not whatever preceded it.
+// value, not whatever preceded it. A compiled macro does not define that
+// read, so march_2rw never issues one (its read/write element writes one
+// address behind its reads); the generated behavioral model reads X there.
 //
 // Same-address, same-cycle WRITE + WRITE on both ports is intentionally
 // left unspecified here (real dual-port SRAM compilers do not define this

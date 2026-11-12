@@ -7,13 +7,13 @@ checkerboard:
   cells: 193
   flops: 15
 march-1r1w:
-  bist_cycles: 273
-  cells: 160
-  flops: 14
+  bist_cycles: 281
+  cells: 171
+  flops: 20
 march-2rw:
-  bist_cycles: 241
-  cells: 188
-  flops: 15
+  bist_cycles: 243
+  cells: 205
+  flops: 21
 march-c:
   bist_cycles: 401
   cells: 185
@@ -39,10 +39,10 @@ mats-plus:
   cells: 141
   flops: 15
 selfrepair-1r1w-2d:
-  bist_cycles: 273
-  cells: 562
-  flops: 54
-  selfrepair_cycles: 551
+  bist_cycles: 281
+  cells: 621
+  flops: 60
+  selfrepair_cycles: 567
 selfrepair-2d:
   bist_cycles: 401
   cells: 581
@@ -59,10 +59,10 @@ selfrepair-2d-deferred-retry-diagnosis:
   flops: 147
   selfrepair_cycles: 1211
 selfrepair-2rw-2d-retry:
-  bist_cycles: 241
-  cells: 729
-  flops: 63
-  selfrepair_cycles: 487
+  bist_cycles: 243
+  cells: 776
+  flops: 69
+  selfrepair_cycles: 491
 selfrepair-row:
   bist_cycles: 401
   cells: 330

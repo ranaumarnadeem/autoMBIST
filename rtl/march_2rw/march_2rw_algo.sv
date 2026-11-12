@@ -18,20 +18,15 @@
 // bit always flips it, so partner_addr != addr_q for every possible addr_q
 // across the whole sweep -- the two addresses are guaranteed different with
 // no special-casing at the boundaries. Elements that need the SAME address
-// on both ports (the read/read and read/write-forwarding cases) simply
-// drive both ports from addr_q directly; the FSM applies partner_addr only
-// where this decoder asks for it via use_partner_addr1.
+// on both ports (the read/read case) simply drive both ports from addr_q
+// directly; the FSM applies partner_addr only where this decoder asks for
+// it via use_partner_addr1.
 //
-// Timing note for the read(portA)/write(portB) same-address case (E3
-// below): identical write-forwarding rule as march_1r1w_algo.sv's header
-// comment, just generalized to whichever port is reading vs. writing this
-// element -- in sram_model_2rw, a same-cycle write on one port commits (as
-// a nonblocking assignment) on the SAME edge a concurrent read on the other
-// port captures its addr_q into that port's addrN_q shadow register. The
-// reading port's registered dout is driven from mem[addrN_q] on the
-// FOLLOWING edge -- by which point the other port's same-cycle write has
-// already landed in mem[]. So the read observes that write's own new data
-// (write-forwarding), exactly like march_1r1w.
+// The ports never read and write one address in the same cycle: a compiled
+// two-port macro (OpenRAM's among them) leaves that read undefined. In the
+// read(port 0)/write(port 1) element (E3) march_2rw_fsm.sv has port 1 write
+// the address port 0 read on the previous step, exactly as march_1r1w does,
+// so E3's reads see what E1 left (1) and its writes land one step behind.
 //
 // Algorithm (march-C-sized, 6 elements):
 //   E0 (up,   port0 write only):              write 0 (establish state)
@@ -42,11 +37,10 @@
 //   E2 (up,   CONCURRENT READ/READ, same addr):
 //                                              port0 and port1 both read
 //                                              addr_q, both expect 1
-//   E3 (down, CONCURRENT READ(port0)/WRITE(port1), same addr, forwarding):
-//                                              port1 writes 0 @ addr_q while
-//                                              port0 reads addr_q same
-//                                              cycle, expects 0 (that same
-//                                              write's own new value)
+//   E3 (down, CONCURRENT READ(port0)/WRITE(port1), neighbouring addrs):
+//                                              port0 reads addr_q, expects 1;
+//                                              port1 writes 0 to the address
+//                                              port0 read on the step before
 //   E4 (down, CONCURRENT WRITE/WRITE, diff addr):
 //                                              port0 writes 0 @ addr_q,
 //                                              port1 writes 0 @ partner_addr,
@@ -65,8 +59,8 @@
 // identical, correct value) -- a case march_1r1w cannot express since it
 // only has one read-capable port.
 //
-// E3 exercises the 1R1W-style same-address read+write case, generalized so
-// either port can play either role (here port0 reads, port1 writes).
+// E3 exercises read+write concurrency on neighbouring addresses, here with
+// port0 reading and port1 writing.
 module march_2rw_algo #(
     parameter integer DATA_WIDTH = 32
 ) (
@@ -131,12 +125,12 @@ module march_2rw_algo #(
                 last_step        = 1'b1;
             end
 
-            // E3: CONCURRENT read(port0)/write(port1) to the SAME address,
-            // descending -- write-forwarding case (1R1W-style, generalized).
+            // E3: CONCURRENT read(port0)/write(port1), descending: port0
+            // reads 1, port1 writes 0 one address behind (march_2rw_fsm.sv).
             3'd3: begin
                 phase_dir_up     = 1'b0;
                 do_read[0]       = 1'b1;
-                expected_data[0] = ALL_ZERO;
+                expected_data[0] = ALL_ONE;
                 do_write[1]      = 1'b1;
                 write_data[1]    = ALL_ZERO;
                 last_step        = 1'b1;

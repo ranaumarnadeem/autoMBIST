@@ -56,8 +56,8 @@ __all__ = [
 #: What the functional solid-0 / solid-1 scan through the wrapper's functional
 #: port, after the faults are in place, can see: stuck-at faults only. A
 #: transition fault's delayed write has committed long before the scan reads the
-#: word back, and a port-coupling fault needs a read and a write to the same
-#: address in the same cycle, which the scan never does.
+#: word back, and a port-coupling fault needs a write made while the other port
+#: reads, which the scan never does.
 OBSERVABLE_FAULT_TYPES = ("stuck-at",)
 #: The report's engine name, as the yieldsim engines name theirs.
 ENGINE = "rtl-functional-scan"

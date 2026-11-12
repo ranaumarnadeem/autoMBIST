@@ -8,8 +8,9 @@ for the exact invocation), e.g.:
 
 This test produces hard evidence for three things:
   a) CONCURRENCY: the FSM's read-enable-for-port-0 and write-enable-for-
-     port-1 signals (and their address registers) are active on the SAME
-     clock edge with the SAME address value.
+     port-1 signals are active on the SAME clock edge, and never on the
+     same address: a compiled two-port macro leaves a read of the address
+     the other port is writing undefined.
   b) GOLDEN CLEAN: bist_fail == 0 at bist_done with an unmodified
      sram_model_1r1w.
   c) FAULT DETECTION: with a stuck-at fault injected on the read path (an
@@ -60,8 +61,8 @@ async def _run_until_done(dut, concurrency_events: list[dict[str, int]] | None =
 
     On every clock edge while busy, hierarchically probe the FSM's port-0
     read-enable/address and port-1 write-enable/address signals. Any cycle
-    where both are asserted simultaneously is direct proof of same-cycle,
-    same-address read+write concurrency.
+    where both are asserted simultaneously is direct proof of same-cycle
+    read+write concurrency; its addresses show whether the ports collided.
     """
     fsm_path = "u_algo_top.u_march_1r1w_fsm"
     while True:
@@ -91,8 +92,9 @@ async def _run_until_done(dut, concurrency_events: list[dict[str, int]] | None =
 
 @cocotb.test()
 async def test_concurrency_and_golden_clean(dut):
-    """Proves (a) same-cycle same-address read+write concurrency and (b) a
-    golden-clean run against an unmodified sram_model_1r1w reports no fail.
+    """Proves (a) same-cycle read+write concurrency that never puts both ports
+    on one address and (b) a golden-clean run against an unmodified
+    sram_model_1r1w reports no fail.
     """
     await _reset(dut)
     await _start_bist(dut)
@@ -100,35 +102,32 @@ async def test_concurrency_and_golden_clean(dut):
     concurrency_events: list[dict[str, int]] = []
     await _run_until_done(dut, concurrency_events)
 
-    # (a) CONCURRENCY: at least one cycle must show mem_en0 and mem_en1 both
-    # asserted with mem_addr0 == mem_addr1 (same address, same edge).
+    # (a) CONCURRENCY: cycles with mem_en0 and mem_en1 both asserted, none of
+    # them with mem_addr0 == mem_addr1.
     assert concurrency_events, "No cycle observed with both ports active simultaneously"
 
     same_addr_events = [e for e in concurrency_events if e["mem_addr0"] == e["mem_addr1"]]
-    assert same_addr_events, (
-        f"Ports were concurrently active but never at the same address: {concurrency_events[:5]}"
+    assert not same_addr_events, (
+        f"Port 1 wrote the address port 0 was reading in the same cycle: {same_addr_events[:5]}"
     )
 
     print()
-    print("Concurrency evidence (same-cycle, same-address read(port0)+write(port1)):")
+    print("Concurrency evidence (same-cycle read(port0)+write(port1), different addresses):")
     print(f"  total concurrent-port cycles observed: {len(concurrency_events)}")
-    print(f"  total same-address concurrent cycles : {len(same_addr_events)}")
-    for event in same_addr_events[:8]:
+    for event in concurrency_events[:8]:
         print(
             f"  phase={event['phase']} addr0=0x{event['mem_addr0']:X} "
             f"addr1=0x{event['mem_addr1']:X} mem_en0={event['mem_en0']} "
             f"mem_en1={event['mem_en1']}"
         )
 
-    # Expect concurrency on elements 1-4 (4 phases) across every address in
-    # the sweep -- assert we saw a substantial number of such cycles, not
-    # just a fluke single edge.
+    # Elements 1-4 each overlap a read with a write at every address but the
+    # first one they read (whose step has no write due yet).
     addr_width = int(os.getenv("ADDR_WIDTH", "6"))
     depth = 1 << addr_width
-    expected_min = depth * 4 - 1  # 4 concurrent phases, allow off-by-one at boundaries
-    assert len(same_addr_events) >= expected_min, (
-        f"Expected at least {expected_min} same-address concurrent cycles, "
-        f"got {len(same_addr_events)}"
+    expected = (depth - 1) * 4
+    assert len(concurrency_events) == expected, (
+        f"Expected {expected} concurrent read+write cycles, got {len(concurrency_events)}"
     )
 
     # (b) GOLDEN CLEAN.
