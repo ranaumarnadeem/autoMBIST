@@ -791,3 +791,35 @@ def test_materializing_by_copy_also_leaves_the_cache_entry_alone(tmp_path: Path,
     assert entry_a.read_bytes() == b"geometry A"
     assert dest.read_bytes() == b"geometry B"
     assert not (tmp_path / "work" / "engine.partial").exists()
+
+
+def test_a_generated_alias_fault_never_aliases_a_word_to_itself() -> None:
+    """An AF_ALIAS whose target is its own address changes nothing, so it is
+    reported escaped for every algorithm and lowers every coverage figure. The
+    all-types list put it there at depth 2 ((va + 2) % 2 == va); the random list
+    did so whenever its aggressor draw hit the victim."""
+    from autombist.algo_engine import MemoryParams, generate_all_types_faults, generate_random_faults
+
+    for addr_width in (1, 2, 4):
+        mem = MemoryParams(addr_width=addr_width, data_width=4)
+        aliases = [r for r in generate_all_types_faults(mem) if r.type == "AF_ALIAS"]
+        assert aliases and all(r.aaddr != r.vaddr for r in aliases), (addr_width, aliases)
+
+    mem = MemoryParams(addr_width=2, data_width=2)
+    records = generate_random_faults(mem, 2000, seed=7)
+    aliases = [r for r in records if r.type == "AF_ALIAS"]
+    assert aliases and all(r.aaddr != r.vaddr for r in aliases)
+    # only a self-alias's target moved: every other draw is what the seed gives
+    import random
+
+    from autombist.algo_engine import _effective_all_types
+
+    rng, types, moved = random.Random(7), _effective_all_types(mem), 0
+    for r in records:
+        drawn = (rng.choice(types), rng.randrange(4), rng.randrange(2), rng.randrange(4),
+                 rng.randrange(2), rng.randrange(3), rng.randrange(2))
+        assert (r.type, r.vaddr, r.vbit, r.abit, r.p0, r.p1) == drawn[:3] + drawn[4:]
+        if r.aaddr != drawn[3]:
+            assert r.type == "AF_ALIAS" and drawn[3] == r.vaddr and r.aaddr == (r.vaddr + 1) % 4
+            moved += 1
+    assert moved > 0

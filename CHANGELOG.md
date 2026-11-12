@@ -26,6 +26,11 @@ everything that predates the migration.
   worked example a test re-runs, and what autoMBIST does not provide (#41).
 
 ### Fixed
+- Generated fault lists no longer contain an `AF_ALIAS` aliasing a word to
+  itself, which changes nothing and so was reported escaped for every
+  algorithm. The all-types list made one at a 2-word depth, and a random list
+  whenever its aggressor draw hit the victim; that aggressor is now the next
+  address, and the rest of a seeded list is unchanged.
 - A shared-controller campaign's reports name each fault's memory when its
   faults are on more than memory 0: `mi` in the JSON, a `memory` column in the
   CSV and Markdown, and diagnosis cells keyed by memory as well as address and

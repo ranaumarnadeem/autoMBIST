@@ -572,7 +572,10 @@ def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
         ab = vb
         p0, p1 = _coupling_p0_p1(t)
         if t == "AF_ALIAS":
-            aa = (va + 2) % depth
+            # The alias target must be another address: aliasing a word to itself
+            # changes nothing, so the fault could never be detected. (va + 2) %
+            # depth is va itself when depth is 2.
+            aa = (va + 2) % depth if (va + 2) % depth != va else (va + 1) % depth
         elif t == "DRF":
             # AADDR/ABIT unused (matches SOF/AF_NOACC's convention). P0 is the
             # idle-cycle threshold, not a polarity/direction selector like
@@ -655,14 +658,17 @@ def generate_random_faults(mem: MemoryParams, n: int, seed: int = 0) -> list[Fau
     types = _effective_all_types(mem)
     records: list[FaultRecord] = []
     for _ in range(n):
-        records.append(
-            FaultRecord(
-                type=rng.choice(types),
-                vaddr=rng.randrange(depth), vbit=rng.randrange(dw),
-                aaddr=rng.randrange(depth), abit=rng.randrange(dw),
-                p0=rng.randrange(3), p1=rng.randrange(2),
-            )
+        record = FaultRecord(
+            type=rng.choice(types),
+            vaddr=rng.randrange(depth), vbit=rng.randrange(dw),
+            aaddr=rng.randrange(depth), abit=rng.randrange(dw),
+            p0=rng.randrange(3), p1=rng.randrange(2),
         )
+        if record.type == "AF_ALIAS" and record.aaddr == record.vaddr and depth > 1:
+            # A word aliased to itself is no fault at all: take the next address
+            # (not a new draw, so the rest of a seeded list stays the same).
+            record.aaddr = (record.vaddr + 1) % depth
+        records.append(record)
     return records
 
 
