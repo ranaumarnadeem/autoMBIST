@@ -26,6 +26,7 @@ from autombist.bira_input import observed_cells  # noqa: E402
 from autombist.fault_gen import FaultType, generate_fault_masks  # noqa: E402
 from autombist.generator import generate_from_config  # noqa: E402
 from autombist.runner import run_simulation  # noqa: E402
+from fixture_models import fixture_model  # noqa: E402
 
 TINY = {
     "memory_name": "sram_tiny", "wrapper_module_name": "sram_tiny_mbist", "addr_width": 2, "data_width": 4,
@@ -76,7 +77,7 @@ def _passed(report: dict) -> bool:
 @pytest.mark.parametrize("algo", SINGLE_PORT_ALGOS)
 def test_a_clean_march_logs_nothing(tmp_path: Path, algo: str) -> None:
     module = _generate(tmp_path, TINY, faults=0, fault_seed=0, fault_type="stuck-at", algo=algo)
-    report = run_simulation(module, march_log=True).report
+    report = run_simulation(module, memory_model=fixture_model(module), march_log=True).report
     assert report["march_log"] == {"events": 0, "cells": 0, "unknown": 0, "bist_fail": 0}
     assert report["march_fail_bitmap"] == [] and _passed(report)
 
@@ -91,7 +92,7 @@ def test_a_clean_march_logs_nothing(tmp_path: Path, algo: str) -> None:
 def test_stuck_at_cells_seen_by_the_march_are_the_injected_ones(tmp_path: Path, config: dict, algo: str) -> None:
     faults, seed = 3, 11
     module = _generate(tmp_path, config, faults=faults, fault_seed=seed, fault_type="stuck-at", algo=algo)
-    report = run_simulation(module, march_log=True).report
+    report = run_simulation(module, memory_model=fixture_model(module), march_log=True).report
 
     assert _passed(report), report.get("junit")
     # an event is one failing read, which can carry several of the cells
@@ -103,8 +104,8 @@ def test_stuck_at_cells_seen_by_the_march_are_the_injected_ones(tmp_path: Path, 
 @pytest.mark.parametrize("config", [TINY, DEMO])
 def test_the_march_and_the_functional_scan_agree_on_stuck_at(tmp_path: Path, config: dict) -> None:
     module = _generate(tmp_path, config, faults=4, fault_seed=3, fault_type="stuck-at", algo="march-c")
-    march = observed_cells(run_simulation(module, march_log=True).report, "march")
-    functional = observed_cells(run_simulation(module, fail_scan=True).report, "functional")
+    march = observed_cells(run_simulation(module, memory_model=fixture_model(module), march_log=True).report, "march")
+    functional = observed_cells(run_simulation(module, memory_model=fixture_model(module), fail_scan=True).report, "functional")
     assert march == functional == _stuck_truth(config, 4, 3)
 
 
@@ -119,13 +120,13 @@ def test_transition_faults_are_seen_by_the_march_but_not_by_a_read_back(tmp_path
     masks, _ = generate_fault_masks(addr_width=2, data_width=4, fault_type=FaultType(fault_type), faults=faults, seed=seed)
     truth = {(a, b) for a in range(4) for b in range(4) if (masks[a] >> b) & 1}
 
-    march_report = run_simulation(module, march_log=True).report
+    march_report = run_simulation(module, memory_model=fixture_model(module), march_log=True).report
     march = observed_cells(march_report, "march")
     assert _passed(march_report) and march and march <= truth
-    assert observed_cells(run_simulation(module, fail_scan=True).report, "functional") == set()
+    assert observed_cells(run_simulation(module, memory_model=fixture_model(module), fail_scan=True).report, "functional") == set()
 
 
 def test_one_run_cannot_be_both_observations(tmp_path: Path) -> None:
     module = _generate(tmp_path, TINY, faults=1, fault_seed=0, fault_type="stuck-at", algo="march-c")
     with pytest.raises(ValueError, match="choose one"):
-        run_simulation(module, fail_scan=True, march_log=True)
+        run_simulation(module, memory_model=fixture_model(module), fail_scan=True, march_log=True)

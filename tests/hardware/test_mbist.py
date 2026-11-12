@@ -649,7 +649,11 @@ async def test_transition_faults(dut):
 
     algo_name = os.getenv("ALGO", "march-c").strip().lower()
     pulse_width_cycles = int(os.getenv("PULSE_WIDTH_NS", "2"))
-    if algo_name == "march-raw":
+    if total_sites == 0:
+        # An all-zero transition mask must be a no-op, as for port coupling
+        # below: a fail here is the saboteur's own decode, not a fault (#48).
+        assert int(dut.bist_fail.value) == 0, "MBIST reported fail with zero injected transition faults (false positive)"
+    elif algo_name == "march-raw":
         assert int(dut.bist_fail.value) == 1, "MBIST did not detect transition faults in March RAW"
     elif total_sites > 0 and pulse_width_cycles > 1:
         assert detected_count < total_sites, "March C unexpectedly detected 100% transition-delay faults"

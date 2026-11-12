@@ -221,7 +221,7 @@ class SolverStats:
     forced_rows: int = 0       # rows the must-repair phase forced (winning or last attempt)
     forced_cols: int = 0
     spare_subsets: int = 1     # sets of faulty spares tried (1 when no spare is faulty)
-    decided_by: str = ""       # "empty", "must-repair", "early-abort", "search" or "spare-subsets"
+    decided_by: str = ""       # "matching-bound", "empty", "must-repair", "early-abort", "search" or "spare-subsets"
 
 
 @dataclass(slots=True, frozen=True)

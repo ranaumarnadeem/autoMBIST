@@ -279,6 +279,25 @@ def validate(prim: FaultPrimitive, *, existing_names: set[str]) -> None:
     if prim.category == "static_clamp":
         if prim.effect.kind != "force":
             raise FaultPrimitiveError("static_clamp primitives must use effect.kind='force'")
+        # What render_static_clamp_arm reads, and nothing else: a field it
+        # ignores was accepted and silently dropped, so a state-coupling clamp
+        # came out as a plain stuck-at (#60).
+        if prim.sensitize.written != "x" or prim.sensitize.transition != "x":
+            raise FaultPrimitiveError(
+                "a static_clamp holds a stored value, not a write: sensitize.written and "
+                "sensitize.transition do not apply (use category='write_effect')"
+            )
+        if prim.sensitize.on == "aggressor" and prim.sensitize.pre == "x":
+            raise FaultPrimitiveError(
+                "a static_clamp with sensitize.on='aggressor' needs sensitize.pre: the "
+                "aggressor value that holds the clamp ('0', '1', 'p0' or 'p1')"
+            )
+        if prim.sensitize.on == "victim" and (prim.sensitize.pre != "x" or prim.sensitize.agg_pre != "x"):
+            raise FaultPrimitiveError(
+                "a static_clamp with sensitize.on='victim' is unconditional: sensitize.pre and "
+                "sensitize.agg_pre would be ignored. For a clamp held by another cell's value "
+                "use on='aggressor' with sensitize.pre"
+            )
         if prim.sensitize.port != "x":
             # A static clamp is a STORAGE-level invariant, not an access event:
             # its arm is emitted into clamp_static(), which rewrites mem[] and is
@@ -530,3 +549,35 @@ def default_registry() -> list[FaultPrimitive]:
             Effect(kind="corrupt_read", value="0"),                    # <1w1r1/1/0>
         ),
     ]
+
+
+def load_custom_registry(path: "Path") -> list[FaultPrimitive]:
+    """The built-in registry plus the custom fault types in a ``--fault-types``
+    JSON file (a list of :func:`from_dict` specs), each validated. Every problem
+    with the file is a FaultPrimitiveError naming the entry, never a KeyError
+    or AttributeError traceback (#59). The CLI's and the Tcl shell's `test`
+    both call this."""
+    import json
+    from pathlib import Path
+
+    path = Path(path)
+    try:
+        specs = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise FaultPrimitiveError(f"{path}: not valid JSON: {exc}") from None
+    if not isinstance(specs, list):
+        raise FaultPrimitiveError(f"{path} must contain a JSON list of fault-primitive specs")
+    registry = default_registry()
+    for index, spec in enumerate(specs):
+        if not isinstance(spec, dict):
+            raise FaultPrimitiveError(f"{path}: entry {index} must be a JSON object, got {spec!r}")
+        where = f"{path}: entry {index} ({spec.get('name', 'unnamed')})"
+        try:
+            prim = from_dict(spec)
+        except KeyError as exc:
+            raise FaultPrimitiveError(f"{where} is missing {exc}") from None
+        except (TypeError, AttributeError, ValueError) as exc:
+            raise FaultPrimitiveError(f"{where}: {exc}") from None
+        validate(prim, existing_names={p.name for p in registry})
+        registry.append(prim)
+    return registry

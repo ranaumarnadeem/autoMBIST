@@ -39,6 +39,9 @@ class BitmapEngine:
     spares."""
 
     name = "bitmap"
+    # Each trial seeds its own RNG and shares nothing, so run_sweep may run
+    # trials in worker processes with identical results (#64).
+    parallel_safe = True
 
     def __init__(
         self,

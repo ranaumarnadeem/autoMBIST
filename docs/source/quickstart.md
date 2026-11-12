@@ -16,15 +16,18 @@ nix develop
 ### Step 1. Scaffold a starter project
 
 ```bash
-autombist init --out .
+autombist init --out mbist-demo && cd mbist-demo
 ```
 
 ```text
-Created starter MBIST config: config.yml
-Created starter OpenRAM config: openram.yml
-Created starter Makefile: Makefile
-Created sample SRAM model: sram_1rw.v
+Created starter MBIST config: mbist-demo/config.yml
+Created starter OpenRAM config: mbist-demo/openram.yml
+Created starter Makefile: mbist-demo/Makefile
+Created sample SRAM model: mbist-demo/sram_1rw.v
 ```
+
+A new directory, not the repo root: the checkout has its own `config.yml`,
+which `init` refuses to overwrite.
 
 `config.yml` describes a 10-bit-address, 32-bit-data single-port memory
 named `sram_1rw`:
@@ -46,7 +49,11 @@ ports:
 
 `sram_1rw.v` is a plain behavioral RAM matching those ports — a stand-in for
 your own OpenRAM-generated or vendor macro. Everything below runs against it
-unmodified.
+unmodified: `simulate` and `run` compile `<memory_name>.v` from the current
+directory, so replacing this file with your macro's simulation model is all it
+takes to test that instead (or pass `--model PATH`). Without one, they use the
+behavioral model `generate` writes to `out/<memory_name>/tb/`. Either way, the
+first line of the summary names the model it compiled.
 
 ### Step 2. Generate the MBIST wrapper
 
@@ -70,6 +77,7 @@ autombist simulate --out out/sram_1rw
 ```
 
 ```text
+Memory model: /path/to/project/sram_1rw.v
 autombist: simulation PASS
   memory: sram_1rw
   algo: march-c

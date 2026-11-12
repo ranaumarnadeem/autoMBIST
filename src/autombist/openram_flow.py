@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import difflib
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .yaml_io import load_user_yaml
 
 
 class OpenRAMConfigError(ValueError):
@@ -56,13 +59,25 @@ def load_openram_config(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         raise FileNotFoundError(f"OpenRAM config file not found: {config_path}")
 
-    loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    try:
+        loaded = load_user_yaml(config_path)
+    except yaml.YAMLError as exc:
+        raise OpenRAMConfigError(f"{config_path} is not valid YAML: {exc}") from None
     if loaded is None:
         loaded = {}
     if not isinstance(loaded, dict):
         raise OpenRAMConfigError("OpenRAM config must be a YAML mapping")
 
     config = default_openram_config()
+    # A misspelled key (num_spare_row) used to be merged in beside the real
+    # one, which kept its default: the macro was built without it (#60).
+    unknown = sorted(str(key) for key in loaded if key not in config)
+    if unknown:
+        suggestion = difflib.get_close_matches(unknown[0], config, n=1)
+        hint = f" -- did you mean {suggestion[0]!r}?" if suggestion else ""
+        raise OpenRAMConfigError(
+            f"{unknown[0]!r} is not an OpenRAM config key{hint}. Valid keys: {', '.join(sorted(config))}"
+        )
     config.update(loaded)
 
     _require_type("tech", config["tech"], (str,))

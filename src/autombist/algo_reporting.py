@@ -109,7 +109,32 @@ def _tool_versions(result: CampaignResult) -> dict[str, str]:
         simulator = _verilator_version() if result.sim == "verilator" else "unknown"
     except OSError:  # a CampaignResult built without running Verilator
         simulator = "unknown"
-    return {"autombist": __version__, "simulator": simulator}
+    versions = {"autombist": __version__, "simulator": simulator}
+    commit = _source_commit()
+    if commit is not None:
+        versions["autombist_commit"] = commit
+    return versions
+
+
+def _source_commit() -> str | None:
+    """The git commit this autombist runs from, when it runs from a checkout
+    (`nix develop`, an editable install), with "-dirty" for local changes. The
+    version alone named a release that did not contain the code between two
+    releases, so an assessor checking it out would not find what measured the
+    figures (#61). None for an installed package, whose version is the release."""
+    import subprocess
+
+    root = Path(__file__).resolve().parents[2]
+    if not (root / ".git").exists():
+        return None
+    try:
+        head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+                               capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return f"{head}-dirty" if dirty else head or None
 
 
 def render_campaign_json(result: CampaignResult) -> str:

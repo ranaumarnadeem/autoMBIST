@@ -55,6 +55,7 @@ autombist test --addr-width INTEGER --data-width INTEGER --faults PATH [OPTIONS]
 | `--data-width`, `-dw` (required) | — | Memory data width in bits |
 | `--algo TEXT` | `march_c` | Built-in algorithm name (`march_c`, `march_c_plus`, `march_y`, `march_b`, `mats_plus`, `march_ss`, `march_x`, `checkerboard`, `march_raw1`) or a path to a `.alg` file |
 | `--fsm PATH` | none | Validate a controller FSM `.sv` instead of an algorithm (takes precedence over `--algo`); sibling `.sv`/`.v` files in its directory are gathered automatically. No elem/op attribution in this mode — a black-box controller has no step counter to report |
+| `--top NAME` | the first module | With `--fsm`: the controller's module name, when the file declares more than one. Comments are skipped either way |
 | `--faults PATH` (required) | — | Fault-list file: `TYPE VADDR VBIT AADDR ABIT P0 P1` per line (see the `add_fault`/`load_faults` entries in §3 for the full grammar, and the primitive table in §4) |
 | `--fault-types PATH` | none | JSON file with a list of custom fault-primitive specs, added to the built-in 41 (see §4 and `fault_primitives.py`'s module docstring for the schema) |
 | `--init INTEGER` | `1` | Memory init value (0 or 1) |
@@ -141,9 +142,12 @@ printf 'set_memory 8 8\nrun march_c\nquit\n' | autombist algo --script -
 ```
 
 `--script -` reads commands from stdin instead of a file, which is handy for
-one-off scripted sessions or embedding in another script. Inside the shell,
-`help` lists every command, and `help <command>` prints that command's exact
-usage string.
+one-off scripted sessions or embedding in another script. A script stops at
+its first failing command, prints the error to stderr and exits 1, so a CI job
+running one fails when a command does. At the interactive prompt an error
+leaves the session as it was, and Ctrl-C interrupts the running command
+without ending the shell. Inside the shell, `help` lists every command, and
+`help <command>` prints that command's exact usage string.
 
 ### Worked session
 
@@ -376,6 +380,10 @@ the engine sources (`fault_ram.sv` regenerated from the session's registry,
 so any custom types from `add_fault_type` are included), every registered
 `.alg` spec (as numeric `.algc` files), and the current fault list —
 runnable via the bundle's `run_campaign.sh` without autoMBIST installed.
+`bundle.env` records the session's memory (`set_memory`'s widths,
+`--words-per-row` and `--init`, and the 2-port engine for `--ports 2`), so
+`run_campaign.sh` builds the same memory the session ran and reports the same
+coverage.
 
 **`list [algos|fsms|faults|types]`**
 Inspect session state; defaults to printing everything. `list algos` (and

@@ -441,3 +441,33 @@ def test_quit_and_eof_stop_the_loop() -> None:
     assert shell.onecmd("quit") is True
     shell2 = _shell()
     assert shell2.onecmd("EOF") is True
+
+
+def _register(tmp_path: Path, shell: AlgoShell, file_name: str, text: str = "either w0\nup r0 w1\ndown r1 w0\n") -> None:
+    path = tmp_path / file_name
+    path.write_text(text, encoding="utf-8")
+    shell.onecmd(f"add_algo {path}")
+
+
+def test_a_hyphenated_user_algorithm_is_found_by_its_own_name(tmp_path: Path) -> None:
+    """#58: the alias rewrite turned my-march into my_march before looking."""
+    shell = _shell()
+    _register(tmp_path, shell, "my-march.alg")
+    assert shell._resolve_algo("my-march") is shell.session.algos["my-march"]
+
+
+def test_a_user_algorithm_named_like_an_alias_is_the_users(tmp_path: Path) -> None:
+    """#58: `x` is an alias for march_x, so `run x` ran the built-in March X and
+    reported its coverage as the user's algorithm's."""
+    shell = _shell()
+    _register(tmp_path, shell, "x.alg", "either w0\nup r0 w1\ndown r1\n")
+    assert shell._resolve_algo("x") is shell.session.algos["x"]
+    assert shell._resolve_algo("X") is shell.session.algos["march_x"]  # no user 'X': the alias
+    assert "note: 'x' is also an alias for built-in march_x" in _output(shell)
+
+
+def test_aliases_still_reach_the_builtins() -> None:
+    shell = _shell()
+    assert shell._resolve_algo("C") is shell.session.algos["march_c"]
+    assert shell._resolve_algo("mats+") is shell.session.algos["mats_plus"]
+    assert shell._resolve_algo("march-x") is shell.session.algos["march_x"]

@@ -10,6 +10,146 @@
 {% set has_onchip_spare_retry = has_onchip_selfrepair and redundancy.onchip_spare_retry %}
 {% set spare_retry_limit = (redundancy.num_spare_rows + (redundancy.num_spare_cols if has_onchip_col_repair else 0)) if has_onchip_spare_retry else 0 %}
 {% set onchip_analyzer_deferred = has_onchip_col_repair and redundancy.onchip_analyzer == 'deferred' %}
+{# The diagnosis log records the first analyze pass only: a retry or the
+   deferred analyzer's second pass runs through repairs just applied, and a
+   new pass restarts the log (#46). The controller's diag_enable is that. #}
+{% set has_diag_enable = has_onchip_spare_retry or onchip_analyzer_deferred %}
+{# The on-chip self-repair instances -- analyzer, diagnosis log, controller --
+   the same for single- and multi-port wrappers; one copy, so a fix lands in
+   both (#46's diagnosis-enable bug was in each copy, #65). #}
+{% macro selfrepair_instances() %}
+{% if has_onchip_col_repair %}
+    onchip_2d_repair_analyzer #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .DATA_WIDTH(DATA_WIDTH),
+        .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }}),
+{% if onchip_analyzer_deferred %}
+        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }}),
+        .DEFERRED(1)
+{% else %}
+        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+{% endif %}
+    ) u_onchip_analyzer (
+        .clk(clk),
+        .rst_n(rst_n),
+        .enable(registrar_enable),
+        .fail_valid(algo_fail_valid),
+        .fail_addr(algo_fail_addr),
+        .fail_bitmask(algo_fail_bitmask),
+        .latch_result(latch_result),
+{% if has_onchip_repair_persistence %}
+        .repair_load(repair_load),
+        .fuse_row_repair_en(fuse_row_repair_en),
+        .fuse_faulty_row_addr(fuse_faulty_row_addr),
+        .repair_load_done(repair_load_done),
+{% else %}
+        .repair_load(1'b0),
+        .fuse_row_repair_en('0),
+        .fuse_faulty_row_addr('0),
+        .repair_load_done(),
+{% endif %}
+        .row_repair_en(row_repair_en),
+        .faulty_row_addr(faulty_row_addr),
+        .col_repair_en(col_repair_en),
+        .faulty_bit(faulty_bit),
+        .unrepairable(unrepairable),
+{% if has_onchip_spare_retry %}
+        .verify_enable(verify_enable),
+        .retire(retire),
+        .has_suspect(has_suspect),
+{% else %}
+        .verify_enable(1'b0),
+        .retire(1'b0),
+        .has_suspect(),
+{% endif %}
+        .defer({% if onchip_analyzer_deferred %}defer{% else %}1'b0{% endif %})
+    );
+{% else %}
+    onchip_row_repair_analyzer #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
+    ) u_onchip_analyzer (
+        .clk(clk),
+        .rst_n(rst_n),
+        .enable(registrar_enable),
+        .fail_valid(algo_fail_valid),
+        .fail_addr(algo_fail_addr),
+        .latch_result(latch_result),
+{% if has_onchip_repair_persistence %}
+        .repair_load(repair_load),
+        .fuse_row_repair_en(fuse_row_repair_en),
+        .fuse_faulty_row_addr(fuse_faulty_row_addr),
+        .repair_load_done(repair_load_done),
+{% else %}
+        .repair_load(1'b0),
+        .fuse_row_repair_en('0),
+        .fuse_faulty_row_addr('0),
+        .repair_load_done(),
+{% endif %}
+        .row_repair_en(row_repair_en),
+        .faulty_row_addr(faulty_row_addr),
+        .unrepairable(unrepairable),
+{% if has_onchip_spare_retry %}
+        .verify_enable(verify_enable),
+        .retire(retire),
+        .has_suspect(has_suspect)
+{% else %}
+        .verify_enable(1'b0),
+        .retire(1'b0),
+        .has_suspect()
+{% endif %}
+    );
+{% endif %}
+
+{% if has_onchip_diagnosis %}
+    onchip_diagnosis_log #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .NUM_DIAGNOSIS_ENTRIES({{ redundancy.num_diagnosis_entries }})
+    ) u_onchip_diagnosis (
+        .clk(clk),
+        .rst_n(rst_n),
+        .enable({% if has_diag_enable %}diag_enable{% else %}registrar_enable{% endif %}),
+        .fail_valid(algo_fail_valid),
+        .fail_addr(algo_fail_addr),
+        .latch_result(latch_result),
+        .diag_valid(diag_valid),
+        .diag_addr(diag_addr),
+        .diag_overflow(diag_overflow)
+    );
+
+{% endif %}
+    onchip_selfrepair_ctrl{% if has_onchip_spare_retry or onchip_analyzer_deferred %} #(
+        .MAX_RETRIES({{ spare_retry_limit }}),
+        .TWO_PASS({{ 1 if onchip_analyzer_deferred else 0 }})
+    ){% endif %} u_onchip_selfrepair_ctrl (
+        .clk(clk),
+        .rst_n(rst_n),
+        .self_repair_start(self_repair_start),
+        .self_repair_done(self_repair_done),
+        .self_repair_fail(self_repair_fail),
+        .self_repair_busy(self_repair_busy),
+        .ctrl_test_mode_override(ctrl_test_mode_override),
+        .ctrl_bist_start(ctrl_bist_start),
+        .mbist_busy(mbist_busy),
+        .bist_done(bist_done),
+        .bist_fail(bist_fail),
+        .registrar_enable(registrar_enable),
+        .latch_result(latch_result),
+        .unrepairable(unrepairable),
+{% if has_onchip_spare_retry %}
+        .verify_enable(verify_enable),
+        .retire(retire),
+        .diag_enable(diag_enable),
+        .has_suspect(has_suspect),
+{% else %}
+        .verify_enable(),
+        .retire(),
+        .diag_enable({% if has_diag_enable %}diag_enable{% endif %}),
+        .has_suspect(1'b0),
+{% endif %}
+        .defer({% if onchip_analyzer_deferred %}defer{% endif %})
+    );
+{%- endmacro %}
 {% set mode_signal = "effective_test_mode" if has_onchip_selfrepair else "test_mode" %}
 {% set start_signal = "effective_bist_start" if has_onchip_selfrepair else "bist_start && test_mode" %}
 {# Shared-bus MBIST controller (docs/shared-hierarchical-mbist-plan.md §4a):
@@ -110,6 +250,8 @@ module {{ wrapper_module_name }} #(
     logic                  verify_enable;
     logic                  retire;
     logic                  has_suspect;
+{% endif %}
+{% if has_diag_enable %}
     logic                  diag_enable;
 {% endif %}
     logic [{{ redundancy.num_spare_rows }}-1:0]            row_repair_en;
@@ -216,6 +358,12 @@ module {{ wrapper_module_name }} #(
     logic                    shb_selfrepair_mode_q;
     logic                    shb_selfrepair_done_q;
     logic                    shb_selfrepair_fail_q;
+    // Set once the selected memory's self_repair_done reads LOW during this
+    // run. done is sticky until that controller's next S_ANALYZE_KICK, so on
+    // a second self-repair without reset every memory still holds the last
+    // run's done when the sequencer reaches it: accepting that would move the
+    // bus on while the controller is still running (#45).
+    logic                    shb_selfrepair_armed_q;
 
     // One independent onchip_row_repair_analyzer + onchip_selfrepair_ctrl +
     // repair_remap_row per memory -- each reads u_algo_top's own PER-PASS
@@ -361,6 +509,7 @@ module {{ wrapper_module_name }} #(
             shb_selfrepair_mode_q <= 1'b0;
             shb_selfrepair_done_q <= 1'b0;
             shb_selfrepair_fail_q <= 1'b0;
+            shb_selfrepair_armed_q <= 1'b0;
 {% endif %}
         end else begin
             case (shb_state_q)
@@ -371,6 +520,7 @@ module {{ wrapper_module_name }} #(
                         shb_selfrepair_done_q  <= 1'b0;
                         shb_selfrepair_fail_q  <= 1'b0;
                         shb_selfrepair_mode_q  <= 1'b1;
+                        shb_selfrepair_armed_q <= 1'b0;
                         shb_state_q            <= SHB_RUN;
                     end else if (bist_start && test_mode && !self_repair_start) begin
                         mem_sel_q              <= '0;
@@ -389,7 +539,9 @@ module {{ wrapper_module_name }} #(
                 SHB_RUN: begin
 {% if has_onchip_selfrepair %}
                     if (shb_selfrepair_mode_q) begin
-                        if (self_repair_done_arr[mem_sel_q]) begin
+                        if (!self_repair_done_arr[mem_sel_q]) begin
+                            shb_selfrepair_armed_q <= 1'b1;
+                        end else if (shb_selfrepair_armed_q) begin
                             if (self_repair_fail_arr[mem_sel_q])
                                 shb_selfrepair_fail_q <= 1'b1;
                             if (mem_sel_q == {{ num_memories - 1 }}) begin
@@ -420,6 +572,9 @@ module {{ wrapper_module_name }} #(
                 end
                 SHB_ADVANCE: begin
                     mem_sel_q   <= mem_sel_q + 1'b1;
+{% if has_onchip_selfrepair %}
+                    shb_selfrepair_armed_q <= 1'b0;
+{% endif %}
                     shb_state_q <= SHB_RUN;
                 end
                 SHB_DONE: begin
@@ -532,137 +687,7 @@ module {{ wrapper_module_name }} #(
     logic [{{ redundancy.num_spare_cols }}-1:0] sram_spare_wen;
 {% endif %}
 
-{% if has_onchip_col_repair %}
-    onchip_2d_repair_analyzer #(
-        .ADDR_WIDTH(ADDR_WIDTH),
-        .DATA_WIDTH(DATA_WIDTH),
-        .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }}),
-{% if onchip_analyzer_deferred %}
-        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }}),
-        .DEFERRED(1)
-{% else %}
-        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
-{% endif %}
-    ) u_onchip_analyzer (
-        .clk(clk),
-        .rst_n(rst_n),
-        .enable(registrar_enable),
-        .fail_valid(algo_fail_valid),
-        .fail_addr(algo_fail_addr),
-        .fail_bitmask(algo_fail_bitmask),
-        .latch_result(latch_result),
-{% if has_onchip_repair_persistence %}
-        .repair_load(repair_load),
-        .fuse_row_repair_en(fuse_row_repair_en),
-        .fuse_faulty_row_addr(fuse_faulty_row_addr),
-        .repair_load_done(repair_load_done),
-{% else %}
-        .repair_load(1'b0),
-        .fuse_row_repair_en('0),
-        .fuse_faulty_row_addr('0),
-        .repair_load_done(),
-{% endif %}
-        .row_repair_en(row_repair_en),
-        .faulty_row_addr(faulty_row_addr),
-        .col_repair_en(col_repair_en),
-        .faulty_bit(faulty_bit),
-        .unrepairable(unrepairable),
-{% if has_onchip_spare_retry %}
-        .verify_enable(verify_enable),
-        .retire(retire),
-        .has_suspect(has_suspect),
-{% else %}
-        .verify_enable(1'b0),
-        .retire(1'b0),
-        .has_suspect(),
-{% endif %}
-        .defer({% if onchip_analyzer_deferred %}defer{% else %}1'b0{% endif %})
-    );
-{% else %}
-    onchip_row_repair_analyzer #(
-        .ADDR_WIDTH(ADDR_WIDTH),
-        .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
-    ) u_onchip_analyzer (
-        .clk(clk),
-        .rst_n(rst_n),
-        .enable(registrar_enable),
-        .fail_valid(algo_fail_valid),
-        .fail_addr(algo_fail_addr),
-        .latch_result(latch_result),
-{% if has_onchip_repair_persistence %}
-        .repair_load(repair_load),
-        .fuse_row_repair_en(fuse_row_repair_en),
-        .fuse_faulty_row_addr(fuse_faulty_row_addr),
-        .repair_load_done(repair_load_done),
-{% else %}
-        .repair_load(1'b0),
-        .fuse_row_repair_en('0),
-        .fuse_faulty_row_addr('0),
-        .repair_load_done(),
-{% endif %}
-        .row_repair_en(row_repair_en),
-        .faulty_row_addr(faulty_row_addr),
-        .unrepairable(unrepairable),
-{% if has_onchip_spare_retry %}
-        .verify_enable(verify_enable),
-        .retire(retire),
-        .has_suspect(has_suspect)
-{% else %}
-        .verify_enable(1'b0),
-        .retire(1'b0),
-        .has_suspect()
-{% endif %}
-    );
-{% endif %}
-
-{% if has_onchip_diagnosis %}
-    onchip_diagnosis_log #(
-        .ADDR_WIDTH(ADDR_WIDTH),
-        .NUM_DIAGNOSIS_ENTRIES({{ redundancy.num_diagnosis_entries }})
-    ) u_onchip_diagnosis (
-        .clk(clk),
-        .rst_n(rst_n),
-        .enable({% if has_onchip_spare_retry %}diag_enable{% else %}registrar_enable{% endif %}),
-        .fail_valid(algo_fail_valid),
-        .fail_addr(algo_fail_addr),
-        .latch_result(latch_result),
-        .diag_valid(diag_valid),
-        .diag_addr(diag_addr),
-        .diag_overflow(diag_overflow)
-    );
-
-{% endif %}
-    onchip_selfrepair_ctrl{% if has_onchip_spare_retry or onchip_analyzer_deferred %} #(
-        .MAX_RETRIES({{ spare_retry_limit }}),
-        .TWO_PASS({{ 1 if onchip_analyzer_deferred else 0 }})
-    ){% endif %} u_onchip_selfrepair_ctrl (
-        .clk(clk),
-        .rst_n(rst_n),
-        .self_repair_start(self_repair_start),
-        .self_repair_done(self_repair_done),
-        .self_repair_fail(self_repair_fail),
-        .self_repair_busy(self_repair_busy),
-        .ctrl_test_mode_override(ctrl_test_mode_override),
-        .ctrl_bist_start(ctrl_bist_start),
-        .mbist_busy(mbist_busy),
-        .bist_done(bist_done),
-        .bist_fail(bist_fail),
-        .registrar_enable(registrar_enable),
-        .latch_result(latch_result),
-        .unrepairable(unrepairable),
-{% if has_onchip_spare_retry %}
-        .verify_enable(verify_enable),
-        .retire(retire),
-        .diag_enable(diag_enable),
-        .has_suspect(has_suspect),
-{% else %}
-        .verify_enable(),
-        .retire(),
-        .diag_enable(),
-        .has_suspect(1'b0),
-{% endif %}
-        .defer({% if onchip_analyzer_deferred %}defer{% endif %})
-    );
+{{ selfrepair_instances() }}
 
     repair_remap_row #(
         .ADDR_WIDTH(ADDR_WIDTH),
@@ -904,6 +929,8 @@ module {{ wrapper_module_name }} #(
     logic                  verify_enable;
     logic                  retire;
     logic                  has_suspect;
+{% endif %}
+{% if has_diag_enable %}
     logic                  diag_enable;
 {% endif %}
     logic [{{ redundancy.num_spare_rows }}-1:0]            row_repair_en;
@@ -1086,136 +1113,8 @@ module {{ wrapper_module_name }} #(
     // col_repair_en/faulty_bit are a single set of claims fed into one
     // repair_remap_col instance below, wired across whichever port
     // physically reads and whichever physically writes.
-    onchip_2d_repair_analyzer #(
-        .ADDR_WIDTH(ADDR_WIDTH),
-        .DATA_WIDTH(DATA_WIDTH),
-        .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }}),
-{% if onchip_analyzer_deferred %}
-        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }}),
-        .DEFERRED(1)
-{% else %}
-        .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
 {% endif %}
-    ) u_onchip_analyzer (
-        .clk(clk),
-        .rst_n(rst_n),
-        .enable(registrar_enable),
-        .fail_valid(algo_fail_valid),
-        .fail_addr(algo_fail_addr),
-        .fail_bitmask(algo_fail_bitmask),
-        .latch_result(latch_result),
-{% if has_onchip_repair_persistence %}
-        .repair_load(repair_load),
-        .fuse_row_repair_en(fuse_row_repair_en),
-        .fuse_faulty_row_addr(fuse_faulty_row_addr),
-        .repair_load_done(repair_load_done),
-{% else %}
-        .repair_load(1'b0),
-        .fuse_row_repair_en('0),
-        .fuse_faulty_row_addr('0),
-        .repair_load_done(),
-{% endif %}
-        .row_repair_en(row_repair_en),
-        .faulty_row_addr(faulty_row_addr),
-        .col_repair_en(col_repair_en),
-        .faulty_bit(faulty_bit),
-        .unrepairable(unrepairable),
-{% if has_onchip_spare_retry %}
-        .verify_enable(verify_enable),
-        .retire(retire),
-        .has_suspect(has_suspect),
-{% else %}
-        .verify_enable(1'b0),
-        .retire(1'b0),
-        .has_suspect(),
-{% endif %}
-        .defer({% if onchip_analyzer_deferred %}defer{% else %}1'b0{% endif %})
-    );
-{% else %}
-    onchip_row_repair_analyzer #(
-        .ADDR_WIDTH(ADDR_WIDTH),
-        .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
-    ) u_onchip_analyzer (
-        .clk(clk),
-        .rst_n(rst_n),
-        .enable(registrar_enable),
-        .fail_valid(algo_fail_valid),
-        .fail_addr(algo_fail_addr),
-        .latch_result(latch_result),
-{% if has_onchip_repair_persistence %}
-        .repair_load(repair_load),
-        .fuse_row_repair_en(fuse_row_repair_en),
-        .fuse_faulty_row_addr(fuse_faulty_row_addr),
-        .repair_load_done(repair_load_done),
-{% else %}
-        .repair_load(1'b0),
-        .fuse_row_repair_en('0),
-        .fuse_faulty_row_addr('0),
-        .repair_load_done(),
-{% endif %}
-        .row_repair_en(row_repair_en),
-        .faulty_row_addr(faulty_row_addr),
-        .unrepairable(unrepairable),
-{% if has_onchip_spare_retry %}
-        .verify_enable(verify_enable),
-        .retire(retire),
-        .has_suspect(has_suspect)
-{% else %}
-        .verify_enable(1'b0),
-        .retire(1'b0),
-        .has_suspect()
-{% endif %}
-    );
-{% endif %}
-
-{% if has_onchip_diagnosis %}
-    onchip_diagnosis_log #(
-        .ADDR_WIDTH(ADDR_WIDTH),
-        .NUM_DIAGNOSIS_ENTRIES({{ redundancy.num_diagnosis_entries }})
-    ) u_onchip_diagnosis (
-        .clk(clk),
-        .rst_n(rst_n),
-        .enable({% if has_onchip_spare_retry %}diag_enable{% else %}registrar_enable{% endif %}),
-        .fail_valid(algo_fail_valid),
-        .fail_addr(algo_fail_addr),
-        .latch_result(latch_result),
-        .diag_valid(diag_valid),
-        .diag_addr(diag_addr),
-        .diag_overflow(diag_overflow)
-    );
-
-{% endif %}
-    onchip_selfrepair_ctrl{% if has_onchip_spare_retry or onchip_analyzer_deferred %} #(
-        .MAX_RETRIES({{ spare_retry_limit }}),
-        .TWO_PASS({{ 1 if onchip_analyzer_deferred else 0 }})
-    ){% endif %} u_onchip_selfrepair_ctrl (
-        .clk(clk),
-        .rst_n(rst_n),
-        .self_repair_start(self_repair_start),
-        .self_repair_done(self_repair_done),
-        .self_repair_fail(self_repair_fail),
-        .self_repair_busy(self_repair_busy),
-        .ctrl_test_mode_override(ctrl_test_mode_override),
-        .ctrl_bist_start(ctrl_bist_start),
-        .mbist_busy(mbist_busy),
-        .bist_done(bist_done),
-        .bist_fail(bist_fail),
-        .registrar_enable(registrar_enable),
-        .latch_result(latch_result),
-        .unrepairable(unrepairable),
-{% if has_onchip_spare_retry %}
-        .verify_enable(verify_enable),
-        .retire(retire),
-        .diag_enable(diag_enable),
-        .has_suspect(has_suspect),
-{% else %}
-        .verify_enable(),
-        .retire(),
-        .diag_enable(),
-        .has_suspect(1'b0),
-{% endif %}
-        .defer({% if onchip_analyzer_deferred %}defer{% endif %})
-    );
+{{ selfrepair_instances() }}
 
     {% for pname, pdata in normalized_ports.items() %}
     {% set suffix = algo_port_suffixes[pname] %}

@@ -99,6 +99,13 @@ def test_shared_bus_rejects_empty_memories_list(tmp_path: Path) -> None:
         _load(tmp_path, {**SHARED_BUS, "memories": []})
 
 
+def test_shared_bus_rejects_a_single_memory(tmp_path: Path) -> None:
+    """#50: one memory rendered the dedicated wrapper while the manifest
+    described a shared-bus one, naming instances that did not exist."""
+    with pytest.raises(ConfigError, match="at least two memories"):
+        _load(tmp_path, {**SHARED_BUS, "memories": [{"name": "mem_bank0"}]})
+
+
 def test_shared_bus_rejects_duplicate_memory_names(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="duplicate memory name 'mem_bank0'"):
         _load(tmp_path, {**SHARED_BUS, "memories": [{"name": "mem_bank0"}, {"name": "mem_bank0"}]})

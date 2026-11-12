@@ -73,7 +73,7 @@ def test_run_min_coverage_gate_fails_on_low_coverage(tmp_path: Path, monkeypatch
 
     monkeypatch.setattr(cli_mod, "generate_from_config", _stub_generate(wrapper_path))
     monkeypatch.setattr(
-        cli_mod, "run_simulation", lambda module_outdir, verbose=False: _fake_result(50.0)
+        cli_mod, "run_simulation", lambda module_outdir, verbose=False, memory_model=None: _fake_result(50.0)
     )
 
     result = runner.invoke(
@@ -99,7 +99,7 @@ def test_run_min_coverage_gate_passes_on_sufficient_coverage(tmp_path: Path, mon
 
     monkeypatch.setattr(cli_mod, "generate_from_config", _stub_generate(wrapper_path))
     monkeypatch.setattr(
-        cli_mod, "run_simulation", lambda module_outdir, verbose=False: _fake_result(95.0)
+        cli_mod, "run_simulation", lambda module_outdir, verbose=False, memory_model=None: _fake_result(95.0)
     )
 
     result = runner.invoke(
@@ -131,7 +131,7 @@ def test_run_min_coverage_gate_fails_when_coverage_was_never_reported(
 
     monkeypatch.setattr(cli_mod, "generate_from_config", _stub_generate(wrapper_path))
     monkeypatch.setattr(
-        cli_mod, "run_simulation", lambda module_outdir, verbose=False: _fake_result(None)
+        cli_mod, "run_simulation", lambda module_outdir, verbose=False, memory_model=None: _fake_result(None)
     )
 
     result = runner.invoke(
@@ -162,7 +162,7 @@ def test_simulate_json_prints_report_dict(tmp_path: Path, monkeypatch) -> None:
     (wrapper_path.parent / "Makefile").write_text("sim:\n\t@true\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        cli_mod, "run_simulation", lambda module_outdir, verbose=False: _fake_result(87.5)
+        cli_mod, "run_simulation", lambda module_outdir, verbose=False, memory_model=None: _fake_result(87.5)
     )
 
     result = runner.invoke(cli_mod.app, ["simulate", "--out", str(tmp_path / "out"), "--json"])
@@ -191,7 +191,7 @@ def test_simulate_verbose_json_keeps_stdout_pure_and_routes_raw_output_to_stderr
         stdout="RAW SIMULATOR STDOUT MARKER\n", stderr="RAW SIMULATOR STDERR MARKER\n",
         report=base.report,
     )
-    monkeypatch.setattr(cli_mod, "run_simulation", lambda module_outdir, verbose=False: verbose_result)
+    monkeypatch.setattr(cli_mod, "run_simulation", lambda module_outdir, verbose=False, memory_model=None: verbose_result)
 
     result = runner.invoke(
         cli_mod.app, ["simulate", "--out", str(tmp_path / "out"), "--json", "--verbose"]
@@ -220,7 +220,7 @@ def test_run_json_prints_report_dict_and_suppresses_status_lines(tmp_path: Path,
 
     monkeypatch.setattr(cli_mod, "generate_from_config", _stub_generate(wrapper_path))
     monkeypatch.setattr(
-        cli_mod, "run_simulation", lambda module_outdir, verbose=False: _fake_result(95.0)
+        cli_mod, "run_simulation", lambda module_outdir, verbose=False, memory_model=None: _fake_result(95.0)
     )
 
     result = runner.invoke(
@@ -243,7 +243,7 @@ def test_run_json_still_honors_min_coverage_exit_code(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr(cli_mod, "generate_from_config", _stub_generate(wrapper_path))
     monkeypatch.setattr(
-        cli_mod, "run_simulation", lambda module_outdir, verbose=False: _fake_result(50.0)
+        cli_mod, "run_simulation", lambda module_outdir, verbose=False, memory_model=None: _fake_result(50.0)
     )
 
     result = runner.invoke(
@@ -473,7 +473,7 @@ def test_global_verbose_ors_into_simulate_effective_verbose(tmp_path: Path, monk
 
     captured: dict[str, object] = {}
 
-    def fake_run_simulation(module_outdir, verbose=False):
+    def fake_run_simulation(module_outdir, verbose=False, memory_model=None):
         captured["verbose"] = verbose
         return _fake_result(90.0)
 
@@ -600,7 +600,7 @@ def test_simulate_takes_the_module_directory_itself_and_verbose_prints_the_raw_o
     module_outdir = _module_outdir(tmp_path)
     captured: dict[str, object] = {}
 
-    def fake_run_simulation(outdir, verbose=False):
+    def fake_run_simulation(outdir, verbose=False, memory_model=None):
         captured["outdir"] = outdir
         return dataclasses.replace(_fake_result(95.0), stdout="RAW SIMULATOR OUTPUT\n")
 
@@ -682,7 +682,7 @@ def test_generate_emit_manifest_build_error_is_one_error_line(tmp_path: Path, mo
 def test_run_test_names_the_fault_files_and_refuses_a_manifest_for_them(tmp_path: Path, monkeypatch) -> None:
     """A --test build has the saboteur in place of the memory, so it has no
     clean collar for a manifest to describe: run says so after simulating."""
-    monkeypatch.setattr(cli_mod, "run_simulation", lambda outdir, verbose=False: _fake_result(100.0))
+    monkeypatch.setattr(cli_mod, "run_simulation", lambda outdir, verbose=False, memory_model=None: _fake_result(100.0))
 
     result = runner.invoke(cli_mod.app, ["run", "--config", str(_real_config(tmp_path)), "--out", str(tmp_path / "out"),
                                          "--test", "--faults", "4", "--seed", "1", "--emit-manifest"])
@@ -696,7 +696,7 @@ def test_run_test_names_the_fault_files_and_refuses_a_manifest_for_them(tmp_path
 
 
 def test_run_emit_manifest_writes_the_manifest_after_simulating(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(cli_mod, "run_simulation", lambda outdir, verbose=False: _fake_result(100.0))
+    monkeypatch.setattr(cli_mod, "run_simulation", lambda outdir, verbose=False, memory_model=None: _fake_result(100.0))
 
     result = runner.invoke(cli_mod.app, ["run", "--config", str(_real_config(tmp_path)), "--out", str(tmp_path / "out"),
                                          "--emit-manifest"])
@@ -921,7 +921,7 @@ def test_test_fault_types_that_is_not_a_list_is_one_error_line(tmp_path: Path) -
     result = runner.invoke(cli_mod.app, ["test", "--addr-width", "4", "--data-width", "8", "--faults", str(faults_path),
                                          "--fault-types", str(fault_types_path)])
 
-    assert_one_error_line(result, "--fault-types file must contain a JSON list of fault-primitive specs")
+    assert_one_error_line(result, f"{fault_types_path} must contain a JSON list of fault-primitive specs")
 
 
 def _fake_openram(monkeypatch, *, stdout: str = "", stderr: str = "", returncode: int = 0) -> None:

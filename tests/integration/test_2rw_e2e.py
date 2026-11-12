@@ -22,6 +22,7 @@ import yaml
 
 from autombist.generator import generate_from_config
 from autombist.runner import run_simulation
+from fixture_models import fixture_model  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     shutil.which("iverilog") is None or shutil.which("make") is None,
@@ -54,7 +55,7 @@ def test_clean_simulation_passes(tmp_path: Path) -> None:
     _write_config(config_path, CONFIG)
 
     wrapper_path = generate_from_config(config_path, outdir, algo="march-2rw")
-    result = run_simulation(wrapper_path.parent, verbose=False)
+    result = run_simulation(wrapper_path.parent, memory_model=fixture_model(wrapper_path.parent), verbose=False)
 
     assert result.returncode == 0
     assert result.report["status"] == "pass"
@@ -72,7 +73,7 @@ def test_stuck_at_fault_simulation_detects_faults(tmp_path: Path) -> None:
         config_path, outdir, use_saboteur=True, faults=4, fault_seed=1,
         fault_type="stuck-at", algo="march-2rw",
     )
-    result = run_simulation(wrapper_path.parent, verbose=False)
+    result = run_simulation(wrapper_path.parent, memory_model=fixture_model(wrapper_path.parent), verbose=False)
 
     assert result.returncode == 0
     assert result.report["fault_metrics"]["injected_faults"] == 4
@@ -94,7 +95,7 @@ def test_stuck_at_fault_different_seeds_all_detected(tmp_path: Path) -> None:
             config_path, outdir, use_saboteur=True, faults=6, fault_seed=seed,
             fault_type="stuck-at", algo="march-2rw",
         )
-        result = run_simulation(wrapper_path.parent, verbose=False)
+        result = run_simulation(wrapper_path.parent, memory_model=fixture_model(wrapper_path.parent), verbose=False)
 
         assert result.returncode == 0
         metrics = result.report["fault_metrics"]
@@ -132,7 +133,7 @@ def test_transition_up_fault_simulation_runs_clean(tmp_path: Path) -> None:
         config_path, outdir, use_saboteur=True, faults=6, fault_seed=4,
         fault_type="transition-up", pulse_width_ns=2, algo="march-2rw",
     )
-    result = run_simulation(wrapper_path.parent, verbose=False)
+    result = run_simulation(wrapper_path.parent, memory_model=fixture_model(wrapper_path.parent), verbose=False)
 
     assert result.returncode == 0
     metrics = result.report["fault_metrics"]
@@ -151,7 +152,7 @@ def test_transition_down_fault_simulation_runs_clean(tmp_path: Path) -> None:
         config_path, outdir, use_saboteur=True, faults=6, fault_seed=5,
         fault_type="transition-down", pulse_width_ns=2, algo="march-2rw",
     )
-    result = run_simulation(wrapper_path.parent, verbose=False)
+    result = run_simulation(wrapper_path.parent, memory_model=fixture_model(wrapper_path.parent), verbose=False)
 
     assert result.returncode == 0
     metrics = result.report["fault_metrics"]

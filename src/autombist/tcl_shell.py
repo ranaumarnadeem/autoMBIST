@@ -41,8 +41,6 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
-import yaml
-
 try:
     import tkinter
 
@@ -53,7 +51,7 @@ except ImportError as _exc:  # pragma: no cover - platform-dependent
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from autombist.cli import _resolve_config_path, _resolve_module_outdir
+    from autombist.cli import _memory_model_line, _resolve_config_path, _resolve_module_outdir
     from autombist.cli_render import spinner
     from autombist.generator import ConfigError, generate_from_config
     from autombist.openram_flow import (
@@ -70,11 +68,13 @@ if __package__ in {None, ""}:
         SignoffConfigError,
         build_librelane_command,
         build_librelane_config,
+        DEFAULT_SIGNOFF_SCRIPT,
         build_macro_signoff_command,
+        signoff_script_problem,
         normalize_lef_units,
     )
 else:
-    from .cli import _resolve_config_path, _resolve_module_outdir
+    from .cli import _memory_model_line, _resolve_config_path, _resolve_module_outdir
     from .cli_render import spinner
     from .generator import ConfigError, generate_from_config
     from .openram_flow import (
@@ -91,7 +91,9 @@ else:
         SignoffConfigError,
         build_librelane_command,
         build_librelane_config,
+        DEFAULT_SIGNOFF_SCRIPT,
         build_macro_signoff_command,
+        signoff_script_problem,
         normalize_lef_units,
     )
 
@@ -244,6 +246,37 @@ class TclShell:
         }
         for name, fn in commands.items():
             self.interp.createcommand(name, self._wrap(name, fn))
+        # The shell's own, kept out of the table above: each of those mirrors a
+        # CLI command (tests/software/test_cli_reference.py checks that).
+        self.interp.createcommand("help", self._wrap("help", self._cmd_help))
+
+    _HELP = {
+        "generate": "write the MBIST wrapper (autombist generate)",
+        "simulate": "simulate a generated module; returns its coverage (autombist simulate)",
+        "run": "generate then simulate; returns the coverage (autombist run)",
+        "test": "an algorithm or FSM fault campaign (autombist test)",
+        "harden": "harden a design with LibreLane (autombist harden)",
+        "fix_lef_units": "fix an OpenRAM LEF's units declaration (autombist fix-lef-units)",
+        "macro_signoff": "run the macro signoff script (autombist macro-signoff)",
+        "grade_controller": "grade the controller logic with FaultFlow (autombist grade-controller)",
+        "ram_synth": "synthesize an SRAM macro with OpenRAM (autombist ram-synth)",
+        "doctor": "list the tools a flow needs that are missing (autombist doctor)",
+        "help": "this list; `help <command>` for one command",
+    }
+
+    def _cmd_help(self, *args: str) -> str:
+        """The shell's own commands. Each takes the CLI command's options,
+        spelled -flag instead of --flag; the rest of Tcl is plain Tcl (#62)."""
+        if args:
+            name = args[0]
+            if name not in self._HELP:
+                raise RuntimeError(f"no autoMBIST command {name!r}; `help` lists them")
+            cli = name.replace("_", "-")
+            return (f"{name}: {self._HELP[name]}\n"
+                    f"Options: as `autombist {cli} --help` lists them, written -flag for --flag.")
+        width = max(map(len, self._HELP))
+        lines = [f"  {name:<{width}}  {text}" for name, text in self._HELP.items()]
+        return "autoMBIST commands (options as the CLI's, written -flag):\n" + "\n".join(lines)
 
     def _puts(self, text: str, *, nl: bool = True, err: bool = False) -> None:
         """print(), explicitly flushed. A bare, unflushed print() from inside
@@ -288,7 +321,7 @@ class TclShell:
     # ----------------------------------------------------------------- #
     def _cmd_generate(self, *args: str) -> str:
         flags = _parse_flags(args)
-        config = Path(_pop_required(flags, "-config"))
+        config = Path(_pop_str(flags, "-config", "config.yml"))
         out = Path(_pop_str(flags, "-out", "out"))
         test = _pop_bool(flags, "-test", False)
         faults = _pop_int(flags, "-faults", 50)
@@ -316,21 +349,35 @@ class TclShell:
         out = Path(_pop_str(flags, "-out", "out"))
         verbose = _pop_bool(flags, "-verbose", False)
         min_coverage = _pop_float(flags, "-min-coverage", None)
+        model = _pop_str(flags, "-model", None)
         _reject_unknown(flags)
 
         try:
             module_outdir = _resolve_module_outdir(out)
         except (FileNotFoundError, NotADirectoryError, OSError) as exc:
             raise RuntimeError(str(exc)) from exc
-        return self._run_simulation_and_report(module_outdir, verbose, min_coverage)
+        return self._run_simulation_and_report(module_outdir, verbose, min_coverage, model)
 
-    def _run_simulation_and_report(self, module_outdir: Path, verbose: bool, min_coverage: float | None) -> Any:
+    def _run_simulation_and_report(
+        self, module_outdir: Path, verbose: bool, min_coverage: float | None, model: str | None = None,
+    ) -> Any:
         try:
             with spinner("Running MBIST simulation..."):
-                result = run_simulation(module_outdir, verbose=verbose)
+                result = run_simulation(
+                    module_outdir, verbose=verbose, memory_model=[Path(model)] if model else None,
+                )
         except (ConfigError, FileNotFoundError, OSError, ValueError, SimulationError) as exc:
             raise RuntimeError(str(exc)) from exc
 
+        # -verbose: the simulator's own output, as the CLI's --verbose prints it.
+        # run_simulation always captures it; it was dropped here (#62).
+        if verbose and result.stdout:
+            self._puts(result.stdout, nl=False)
+        if verbose and result.stderr:
+            self._puts(result.stderr, nl=False, err=True)
+        model_line = _memory_model_line(result.memory_model, Path(module_outdir).resolve())
+        if model_line:
+            self._puts(model_line)
         self._puts(format_simulation_summary(result.report))
         # coverage_meets_threshold's own return value only carries a coverage
         # number when min_coverage was actually given (its documented
@@ -350,7 +397,7 @@ class TclShell:
 
     def _cmd_run(self, *args: str) -> Any:
         flags = _parse_flags(args)
-        config = Path(_pop_required(flags, "-config"))
+        config = Path(_pop_str(flags, "-config", "config.yml"))
         out = Path(_pop_str(flags, "-out", "out"))
         test = _pop_bool(flags, "-test", False)
         faults = _pop_int(flags, "-faults", 50)
@@ -365,6 +412,7 @@ class TclShell:
         cell_lib = _pop_str(flags, "-cell-lib", "sky130")
         scan_chains = _pop_int(flags, "-scan-chains", 1)
         emit_manifest = _pop_bool(flags, "-emit-manifest", False)
+        model = _pop_str(flags, "-model", None)
         _reject_unknown(flags)
 
         try:
@@ -375,7 +423,7 @@ class TclShell:
         except (ConfigError, FileNotFoundError, OSError, ValueError) as exc:
             raise RuntimeError(str(exc)) from exc
         self._puts(f"Generated MBIST wrapper: {wrapper_path}")
-        coverage = self._run_simulation_and_report(wrapper_path.parent, verbose, min_coverage)
+        coverage = self._run_simulation_and_report(wrapper_path.parent, verbose, min_coverage, model)
 
         if faultflow:
             from .faultflow_flow import FaultFlowOptions
@@ -393,26 +441,16 @@ class TclShell:
         """-emit-manifest: write manifest.json from the config.yml snapshot generate
         wrote next to the wrapper, as the CLI's --emit-manifest does."""
         from . import __version__
-        from .manifest import ManifestError, build_instance_manifest, write_instance_manifest
+        from .manifest import ManifestError, emit_instance_manifest
 
-        snapshot_path = module_outdir / "config.yml"
         try:
-            loaded = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError) as exc:
-            raise RuntimeError(str(exc)) from exc
-        if not isinstance(loaded, dict):
-            raise RuntimeError(f"{snapshot_path} must be a YAML mapping")
-        try:
-            manifest = build_instance_manifest(
-                loaded, module_outdir, tool_version=__version__, config_path=config_path,
-            )
-            manifest_path = write_instance_manifest(manifest, module_outdir)
-        except (ManifestError, KeyError, ValueError, OSError) as exc:
+            manifest_path = emit_instance_manifest(module_outdir, config_path, tool_version=__version__)
+        except ManifestError as exc:
             raise RuntimeError(str(exc)) from exc
         self._puts(f"Emitted instance manifest: {manifest_path}")
 
     def _cmd_test(self, *args: str) -> Any:
-        import json
+        import shutil
         import tempfile
 
         from .alg_spec import AlgSpecError, resolve_algo
@@ -420,10 +458,7 @@ class TclShell:
         from .algo_reporting import _check_diagnosis_fmt, _check_fmt, write_campaign_report, write_diagnosis_report
         from .algo_reporting import coverage_meets_threshold as campaign_coverage_meets_threshold
         from .cli_render import fault_progress
-        from .fault_primitives import FaultPrimitiveError
-        from .fault_primitives import default_registry as fp_default_registry
-        from .fault_primitives import from_dict as fp_from_dict
-        from .fault_primitives import validate as fp_validate
+        from .fault_primitives import FaultPrimitiveError, load_custom_registry
         from .fault_ram_gen import render_and_write
         from .fsm_harness import FsmPortError, check_ports, gather_sibling_sources
 
@@ -432,6 +467,7 @@ class TclShell:
         data_width = _pop_required_int(flags, "-data-width")
         algo = _pop_str(flags, "-algo", "march_c")
         fsm = _pop_str(flags, "-fsm", None)
+        top = _pop_str(flags, "-top", None)
         faults_path = Path(_pop_required(flags, "-faults"))
         fault_types = _pop_str(flags, "-fault-types", None)
         init = _pop_int(flags, "-init", 1)
@@ -445,6 +481,7 @@ class TclShell:
         check_sequence = _pop_bool(flags, "-check-sequence", False)
         _reject_unknown(flags)
 
+        types_dir: Path | None = None
         try:
             # Validate up front, before the (potentially multi-minute) campaign
             # runs -- a typo'd -fmt/-diagnosis-fmt used to only surface after
@@ -458,22 +495,14 @@ class TclShell:
 
             fault_ram_sv = None
             if fault_types is not None:
-                specs = json.loads(Path(fault_types).read_text(encoding="utf-8"))
-                if not isinstance(specs, list):
-                    raise ValueError("-fault-types file must contain a JSON list of fault-primitive specs")
-                registry = fp_default_registry()
-                for spec_dict in specs:
-                    prim = fp_from_dict(spec_dict)
-                    fp_validate(prim, existing_names={p.name for p in registry})
-                    registry.append(prim)
-                fault_ram_sv = render_and_write(
-                    registry, Path(tempfile.mkdtemp(prefix="autombist-test-types-")) / "fault_ram.sv"
-                )
+                registry = load_custom_registry(Path(fault_types))
+                types_dir = Path(tempfile.mkdtemp(prefix="autombist-test-types-"))
+                fault_ram_sv = render_and_write(registry, types_dir / "fault_ram.sv")
 
             if fsm is not None:
                 fsm_path = Path(fsm)
                 sources = gather_sibling_sources(fsm_path)
-                ports = check_ports(fsm_path.read_text(encoding="utf-8"))
+                ports = check_ports(fsm_path.read_text(encoding="utf-8"), module_name=top)
                 kwargs: dict[str, object] = {}
                 if check_sequence:
                     kwargs["expected_spec"] = resolve_algo(algo)
@@ -502,6 +531,9 @@ class TclShell:
             AlgSpecError, CampaignError, FsmPortError, FaultPrimitiveError, FileNotFoundError, OSError, ValueError,
         ) as exc:
             raise RuntimeError(str(exc)) from exc
+        finally:
+            if types_dir is not None:
+                shutil.rmtree(types_dir, ignore_errors=True)
 
         self._puts(f"autombist test: {label} on {addr_width}x{data_width} memory, init={init}")
         self._puts(f"  faults: {result.total}   detected: {result.detected}   coverage: {result.coverage_percent:.2f}%")
@@ -530,16 +562,21 @@ class TclShell:
 
         import yaml
 
+        from .yaml_io import load_user_yaml
+
         try:
             resolved = config if config.is_absolute() else (Path.cwd() / config).resolve()
-            loaded = yaml.safe_load(resolved.read_text(encoding="utf-8"))
+            loaded = load_user_yaml(resolved)
             ll_config = build_librelane_config(loaded)
         except FileNotFoundError as exc:
             raise RuntimeError(f"harden config not found: {config}") from exc
         except (SignoffConfigError, yaml.YAMLError) as exc:
             raise RuntimeError(str(exc)) from exc
 
-        out.write_text(json.dumps(ll_config, indent=2) + "\n", encoding="utf-8")
+        try:
+            out.write_text(json.dumps(ll_config, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(f"cannot write {out}: {exc.strerror or exc}") from exc
         self._puts(f"Wrote LibreLane config: {out}")
         if not run:
             return str(out)
@@ -589,13 +626,13 @@ class TclShell:
             i += 1
         macros = list(args[:i])
         flags = _parse_flags(tuple(args[i:]))
-        default_script = Path(__file__).resolve().parents[2] / "flow" / "multimem" / "signoff" / "run_macro_signoff.sh"
-        script = Path(_pop_str(flags, "-script", str(default_script)))
+        script = Path(_pop_str(flags, "-script", str(DEFAULT_SIGNOFF_SCRIPT)))
         show_command = _pop_bool(flags, "-show-command", False)
         _reject_unknown(flags)
 
-        if not script.is_file():
-            raise RuntimeError(f"signoff script not found: {script}")
+        problem = signoff_script_problem(script)
+        if problem:
+            raise RuntimeError(problem.replace("--script", "-script"))
         cmd = build_macro_signoff_command(script, macros or None)
         if show_command:
             self._puts("$ " + " ".join(cmd))
@@ -626,20 +663,9 @@ class TclShell:
             self._puts(f"Emitted FaultFlow bundle: {bundle}")
             return str(bundle)
 
-        report_path = module_outdir / "reports" / "latest.json"
-        if coverage and report_path.exists():
-            import json
+        from .reporting import format_controller_coverage, merge_controller_grading
 
-            from .reporting import merge_faultflow_coverage, write_simulation_report
-
-            try:
-                report = json.loads(report_path.read_text(encoding="utf-8"))
-                merge_faultflow_coverage(report, coverage)
-                write_simulation_report(report, module_outdir / "reports")
-            except (OSError, ValueError):
-                pass
-
-        from .reporting import format_controller_coverage
+        merge_controller_grading(module_outdir, coverage)
 
         line = format_controller_coverage(coverage)
         if line:
@@ -724,24 +750,43 @@ class TclShell:
         except ImportError:
             pass
 
-        print("autombist Tcl shell. Type 'exit' or Ctrl-D to quit.")
+        print("autombist Tcl shell. Type 'help' for the commands, 'exit' or Ctrl-D to quit.")
+        pending: list[str] = []
         while True:
             try:
-                line = input("autombist> ")
+                line = input("autombist> " if not pending else "         > ")
             except EOFError:
                 print()
                 break
-            if not line.strip():
+            except KeyboardInterrupt:
+                print()
+                pending.clear()  # Ctrl-C drops a half-typed command
                 continue
-            if line.strip() in ("exit", "quit"):
+            if not pending and not line.strip():
+                continue
+            if not pending and line.strip() in ("exit", "quit"):
                 break
+            pending.append(line)
+            script = "\n".join(pending)
+            # A proc, if or foreach spans lines: read on until Tcl says the
+            # command is complete, as tclsh does (#62).
+            if not self.is_complete(script):
+                continue
+            pending.clear()
             try:
-                result = self.eval(line)
+                result = self.eval(script)
             except tkinter.TclError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 continue
+            except KeyboardInterrupt:
+                print("interrupted", file=sys.stderr)
+                continue
             if result:
                 print(result)
+
+    def is_complete(self, script: str) -> bool:
+        """Tcl's own `info complete`: no unclosed brace, bracket or quote."""
+        return bool(int(self.interp.call("info", "complete", script)))
 
     def run_batch(self, path: Path | None) -> int:
         try:

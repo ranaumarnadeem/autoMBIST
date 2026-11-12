@@ -12,7 +12,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from autombist import __version__
     from autombist.cli_render import fault_progress, print_status_table, spinner
-    from autombist.generator import ConfigError, generate_from_config
+    from autombist.generator import RTL_ALGORITHM_LIST, ConfigError, generate_from_config
     from autombist.openram_flow import (
         OpenRAMConfigError,
         build_openram_command_args,
@@ -39,13 +39,15 @@ if __package__ in {None, ""}:
         SignoffConfigError,
         build_librelane_command,
         build_librelane_config,
+        DEFAULT_SIGNOFF_SCRIPT,
         build_macro_signoff_command,
+        signoff_script_problem,
         normalize_lef_units,
     )
 else:
     from . import __version__
     from .cli_render import fault_progress, print_status_table, spinner
-    from .generator import ConfigError, generate_from_config
+    from .generator import RTL_ALGORITHM_LIST, ConfigError, generate_from_config
     from .openram_flow import (
         OpenRAMConfigError,
         build_openram_command_args,
@@ -72,7 +74,9 @@ else:
         SignoffConfigError,
         build_librelane_command,
         build_librelane_config,
+        DEFAULT_SIGNOFF_SCRIPT,
         build_macro_signoff_command,
+        signoff_script_problem,
         normalize_lef_units,
     )
 
@@ -92,6 +96,16 @@ def _resolve_config_path(config: Path | None) -> Path:
         return default_config
 
     raise FileNotFoundError("Config file not found. Pass --config PATH or create config.yml in the current working directory.")
+
+
+def _config_or_exit(config: Path | None) -> Path:
+    """_resolve_config_path for a CLI command: one error line, not a traceback
+    -- a new user's first `autombist generate` hit this (#59)."""
+    try:
+        return _resolve_config_path(config)
+    except FileNotFoundError as exc:
+        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from None
 
 
 def _resolve_module_outdir(out: Path) -> Path:
@@ -219,21 +233,34 @@ def _generate(
         raise typer.Exit(code=1)
 
 
+def _memory_model_line(models: list[Path] | None, module_outdir: Path) -> str | None:
+    """Which memory model the simulation compiled, for the human summary."""
+    if not models:
+        return None
+    shown = ", ".join(str(p) for p in models)
+    if len(models) == 1 and models[0].parent == (module_outdir / "tb").resolve():
+        return (f"Memory model: {shown} (generated behavioral model; "
+                "pass --model for your macro's own simulation model)")
+    return f"Memory model: {shown}"
+
+
 def _simulate(
     module_outdir: Path,
     verbose: bool,
     min_coverage: float | None = None,
     json_output: bool = False,
+    memory_model: list[Path] | None = None,
 ) -> None:
     try:
         with spinner("Running MBIST simulation..."):
-            result = run_simulation(module_outdir, verbose=verbose)
+            result = run_simulation(module_outdir, verbose=verbose, memory_model=memory_model)
     except (ConfigError, FileNotFoundError, OSError, ValueError, yaml.YAMLError, SimulationError) as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     from autombist.reporting import coverage_meets_threshold, format_simulation_summary
 
+    model_line = _memory_model_line(result.memory_model, module_outdir)
     if json_output:
         import json
 
@@ -246,6 +273,8 @@ def _simulate(
             typer.echo(result.stdout, err=True, nl=False)
     else:
         if not _is_quiet():
+            if model_line:
+                typer.echo(model_line)
             typer.echo(format_simulation_summary(result.report))
         if verbose and result.stdout:
             typer.echo(result.stdout, nl=False)
@@ -291,14 +320,8 @@ def _build_faultflow_options(
 def _grade_controller(
     module_outdir: Path, opts, run: bool, *, quiet: bool = False, json_output: bool = False,
 ) -> None:
-    import json
-
     from autombist.faultflow_flow import FaultFlowError
-    from autombist.reporting import (
-        format_controller_coverage,
-        merge_faultflow_coverage,
-        write_simulation_report,
-    )
+    from autombist.reporting import format_controller_coverage, merge_controller_grading
     from autombist.runner import run_controller_grading
 
     bundle = module_outdir / "faultflow"
@@ -319,14 +342,7 @@ def _grade_controller(
             typer.echo(f"  Run on Linux/WSL:  FAULTFLOW_HOME=<path> bash {bundle / 'run_faultflow.sh'}")
         return
 
-    report_path = module_outdir / "reports" / "latest.json"
-    if coverage and report_path.exists():
-        try:
-            report = json.loads(report_path.read_text(encoding="utf-8"))
-            merge_faultflow_coverage(report, coverage)
-            write_simulation_report(report, module_outdir / "reports")
-        except (OSError, ValueError):
-            pass
+    merge_controller_grading(module_outdir, coverage)
 
     if silent:
         return
@@ -339,28 +355,11 @@ def _grade_controller(
 
 
 def _emit_manifest(module_outdir: Path, config_path: Path) -> None:
-    from autombist.manifest import ManifestError, build_instance_manifest, write_instance_manifest
-
-    # Re-loads the config.yml snapshot generate_from_config already wrote,
-    # rather than threading the in-memory render_config through -- _generate()
-    # returns only the wrapper Path, matching the existing precedent
-    # _wrap_test_access's own --config handling already uses.
-    snapshot_path = module_outdir / "config.yml"
-    try:
-        loaded = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
-        raise typer.Exit(code=1)
-    if not isinstance(loaded, dict):
-        typer.secho(f"autombist: {snapshot_path} must be a YAML mapping", err=True, fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+    from autombist.manifest import ManifestError, emit_instance_manifest
 
     try:
-        manifest = build_instance_manifest(
-            loaded, module_outdir, tool_version=__version__, config_path=config_path,
-        )
-        manifest_path = write_instance_manifest(manifest, module_outdir)
-    except (ManifestError, KeyError, ValueError, OSError) as exc:
+        manifest_path = emit_instance_manifest(module_outdir, config_path, tool_version=__version__)
+    except ManifestError as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
@@ -426,7 +425,7 @@ def generate(
     seed: int | None = typer.Option(None, "--seed", help="Random seed for reproducible fault injection (optional)"),
     fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at (SA0/SA1), transition-up, transition-down, or port-coupling (march-1r1w only; march-2rw supports stuck-at/transition only)"),
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
-    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, march-2rw, march-x, mats-plus, or checkerboard"),
+    algo: str = typer.Option("march-c", "--algo", help=f"MBIST algorithm: {RTL_ALGORITHM_LIST}"),
     emit_manifest: bool = typer.Option(False, "--emit-manifest/--no-emit-manifest", help="Also write manifest.json: memory instances to blackbox and MBIST logic instances to grade, for external synthesis tooling (e.g. FaultFlow)"),
 ) -> None:
     r"""Generate MBIST wrapper, RTL, and optionally fault masks.
@@ -465,7 +464,7 @@ def generate(
       autombist generate  # uses ./config.yml when present
     """
 
-    config = _resolve_config_path(config)
+    config = _config_or_exit(config)
     wrapper_path = _generate(config, out, test, faults, seed, fault_type, pulse_width_ns, algo)
     if not _is_quiet():
         typer.echo(f"Generated MBIST wrapper: {wrapper_path}")
@@ -482,6 +481,7 @@ def simulate(
     verbose: bool = typer.Option(False, "--verbose", help="Print full simulator console output and detailed logs"),
     min_coverage: float | None = typer.Option(None, "--min-coverage", help="Fail (exit 1) if array fault coverage is below this percent"),
     json_output: bool = typer.Option(False, "--json", help="Print the structured report as JSON to stdout instead of the human summary"),
+    model: list[Path] | None = typer.Option(None, "--model", help="The memory's simulation model (repeatable for a multi-file model). Default: ./<memory_name>.v when present, else the behavioral model generate wrote to out/<memory_name>/tb/"),
 ) -> None:
     """Run MBIST simulation using Cocotb and Icarus Verilog.
 
@@ -489,6 +489,10 @@ def simulate(
     If the output directory contains a generated fault Makefile, it runs the
     fault simulation path. Otherwise it runs the clean simulation path.
     Outputs a JSON report and terminal summary to out/<memory_name>/reports/.
+
+    The memory under test is --model if given, else <memory_name>.v in the
+    current directory (where `autombist init` puts the sample model), else the
+    behavioral model generate derived from the config. The summary names it.
 
     Requirements:
       - Run 'autombist generate' first to create the wrapper
@@ -504,6 +508,7 @@ def simulate(
       autombist simulate --out out
       autombist simulate --out out --verbose
       autombist simulate --out out/input_demo_8x16_scn4m
+      autombist simulate --out out --model path/to/sram_1rw.v
       autombist simulate --out out --json | jq .fault_metrics
     """
 
@@ -513,7 +518,7 @@ def simulate(
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    _simulate(module_outdir, _effective_verbose(verbose), min_coverage, json_output)
+    _simulate(module_outdir, _effective_verbose(verbose), min_coverage, json_output, model or None)
 
 
 @app.command()
@@ -525,7 +530,7 @@ def run(
     seed: int | None = typer.Option(None, "--seed", help="Random seed for reproducible fault injection"),
     fault_type: str = typer.Option("stuck-at", "--fault-type", help="Fault model: stuck-at, transition-up, transition-down, or port-coupling (march-1r1w only; march-2rw supports stuck-at/transition only)"),
     pulse_width_ns: int = typer.Option(2, "--pulse-width-ns", help="Pulse width in clock cycles for transition faults"),
-    algo: str = typer.Option("march-c", "--algo", help="MBIST algorithm: march-c, march-raw, march-1r1w, march-2rw, march-x, mats-plus, or checkerboard"),
+    algo: str = typer.Option("march-c", "--algo", help=f"MBIST algorithm: {RTL_ALGORITHM_LIST}"),
     verbose: bool = typer.Option(False, "--verbose", help="Print full simulator console output and detailed logs"),
     faultflow: bool = typer.Option(False, "--faultflow/--no-faultflow", help="After sim, grade the MBIST controller logic with FaultFlow (Linux/WSL)"),
     faultflow_repo: Path | None = typer.Option(None, "--faultflow-repo", envvar="FAULTFLOW_HOME", help="FaultFlow repo path (or set FAULTFLOW_HOME)"),
@@ -534,6 +539,7 @@ def run(
     min_coverage: float | None = typer.Option(None, "--min-coverage", help="Fail (exit 1) if array fault coverage is below this percent"),
     json_output: bool = typer.Option(False, "--json", help="Print the structured report as JSON to stdout instead of the human summary"),
     emit_manifest: bool = typer.Option(False, "--emit-manifest/--no-emit-manifest", help="Also write manifest.json: memory instances to blackbox and MBIST logic instances to grade, for external synthesis tooling (e.g. FaultFlow)"),
+    model: list[Path] | None = typer.Option(None, "--model", help="The memory's simulation model (repeatable for a multi-file model). Default: ./<memory_name>.v when present, else the behavioral model generate writes to out/<memory_name>/tb/"),
 ) -> None:
     """Generate wrapper AND run simulation in one command (convenience mode).
 
@@ -557,14 +563,14 @@ def run(
       autombist run --config config.yml --json | jq .fault_metrics
     """
 
-    config = _resolve_config_path(config)
+    config = _config_or_exit(config)
     wrapper_path = _generate(config, out, test, faults, seed, fault_type, pulse_width_ns, algo)
     if not json_output and not _is_quiet():
         typer.echo(f"Generated MBIST wrapper: {wrapper_path}")
         if test:
             typer.echo(f"Generated fault masks in: {wrapper_path.parent / 'faults'}")
             typer.echo(f"Generated fault-sim Makefile: {wrapper_path.parent / 'Makefile'}")
-    _simulate(wrapper_path.parent, _effective_verbose(verbose), min_coverage, json_output)
+    _simulate(wrapper_path.parent, _effective_verbose(verbose), min_coverage, json_output, model or None)
     if faultflow:
         opts = _build_faultflow_options(faultflow_repo, cell_lib, scan_chains, 90.0, 20)
         _grade_controller(wrapper_path.parent, opts, run=True, quiet=_is_quiet(), json_output=json_output)
@@ -1081,22 +1087,31 @@ def _wrap_test_access(
         # --manifest alone is enough: everything else defaults from the generate
         # output directory it names, with the memory's blackbox stub standing in
         # for the memory model so the wrapped netlist keeps it a test boundary.
-        from autombist.manifest import MANIFEST_FILENAME, synthesis_sources
+        from autombist.manifest import MANIFEST_FILENAME, ManifestError, synthesis_sources
 
         try:
             base_manifest = json.loads((manifest / MANIFEST_FILENAME).read_text(encoding="utf-8"))
             snapshot = yaml.safe_load((manifest / "config.yml").read_text(encoding="utf-8"))
         except (OSError, ValueError, yaml.YAMLError) as exc:
             _fail(f"{exc} -- run `generate --emit-manifest` for {manifest} first")
-        top = top or base_manifest["top_module"]
-        out = out or manifest / "test-access"
-        if config is None and not legacy_flags:
-            config = manifest / "config.yml"
-        if not sources:
-            sources = [
-                *synthesis_sources(snapshot, manifest),
-                manifest / base_manifest["sources"]["blackbox_stub"],
-            ]
+        if not isinstance(base_manifest, dict) or not isinstance(snapshot, dict):
+            _fail(f"{manifest}: manifest.json and config.yml must both be mappings -- "
+                  "run `generate --emit-manifest` again")
+        try:
+            top = top or base_manifest["top_module"]
+            out = out or manifest / "test-access"
+            if config is None and not legacy_flags:
+                config = manifest / "config.yml"
+            if not sources:
+                sources = [
+                    *synthesis_sources(snapshot, manifest),
+                    manifest / base_manifest["sources"]["blackbox_stub"],
+                ]
+        except (ManifestError, KeyError, TypeError) as exc:
+            # A --test build regenerated over a manifest's directory, or a
+            # hand-edited manifest: one line, not a traceback (#59).
+            detail = f"missing {exc}" if isinstance(exc, KeyError) else str(exc)
+            _fail(f"{manifest}: {detail}")
     if not sources or top is None:
         _fail("--source and --top are required unless --manifest is given")
     out = out or Path("out/test-access")
@@ -1417,6 +1432,32 @@ def wrap_test_access_cmd(
     )
 
 
+def _load_failure_rates(path: Path) -> object:
+    """A --failure-rates file: JSON by its .json suffix, YAML otherwise. Both
+    refuse a fault class given twice, and the YAML reader takes `1e-9` as a
+    number, the way JSON and per-hour rates write it; YAML 1.1 read it as a
+    string and the rate was rejected (#61). An empty file is no rates at all,
+    which is not the same as not asking for DC. Anything else that is not a
+    mapping goes on to the report's own "must be a mapping" check."""
+    import json
+
+    text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() == ".json":
+        def no_repeats(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            seen: dict[str, object] = {}
+            for key, value in pairs:
+                if key in seen:
+                    raise ValueError(f"duplicate key {key!r}")
+                seen[key] = value
+            return seen
+
+        return json.loads(text, object_pairs_hook=no_repeats)
+    from autombist.yaml_io import load_user_yaml
+
+    loaded = load_user_yaml(text)
+    return {} if loaded is None else loaded
+
+
 @app.command("safety-report")
 def safety_report(
     campaign: Path = typer.Option(..., "--campaign", help="Campaign report in JSON (autombist test --report x.json --fmt json)"),
@@ -1456,12 +1497,15 @@ def safety_report(
     rates = None
     if failure_rates is not None:
         try:
-            # An empty file is no rates at all, which is not the same as not asking for DC.
-            rates = yaml.safe_load(failure_rates.read_text(encoding="utf-8")) or {}
+            rates = _load_failure_rates(failure_rates)
         except FileNotFoundError:
             _fail(f"failure rates not found: {failure_rates}")
-        except (yaml.YAMLError, ValueError):
-            _fail(f"{failure_rates} is not YAML")
+        except yaml.YAMLError as exc:
+            from autombist.yaml_io import describe_yaml_error
+
+            _fail(f"{failure_rates} is not valid YAML: {describe_yaml_error(exc)}")
+        except ValueError as exc:
+            _fail(f"{failure_rates} is not valid JSON: {exc}")
         except OSError as exc:
             _fail(str(exc))
 
@@ -1497,6 +1541,7 @@ def test(
     data_width: int = typer.Option(..., "--data-width", "-dw", help="Memory data width in bits"),
     algo: str = typer.Option("march_c", "--algo", help="Built-in algorithm name (checkerboard, march_b, march_c, march_c_plus, march_raw1, march_ss, march_x, march_y, mats_plus) or a path to a .alg file"),
     fsm: Path | None = typer.Option(None, "--fsm", help="Validate a controller FSM .sv instead of an algorithm (takes precedence over --algo); sibling .sv/.v files in its directory are gathered automatically"),
+    top: str | None = typer.Option(None, "--top", help="With --fsm: the controller's module name, when the file has more than one module (default: the first)"),
     faults: Path = typer.Option(..., "--faults", help="Fault-list file: 'TYPE VADDR VBIT AADDR ABIT P0 P1' per line"),
     fault_types: Path | None = typer.Option(None, "--fault-types", help="JSON file with a list of custom fault-primitive specs, added to the built-in 41 (see fault_primitives.py for the schema)"),
     init: int = typer.Option(1, "--init", help="Memory init value (0 or 1)"),
@@ -1534,7 +1579,7 @@ def test(
       autombist test -aw 8 -dw 8 --algo march_c --faults faults.txt --diagnosis diag.md
     """
 
-    import json
+    import shutil
 
     from autombist.alg_spec import AlgSpecError, resolve_algo
     from autombist.algo_engine import CampaignError, MemoryParams, load_fault_list, run_algo_campaign, run_fsm_campaign
@@ -1546,13 +1591,11 @@ def test(
         write_campaign_report,
         write_diagnosis_report,
     )
-    from autombist.fault_primitives import FaultPrimitiveError
-    from autombist.fault_primitives import default_registry as fp_default_registry
-    from autombist.fault_primitives import from_dict as fp_from_dict
-    from autombist.fault_primitives import validate as fp_validate
+    from autombist.fault_primitives import FaultPrimitiveError, load_custom_registry
     from autombist.fault_ram_gen import render_and_write
     from autombist.fsm_harness import FsmPortError, check_ports, gather_sibling_sources
 
+    types_dir: Path | None = None
     try:
         # Validate up front, before the (potentially multi-minute) campaign
         # runs -- a typo'd --fmt/--diagnosis-fmt used to only surface after
@@ -1566,21 +1609,14 @@ def test(
 
         fault_ram_sv = None
         if fault_types is not None:
-            specs = json.loads(fault_types.read_text(encoding="utf-8"))
-            if not isinstance(specs, list):
-                raise ValueError("--fault-types file must contain a JSON list of fault-primitive specs")
-            registry = fp_default_registry()
-            for spec_dict in specs:
-                prim = fp_from_dict(spec_dict)
-                fp_validate(prim, existing_names={p.name for p in registry})
-                registry.append(prim)
-            fault_ram_sv = render_and_write(
-                registry, Path(tempfile.mkdtemp(prefix="autombist-test-types-")) / "fault_ram.sv"
-            )
+            registry = load_custom_registry(fault_types)
+            # Removed in the finally below: every --fault-types run left one (#59).
+            types_dir = Path(tempfile.mkdtemp(prefix="autombist-test-types-"))
+            fault_ram_sv = render_and_write(registry, types_dir / "fault_ram.sv")
 
         if fsm is not None:
             sources = gather_sibling_sources(fsm)
-            ports = check_ports(fsm.read_text(encoding="utf-8"))
+            ports = check_ports(fsm.read_text(encoding="utf-8"), module_name=top)
             # Pass expected_spec ONLY when a sequence check was requested, so the
             # default call is byte-identical to before this feature existed.
             fsm_kwargs: dict[str, object] = {}
@@ -1612,6 +1648,9 @@ def test(
     except (AlgSpecError, CampaignError, FsmPortError, FaultPrimitiveError, FileNotFoundError, OSError, ValueError) as exc:
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
+    finally:
+        if types_dir is not None:
+            shutil.rmtree(types_dir, ignore_errors=True)
 
     if json_output:
         typer.echo(render_campaign_json(result))
@@ -1680,9 +1719,20 @@ def algo(
         shell.cmdloop()
         return
 
-    lines = sys.stdin.read().splitlines() if str(script) == "-" else script.read_text(encoding="utf-8").splitlines()
-    for line in lines:
-        if shell.onecmd(shell.precmd(line)):
+    try:
+        text = sys.stdin.read() if str(script) == "-" else script.read_text(encoding="utf-8")
+    except OSError as exc:
+        typer.secho(f"autombist: cannot read script {script}: {exc.strerror or exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    # A script stops at its first failing command and exits 1, like `autombist
+    # shell`'s batch mode: CI runs sessions this way, and a failed one passed (#57).
+    shell.stderr = sys.stderr
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        stop = shell.onecmd(shell.precmd(line))
+        if shell.errors:
+            typer.secho(f"autombist: {script}:{lineno}: stopped at a failed command", err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        if stop:
             break
 
 
@@ -1741,9 +1791,11 @@ def harden(
     import shutil
     import subprocess
 
+    from autombist.yaml_io import load_user_yaml
+
     try:
         resolved = config if config.is_absolute() else (Path.cwd() / config).resolve()
-        loaded = yaml.safe_load(resolved.read_text(encoding="utf-8"))
+        loaded = load_user_yaml(resolved)
         ll_config = build_librelane_config(loaded)
     except FileNotFoundError:
         typer.secho(f"autombist: harden config not found: {config}", err=True, fg=typer.colors.RED)
@@ -1752,7 +1804,10 @@ def harden(
         typer.secho(f"autombist: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    out.write_text(json.dumps(ll_config, indent=2) + "\n", encoding="utf-8")
+    try:
+        out.write_text(json.dumps(ll_config, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        _fail(f"cannot write {out}: {exc.strerror or exc}")
     typer.echo(f"Wrote LibreLane config: {out}")
 
     if not run:
@@ -1793,10 +1848,15 @@ def fix_lef_units(
     except FileNotFoundError:
         typer.secho(f"autombist: LEF not found: {lef}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
+    except OSError as exc:  # a directory, no permission (#59)
+        _fail(f"cannot read LEF {lef}: {exc.strerror or exc}")
 
     fixed, snapped = normalize_lef_units(text, target_dbu=target_dbu)
     dest = out or lef
-    dest.write_text(fixed, encoding="utf-8")
+    try:
+        dest.write_text(fixed, encoding="utf-8")
+    except OSError as exc:
+        _fail(f"cannot write {dest}: {exc.strerror or exc}")
     typer.echo(f"Wrote {dest} (DATABASE MICRONS -> {target_dbu}, {snapped} coords snapped)")
 
 
@@ -1804,7 +1864,7 @@ def fix_lef_units(
 def macro_signoff(
     macros: list[str] = typer.Argument(None, help="Macro dir names to check (default: all in the multimem set)"),
     script: Path = typer.Option(
-        Path(__file__).resolve().parents[2] / "flow" / "multimem" / "signoff" / "run_macro_signoff.sh",
+        DEFAULT_SIGNOFF_SCRIPT,
         "--script",
         help="Path to run_macro_signoff.sh",
     ),
@@ -1816,9 +1876,9 @@ def macro_signoff(
     import shutil
     import subprocess
 
-    if not script.is_file():
-        typer.secho(f"autombist: signoff script not found: {script}", err=True, fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+    problem = signoff_script_problem(script)
+    if problem:
+        _fail(problem)
 
     cmd = build_macro_signoff_command(script, list(macros) if macros else None)
     if show_command:

@@ -150,7 +150,13 @@ def test_bist_cycles_names_a_malformed_field(change: dict, fragment: str) -> Non
 def test_bist_cycles_names_a_missing_addr_width() -> None:
     config = {key: value for key, value in BASE.items() if key != "addr_width"}
     with pytest.raises(ValueError, match="config has no addr_width"):
-        bist_cycles(config)
+        bist_cycles({**config, "algo": "march-c"})
+
+
+def test_bist_cycles_does_not_assume_an_algorithm() -> None:
+    """#60: a config with no algo was sized as march-c."""
+    with pytest.raises(TestbenchError, match="config has no algo key"):
+        bist_cycles(BASE)
 
 
 def test_testbench_renders_its_timeout() -> None:
@@ -293,3 +299,12 @@ def test_jtag_testbench_needs_the_jtag_ports() -> None:
     ports = [NetlistPort("clk", "input", ""), NetlistPort("rst_n", "input", "")]
     with pytest.raises(TestbenchError, match="tck"):
         render_jtag_testbench("x", ports, vectors_file="v", pdl_file="p", read_labels=[], instruction="EXTEST")
+
+
+def test_every_rtl_algorithm_has_a_bist_length() -> None:
+    """#65: the algorithm list lived in about eight places; the cycle table is
+    the one that cannot be derived, so it is checked against the registry."""
+    from autombist.generator import RTL_ALGORITHMS
+    from autombist.testbench import _CYCLES_PER_ADDRESS
+
+    assert set(_CYCLES_PER_ADDRESS) == set(RTL_ALGORITHMS)

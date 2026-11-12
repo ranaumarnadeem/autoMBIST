@@ -111,8 +111,8 @@ Full writeup, the BIRA/BISR internals, and the reproducible hardening flow:
 # 1. Inside Linux, WSL or Apple Silicon macOS, from the repo root:
 nix develop
 
-# 2. Scaffold a starter config in the current directory
-autombist init --out .
+# 2. Scaffold a starter project in a new directory, and work there
+autombist init --out mbist-demo && cd mbist-demo
 
 # 3. Generate the MBIST wrapper + RTL for the memory described in config.yml
 autombist generate --config config.yml --out out
@@ -181,6 +181,7 @@ above (March X; `checkerboard`, an address-parity test; `march_raw1`, the
 | `simulate` | Run cocotb + Icarus against a `generate`d output directory |
 | `run` | `generate` + `simulate` (+ optional `--faultflow`) in one shot |
 | `test` | Grade a march algorithm or controller FSM against the functional fault DSL |
+| `safety-report` | Coverage per fault class from a `test` campaign report, as evidence for a safety analysis; diagnostic coverage with `--failure-rates` |
 | `algo` | Interactive research shell — register algorithms/faults, run campaigns, export reports |
 | `grade-controller` | [faultflow](https://github.com/ranaumarnadeem/faultflow) scan-ATPG structural grading of the controller logic |
 | `yield-sim` / `yield-sweep` / `yield-multiplier` | Repair-rate sweeps on the fail bitmap or the RTL (including the chip's own self-repair), and yield with redundancy for assumed defect statistics |

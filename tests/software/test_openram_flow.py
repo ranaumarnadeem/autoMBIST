@@ -345,3 +345,19 @@ def test_synthesize_sram_script_resolves_in_this_source_checkout() -> None:
     path = _synthesize_sram_script()
     assert path.is_file()
     assert path.name == "synthesize_sram.py"
+
+
+def test_load_openram_config_rejects_a_misspelled_key(tmp_path: Path) -> None:
+    """#60: `num_spare_row` was merged in beside the real key, which kept its
+    default, and the macro was built without it."""
+    config_path = tmp_path / "openram.yml"
+    config_path.write_text("tech: scn4m_subm\nword_size: 8\nnum_words: 16\nnum_spare_row: 2\n", encoding="utf-8")
+    with pytest.raises(OpenRAMConfigError, match=r"'num_spare_row' is not an OpenRAM config key -- did you mean 'num_spare_rows'\?"):
+        load_openram_config(config_path)
+
+
+def test_load_openram_config_rejects_a_repeated_key(tmp_path: Path) -> None:
+    config_path = tmp_path / "openram.yml"
+    config_path.write_text("tech: scn4m_subm\nword_size: 8\nnum_words: 16\nword_size: 32\n", encoding="utf-8")
+    with pytest.raises(OpenRAMConfigError, match="duplicate key 'word_size'"):
+        load_openram_config(config_path)

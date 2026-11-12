@@ -27,7 +27,6 @@ interleaving, which the sequential ``.alg`` format does not pin down.
 from __future__ import annotations
 
 import re
-from collections import Counter
 from dataclasses import dataclass, field
 
 from .alg_spec import AccessStep, ElementBlock
@@ -125,32 +124,40 @@ def _observed_desc(acc: ObservedAccess, data_width: int) -> str:
     return f"{kind}@{acc.addr} (port {acc.port})"
 
 
-def _compare_single_port(
-    blocks: list[ElementBlock], observed: list[ObservedAccess], data_width: int
+def _compare_port_stream(
+    blocks: list[ElementBlock], observed: list[ObservedAccess], data_width: int, port: int | None
 ) -> list[Divergence]:
-    """Walk the observed trace one element-block at a time; a block matches if it
-    equals ANY of its acceptable orderings (up/down for an ``either`` element).
-    Reports the first block that matches none."""
+    """Walk one port's observed stream one element-block at a time; a block
+    matches if it equals ANY of its acceptable orderings (up/down for an
+    ``either`` element), projected onto ``port`` (``None``: every access, the
+    single-port case). Reports the first block that matches none."""
+    def project(steps: list[AccessStep]) -> list[AccessStep]:
+        return steps if port is None else [s for s in steps if s.port == port]
+
+    where = 0 if port is None else port
     divergences: list[Divergence] = []
     pos = 0
     for block in blocks:
-        size = block.size
+        orderings = [project(ordering) for ordering in block.orderings]
+        size = len(orderings[0])
+        if size == 0:
+            continue
         window = observed[pos:pos + size]
         obs_keys = [_observed_key(o, data_width) for o in window]
-        if any([_expected_key(s) for s in ordering] == obs_keys for ordering in block.orderings):
+        if any([_expected_key(s) for s in ordering] == obs_keys for ordering in orderings):
             pos += size
             continue
         # No ordering matched -- locate the first differing position against the
         # first (canonical) ordering for a readable message.
-        canon = block.orderings[0]
+        canon = orderings[0]
         for i in range(size):
             exp_desc = canon[i].human()
             if i >= len(window):
-                divergences.append(Divergence(0, pos + i, exp_desc, "<end of trace>"))
+                divergences.append(Divergence(where, pos + i, exp_desc, "<end of trace>"))
                 break
             if _expected_key(canon[i]) != obs_keys[i]:
                 divergences.append(
-                    Divergence(0, pos + i, exp_desc, _observed_desc(window[i], data_width))
+                    Divergence(where, pos + i, exp_desc, _observed_desc(window[i], data_width))
                 )
                 break
         break
@@ -158,7 +165,7 @@ def _compare_single_port(
         # All blocks matched; flag any trailing observed accesses.
         if pos < len(observed):
             divergences.append(
-                Divergence(0, pos, "<end of sequence>", _observed_desc(observed[pos], data_width))
+                Divergence(where, pos, "<end of sequence>", _observed_desc(observed[pos], data_width))
             )
     return divergences
 
@@ -166,33 +173,19 @@ def _compare_single_port(
 def _compare_multi_port(
     blocks: list[ElementBlock], observed: list[ObservedAccess], data_width: int, num_ports: int
 ) -> list[Divergence]:
-    """Order-independent per-port multiset comparison. A 2RW controller may run
-    the two ports' accesses concurrently and in an order the sequential ``.alg``
-    does not pin down, so we compare the *multiset* of (addr, op, data) accesses
-    each port performs, not their order. This still catches a missing, extra,
-    wrong-address, or wrong-data access on any port."""
-    exp_counts: Counter[_Key] = Counter()
-    for block in blocks:
-        # multiset is ordering-independent, so orderings[0] suffices.
-        for step in block.orderings[0]:
-            exp_counts[_expected_key(step)] += 1
-    obs_counts: Counter[_Key] = Counter(_observed_key(o, data_width) for o in observed)
-
+    """Each port's stream in order, against the spec projected onto that port.
+    A 2RW controller may interleave the two ports however it likes, which the
+    sequential ``.alg`` does not pin down, but each port's own accesses are
+    totally ordered in time: a wrong address direction or a read before its
+    write on one port is a mismatch (#56)."""
     divergences: list[Divergence] = []
-    missing = exp_counts - obs_counts
-    extra = obs_counts - exp_counts
-    for key, n in sorted(missing.items()):
-        addr, port, is_write, wv = key
-        kind = ("w" + str(wv)) if is_write else "r"
-        divergences.append(
-            Divergence(port, -1, f"{kind}@{addr} x{n}", "<missing on this port>")
-        )
-    for key, n in sorted(extra.items()):
-        addr, port, is_write, wv = key
-        kind = ("w" + str(wv)) if is_write else "r"
-        divergences.append(
-            Divergence(port, -1, "<not in spec>", f"{kind}@{addr} x{n}")
-        )
+    for port in range(num_ports):
+        stream = [o for o in observed if o.port == port]
+        divergences.extend(_compare_port_stream(blocks, stream, data_width, port))
+    # An access on a port the controller does not have.
+    stray = [o for o in observed if not 0 <= o.port < num_ports]
+    if stray:
+        divergences.append(Divergence(stray[0].port, 0, "<no such port>", _observed_desc(stray[0], data_width)))
     return divergences
 
 
@@ -205,14 +198,13 @@ def compare_trace(
 ) -> SequenceResult:
     """Compare an observed controller trace against the expected march blocks.
 
-    Single-port: element-block ordered comparison, accepting either address
-    order for ``either`` elements. Multi-port: order-independent per-port
-    multiset comparison (see :func:`_compare_multi_port` and the module
-    docstring for why order is not asserted across concurrent ports).
+    Element-block ordered comparison, accepting either address order for
+    ``either`` elements. Multi-port: the same, on each port's own stream; the
+    interleaving across ports is free (see :func:`_compare_multi_port`).
     """
     expected_count = sum(b.size for b in blocks)
     if num_ports == 1:
-        divergences = _compare_single_port(blocks, observed, data_width)
+        divergences = _compare_port_stream(blocks, observed, data_width, None)
     else:
         divergences = _compare_multi_port(blocks, observed, data_width, num_ports)
     return SequenceResult(

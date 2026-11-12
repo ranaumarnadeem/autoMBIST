@@ -220,3 +220,43 @@ def test_the_multiplier_report_records_the_curve_assumptions_and_bands() -> None
     assert band["method"] == "bonferroni-wilson" and band["confidence"] == 0.95
     assert band["m_low"] <= poisson["m"] <= band["m_high"]
     json.dumps(report)
+
+
+def test_two_banks_counted_per_bank_match_the_closed_form() -> None:
+    """#66: lam 1 per bank, 2 banks, a bank repairable at k <= 1. Independent
+    banks give (P0 + P1)^2 = 0.541 and M = (1 + lam)^2 = 4, not the
+    0.736 and 2.0 of weighting the memory's curve by one bank's count."""
+    curve = RepairCurve(counts={1: (1000, 1000), **{k: (0, 1000) for k in range(2, 8)}}, unit="cells", banks=2)
+    point = yield_with_redundancy(curve, lam=1.0)
+    assert point.y_red == pytest.approx((2 / math.e) ** 2)
+    assert point.y0 == pytest.approx(math.exp(-2))
+    assert point.m == pytest.approx(4.0)
+    # and Y0 given for the memory is split per bank the same way
+    assert yield_with_redundancy(curve, y0=math.exp(-2)).lam == pytest.approx(1.0)
+
+
+def test_one_bank_is_the_plain_weighting() -> None:
+    counts = {1: (900, 1000), 2: (500, 1000), 3: (100, 1000)}
+    plain = yield_with_redundancy(RepairCurve(counts=counts), lam=1.5)
+    assert plain == yield_with_redundancy(RepairCurve(counts=counts, banks=1), lam=1.5)
+    assert plain.y_red == pytest.approx(sum(pmf(k, 1.5) * r for k, r in [(0, 1), (1, .9), (2, .5), (3, .1)]))
+
+
+def _itc_report(scope: str, banks: int) -> dict:
+    return {
+        "schema_version": "1.1",
+        "geometry": {"rows": 512, "cols": 256, "banks": banks},
+        "defect_model": {"model": "itc2020", "unit": "cells", "scope": scope, "reading": f"each-{scope}"},
+        "points": [{"faults": 1, "valid_trials": 10, "repaired_count": 10}],
+    }
+
+
+def test_a_per_bank_itc_sweep_carries_its_bank_count() -> None:
+    assert curve_from_report(_itc_report("bank", 2)).banks == 2
+    assert curve_from_report(_itc_report("memory", 1)).banks == 1
+
+
+def test_an_itc_sweep_placed_over_the_whole_memory_is_refused() -> None:
+    """Its k is a per-bank average, so no bank's own rate can be read off it."""
+    with pytest.raises(ValueError, match="--itc-reading each-bank or total-bank"):
+        curve_from_report(_itc_report("memory", 2))

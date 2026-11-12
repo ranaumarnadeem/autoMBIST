@@ -66,7 +66,14 @@ autombist yield-multiplier --report out/yield_sim.json --y0 0.9,0.5,0.2 --alpha 
   that `area_ratio` and `yield-multiplier` applies it.
 - `--alpha itc2020` and `--lam itc2020` are the ITC'2020 RA Benchmarks'
   defect-count parameters (alpha 0.6212, mean 2.006 per bank, about 41%
-  initial yield).
+  initial yield per bank).
+- A multi-bank ITC'2020 sweep counts k per bank, and a memory is repaired only
+  when every bank is. With the banks independent, `yield-multiplier` takes `--lam`
+  as one bank's mean and `--y0` as the memory's, and weights each bank:
+  Y_red = (sum over k of P(k) R(k)^(1/B))^B and Y0 = P(0)^B for B banks. The
+  sweep has to place each bank's faults separately (`--itc-reading each-bank`
+  or `total-bank`); a reading that places them over the whole memory leaves a
+  bank's own count unknown, and `yield-multiplier` refuses it.
 
 The weighting is tested against Stapper's 1989 Table 4 (10 blocks at 10%
 yield, 0 to 5 spare blocks, alpha 0.5, 1, 2 and Poisson): from an exact

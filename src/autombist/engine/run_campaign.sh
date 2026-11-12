@@ -12,6 +12,10 @@
 #     MARCHCM.
 #     SIM=xrun|verilator to force a simulator (default: xrun if found)
 #
+# An exported bundle's bundle.env (algo_shell.py's export_tb) gives the
+# session's memory: the engine (1- or 2-port), its AW/DW/WORDS_PER_ROW and the
+# +INIT value. Without one, the engine's own defaults apply (an 8x8 memory).
+#
 # Output: campaign_<ALG>.csv  with columns
 #   idx,type,result,elem,op,addr
 
@@ -20,6 +24,20 @@ FAULTS="${1:-faults.example.txt}"
 ALG="${2:-MARCHCM}"
 SIM="${SIM:-auto}"
 CSV="campaign_${ALG}.csv"
+
+ENGINE_TOP=march_engine
+ENGINE_SOURCES="fault_ram.sv march_engine.sv"
+ENGINE_PARAMS=""
+RUN_PLUSARGS=""
+if [ -f bundle.env ]; then
+  . ./bundle.env
+fi
+VERILATOR_PARAMS=""
+XRUN_PARAMS=""
+for p in $ENGINE_PARAMS; do
+  VERILATOR_PARAMS="$VERILATOR_PARAMS -G$p"
+  XRUN_PARAMS="$XRUN_PARAMS -defparam $ENGINE_TOP.$p"
+done
 
 # See the ALG description above: an exported bundle's own algorithm(s) always
 # have a same-named .algc file, which the 3 fixed built-in tables cannot
@@ -45,17 +63,21 @@ if [ "$SIM" = "verilator" ]; then
   # algorithm. algo_engine.py's in-process driver already raises CampaignError
   # on a non-zero verilator exit; this standalone path, which an exported
   # bundle runs WITHOUT autoMBIST installed, needs the same guard.
+  # The parameter and source lists are space-separated, so left unquoted.
+  # shellcheck disable=SC2086
   if ! verilator --binary --timing -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
-       --top-module march_engine fault_ram.sv march_engine.sv \
+       $VERILATOR_PARAMS --top-module "$ENGINE_TOP" $ENGINE_SOURCES \
        -o march_engine_sim >/dev/null; then
     echo "verilator build FAILED -- aborting (errors above)." >&2
     echo "Not falling back to any existing ./obj_dir/march_engine_sim: it would" >&2
     echo "be from an earlier build and would report results for the wrong RTL." >&2
     exit 1
   fi
-  RUN() { ./obj_dir/march_engine_sim "$@" 2>/dev/null; }
+  # shellcheck disable=SC2086
+  RUN() { ./obj_dir/march_engine_sim $RUN_PLUSARGS "$@" 2>/dev/null; }
 else
-  RUN() { xrun -64bit -q -sv fault_ram.sv march_engine.sv "$@" 2>/dev/null; }
+  # shellcheck disable=SC2086
+  RUN() { xrun -64bit -q -sv $XRUN_PARAMS -top "$ENGINE_TOP" $ENGINE_SOURCES $RUN_PLUSARGS "$@" 2>/dev/null; }
 fi
 
 NF=$(grep -cv '^[[:space:]]*\(#\|$\)' "$FAULTS")

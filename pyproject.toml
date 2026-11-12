@@ -52,7 +52,7 @@ test-access = [
 ]
 
 [project.scripts]
-autombist = "autombist.main:app"
+autombist = "autombist.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/autombist"]

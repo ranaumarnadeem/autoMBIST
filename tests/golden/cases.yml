@@ -222,6 +222,26 @@ selfrepair-2d-deferred-retry-diagnosis:
       onchip_diagnosis: true
       num_diagnosis_entries: 4
 
+# The deferred analyzer without spare retry: the diagnosis log still takes the
+# controller's first-pass enable (#46).
+selfrepair-2d-deferred-diagnosis:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_sddg
+    wrapper_module_name: sram_sddg_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0, spare_wen: spare_wen0}
+    redundancy:
+      num_spare_rows: 2
+      num_spare_cols: 1
+      onchip_selfrepair: true
+      onchip_col_repair: true
+      onchip_analyzer: deferred
+      onchip_diagnosis: true
+      num_diagnosis_entries: 4
+
 selfrepair-1r1w-2d:
   generate: {algo: march-1r1w}
   config:

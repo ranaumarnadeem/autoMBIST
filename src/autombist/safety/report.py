@@ -195,7 +195,9 @@ def render_safety_report_md(report: dict[str, Any]) -> str:
     fault_list = report["fault_list"]
     lines.append(f"- Fault list: {fault_list['records']} records, sha256 {fault_list['sha256']}")
     lines.append(f"- Simulator: {campaign['sim']}, {versions.get('simulator', 'version not recorded')}")
-    lines.append(f"- autoMBIST: {versions.get('autombist', 'version not recorded')}")
+    commit = versions.get("autombist_commit")
+    lines.append(f"- autoMBIST: {versions.get('autombist', 'version not recorded')}"
+                 + (f", source commit {commit}" if commit else ""))
 
     lines += ["", "## Coverage by fault class", "", "| Class | Detected | Total | Coverage | Failure rate |",
               "|---|---|---|---|---|"]

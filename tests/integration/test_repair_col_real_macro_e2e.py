@@ -39,6 +39,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from autombist.generator import generate_from_config  # noqa: E402
 from autombist.runner import run_simulation  # noqa: E402
+from fixture_models import fixture_model  # noqa: E402
 
 ADDR_WIDTH = 4
 DATA_WIDTH = 8
@@ -69,6 +70,7 @@ def test_real_openram_macro_column_repair_steering(tmp_path: Path) -> None:
     wrapper = generate_from_config(config_path, tmp_path / "out", algo="march-c")
     result = run_simulation(
         wrapper.parent,
+        memory_model=fixture_model(wrapper.parent),
         extra_make_vars={
             "COCOTB_TEST_MODULES": "test_repair_col_distinct",
             "TARGET_ADDR": 5,

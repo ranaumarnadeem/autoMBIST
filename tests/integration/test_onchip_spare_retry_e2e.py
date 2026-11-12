@@ -29,6 +29,7 @@ if str(SRC_ROOT) not in sys.path:
 from autombist.bira_input import fail_cells  # noqa: E402
 from autombist.generator import generate_from_config  # noqa: E402
 from autombist.runner import SimulationError, run_simulation  # noqa: E402
+from fixture_models import fixture_model
 from autombist.yield_sweep import SelfRepairEngine  # noqa: E402
 
 
@@ -114,7 +115,7 @@ def _multi_port(tmp_path: Path, algo: str, retry: bool):
     path = tmp_path / f"retry_{retry}.yml"
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     wrapper = generate_from_config(path, tmp_path / f"retry_{retry}", algo=algo)
-    return run_simulation(wrapper.parent, extra_make_vars={
+    return run_simulation(wrapper.parent, memory_model=fixture_model(wrapper.parent), extra_make_vars={
         "COCOTB_TEST_MODULES": "test_onchip_selfrepair", "SELFREPAIR_SCENARIO": "repairable",
     })
 

@@ -37,6 +37,7 @@ if str(SRC_ROOT) not in sys.path:
 from autombist.faultflow_flow import controller_sources, memory_instances  # noqa: E402
 from autombist.generator import generate_from_config  # noqa: E402
 from autombist.runner import SimulationError, run_simulation  # noqa: E402
+from fixture_models import fixture_model
 
 PORTS = {"clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "we": "we0", "csb": "csb0"}
 DEDICATED = {"wrapper_module_name": "ded_ctrl", "addr_width": 6, "data_width": 8,
@@ -87,7 +88,7 @@ def _generate_and_synthesize(tmp_path: Path, case: str, *, defective: bool) -> P
 @pytest.mark.parametrize("case", CASES)
 def test_synthesized_bist_passes_a_good_memory(tmp_path: Path, case: str) -> None:
     module_outdir = _generate_and_synthesize(tmp_path, case, defective=False)
-    result = run_simulation(module_outdir)
+    result = run_simulation(module_outdir, memory_model=fixture_model(module_outdir))
     assert "test_mbist.test_clean passed" in result.stdout
 
 
@@ -95,7 +96,7 @@ def test_synthesized_bist_passes_a_good_memory(tmp_path: Path, case: str) -> Non
 def test_synthesized_bist_detects_a_stuck_bit(tmp_path: Path, case: str) -> None:
     module_outdir = _generate_and_synthesize(tmp_path, case, defective=True)
     with pytest.raises(SimulationError):
-        run_simulation(module_outdir)
+        run_simulation(module_outdir, memory_model=fixture_model(module_outdir))
     log = (module_outdir / "simulate.log").read_text(encoding="utf-8")
     assert "test_mbist.test_clean failed" in log
     assert "MBIST reported fail in clean mode" in log

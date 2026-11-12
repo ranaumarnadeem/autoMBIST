@@ -136,11 +136,17 @@ class RepairCurve:
 
     counts: Mapping[int, tuple[int, int]]
     unit: str = "cells"
+    #: Independent banks the curve's k is counted in each of: k faults in EVERY
+    #: one of ``banks`` banks, a memory repaired only when all are. 1 when k
+    #: counts over the whole memory (#66).
+    banks: int = 1
 
     def __post_init__(self) -> None:
         for k, (repaired, valid) in self.counts.items():
             if k < 0 or valid < 0 or not 0 <= repaired <= valid:
                 raise ValueError(f"bad repair count at k={k}: {repaired} of {valid}")
+        if self.banks < 1:
+            raise ValueError(f"banks must be at least 1, got {self.banks}")
 
     @property
     def k_max(self) -> int:
@@ -174,8 +180,21 @@ def curve_from_report(report: Mapping[str, Any]) -> RepairCurve:
         if k in counts:
             raise ValueError(f"the report lists k={k} twice")
         counts[k] = (repaired, valid)
-    unit = (report.get("defect_model") or {}).get("unit", "cells")
-    return RepairCurve(counts=counts, unit=unit)
+    model = report.get("defect_model") or {}
+    unit = model.get("unit", "cells")
+    banks = int((report.get("geometry") or {}).get("banks", 1) or 1)
+    per_bank_k = model.get("model") == "itc2020"
+    if not per_bank_k or banks == 1:
+        return RepairCurve(counts=counts, unit=unit)
+    if model.get("scope") != "bank":
+        # The faults of all banks were placed together, so a bank's own count
+        # varies around k and the curve cannot be split into one bank's rate.
+        raise ValueError(
+            f"this {banks}-bank ITC'2020 sweep placed its faults over the whole memory "
+            f"({model.get('reading')!r} reading), so its k is a per-bank average and the "
+            "yield weighting cannot use it: sweep with --itc-reading each-bank or total-bank"
+        )
+    return RepairCurve(counts=counts, unit=unit, banks=banks)
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +217,7 @@ class YieldPoint:
     band_low: float
     band_high: float
     confidence: float
+    banks: int = 1  # independent banks lam is per (RepairCurve.banks); y0 and y_red are the memory's
 
     @property
     def m(self) -> float:
@@ -215,7 +235,7 @@ class YieldPoint:
     def r_cond(self) -> float:
         """The repair rate over dies with at least one defect (BIRA's "repaired
         over defective"), for the redundant array's own defect distribution."""
-        p0 = pmf(0, self.lam * self.area_ratio, self.alpha)
+        p0 = pmf(0, self.lam * self.area_ratio, self.alpha) ** self.banks
         return (self.y_red - p0) / (1.0 - p0) if p0 < 1.0 else 1.0
 
 
@@ -244,27 +264,36 @@ def yield_with_redundancy(
             "the yield weighting needs a measured repair rate at every k from 1 to the largest; "
             f"missing k = {missing or 'all'} (sweep a contiguous range, e.g. --faults 1..{max(curve.k_max, 1)})"
         )
-    base_lam = lam_from_y0(y0, alpha) if y0 is not None else lam
+    # With k counted per bank in each of B independent banks (#66): lam is one
+    # bank's mean and Y0 the memory's, P(0)^B. A memory is repaired only when
+    # every bank is, so a bank's own rate is R(k)^(1/B) and the memory's yield
+    # is (sum over k of P(k) R(k)^(1/B))^B. B = 1 is the plain weighting.
+    banks = curve.banks
+    base_lam = lam_from_y0(y0 ** (1.0 / banks), alpha) if y0 is not None else lam
     _check_lam(base_lam)
-    base_y0 = y0 if y0 is not None else y0_from_lam(base_lam, alpha)
+    base_y0 = y0 if y0 is not None else y0_from_lam(base_lam, alpha) ** banks
     phys_lam = base_lam * area_ratio
     k_max = curve.k_max
     weights = [pmf(k, phys_lam, alpha) for k in range(k_max + 1)]
     tail_mass = tail(k_max, phys_lam, alpha)
 
-    per_point = bonferroni_confidence(confidence, k_max)
-    bounds = {k: wilson_interval(curve.counts[k][0], curve.counts[k][1], per_point) for k in range(1, k_max + 1)}
-    rates = [curve.rate(k) for k in range(k_max + 1)]
+    def per_bank(rate: float) -> float:
+        return rate ** (1.0 / banks)
 
-    y_red = math.fsum(w * r for w, r in zip(weights, rates))
-    y_red_high = y_red + tail_mass * min(rates[1:])
+    per_point = bonferroni_confidence(confidence, k_max)
+    bounds = {k: tuple(map(per_bank, wilson_interval(curve.counts[k][0], curve.counts[k][1], per_point)))
+              for k in range(1, k_max + 1)}
+    rates = [per_bank(curve.rate(k)) for k in range(k_max + 1)]
+
+    y_bank = math.fsum(w * r for w, r in zip(weights, rates))
+    y_bank_high = y_bank + tail_mass * min(rates[1:])
     band_low = weights[0] + math.fsum(weights[k] * bounds[k][0] for k in range(1, k_max + 1))
     band_high = (weights[0] + math.fsum(weights[k] * bounds[k][1] for k in range(1, k_max + 1))
                  + tail_mass * min(bounds[k][1] for k in range(1, k_max + 1)))
     return YieldPoint(
         y0=base_y0, lam=base_lam, alpha=alpha, area_ratio=area_ratio, k_max=k_max, tail_mass=tail_mass,
-        y_red=y_red, y_red_high=min(1.0, y_red_high), band_low=band_low, band_high=min(1.0, band_high),
-        confidence=confidence,
+        y_red=y_bank ** banks, y_red_high=min(1.0, y_bank_high) ** banks, band_low=band_low ** banks,
+        band_high=min(1.0, band_high) ** banks, confidence=confidence, banks=banks,
     )
 
 
@@ -294,6 +323,8 @@ def _point_entry(point: YieldPoint) -> dict[str, Any]:
         "alpha": point.alpha,
         "y0": point.y0,
         "lam": point.lam,
+        "lam_per": "bank" if point.banks > 1 else "memory",
+        "banks": point.banks,
         "area_ratio": point.area_ratio,
         "y_red": point.y_red,
         "y_red_high": point.y_red_high,

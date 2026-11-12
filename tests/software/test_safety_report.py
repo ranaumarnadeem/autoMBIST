@@ -236,8 +236,11 @@ def test_the_command_without_rates_labels_the_figure_as_not_dc(tmp_path: Path) -
         (None, None, "campaign report not found"),
         ("{not json", None, "is not JSON"),
         ('{"cells": []}', None, "not a campaign report"),
-        ("CAMPAIGN", "a: [", "is not YAML"),
+        ("CAMPAIGN", "a: [", "is not valid YAML: expected the node content, but found '<stream end>' (line 1, column 5)"),
         ("CAMPAIGN", "- stuck_at", "failure rates must be a mapping"),
+        # #61: a falsy non-mapping was taken for "no rates at all"
+        ("CAMPAIGN", "[]", "failure rates must be a mapping"),
+        ("CAMPAIGN", "stuck_at: 1\nstuck_at: 2\n", "duplicate key 'stuck_at'"),
         ("CAMPAIGN", "", "no failure rate for measured class stuck_at"),
     ],
 )
@@ -288,3 +291,36 @@ def test_record_weights_are_named_as_ignored() -> None:
     assert report["record_weights_ignored"] is True
     assert "ignores" in render_safety_report_md(report)
     assert "ignores" not in render_safety_report_md(build_safety_report(_campaign(_fault("SA0", True))))
+
+
+@pytest.mark.parametrize(("name", "text"), [
+    ("rates.yml", "stuck_at: 3e-09\ncoupling: 1E-9\n"),
+    ("rates.json", '{"stuck_at": 3e-09, "coupling": 1e-09}'),
+])
+def test_rates_written_with_an_exponent_are_numbers(tmp_path: Path, name: str, text: str) -> None:
+    """#61: YAML 1.1 read 1e-9 (no dot) as a string, and the rate was refused;
+    json.dumps writes rates exactly that way."""
+    campaign = _write_campaign(tmp_path, _campaign(_fault("SA0", True), _fault("CFIN", False)))
+    rates = tmp_path / name
+    rates.write_text(text, encoding="utf-8")
+    out = tmp_path / "safety"
+    result = runner.invoke(cli_mod.app, ["safety-report", "--campaign", str(campaign),
+                                         "--failure-rates", str(rates), "--out", str(out)])
+    assert result.exit_code == 0, result.output
+    written = json.loads((out / "safety_report.json").read_text(encoding="utf-8"))
+    assert written["diagnostic_coverage_percent"] == pytest.approx(75.0)
+
+
+def test_a_json_rates_file_with_a_repeated_class_is_refused(tmp_path: Path) -> None:
+    campaign = _write_campaign(tmp_path, _campaign(_fault("SA0", True)))
+    rates = tmp_path / "rates.json"
+    rates.write_text('{"stuck_at": 1, "stuck_at": 2}', encoding="utf-8")
+    result = runner.invoke(cli_mod.app, ["safety-report", "--campaign", str(campaign),
+                                         "--failure-rates", str(rates), "--out", str(tmp_path / "s")])
+    assert_one_error_line(result, "is not valid JSON: duplicate key 'stuck_at'")
+
+
+def test_the_report_names_the_source_commit_when_the_campaign_recorded_one() -> None:
+    campaign = _campaign(_fault("SA0", True))
+    campaign["tool_versions"] = {**campaign["tool_versions"], "autombist_commit": "abc123"}
+    assert "- autoMBIST: 9.9.9, source commit abc123" in render_safety_report_md(build_safety_report(campaign))

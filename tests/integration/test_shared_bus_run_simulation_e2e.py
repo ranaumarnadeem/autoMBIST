@@ -31,6 +31,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from autombist.generator import generate_from_config  # noqa: E402
 from autombist.runner import run_simulation  # noqa: E402
+from fixture_models import fixture_model  # noqa: E402
 
 CONFIG = {
     "memory_name": "sram_1rw",
@@ -49,6 +50,6 @@ def test_plain_shared_bus_wrapper_actually_simulates(tmp_path: Path) -> None:
     config_path.write_text(yaml.safe_dump(CONFIG, sort_keys=False), encoding="utf-8")
     wrapper_path = generate_from_config(config_path, tmp_path / "out")
 
-    result = run_simulation(wrapper_path.parent)
+    result = run_simulation(wrapper_path.parent, memory_model=fixture_model(wrapper_path.parent))
     assert result.returncode == 0, result.stdout
     assert "test_mbist.test_clean" in result.stdout

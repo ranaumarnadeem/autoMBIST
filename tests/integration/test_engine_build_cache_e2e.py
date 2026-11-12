@@ -92,6 +92,25 @@ def test_engine_build_cache_key_is_sensitive_to_every_field_that_affects_the_bui
         "plan.md step 6) -- unlike num_ports, it DOES reach a real -G flag, so "
         "a NUM_MEMORIES=2 build and a NUM_MEMORIES=3 build must never collide"
     )
+    # #64: a changed build flag with unchanged sources is a different binary
+    assert _engine_build_cache_key(mem, sources, top_module, "verilator", flags=["-O2"]) != \
+        _engine_build_cache_key(mem, sources, top_module, "verilator", flags=["-O3"])
+
+
+def test_a_cache_entry_keeps_only_the_executable(tmp_path: Path) -> None:
+    """#64: an entry held Verilator's whole build tree, ~146 MB, of which a
+    hit uses only the ~0.4 MB binary."""
+    mem = MemoryParams(addr_width=4, data_width=8)
+    engine_dir = find_engine_dir()
+    cache_dir = tmp_path / "cache"
+    artifact = compile_engine(
+        mem, sources=[engine_dir / "fault_ram.sv", engine_dir / "march_engine.sv"], top_module="march_engine",
+        workdir=tmp_path / "work", cache_dir=cache_dir,
+    )
+    (entry,) = [p for p in cache_dir.iterdir() if p.is_dir()]
+    kept = sorted(str(p.relative_to(entry)) for p in entry.rglob("*") if p.is_file())
+    assert kept == ["build_seconds.txt", "obj_dir/march_engine_sim"]
+    assert "RESULT ESCAPED" in run_one(artifact, extra_plusargs=["+ALG=MARCHCM"])
 
 
 def test_shared_engine_builds_at_different_num_memories_never_collide(

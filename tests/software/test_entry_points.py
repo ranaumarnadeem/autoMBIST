@@ -92,3 +92,17 @@ def test_the_script_imports_match_the_package_imports(source: str) -> None:
     package_names = _imported_names(branch.orelse)
 
     assert script_names and script_names == package_names
+
+
+def test_the_console_script_turns_a_stray_os_error_into_one_line(monkeypatch, capsys) -> None:
+    """#59: an OSError no command caught is one `autombist:` line, exit 1."""
+    import autombist.main as main_module
+
+    def broken_app() -> None:
+        raise PermissionError(13, "Permission denied", "/locked/out")
+
+    monkeypatch.setattr(main_module, "app", broken_app)
+    with pytest.raises(SystemExit) as exit_info:
+        main_module.main()
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().err == "autombist: [Errno 13] Permission denied: '/locked/out'\n"

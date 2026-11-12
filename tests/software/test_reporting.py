@@ -144,7 +144,7 @@ Injected faults: 10
 def test_render_text_report_matches_sample_artifact() -> None:
     workspace = Path(__file__).resolve().parents[2]
     report_json = workspace / "out" / "input_demo_8x16_scn4m" / "reports" / "latest.json"
-    fault_log = workspace / "out" / "input_demo_8x16_scn4m" / "fault_sim.log"
+    fault_log = workspace / "out" / "input_demo_8x16_scn4m" / "simulate.log"
     report_txt = workspace / "out" / "input_demo_8x16_scn4m" / "reports" / "report.txt"
 
     if not all(p.exists() for p in (report_json, fault_log, report_txt)):
@@ -489,6 +489,23 @@ def _base_config() -> dict:
     }
 
 
+def test_a_clean_runs_report_requests_no_faults(tmp_path: Path) -> None:
+    """#63: a run without --test read "Faults requested: 50" (generate's
+    --faults default) and "Injected faults (obs): None"."""
+    report = build_simulation_report(
+        tool_version="0.6.0", config=_base_config(), command=["make", "sim"], cwd=tmp_path,
+        log_path=tmp_path / "simulate.log", report_path=tmp_path / "reports" / "latest.json",
+        returncode=0, runtime_seconds=1.0, stdout="", stderr="", use_saboteur=False, faults=50,
+        fault_seed=None, fault_type="stuck-at", pulse_width_ns=2, algo="march-c",
+        results_xml_path=tmp_path / "results.xml",
+    )
+    assert report["simulation"]["faults_requested"] == 0
+    text = render_text_report(report, "")
+    assert "Fault model:           none (clean run, no faults injected)" in text
+    assert "Faults requested:      0" in text
+    assert "None" not in text
+
+
 def _build_report(tmp_path: Path, *, fault_type: str, stdout: str = "") -> dict:
     return build_simulation_report(
         tool_version="0.3.1",
@@ -620,6 +637,20 @@ def test_render_text_report_shows_controller_grading_next_to_array_coverage(tmp_
     assert "Memory instances:      u_sram" in rendered
     # the array-test summary still comes first
     assert rendered.index("SUMMARY") < rendered.index("CONTROLLER LOGIC")
+
+
+def test_merging_a_grading_rewrites_report_txt_too(tmp_path: Path) -> None:
+    """#62: the grading merge rewrote latest.json only, so report.txt never
+    showed the CONTROLLER LOGIC section."""
+    from autombist.reporting import merge_controller_grading, write_simulation_report
+
+    module = tmp_path / "module"
+    reports = module / "reports"
+    write_simulation_report(_build_report(tmp_path, fault_type="stuck-at"), reports)
+    merge_controller_grading(module, {"coverage_percent": 90.0, "detected": 9, "denominator": 10})
+
+    assert "controller_grading" in json.loads((reports / "latest.json").read_text(encoding="utf-8"))
+    assert "CONTROLLER LOGIC" in (reports / "report.txt").read_text(encoding="utf-8")
 
 
 def test_format_simulation_summary_controller_grading_none_coverage_not_reported(

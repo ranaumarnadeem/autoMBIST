@@ -23,8 +23,9 @@ autombist smoke          # generation + OpenRAM config parse + small fault sims
 Needs `iverilog` + `cocotb` on PATH.
 
 ```bash
-# Scaffold a runnable starter project (config.yml, openram.yml, Makefile):
-autombist init --out .
+# Scaffold a runnable starter project (config.yml, openram.yml, Makefile) in a
+# new directory -- the repo root has its own config.yml -- and work there:
+autombist init --out mbist-demo && cd mbist-demo
 
 # Generate the MBIST wrapper + march-C controller RTL, then simulate it:
 autombist run --config config.yml --out out

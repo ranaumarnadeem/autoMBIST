@@ -24,6 +24,7 @@ import yaml
 
 from autombist.generator import generate_from_config
 from autombist.runner import run_simulation
+from fixture_models import fixture_model  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     shutil.which("iverilog") is None or shutil.which("make") is None,
@@ -63,7 +64,7 @@ def _run_transition(tmp_path: Path, config: dict, algo: str) -> str:
         config_path, tmp_path / "out", use_saboteur=True, faults=3, fault_seed=5,
         fault_type="transition-up", pulse_width_ns=2, algo=algo,
     )
-    result = run_simulation(wrapper_path.parent, verbose=False)
+    result = run_simulation(wrapper_path.parent, memory_model=fixture_model(wrapper_path.parent), verbose=False)
     assert result.returncode == 0, result.report.get("summary", "")
     return (wrapper_path.parent / "simulate.log").read_text(encoding="utf-8")
 
@@ -86,3 +87,20 @@ def test_2rw_transition_invariant_holds(tmp_path: Path) -> None:
 
 def test_1r1w_transition_invariant_holds(tmp_path: Path) -> None:
     _assert_invariant_ran_clean(_run_transition(tmp_path, _1R1W, "march-1r1w"))
+
+
+@pytest.mark.parametrize("fault_type", ["transition-up", "transition-down"])
+def test_no_transition_faults_on_an_active_high_we_memory_is_not_detected(tmp_path: Path, fault_type: str) -> None:
+    """#48: the saboteur decoded the write enable as active-low whatever the
+    config said, so on an active-high memory every read was a write and every
+    write a read, and the BIST failed with no fault injected."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(yaml.safe_dump(_SINGLE, sort_keys=False), encoding="utf-8")
+    wrapper_path = generate_from_config(
+        config_path, tmp_path / "out", use_saboteur=True, faults=0, fault_seed=5,
+        fault_type=fault_type, pulse_width_ns=2, algo="march-c",
+    )
+    result = run_simulation(wrapper_path.parent, memory_model=fixture_model(wrapper_path.parent), verbose=False)
+    assert result.returncode == 0, result.report.get("summary", "")
+    metrics = result.report["fault_metrics"]
+    assert metrics["injected_faults"] == 0 and metrics["detected_faults"] == 0, metrics

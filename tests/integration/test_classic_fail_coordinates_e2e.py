@@ -37,6 +37,7 @@ from autombist.fault_gen import (  # noqa: E402
 )
 from autombist.generator import generate_from_config  # noqa: E402
 from autombist.runner import run_simulation  # noqa: E402
+from fixture_models import fixture_model  # noqa: E402
 
 # The smallest sensible macro (depth 4 x width 4), active-low we, read_latency 1.
 ADDR_WIDTH = 2
@@ -86,7 +87,7 @@ def test_functional_fail_scan_pins_injected_coordinates(tmp_path: Path) -> None:
         use_saboteur=True, faults=faults, fault_seed=seed,
         fault_type="stuck-at", algo="march-c",
     )
-    result = run_simulation(wrapper.parent, fail_scan=True)
+    result = run_simulation(wrapper.parent, memory_model=fixture_model(wrapper.parent), fail_scan=True)
 
     assert result.report["status"] == "pass"
     assert "fail_bitmap" in result.report, "fail scan did not attach fail_bitmap"
@@ -109,7 +110,7 @@ def test_no_fail_bitmap_without_fail_scan(tmp_path: Path) -> None:
         use_saboteur=True, faults=3, fault_seed=7,
         fault_type="stuck-at", algo="march-c",
     )
-    result = run_simulation(wrapper.parent)  # fail_scan defaults False
+    result = run_simulation(wrapper.parent, memory_model=fixture_model(wrapper.parent))  # fail_scan defaults False
 
     assert "fail_bitmap" not in result.report
 
@@ -141,7 +142,7 @@ def test_high_bit_defect_not_mirrored_to_low_bit(tmp_path: Path) -> None:
         fault_type=FaultType.STUCK_AT, mask1_words=sa0, mask2_words=sa1,
     )
 
-    result = run_simulation(wrapper.parent, fail_scan=True)
+    result = run_simulation(wrapper.parent, memory_model=fixture_model(wrapper.parent), fail_scan=True)
     observed = fail_cells(result.report)
 
     assert (high_addr, high_bit) in observed
@@ -179,7 +180,7 @@ def test_the_scan_reads_an_openram_style_macro_without_unknown_words(tmp_path: P
         use_saboteur=True, faults=faults, fault_seed=seed,
         fault_type="stuck-at", algo="march-c",
     )
-    result = run_simulation(wrapper.parent, fail_scan=True)
+    result = run_simulation(wrapper.parent, memory_model=fixture_model(wrapper.parent), fail_scan=True)
 
     assert result.report["fail_scan_unknown_addrs"] == []
     sa0, sa1 = generate_fault_masks(

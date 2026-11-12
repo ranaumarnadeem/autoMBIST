@@ -69,20 +69,25 @@ def _algo_dir(config: dict[str, Any]) -> str:
 
 
 def _redundancy_flags(config: dict[str, Any]) -> dict[str, bool]:
-    """Faithful transliteration of wrapper_template.j2:3-9's own `{% set %}`
-    lines -- keep in sync with that template if those lines change."""
+    """Faithful transliteration of wrapper_template.j2's opening `{% set %}`
+    lines -- keep in sync with that template if those lines change
+    (tests/software/test_manifest_parameters.py checks the parameters)."""
     redundancy = config.get("redundancy") or {}
     has_redundancy = bool(redundancy) and int(redundancy.get("num_spare_rows", 0) or 0) > 0
     has_col_repair = has_redundancy and int(redundancy.get("num_spare_cols", 0) or 0) > 0
     has_onchip_selfrepair = has_redundancy and bool(redundancy.get("onchip_selfrepair", False))
     has_onchip_col_repair = has_onchip_selfrepair and bool(redundancy.get("onchip_col_repair", False))
     has_onchip_diagnosis = has_onchip_selfrepair and bool(redundancy.get("onchip_diagnosis", False))
+    has_onchip_spare_retry = has_onchip_selfrepair and bool(redundancy.get("onchip_spare_retry", False))
+    onchip_analyzer_deferred = has_onchip_col_repair and redundancy.get("onchip_analyzer") == "deferred"
     return {
         "has_redundancy": has_redundancy,
         "has_col_repair": has_col_repair,
         "has_onchip_selfrepair": has_onchip_selfrepair,
         "has_onchip_col_repair": has_onchip_col_repair,
         "has_onchip_diagnosis": has_onchip_diagnosis,
+        "has_onchip_spare_retry": has_onchip_spare_retry,
+        "onchip_analyzer_deferred": onchip_analyzer_deferred,
     }
 
 
@@ -232,6 +237,8 @@ def _analyzer(path_prefix: str, config: dict[str, Any], flags: dict[str, bool]) 
             "ADDR_WIDTH": geo["addr_width"], "DATA_WIDTH": geo["data_width"],
             "NUM_SPARE_ROWS": geo["num_spare_rows"], "NUM_SPARE_COLS": geo["num_spare_cols"],
         }
+        if flags["onchip_analyzer_deferred"]:
+            params["DEFERRED"] = 1
     else:
         module_type = "onchip_row_repair_analyzer"
         params = {"ADDR_WIDTH": geo["addr_width"], "NUM_SPARE_ROWS": geo["num_spare_rows"]}
@@ -241,10 +248,19 @@ def _analyzer(path_prefix: str, config: dict[str, Any], flags: dict[str, bool]) 
     )
 
 
-def _selfrepair_ctrl(path_prefix: str) -> dict[str, Any]:
+def _selfrepair_ctrl(path_prefix: str, config: dict[str, Any], flags: dict[str, bool]) -> dict[str, Any]:
+    params: dict[str, int] = {}
+    if flags["has_onchip_spare_retry"] or flags["onchip_analyzer_deferred"]:
+        geo = _geometry(config)
+        # wrapper_template.j2's spare_retry_limit: every spare it could retire.
+        retries = geo["num_spare_rows"] + (geo["num_spare_cols"] if flags["has_onchip_col_repair"] else 0)
+        params = {
+            "MAX_RETRIES": retries if flags["has_onchip_spare_retry"] else 0,
+            "TWO_PASS": int(flags["onchip_analyzer_deferred"]),
+        }
     return _instrument(
         f"{path_prefix}u_onchip_selfrepair_ctrl", "u_onchip_selfrepair_ctrl", "onchip_selfrepair_ctrl",
-        "self_repair", "redundancy.onchip_selfrepair", {},
+        "self_repair", "redundancy.onchip_selfrepair", params,
     )
 
 
@@ -268,7 +284,7 @@ def _dedicated_instances(config: dict[str, Any], flags: dict[str, bool]) -> list
     instances: list[dict[str, Any]] = []
     if flags["has_onchip_selfrepair"]:
         instances.append(_analyzer("", config, flags))
-        instances.append(_selfrepair_ctrl(""))
+        instances.append(_selfrepair_ctrl("", config, flags))
         if flags["has_onchip_diagnosis"]:
             geo = _geometry(config)
             instances.append(_instrument(
@@ -319,7 +335,7 @@ def _shared_bus_instances(config: dict[str, Any], flags: dict[str, bool]) -> lis
     for i in range(_num_memories(config)):
         prefix = f"selfrepair_inst[{i}]."
         instances.append(_analyzer(prefix, config, flags))
-        instances.append(_selfrepair_ctrl(prefix))
+        instances.append(_selfrepair_ctrl(prefix, config, flags))
         instances.append(_remap_row(prefix, "u_repair_remap", config, "redundancy.onchip_selfrepair"))
         if flags["has_onchip_col_repair"]:
             instances.append(_remap_col(prefix, "u_repair_remap_col", config, "redundancy.onchip_col_repair"))
@@ -393,6 +409,29 @@ def write_instance_manifest(manifest: dict[str, Any], module_outdir: Path) -> Pa
     path = module_outdir / MANIFEST_FILENAME
     _replace_manifest(path, manifest)
     return path
+
+
+def emit_instance_manifest(module_outdir: Path, config_path: Path | None, *, tool_version: str) -> Path:
+    """``--emit-manifest`` / ``-emit-manifest``: manifest.json from the
+    config.yml snapshot generate wrote next to the wrapper. One body for the
+    CLI and the Tcl shell (#62). Raises ManifestError for anything a user can
+    fix (an unreadable or malformed snapshot included)."""
+    import yaml
+
+    snapshot_path = Path(module_outdir) / "config.yml"
+    try:
+        loaded = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ManifestError(str(exc)) from exc
+    if not isinstance(loaded, dict):
+        raise ManifestError(f"{snapshot_path} must be a YAML mapping")
+    try:
+        manifest = build_instance_manifest(
+            loaded, Path(module_outdir), tool_version=tool_version, config_path=config_path,
+        )
+        return write_instance_manifest(manifest, module_outdir)
+    except (KeyError, ValueError, OSError) as exc:
+        raise ManifestError(str(exc)) from exc
 
 
 def _replace_manifest(path: Path, manifest: dict[str, Any]) -> None:

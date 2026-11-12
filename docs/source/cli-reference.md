@@ -246,6 +246,13 @@ autombist simulate [OPTIONS]
 | `--verbose` | off | Print full simulator console output and detailed logs |
 | `--min-coverage FLOAT` | none | Fail (exit 1) if array fault coverage is below this percent |
 | `--json` | off | Print the structured report as JSON to stdout instead of the human summary |
+| `--model PATH` | see below | The memory's simulation model; repeat it for a model in several files |
+
+The memory under test is `--model` if given. Without it, `simulate` uses
+`<memory_name>.v` in the current directory (where `autombist init` puts the
+sample model you replace with your macro's own), and otherwise the behavioral
+model `generate` derived from the config, `out/<memory_name>/tb/<memory_name>_model.v`.
+The summary's first line names the model it compiled.
 
 `--json` prints the same `reports/latest.json` document (see schema below) as
 one JSON document to stdout; `--verbose`'s raw simulator output (and any other
@@ -271,6 +278,7 @@ the clean-simulation path.
 autombist simulate --out out
 autombist simulate --out out --verbose
 autombist simulate --out out/input_demo_8x16_scn4m
+autombist simulate --out out --model path/to/sram_1rw.v
 autombist simulate --out out --json | jq .fault_metrics
 ```
 
@@ -316,6 +324,7 @@ autombist run [OPTIONS]
 | `--min-coverage FLOAT` | none | Fail (exit 1) if array fault coverage is below this percent |
 | `--json` | off | Print the structured report as JSON to stdout instead of the human summary |
 | `--emit-manifest` / `--no-emit-manifest` | `--no-emit-manifest` | Also write `manifest.json` (see `generate`'s own flag above) |
+| `--model PATH` | see `simulate` | The memory's simulation model; repeat it for a model in several files |
 
 `--json` behaves the same as on `simulate`: the structured report goes to
 stdout as one JSON document, and verbose/status output is redirected to
@@ -1265,10 +1274,15 @@ corresponding Typer CLI command calls (`generate_from_config`,
 `run_simulation`, `build_librelane_config`, etc.), so behavior is inherited
 from the CLI, not duplicated. Ten commands are registered: `generate`,
 `simulate`, `run`, `test`, `harden`, `fix_lef_units`, `macro_signoff`,
-`grade_controller`, `ram_synth`, `doctor` — same options as their CLI
-counterparts, but EDA `-flag value` syntax instead of `--flag value`, except
-`--json` (`run`, `simulate`, `test`): a shell command returns its result as a
-Tcl value instead. `tests/software/test_cli_reference.py` checks both.
+`grade_controller`, `ram_synth`, `doctor` — same options and defaults as their
+CLI counterparts (`-config` reads `./config.yml` when left out), but EDA
+`-flag value` syntax instead of `--flag value`, except `--json` (`run`,
+`simulate`, `test`): a shell command returns its result as a Tcl value instead.
+`tests/software/test_cli_reference.py` checks both. `help` lists the commands.
+
+At the interactive prompt a command can span lines: a `proc`, `if` or
+`foreach` with an open brace keeps reading until it is complete, as `tclsh`
+does. Ctrl-C drops a half-typed command.
 
 ### Syntax
 

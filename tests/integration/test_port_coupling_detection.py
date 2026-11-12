@@ -35,6 +35,7 @@ import yaml
 
 from autombist.generator import generate_from_config
 from autombist.runner import run_simulation
+from fixture_models import fixture_model  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     shutil.which("iverilog") is None or shutil.which("make") is None,
@@ -85,7 +86,7 @@ def test_port_coupling_fault_is_detected(tmp_path: Path) -> None:
         config_path, outdir, use_saboteur=True, faults=4, fault_seed=1,
         fault_type="port-coupling", algo="march-1r1w",
     )
-    result = run_simulation(wrapper_path.parent, verbose=False)
+    result = run_simulation(wrapper_path.parent, memory_model=fixture_model(wrapper_path.parent), verbose=False)
 
     assert result.returncode == 0
     assert result.report["fault_metrics"]["injected_faults"] == 4
@@ -110,7 +111,7 @@ def test_port_coupling_fault_detected_across_seeds(tmp_path: Path) -> None:
             config_path, outdir, use_saboteur=True, faults=6, fault_seed=seed,
             fault_type="port-coupling", algo="march-1r1w",
         )
-        result = run_simulation(wrapper_path.parent, verbose=False)
+        result = run_simulation(wrapper_path.parent, memory_model=fixture_model(wrapper_path.parent), verbose=False)
 
         assert result.returncode == 0
         metrics = result.report["fault_metrics"]
@@ -132,7 +133,7 @@ def test_no_faults_no_false_positive(tmp_path: Path) -> None:
         config_path, outdir, use_saboteur=True, faults=0, fault_seed=None,
         fault_type="port-coupling", algo="march-1r1w",
     )
-    result = run_simulation(wrapper_path.parent, verbose=False)
+    result = run_simulation(wrapper_path.parent, memory_model=fixture_model(wrapper_path.parent), verbose=False)
 
     assert result.returncode == 0
     assert result.report["status"] == "pass"
@@ -147,7 +148,7 @@ def test_clean_simulation_no_saboteur_passes(tmp_path: Path) -> None:
     _write_config(config_path, CONFIG)
 
     wrapper_path = generate_from_config(config_path, outdir, algo="march-1r1w")
-    result = run_simulation(wrapper_path.parent, verbose=False)
+    result = run_simulation(wrapper_path.parent, memory_model=fixture_model(wrapper_path.parent), verbose=False)
 
     assert result.returncode == 0
     assert result.report["status"] == "pass"

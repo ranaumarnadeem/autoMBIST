@@ -35,6 +35,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from autombist.generator import generate_from_config  # noqa: E402
 from autombist.runner import run_simulation  # noqa: E402
+from fixture_models import fixture_model  # noqa: E402
 
 ADDR_WIDTH = 2
 DATA_WIDTH = 4
@@ -94,6 +95,7 @@ def _generate(tmp_path: Path) -> Path:
 def _run(module_outdir: Path, override_path: Path):
     return run_simulation(
         module_outdir,
+        memory_model=fixture_model(module_outdir),
         extra_make_vars={
             "COCOTB_TEST_MODULES": "test_shared_selfrepair",
             "EXTRA_SOURCES": str(override_path),

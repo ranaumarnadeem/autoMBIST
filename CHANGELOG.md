@@ -26,6 +26,161 @@ everything that predates the migration.
   worked example a test re-runs, and what autoMBIST does not provide (#41).
 
 ### Fixed
+- `simulate` and `run` now test the user's memory model. They used to compile
+  this repo's own test fixture of the same name (`tests/hardware/<memory_name>.v`)
+  whatever model the project had, so a broken model still passed and any other
+  memory name failed to build. The model is now `--model PATH` if given, else
+  `<memory_name>.v` in the current directory (where `init` puts it), else the
+  behavioral model `generate` writes to `tb/`, and the summary names it. The
+  Tcl shell's `simulate` and `run` take `-model` (#44).
+- The Tcl shell's `run` with a relative `-out`, including the default, failed to
+  simulate: `run_simulation` now makes the module directory absolute itself,
+  since it runs make from another directory (#54).
+- Shared-bus self-repair run a second time without a reset no longer ends early.
+  Each memory's done flag stays set from the last run, and the sequencer took it
+  as the new run's. It moved the bus on while that memory's controller was still
+  running, so the controller analyzed another memory's reads and could use up the
+  spares on a good memory; a third run hung. The sequencer now waits until it
+  sees the flag clear before accepting it (#45).
+- On-chip diagnosis with the deferred analyzer (`onchip_analyzer: deferred`) and
+  no spare retry ended empty: the analyzer's second pass restarted the log and,
+  running through the repair just applied, saw no fails. The log now records the
+  first pass only, as it already did with spare retry (#46).
+- `manifest.json` now lists the self-repair controller's `MAX_RETRIES` and
+  `TWO_PASS` and the 2D analyzer's `DEFERRED`, which the wrapper sets for spare
+  retry and the deferred analyzer. A consumer synthesizing each instance with the
+  listed parameters, `grade-controller` among them, built a controller without
+  retry or the second pass. A test now checks every golden wrapper's parameter
+  overrides against the manifest (#47).
+- Transition-fault and 1R1W port-coupling campaigns on a memory with an
+  active-high write enable (`we_active_low: false`) reported detection whatever
+  the faults: the saboteur decoded every write as a read and every read as a
+  write. It now decodes the configured polarity, and a transition campaign with
+  no faults injected must leave the BIST passing (#48).
+- `nix develop` now puts the `autombist` command on `PATH`, as the docs have
+  always said it did; before, only `python -m autombist` worked in the shell.
+  CI runs `nix develop --command autombist --help` (#49).
+- A `topology: shared-bus` config with a single entry in `memories` is now
+  rejected. It rendered the dedicated wrapper, while `manifest.json` described a
+  shared-bus one whose instances did not exist (#50).
+- A misspelled key inside `redundancy:` (`onchip_diagnosys`, `onchip_analyser`)
+  is now an error with a did-you-mean, as at the top level. It used to take the
+  option's default and leave the feature out of the RTL (#51).
+- Fault-injection runs (`--test`) now read their own simulator output. They read
+  `fault_sim.log`, which only the generated Makefile's manual target writes:
+  without it `report.txt` showed no fault table, and with one left from an
+  earlier run its faults were merged into this run's report (#52).
+- Two engine campaigns sharing a `workdir=` (Python API) no longer corrupt the
+  engine cache. Putting the second campaign's binary in place wrote it through
+  the first one's hardlink, into the first cache entry, so later campaigns with
+  that geometry ran the wrong binary (#55).
+- `test --fsm --check-sequence` on a 2-port controller now checks each port's
+  accesses in order, as documented. It compared only which accesses each port
+  made, so a port running an element in the wrong address direction, or reading
+  before it wrote, passed. The interleaving across ports is still free (#56).
+- The algo shell's `export_tb` bundle now runs the session's memory. It built the
+  engine's 8x8 default whatever `set_memory` said, and the 1-port engine for a
+  2-port session, so the same faults scored differently in the bundle. The
+  bundle's `bundle.env` carries the widths, words per row, init value and engine
+  (#53).
+- `autombist algo --script` now stops at the first failing command, prints the
+  error to stderr and exits 1; it used to exit 0 whatever failed, so a broken
+  session passed CI. A missing script file is one error line, not a traceback
+  (#57).
+- The algo shell finds a user algorithm by the name it was registered under
+  before trying the built-in aliases. `add_algo my-march.alg` could not be run,
+  and a user algorithm named `x`, `c`, `ss` or `mats` silently ran the built-in
+  march it is an alias for, reporting that march's coverage. Registering such a
+  name now prints a note (#58).
+- The Tcl shell is closer to the CLI it wraps (#62):
+  - `generate` and `run` read `./config.yml` when `-config` is left out.
+  - `-verbose` prints the simulator output.
+  - A command typed at the prompt can span lines.
+  - There is a `help` command.
+  - `grade_controller` and `run -faultflow` now rewrite `report.txt` with the
+    controller section, from either front end, through one shared function.
+    `--emit-manifest` is one shared function too.
+
+  The algo shell's prompt survives Ctrl-C with its session intact.
+- More bad inputs are one `autombist:` error line instead of a traceback (#59):
+  - `generate` or `run` with no config.
+  - `fix-lef-units` on a directory, and `harden --out` into a missing directory.
+  - `wrap-test-access` with a malformed config value or an empty snapshot
+    beside its manifest.
+  - `test --fault-types` with a malformed spec. Its temporary directory is now
+    removed.
+  - A config that is not valid YAML, or has a key YAML reads as a boolean or a
+    number (`on:`, `0:`). In the Tcl shell too.
+
+  Any file error no command catches is now one line as well.
+- Inputs that were silently ignored or checked too late (#60):
+  - `--algo` is resolved once, first. A mixed-case name (`MARCH-C`) generated,
+    then failed to simulate; a typo got a misleading port or self-repair error
+    before the did-you-mean.
+  - `algo:` or `fault_type:` in a config that disagrees with the command's
+    option is an error. They were silently replaced.
+  - `wrap-test-access --config` no longer assumes March C when the config has no
+    `algo:`. It sized the run loop for the wrong algorithm.
+  - A custom `static_clamp` fault type that sets a field the renderer ignores is
+    rejected. A state-coupling clamp used to come out as a plain stuck-at.
+  - `openram.yml` rejects a misspelled key. It and `harden` configs reject a key
+    given twice.
+  - `shared_*` campaigns with `--verbose` report each fault's activations.
+- `safety-report --failure-rates` (#61):
+  - Takes rates written with an exponent and no dot (`1e-9`, as `json.dumps`
+    writes them). YAML 1.1 read them as strings, and they were refused.
+  - Refuses a fault class given twice. The last value used to win silently.
+  - Reads a `.json` file as JSON.
+  - Says "must be a mapping" for `[]` or `0`, and gives the parser's message,
+    on one line, for a syntax error.
+- A campaign report's `tool_versions` records the git commit
+  (`autombist_commit`) when autoMBIST runs from a checkout, and the safety
+  report prints it. The version alone named a release without the code between
+  releases (#61).
+- The README's command table lists `safety-report` (#61).
+- Docs, generated files and helpers that did not work as written (#63):
+  - The Quick Start scaffolds into a new directory. `init --out .` at the repo
+    root always refused, since the checkout has its own `config.yml`.
+  - A clean run's report no longer claims `--faults`' default 50 requested
+    faults, or prints `None` for the fault counts.
+  - The Makefile `generate --test` writes runs `autombist simulate` on its own
+    directory (`MODEL=` for your memory model). It used to work only two levels
+    inside an autoMBIST checkout with a venv, and dropped `read_latency`.
+  - `macro-signoff` without `--script` says its default script is in an
+    autoMBIST checkout, which an installed package does not include.
+  - A "set AUTOMBIST_HARDWARE_DIR" hint for a variable nothing reads is gone.
+  - `grade-controller` and `run --faultflow` run the bundle with the repo they
+    were given. An exported `FAULTFLOW_HOME` used to override part of it.
+  - `test --fsm` skips comments when it looks for the module, and takes
+    `--top`. A header like `// This module for my SoC` was read as module `for`.
+  - The golden tool-versions test checks the file's shape, so an update run no
+    longer leaves it failing.
+
+- `yield-multiplier` on a multi-bank ITC'2020 `yield_sim.json` weighted the
+  repair curve as if every bank had the same fault count. With λ 1 per bank and
+  2 banks that gave a multiplier of 2.0 where independent banks give 4.0. It now
+  weights each bank and raises the result to the number of banks; `--lam` is per
+  bank and `--y0` the memory's. A sweep that placed the faults over the whole
+  memory (`--itc-reading each-memory`, the default, or `total-memory`) is
+  refused for more than one bank, since no bank's own count is known (#66).
+
+### Performance
+Results are unchanged in every case (#64).
+- The repair analyzer settles a fail map that needs more lines than there are
+  spares with a matching bound before trying any spare subset. `yield-sim` on
+  1024x1024 with 5+5 spares ran 4.7x faster.
+- Each fault's simulation reads a one-line fault list. Every run used to parse
+  the whole list, O(F²) over a campaign: minutes on a 20k-fault list.
+- An engine cache entry keeps only the executable, about 0.4 MB, not the whole
+  ~146 MB build tree. Entries made before this release stay at their old size:
+  delete the cache directory (`/tmp/autombist-engine-cache` by default) to
+  reclaim the space.
+- The engine cache key includes the build flags, and Verilator compiles on
+  every core (`-j 0`): 8.0 s to 4.7 s on a cold build.
+- `yield-sim` bitmap trials run in worker processes, at most 8 by default
+  (`AUTOMBIST_SWEEP_WORKERS` sets the number, `1` runs serially). The RTL engines
+  still run one trial at a time.
+- `generate` reuses one Jinja environment, which saved about 100 ms per call.
 - `wrap-test-access` with a malformed config value (`read_latency: null`,
   `memories: 4`, a negative `addr_width`) now fails with one error line naming
   the field, before the insertion. `read_latency: null` and `memories: 4` were
