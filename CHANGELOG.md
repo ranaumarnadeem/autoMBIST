@@ -26,6 +26,10 @@ everything that predates the migration.
   worked example a test re-runs, and what autoMBIST does not provide (#41).
 
 ### Fixed
+- The Python model of the on-chip repair analyzer reads march-c's last pass
+  descending, as the RTL does. It could not change a repair decision (every
+  spare a word can take is taken before that pass), so no repair figure
+  changes.
 - Generated fault lists no longer contain an `AF_ALIAS` aliasing a word to
   itself, which changes nothing and so was reported escaped for every
   algorithm. The all-types list made one at a 2-word depth, and a random list

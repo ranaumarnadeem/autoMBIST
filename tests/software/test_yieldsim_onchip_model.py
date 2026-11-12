@@ -21,7 +21,8 @@ def test_march_c_reads_stuck_at_1_on_r0_and_stuck_at_0_on_r1_in_both_directions(
     events = march_c_events({(1, 2): 1, (3, 0): 0, (3, 1): 1}, rows=4)
     sa1 = [(1, 0b100), (3, 0b010)]
     sa0 = [(3, 0b001)]
-    assert events == [*sa1, *sa0, *sa1[::-1], *sa0[::-1], *sa1]
+    # the last r0 descends, as rtl/march_c/march_c_algo.sv's phase 5 does
+    assert events == [*sa1, *sa0, *sa1[::-1], *sa0[::-1], *sa1[::-1]]
 
 
 def test_greedy_takes_a_row_per_first_sighting_and_a_column_on_recurrence() -> None:
