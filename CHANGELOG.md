@@ -26,6 +26,13 @@ everything that predates the migration.
   worked example a test re-runs, and what autoMBIST does not provide (#41).
 
 ### Fixed
+- A shared-controller campaign's reports name each fault's memory when its
+  faults are on more than memory 0: `mi` in the JSON, a `memory` column in the
+  CSV and Markdown, and diagnosis cells keyed by memory as well as address and
+  bit. The same fault on two memories used to be two identical rows, and one
+  diagnosis cell shown as both detected and escaped. The safety report's
+  fault-list hash includes the memory index, so two lists that differ only in
+  it no longer hash alike; lists without one hash as before.
 - The `algo` shell's comparison matrix (`compare_algo`, then `write_report`)
   gives every fault its own row. Faults of one type at one victim that differ
   only in aggressor or `p0`/`p1` shared a row, so a later one overwrote an

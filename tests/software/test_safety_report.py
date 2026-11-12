@@ -147,6 +147,18 @@ def test_the_fault_list_hash_follows_the_list_and_not_its_order_or_results() -> 
     assert digest(one, two) != digest(one, _fault("SA1", True, vaddr=3))
 
 
+def test_the_fault_list_hash_tells_a_shared_controllers_memories_apart() -> None:
+    """Two shared-controller lists that differ only in which memory a fault is on are
+    different lists; a list with no memory index hashes as it always did."""
+    def digest(*faults: dict) -> str:
+        return build_safety_report(_campaign(*faults))["fault_list"]["sha256"]
+
+    on_0, on_1 = _fault("SA0", True, vaddr=5), {**_fault("SA0", True, vaddr=5), "mi": 1}
+
+    assert digest(on_0, on_1) != digest(on_0, {**on_1, "mi": 0})
+    assert digest(on_0) == digest({**on_0, "mi": 0})  # memory 0 is the single-memory list
+
+
 def test_an_older_campaign_report_shows_versions_as_not_recorded() -> None:
     campaign = _campaign(_fault("SA0", True))
     del campaign["tool_versions"]

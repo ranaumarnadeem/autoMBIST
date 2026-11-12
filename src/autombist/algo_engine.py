@@ -370,6 +370,13 @@ class CampaignResult:
                 for r in self.faults
             ],
         }
+        # A shared-controller list with faults off memory 0 records each fault's
+        # memory: the same (vaddr, vbit) exists in every memory, so without it two
+        # faults on different memories read as one. Absent otherwise, so a
+        # single-memory report is unchanged.
+        if any(r.record.mi != 0 for r in self.faults):
+            for fault, r in zip(d["faults"], self.faults):
+                fault["mi"] = r.record.mi
         # Sequence-correctness result is present only when a check was requested
         # (FSM front with an expected spec); omitted entirely otherwise so
         # existing consumers see a byte-identical dict.

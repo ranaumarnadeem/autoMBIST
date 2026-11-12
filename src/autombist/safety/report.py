@@ -93,9 +93,14 @@ def _check_failure_rates(failure_rates: Any, measured: set[str]) -> dict[str, fl
 
 def _fault_list_digest(faults: list[dict[str, Any]]) -> str:
     """The list itself, not its order or its results, so two reports on one list
-    can be told apart from two reports on different lists."""
+    can be told apart from two reports on different lists. A fault's memory index
+    (``mi``, a shared controller's) is part of the record when the report has it;
+    a list without one hashes as before."""
     fields = ("type", "vaddr", "vbit", "aaddr", "abit", "p0", "p1", "vport", "aport", "weight")
-    lines = sorted(" ".join(str(fault.get(name)) for name in fields) for fault in faults)
+    lines = sorted(
+        " ".join(str(fault.get(name)) for name in fields) + (f" mi={fault['mi']}" if fault.get("mi") else "")
+        for fault in faults
+    )
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 

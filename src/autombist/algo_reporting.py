@@ -56,14 +56,15 @@ _PORT_COLUMNS = ("vport", "aport")
 
 
 def _fault_columns_for(result: CampaignResult) -> tuple[str, ...]:
+    memory = ("memory",) if _has_memory_index(result) else ()
     if result.mem.num_ports > 1:
-        return _FAULT_COLUMNS + _PORT_COLUMNS
-    return _FAULT_COLUMNS
+        return _FAULT_COLUMNS + _PORT_COLUMNS + memory
+    return _FAULT_COLUMNS + memory
 
 
-def _fault_row(index: int, r, *, with_ports: bool = False) -> tuple[str, ...]:
+def _fault_row(index: int, r, *, with_ports: bool = False, with_memory: bool = False) -> tuple[str, ...]:
     rec = r.record
-    row = (
+    row: tuple[str, ...] = (
         str(index),
         rec.type,
         f"{rec.vaddr}.{rec.vbit}",
@@ -78,6 +79,8 @@ def _fault_row(index: int, r, *, with_ports: bool = False) -> tuple[str, ...]:
     )
     if with_ports:
         row = row + (str(rec.vport), str(rec.aport))
+    if with_memory:
+        row = row + (str(rec.mi),)
     return row
 
 
@@ -85,7 +88,7 @@ def render_campaign_csv(result: CampaignResult) -> str:
     with_ports = result.mem.num_ports > 1
     lines = [",".join(_fault_columns_for(result))]
     for r in result.faults:
-        lines.append(",".join(_fault_row(r.index, r, with_ports=with_ports)))
+        lines.append(",".join(_fault_row(r.index, r, with_ports=with_ports, with_memory=_has_memory_index(result))))
     return "\n".join(lines) + "\n"
 
 
@@ -99,7 +102,7 @@ def render_campaign_md(result: CampaignResult) -> str:
         f"Build: {result.build_seconds:.2f}s, run: {result.run_seconds:.2f}s, sim: {result.sim}\n\n"
     )
     columns = _fault_columns_for(result)
-    rows = [_fault_row(r.index, r, with_ports=with_ports) for r in result.faults]
+    rows = [_fault_row(r.index, r, with_ports=with_ports, with_memory=_has_memory_index(result)) for r in result.faults]
     return header + _render_pipe_table(columns, rows)
 
 
@@ -292,14 +295,14 @@ def build_diagnosis_cells(result: CampaignResult) -> list[dict[str, Any]]:
     """
     # cell -> mutable accumulator, built in two passes (injection sites, then
     # observation sites) before the final sort + dict conversion.
-    injected_types: dict[tuple[int, int], list[str]] = {}
-    injected_detected: dict[tuple[int, int], bool] = {}
-    injected_escaped_types: dict[tuple[int, int], list[str]] = {}
-    observed_counts: dict[tuple[int, int], int] = {}
-    observed_types: dict[tuple[int, int], list[str]] = {}
+    injected_types: dict[tuple[int, int, int], list[str]] = {}
+    injected_detected: dict[tuple[int, int, int], bool] = {}
+    injected_escaped_types: dict[tuple[int, int, int], list[str]] = {}
+    observed_counts: dict[tuple[int, int, int], int] = {}
+    observed_types: dict[tuple[int, int, int], list[str]] = {}
 
     for r in result.faults:
-        cell = (r.record.vaddr, r.record.vbit)
+        cell = (r.record.mi, r.record.vaddr, r.record.vbit)
         injected_types.setdefault(cell, []).append(r.record.type)
         # A cell can be the injection site for more than one fault (e.g. SA0
         # and SA1 at the same vaddr.vbit); detected_as_injection is True if
@@ -317,15 +320,16 @@ def build_diagnosis_cells(result: CampaignResult) -> list[dict[str, Any]]:
         if not r.detected or r.addr is None or r.xor is None:
             continue
         for bit in _decode_xor_bits(r.xor):
-            cell = (r.addr, bit)
+            cell = (r.record.mi, r.addr, bit)
             observed_counts[cell] = observed_counts.get(cell, 0) + 1
             observed_types.setdefault(cell, []).append(r.record.type)
 
     all_cells = set(injected_types) | set(observed_counts)
+    shared = _has_memory_index(result)
 
     rows: list[dict[str, Any]] = []
     for cell in sorted(all_cells):
-        addr, bit = cell
+        memory, addr, bit = cell
         is_injection = cell in injected_types
         is_observation = cell in observed_counts
         if is_injection and is_observation:
@@ -341,6 +345,7 @@ def build_diagnosis_cells(result: CampaignResult) -> list[dict[str, Any]]:
 
         rows.append(
             {
+                **({"memory": memory} if shared else {}),
                 "addr": addr,
                 "bit": bit,
                 "role": role,
@@ -354,14 +359,26 @@ def build_diagnosis_cells(result: CampaignResult) -> list[dict[str, Any]]:
     return rows
 
 
+def _has_memory_index(result: CampaignResult) -> bool:
+    """Whether a shared-controller result spreads its faults over more than
+    memory 0: its reports then name each cell's memory, since one (addr, bit)
+    exists in every memory."""
+    return any(r.record.mi != 0 for r in result.faults)
+
+
 _DIAGNOSIS_COLUMNS = (
     "addr", "bit", "role", "fault_types_injected_here", "detected_as_injection",
     "escaped_types_here", "times_observed_mismatch", "observed_from_fault_types",
 )
 
 
+def _diagnosis_columns(cells: list[dict[str, Any]]) -> tuple[str, ...]:
+    return ("memory", *_DIAGNOSIS_COLUMNS) if cells and "memory" in cells[0] else _DIAGNOSIS_COLUMNS
+
+
 def _diagnosis_row(cell: dict[str, Any]) -> tuple[str, ...]:
     return (
+        *((str(cell["memory"]),) if "memory" in cell else ()),
         str(cell["addr"]),
         str(cell["bit"]),
         cell["role"],
@@ -378,7 +395,7 @@ def render_diagnosis_csv(result: CampaignResult) -> str:
     escaped_types_here, observed_from_fault_types) are '|'-joined -- CSV has
     no native list type."""
     cells = build_diagnosis_cells(result)
-    lines = [",".join(_DIAGNOSIS_COLUMNS)]
+    lines = [",".join(_diagnosis_columns(cells))]
     for cell in cells:
         lines.append(",".join(_diagnosis_row(cell)))
     return "\n".join(lines) + "\n"
@@ -395,7 +412,7 @@ def render_diagnosis_md(result: CampaignResult) -> str:
         f"Cells: {len(cells)} (sparse: injection and/or observation sites only)\n\n"
     )
     rows = [_diagnosis_row(cell) for cell in cells]
-    return header + _render_pipe_table(_DIAGNOSIS_COLUMNS, rows)
+    return header + _render_pipe_table(_diagnosis_columns(cells), rows)
 
 
 def render_diagnosis_json(result: CampaignResult) -> str:
