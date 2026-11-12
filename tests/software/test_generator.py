@@ -190,7 +190,7 @@ def test_unknown_top_level_key_error_lists_only_user_facing_keys(
     tmp_path: Path, base_config: dict[str, object]
 ) -> None:
     """The error's suggested key list must stay to what a human can actually
-    write in config.yml -- not autombist_fault_seed and friends, which only
+    write in config.yml -- not fault_seed and friends, which only
     ever appear in generate_from_config's own machine-written snapshot."""
     invalid = dict(base_config)
     invalid["totally_bogus_key"] = 1
@@ -210,7 +210,7 @@ def test_generate_from_config_round_trips_through_its_own_snapshot(
 ) -> None:
     """Regression guard for the unknown-top-key check above: generate_from_
     config writes its OWN config.yml snapshot back into the output directory
-    (with machine-added keys like normalized_ports/algo/autombist_algo), and
+    (with machine-added keys like normalized_ports/algo/fault_seed), and
     run_simulation later re-parses that exact file through this same
     load_config -- so the check must not reject its own round trip."""
     config_path = tmp_path / "config.yml"
@@ -674,7 +674,7 @@ def test_a_mixed_case_algo_is_recorded_in_its_canonical_spelling(tmp_path: Path,
     _write_yaml(config_path, base_config)
     wrapper = generate_from_config(config_path, tmp_path / "out", algo="MARCH-C")
     snapshot = yaml.safe_load((wrapper.parent / "config.yml").read_text(encoding="utf-8"))
-    assert snapshot["algo"] == snapshot["autombist_algo"] == "march-c"
+    assert snapshot["algo"] == "march-c"
     assert (wrapper.parent / "march_c" / "march_c_top.sv").exists()
 
 
@@ -863,10 +863,10 @@ def test_cli_smoke_with_sim_runs_fault_modes(
         snapshot = yaml.safe_load((module_outdir / "config.yml").read_text(encoding="utf-8"))
         calls.append(
             (
-                str(snapshot["autombist_fault_type"]),
-                str(snapshot["autombist_algo"]),
-                int(snapshot["autombist_faults"]),
-                bool(snapshot["autombist_use_saboteur"]),
+                str(snapshot["fault_type"]),
+                str(snapshot["algo"]),
+                int(snapshot["fault_count"]),
+                bool(snapshot["use_saboteur"]),
             )
         )
 

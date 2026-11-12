@@ -43,18 +43,23 @@ OPTIONAL_TOP_KEYS = (
 # every key that function ever writes to render_config, on top of what a user
 # may write themselves. Keep this in sync with generate_from_config's
 # render_config[...] assignments.
+#
+# The run parameters generate records in the snapshot, each under the one name
+# the templates and the runner read (#65) -> the name a snapshot written before
+# that also carried it under. Those old names stay accepted, and the runner
+# reads one when the new name is absent, so an old output directory still runs.
+RUN_PARAMETER_LEGACY_KEYS: dict[str, str] = {
+    "use_saboteur": "autombist_use_saboteur",
+    "algo": "autombist_algo",
+    "fault_type": "autombist_fault_type",
+    "fault_count": "autombist_faults",
+    "fault_seed": "autombist_fault_seed",
+    "pulse_width_ns": "autombist_pulse_width_ns",
+}
 _SNAPSHOT_ONLY_TOP_KEYS = (
     "normalized_ports",
-    "use_saboteur",
-    "pulse_width_ns",
-    "algo",
-    "fault_type",
-    "autombist_use_saboteur",
-    "autombist_faults",
-    "autombist_fault_seed",
-    "autombist_fault_type",
-    "autombist_pulse_width_ns",
-    "autombist_algo",
+    *RUN_PARAMETER_LEGACY_KEYS,
+    *RUN_PARAMETER_LEGACY_KEYS.values(),
     "algo_dir",
     "algo_top_module",
     "algo_port_suffixes",
@@ -63,8 +68,6 @@ _SNAPSHOT_ONLY_TOP_KEYS = (
     "tf_up_faults_file",
     "tf_down_faults_file",
     "pc_faults_file",
-    "fault_count",
-    "fault_seed",
 )
 _ALL_TOP_KEYS = frozenset(REQUIRED_TOP_KEYS) | frozenset(OPTIONAL_TOP_KEYS) | frozenset(_SNAPSHOT_ONLY_TOP_KEYS)
 REQUIRED_PORT_KEYS = ("clk", "addr", "din", "dout", "we", "csb")
@@ -294,7 +297,7 @@ def _reject_unknown_top_keys(loaded: dict[str, Any]) -> None:
     ones generate_from_config round-trips through its own config.yml
     snapshot -- see that constant's comment), but the error only advertises
     `_USER_FACING_TOP_KEYS`: a human editing config.yml by hand should never
-    be told to consider writing autombist_fault_seed themselves."""
+    be told to consider writing fault_seed themselves."""
     unknown = sorted(set(loaded) - _ALL_TOP_KEYS)
     if not unknown:
         return
@@ -1389,16 +1392,16 @@ def generate_from_config(
     render_config["memory_has_fixed_geometry"] = config.get(
         "memory_has_fixed_geometry", False
     )
+    # A snapshot given back as --config brings its run parameters along; the
+    # old spellings would then sit next to this run's values, out of date.
+    for legacy_key in RUN_PARAMETER_LEGACY_KEYS.values():
+        render_config.pop(legacy_key, None)
     render_config["use_saboteur"] = use_saboteur
     render_config["pulse_width_ns"] = pulse_width_ns
     render_config["algo"] = algo
     render_config["fault_type"] = fault_type
-    render_config["autombist_use_saboteur"] = use_saboteur
-    render_config["autombist_faults"] = faults
-    render_config["autombist_fault_seed"] = fault_seed
-    render_config["autombist_fault_type"] = fault_type
-    render_config["autombist_pulse_width_ns"] = pulse_width_ns
-    render_config["autombist_algo"] = algo
+    render_config["fault_count"] = faults
+    render_config["fault_seed"] = fault_seed
 
     render_config["algo_dir"] = algo_dir
     render_config["algo_top_module"] = algo_top_module
@@ -1447,9 +1450,6 @@ def generate_from_config(
         saboteur_text = render_saboteur(render_config)
         saboteur_path = module_outdir / f"{config['memory_name']}_saboteur.v"
         saboteur_path.write_text(saboteur_text, encoding="utf-8")
-
-        render_config["fault_count"] = faults
-        render_config["fault_seed"] = fault_seed
 
         makefile_text = render_fault_makefile(render_config)
         makefile_path = module_outdir / "Makefile"

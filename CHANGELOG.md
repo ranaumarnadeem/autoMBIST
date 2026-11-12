@@ -164,6 +164,13 @@ everything that predates the migration.
   memory (`--itc-reading each-memory`, the default, or `total-memory`) is
   refused for more than one bank, since no bank's own count is known (#66).
 
+### Changed
+- The `config.yml` snapshot `generate` writes names each run parameter once:
+  `use_saboteur`, `algo`, `fault_type`, `fault_count`, `fault_seed` and
+  `pulse_width_ns`, without the `autombist_use_saboteur`, `autombist_algo`, ...
+  copies. `fault_count` and `fault_seed` are now there for clean builds too.
+  `simulate` and `run` still read an older snapshot's `autombist_` names (#65).
+
 ### Performance
 Results are unchanged in every case (#64).
 - The repair analyzer settles a fail map that needs more lines than there are

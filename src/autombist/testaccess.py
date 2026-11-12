@@ -563,7 +563,7 @@ def test_access_kwargs_from_config(config: Mapping[str, Any]) -> dict[str, Any]:
     dict render_wrapper() itself renders from). Deliberately does not use
     generator.load_config(): that validates RAW USER INPUT (rejects unknown top-level
     keys), while a config.yml snapshot is the RESOLVED render_config, a superset with
-    many keys (algo_dir, autombist_*, ...) load_config would reject as unrecognized.
+    many keys (algo_dir, normalized_ports, ...) load_config would reject as unrecognized.
 
     Raises ValueError if ``config`` is missing ``addr_width`` -- the cheapest signal
     that this isn't really a generate config.yml snapshot at all.
