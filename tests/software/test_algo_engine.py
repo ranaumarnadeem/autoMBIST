@@ -746,3 +746,48 @@ def test_shared_memory_params_rejects_mismatched_words_per_row() -> None:
     ])
     with pytest.raises(CampaignError, match=r"memories\[1\]\.words_per_row \(2\) does not match"):
         _validate_shared_memory_params(shared)
+
+
+def _materialize(cached: Path, dest: Path) -> None:
+    from autombist.algo_engine import _materialize_exe
+
+    _materialize_exe(cached, dest)
+
+
+def test_materializing_over_an_earlier_engine_leaves_the_cache_entry_alone(tmp_path: Path) -> None:
+    """#55: two campaigns in one workdir put two cache entries at the same
+    path. The second must replace the first's hardlink, not write through it
+    into the first cache entry's binary."""
+    entry_a = tmp_path / "cache" / "a" / "engine"
+    entry_b = tmp_path / "cache" / "b" / "engine"
+    for entry, body in ((entry_a, b"geometry A"), (entry_b, b"geometry B")):
+        entry.parent.mkdir(parents=True)
+        entry.write_bytes(body)
+    dest = tmp_path / "work" / "obj_dir" / "engine"
+
+    _materialize(entry_a, dest)
+    _materialize(entry_b, dest)
+    assert entry_a.read_bytes() == b"geometry A"
+    assert dest.read_bytes() == b"geometry B"
+    _materialize(entry_b, dest)  # the same entry again is fine too
+    assert dest.read_bytes() == b"geometry B"
+
+
+def test_materializing_by_copy_also_leaves_the_cache_entry_alone(tmp_path: Path, monkeypatch) -> None:
+    """The cross-filesystem fallback, where os.link fails."""
+    import autombist.algo_engine as engine
+
+    def no_link(src, dst):
+        raise OSError("cross-device link")
+
+    entry_a = tmp_path / "a"
+    entry_b = tmp_path / "b"
+    entry_a.write_bytes(b"geometry A")
+    entry_b.write_bytes(b"geometry B")
+    dest = tmp_path / "work" / "engine"
+    _materialize(entry_a, dest)  # a real hardlink, as an earlier campaign left it
+    monkeypatch.setattr(engine.os, "link", no_link)
+    _materialize(entry_b, dest)
+    assert entry_a.read_bytes() == b"geometry A"
+    assert dest.read_bytes() == b"geometry B"
+    assert not (tmp_path / "work" / "engine.partial").exists()

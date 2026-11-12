@@ -218,6 +218,21 @@ def test_stats_say_how_the_answer_was_reached() -> None:
     assert not aborted.repaired and aborted.stats.decided_by in ("early-abort", "must-repair")
 
 
+@pytest.mark.parametrize("objective", ["first", "min_spares"])
+def test_a_map_needing_more_lines_than_there_are_spares_is_settled_by_the_bound(objective: str) -> None:
+    """#64: five cells on a diagonal need five lines; four spares, faulty or
+    not, cannot cover them, and no spare subset is tried."""
+    geometry = SpareGeometry(base_words=8, word_size=8, num_spare_rows=2, num_spare_cols=2)
+    diagonal = {(i, i) for i in range(5)}
+    faults = SpareFaults(row_cells={0: frozenset({7})})
+    for spare_faults in (None, faults):
+        result = analyze_detailed(diagonal, geometry, objective=objective, spare_faults=spare_faults)
+        assert not result.repaired
+        assert result.stats.decided_by == "matching-bound" and result.stats.spare_subsets == 0
+    # one cell fewer is within the bound, and repairable
+    assert analyze_detailed({(i, i) for i in range(4)}, geometry, objective=objective).repaired
+
+
 @pytest.mark.parametrize(("kwargs", "fragment"), [
     ({"objective": "cheapest"}, "objective must be one of"),
     ({"spare_faults": SpareFaults(row_cells={5: frozenset()})}, "spare row 5"),

@@ -133,6 +133,12 @@ module shared_selfrepair_ctrl #(
     logic                    shb_selfrepair_mode_q;
     logic                    shb_selfrepair_done_q;
     logic                    shb_selfrepair_fail_q;
+    // Set once the selected memory's self_repair_done reads LOW during this
+    // run. done is sticky until that controller's next S_ANALYZE_KICK, so on
+    // a second self-repair without reset every memory still holds the last
+    // run's done when the sequencer reaches it: accepting that would move the
+    // bus on while the controller is still running (#45).
+    logic                    shb_selfrepair_armed_q;
 
     // One independent onchip_row_repair_analyzer + onchip_selfrepair_ctrl +
     // repair_remap_row per memory -- each reads u_algo_top's own PER-PASS
@@ -245,6 +251,7 @@ module shared_selfrepair_ctrl #(
             shb_selfrepair_mode_q <= 1'b0;
             shb_selfrepair_done_q <= 1'b0;
             shb_selfrepair_fail_q <= 1'b0;
+            shb_selfrepair_armed_q <= 1'b0;
         end else begin
             case (shb_state_q)
                 SHB_IDLE: begin
@@ -253,6 +260,7 @@ module shared_selfrepair_ctrl #(
                         shb_selfrepair_done_q  <= 1'b0;
                         shb_selfrepair_fail_q  <= 1'b0;
                         shb_selfrepair_mode_q  <= 1'b1;
+                        shb_selfrepair_armed_q <= 1'b0;
                         shb_state_q            <= SHB_RUN;
                     end else if (bist_start && test_mode && !self_repair_start) begin
                         mem_sel_q              <= '0;
@@ -263,7 +271,9 @@ module shared_selfrepair_ctrl #(
                 end
                 SHB_RUN: begin
                     if (shb_selfrepair_mode_q) begin
-                        if (self_repair_done_arr[mem_sel_q]) begin
+                        if (!self_repair_done_arr[mem_sel_q]) begin
+                            shb_selfrepair_armed_q <= 1'b1;
+                        end else if (shb_selfrepair_armed_q) begin
                             if (self_repair_fail_arr[mem_sel_q])
                                 shb_selfrepair_fail_q <= 1'b1;
                             if (mem_sel_q == 1) begin
@@ -285,6 +295,7 @@ module shared_selfrepair_ctrl #(
                 end
                 SHB_ADVANCE: begin
                     mem_sel_q   <= mem_sel_q + 1'b1;
+                    shb_selfrepair_armed_q <= 1'b0;
                     shb_state_q <= SHB_RUN;
                 end
                 SHB_DONE: begin

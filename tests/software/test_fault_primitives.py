@@ -415,3 +415,22 @@ def test_from_dict_defaults_prev_to_x_when_absent() -> None:
     # Older JSON fault-type files predate the field and must still load.
     prim = from_dict({"name": "MYNEW", "category": "static_clamp", "effect": {"kind": "force", "value": "1"}})
     assert prim.sensitize.prev == "x"
+
+
+@pytest.mark.parametrize(("sensitize", "message"), [
+    (Sensitize(on="victim", agg_pre="1"), "is unconditional"),
+    (Sensitize(on="victim", pre="0"), "is unconditional"),
+    (Sensitize(on="aggressor"), "needs sensitize.pre"),
+    (Sensitize(written="1"), "do not apply"),
+])
+def test_a_static_clamp_rejects_a_field_its_renderer_ignores(sensitize: Sensitize, message: str) -> None:
+    """#60: a victim-side clamp with agg_pre rendered as a plain stuck-at, and
+    an aggressor clamp with no pre failed only at render time."""
+    prim = FaultPrimitive("MYCLAMP", "static_clamp", sensitize, Effect(kind="force", value="1"))
+    with pytest.raises(FaultPrimitiveError, match=message):
+        validate(prim, existing_names=set())
+
+
+def test_an_aggressor_held_static_clamp_is_accepted() -> None:
+    prim = FaultPrimitive("MYCFST", "static_clamp", Sensitize(on="aggressor", pre="1"), Effect(kind="force", value="0"))
+    validate(prim, existing_names=set())

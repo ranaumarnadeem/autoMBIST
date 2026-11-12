@@ -117,9 +117,13 @@ def test_run_simulation_legacy_outputs_still_use_fault_makefile(
     monkeypatch.setattr(runner_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr("autombist.runner.subprocess.run", fake_run)
 
-    result = run_simulation(module_outdir, verbose=False)
+    # A legacy output has no generated tb/ model, so the memory model is given.
+    model = tmp_path / "sram_1rw.v"
+    model.write_text("module sram_1rw; endmodule\n", encoding="utf-8")
+    result = run_simulation(module_outdir, verbose=False, memory_model=[model])
     assert result.returncode == 0
     assert captured["command"][-1] == "sim"
+    assert f"SRAM_SOURCE={model.resolve()}" in captured["command"]
     assert "USE_SABOTEUR=1" in captured["command"]
     assert "FAULT_MODE=faults" in captured["command"]
     assert any(token.startswith("PYTHON_BIN=") for token in captured["command"])
@@ -365,6 +369,77 @@ def test_build_fault_command_with_seed_includes_fault_seed_token(tmp_path: Path)
 
 
 # ---------------------------------------------------------------------------
+# The memory model a simulation compiles (#44)
+# ---------------------------------------------------------------------------
+
+
+def _module_with_generated_model(tmp_path: Path) -> Path:
+    module_outdir = tmp_path / "out" / "sram_1rw"
+    (module_outdir / "tb").mkdir(parents=True)
+    (module_outdir / "tb" / "sram_1rw_model.v").write_text("module sram_1rw; endmodule\n", encoding="utf-8")
+    return module_outdir
+
+
+def test_the_memory_model_is_the_given_one_first(tmp_path: Path, monkeypatch) -> None:
+    module_outdir = _module_with_generated_model(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "sram_1rw.v").write_text("module sram_1rw; endmodule\n", encoding="utf-8")
+    given = tmp_path / "macro.v"
+    given.write_text("module sram_1rw; endmodule\n", encoding="utf-8")
+    assert runner_mod.resolve_memory_model(_base_config(), module_outdir, [given]) == [given.resolve()]
+
+
+def test_the_memory_model_is_the_project_one_before_the_generated_one(tmp_path: Path, monkeypatch) -> None:
+    module_outdir = _module_with_generated_model(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    generated = (module_outdir / "tb" / "sram_1rw_model.v").resolve()
+    assert runner_mod.resolve_memory_model(_base_config(), module_outdir) == [generated]
+    (tmp_path / "sram_1rw.v").write_text("module sram_1rw; endmodule\n", encoding="utf-8")
+    assert runner_mod.resolve_memory_model(_base_config(), module_outdir) == [(tmp_path / "sram_1rw.v").resolve()]
+
+
+def test_the_memory_model_is_never_the_repo_fixture(tmp_path: Path, monkeypatch) -> None:
+    """tests/hardware/sram_1rw.v exists in this checkout, and before #44 was what
+    every simulation of a memory named sram_1rw compiled."""
+    assert (REPO_ROOT / "tests" / "hardware" / "sram_1rw.v").is_file()
+    module_outdir = tmp_path / "out" / "sram_1rw"
+    module_outdir.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SimulationError, match="no simulation model for memory 'sram_1rw': pass --model"):
+        runner_mod.resolve_memory_model(_base_config(), module_outdir)
+
+
+def test_a_missing_given_model_is_an_error(tmp_path: Path) -> None:
+    module_outdir = _module_with_generated_model(tmp_path)
+    with pytest.raises(SimulationError, match="memory model not found: .*nope.v"):
+        runner_mod.resolve_memory_model(_base_config(), module_outdir, [tmp_path / "nope.v"])
+
+
+def test_run_simulation_passes_the_model_and_an_absolute_module_dir(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.yml"
+    _write_yaml(config_path, _base_config())
+    generate_from_config(config_path, tmp_path / "out", use_saboteur=False)
+    monkeypatch.chdir(tmp_path)
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(runner_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("autombist.runner.subprocess.run", fake_run)
+
+    result = run_simulation(Path("out") / "sram_1rw")  # relative, as the Tcl shell's run passes it (#54)
+
+    module_outdir = (tmp_path / "out" / "sram_1rw").resolve()
+    generated = module_outdir / "tb" / "sram_1rw_model.v"
+    assert result.memory_model == [generated]
+    assert f"SRAM_SOURCE={generated}" in captured["command"]
+    assert f"MODULE_OUTDIR={module_outdir}" in captured["command"]
+    assert captured["command"][-1] == "sim"
+
+
+# ---------------------------------------------------------------------------
 # run_simulation error paths (clusters 7, 8, 10)
 # ---------------------------------------------------------------------------
 
@@ -416,15 +491,10 @@ def test_run_simulation_failure_hint_when_fault_sim_log_has_trigger_substring(
     wrapper_path = generate_from_config(config_path, outdir, use_saboteur=True)
     module_outdir = wrapper_path.parent
 
-    # Pre-create fault_sim.log on disk with the trigger substring; run_simulation
-    # reads this from disk after the subprocess call completes.
-    (module_outdir / "fault_sim.log").write_text(
-        "ERROR: scope 'top' contains no child object named dbg_actual_word\n",
-        encoding="utf-8",
-    )
+    trigger = "ERROR: scope 'top' contains no child object named dbg_actual_word\n"
 
     def fake_run(command, **kwargs):
-        return subprocess.CompletedProcess(args=command, returncode=1, stdout="", stderr="boom")
+        return subprocess.CompletedProcess(args=command, returncode=1, stdout=trigger, stderr="boom")
 
     monkeypatch.setattr(runner_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr("autombist.runner.subprocess.run", fake_run)
@@ -433,6 +503,28 @@ def test_run_simulation_failure_hint_when_fault_sim_log_has_trigger_substring(
         run_simulation(module_outdir, verbose=False)
 
     assert "autombist generate --test" in str(exc_info.value)
+
+
+def test_a_fault_run_ignores_a_stale_fault_sim_log(tmp_path: Path, monkeypatch) -> None:
+    """#52: fault_sim.log is the generated Makefile's manual log, not this
+    run's. Read, it put an earlier run's faults into this run's report."""
+    config_path = tmp_path / "config.yml"
+    _write_yaml(config_path, _base_config())
+    module_outdir = generate_from_config(config_path, tmp_path / "out", use_saboteur=True).parent
+    (module_outdir / "fault_sim.log").write_text("STALE FAULT TABLE\nInjected faults: 99\n", encoding="utf-8")
+    this_run = "Fault summary\nInjected faults: 4\n"
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout=this_run, stderr="")
+
+    monkeypatch.setattr(runner_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("autombist.runner.subprocess.run", fake_run)
+
+    result = run_simulation(module_outdir, memory_model=[module_outdir / "config.yml"], verbose=False)
+
+    assert "STALE" not in result.stdout
+    text_report = (module_outdir / "reports" / "report.txt").read_text(encoding="utf-8")
+    assert "STALE" not in text_report and "Injected faults: 4" in text_report
 
 
 def test_run_simulation_failure_hint_when_clean_run_fails(

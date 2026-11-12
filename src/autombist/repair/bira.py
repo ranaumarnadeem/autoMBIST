@@ -420,6 +420,14 @@ def analyze_detailed(
     usable_cols = sorted(k for k in bad_col_set if len(faults.col_cells.get(k, ())) <= n_rows)
 
     counter = _Counter()
+    # Any matching of the fail map needs one line per matched cell, and no
+    # spare subset has more lines than every spare there is. A greedy matching
+    # over that settles a hopeless map before the subsets are tried, each with
+    # a copy of the map (#64: yield-sim 4.7x faster at 1024x1024, 5+5 spares).
+    if _greedy_matching(fail_cells) > n_rows + n_cols:
+        stats = SolverStats(nodes=0, forced_rows=0, forced_cols=0, spare_subsets=0, decided_by="matching-bound")
+        return Analysis(result=_unrepairable(fail_cells, spare_geometry), objective=objective,
+                        spares_used=None, stats=stats)
     floor = _max_matching(set(fail_cells)) if objective == "min_spares" else 0
     best = None
     subsets = 0

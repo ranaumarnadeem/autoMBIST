@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
@@ -121,9 +122,9 @@ def test_reject_unknown_passes_when_empty() -> None:
 
 def test_error_message_is_not_double_prefixed_with_command_name(shell: "TclShell") -> None:
     caught = shell.eval(
-        "if {[catch {generate -out out} err]} { set result $err } else { set result {NO ERROR} }"
+        "if {[catch {generate -bogus 1} err]} { set result $err } else { set result {NO ERROR} }"
     )
-    assert caught == "generate: missing required flag -config"
+    assert caught == "generate: unknown flag(s): -bogus"
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +180,7 @@ def test_generate_command_test_flag_sets_use_saboteur(shell: TclShell, tmp_path:
 
 
 def test_simulate_command_calls_run_simulation_and_returns_coverage(
-    shell: TclShell, tmp_path: Path, monkeypatch
+    shell: TclShell, tmp_path: Path, monkeypatch, capsys
 ) -> None:
     module_outdir = tmp_path / "out" / "sram_1rw"
     module_outdir.mkdir(parents=True)
@@ -187,11 +188,14 @@ def test_simulate_command_calls_run_simulation_and_returns_coverage(
     (module_outdir / "config.yml").write_text("memory_name: sram_1rw\n", encoding="utf-8")
 
     class _FakeResult:
+        memory_model = None
         report = {"fault_metrics": {"coverage_percent": 92.5}, "status": "pass"}
+        stdout = "SIMULATOR CONSOLE\n"
+        stderr = ""
 
     captured: dict[str, object] = {}
 
-    def fake_run_simulation(outdir, *, verbose=False):
+    def fake_run_simulation(outdir, *, verbose=False, memory_model=None):
         captured["outdir"] = outdir
         captured["verbose"] = verbose
         return _FakeResult()
@@ -206,6 +210,7 @@ def test_simulate_command_calls_run_simulation_and_returns_coverage(
     assert result == "92.5"
     assert captured["outdir"] == module_outdir
     assert captured["verbose"] is True
+    assert "SIMULATOR CONSOLE" in capsys.readouterr().out  # -verbose prints it, as the CLI does (#62)
 
 
 def test_simulate_command_min_coverage_gate_raises_catchable_error(
@@ -217,6 +222,7 @@ def test_simulate_command_min_coverage_gate_raises_catchable_error(
     (module_outdir / "config.yml").write_text("memory_name: sram_1rw\n", encoding="utf-8")
 
     class _FakeResult:
+        memory_model = None
         report = {"fault_metrics": {"coverage_percent": 50.0}, "status": "pass"}
 
     monkeypatch.setattr(tcl_shell_mod, "run_simulation", lambda outdir, **kw: _FakeResult())
@@ -242,6 +248,7 @@ def test_simulate_command_min_coverage_gate_fails_when_coverage_was_never_report
     (module_outdir / "config.yml").write_text("memory_name: sram_1rw\n", encoding="utf-8")
 
     class _FakeResult:
+        memory_model = None
         report = {"fault_metrics": {}, "status": "pass"}
 
     monkeypatch.setattr(tcl_shell_mod, "run_simulation", lambda outdir, **kw: _FakeResult())
@@ -268,6 +275,7 @@ def test_run_command_generates_then_simulates(shell: TclShell, tmp_path: Path, m
         return wrapper_path
 
     class _FakeResult:
+        memory_model = None
         report = {"fault_metrics": {"coverage_percent": 100.0}, "status": "pass"}
 
     def fake_run_simulation(outdir, **kwargs):
@@ -319,6 +327,7 @@ def test_run_command_emit_manifest_writes_it_after_simulating(shell: TclShell, t
     config_path.write_text(_REAL_CONFIG, encoding="utf-8")
 
     class _FakeResult:
+        memory_model = None
         report = {"fault_metrics": {"coverage_percent": 100.0}, "status": "pass"}
 
     monkeypatch.setattr(tcl_shell_mod, "run_simulation", lambda outdir, **kwargs: _FakeResult())
@@ -364,6 +373,7 @@ def test_run_command_faultflow_grades_controller_after_simulate(
         return wrapper_path
 
     class _FakeResult:
+        memory_model = None
         report = {"fault_metrics": {"coverage_percent": 100.0}, "status": "pass"}
 
     def fake_run_simulation(outdir, **kwargs):
@@ -396,6 +406,7 @@ def test_test_command_calls_run_algo_campaign(shell: TclShell, tmp_path: Path, m
         length_n = 10
 
     class _FakeResult:
+        memory_model = None
         total = 1
         detected = 1
         coverage_percent = 100.0
@@ -444,6 +455,7 @@ def test_test_command_fault_types_threads_fault_ram_sv(shell: TclShell, tmp_path
         length_n = 10
 
     class _FakeResult:
+        memory_model = None
         total = 1
         detected = 1
         coverage_percent = 100.0
@@ -785,9 +797,9 @@ def test_wrap_does_not_print_traceback_for_a_typo_d_required_flag(
     shell: TclShell, capsys
 ) -> None:
     caught = shell.eval(
-        "if {[catch {generate -confi c.yml} err]} { set result $err } else { set result {NO ERROR} }"
+        "if {[catch {test -addr-width 4 -data-width 8 -fault f.txt} err]} { set result $err } else { set result {NO ERROR} }"
     )
-    assert caught == "generate: missing required flag -config -- got '-confi', did you mean '-config'?"
+    assert caught == "test: missing required flag -faults -- got '-fault', did you mean '-faults'?"
     stderr = capsys.readouterr().err
     assert "Traceback" not in stderr
 
@@ -1052,7 +1064,7 @@ def test_test_command_fault_types_that_is_not_a_list_is_a_tcl_error(shell: TclSh
         f"test -addr-width 4 -data-width 8 -faults {_q(_faults_file(tmp_path))} -fault-types {_q(fault_types_path)}",
     )
 
-    assert caught == "test: -fault-types file must contain a JSON list of fault-primitive specs"
+    assert caught == f"test: {fault_types_path} must contain a JSON list of fault-primitive specs"
 
 
 def _fake_fsm(monkeypatch, tmp_path: Path, *, matches: bool) -> dict[str, object]:
@@ -1077,7 +1089,7 @@ def _fake_fsm(monkeypatch, tmp_path: Path, *, matches: bool) -> dict[str, object
         return _FsmCampaign()
 
     monkeypatch.setattr("autombist.fsm_harness.gather_sibling_sources", lambda path: [path, path.parent / "pkg.sv"])
-    monkeypatch.setattr("autombist.fsm_harness.check_ports", lambda text: _Ports())
+    monkeypatch.setattr("autombist.fsm_harness.check_ports", lambda text, module_name=None: _Ports())
     monkeypatch.setattr("autombist.alg_spec.resolve_algo", lambda name: _FakeSpec())
     monkeypatch.setattr("autombist.algo_engine.run_fsm_campaign", fake_run_fsm_campaign)
     fsm_path = tmp_path / "march_c_top.sv"
@@ -1336,7 +1348,7 @@ def test_repl_prints_results_and_errors_and_stops_at_exit(shell: TclShell, monke
     shell.run_repl()
 
     captured = capsys.readouterr()
-    assert captured.out.splitlines() == ["autombist Tcl shell. Type 'exit' or Ctrl-D to quit.", "5"]
+    assert captured.out.splitlines() == ["autombist Tcl shell. Type 'help' for the commands, 'exit' or Ctrl-D to quit.", "5"]
     assert 'error: invalid command name "no_such_command"' in captured.err
     # The line after `exit` was never read.
     assert shell.eval("set x") == "5"
@@ -1347,7 +1359,7 @@ def test_repl_quit_also_stops_it(shell: TclShell, monkeypatch, capsys) -> None:
 
     shell.run_repl()
 
-    assert capsys.readouterr().out.splitlines() == ["autombist Tcl shell. Type 'exit' or Ctrl-D to quit."]
+    assert capsys.readouterr().out.splitlines() == ["autombist Tcl shell. Type 'help' for the commands, 'exit' or Ctrl-D to quit."]
 
 
 def test_repl_stops_at_end_of_input(shell: TclShell, monkeypatch, capsys) -> None:
@@ -1355,7 +1367,7 @@ def test_repl_stops_at_end_of_input(shell: TclShell, monkeypatch, capsys) -> Non
 
     shell.run_repl()
 
-    assert capsys.readouterr().out.splitlines() == ["autombist Tcl shell. Type 'exit' or Ctrl-D to quit.", "7", ""]
+    assert capsys.readouterr().out.splitlines() == ["autombist Tcl shell. Type 'help' for the commands, 'exit' or Ctrl-D to quit.", "7", ""]
 
 
 def test_source_runs_a_script_file(shell: TclShell, tmp_path: Path) -> None:
@@ -1391,3 +1403,49 @@ def test_run_batch_without_a_path_reads_stdin(shell: TclShell, monkeypatch) -> N
 
     assert shell.run_batch(None) == 0
     assert shell.eval("set piped") == "3"
+
+
+def test_generate_defaults_config_to_config_yml_like_the_cli(shell: TclShell, tmp_path: Path, monkeypatch) -> None:
+    """#62: -config was required, so `generate -out out` failed in an
+    `autombist init` project, where the CLI reads ./config.yml."""
+    config = {
+        "memory_name": "sram_1rw", "wrapper_module_name": "sram_1rw_mbist", "addr_width": 4, "data_width": 8,
+        "we_active_low": True,
+        "ports": {"clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "we": "web0", "csb": "csb0"},
+    }
+    (tmp_path / "config.yml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert shell.eval("generate -out out").endswith("sram_1rw_mbist.v")
+
+
+def test_help_lists_the_commands(shell: TclShell) -> None:
+    listing = shell.eval("help")
+    for name in ("generate", "simulate", "run", "test", "grade_controller", "help"):
+        assert f"  {name}" in listing
+    assert "autombist grade-controller --help" in shell.eval("help grade_controller")
+
+
+def test_repl_reads_a_multi_line_command_until_it_is_complete(shell: TclShell, monkeypatch, capsys) -> None:
+    """#62: each line was evaluated alone, so a proc typed at the prompt failed."""
+    _feed_input(monkeypatch, ["proc twice {x} {", "  expr {$x * 2}", "}", "twice 21", "exit"])
+
+    shell.run_repl()
+
+    captured = capsys.readouterr()
+    assert "42" in captured.out.splitlines()
+    assert captured.err == ""
+
+
+def test_repl_ctrl_c_drops_the_half_typed_command(shell: TclShell, monkeypatch, capsys) -> None:
+    lines = iter(["proc broken {", KeyboardInterrupt, "set z 3", "exit"])
+
+    def fake_input(prompt: str = "") -> str:
+        item = next(lines)
+        if item is KeyboardInterrupt:
+            raise KeyboardInterrupt
+        return item
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    monkeypatch.setitem(sys.modules, "readline", None)
+    shell.run_repl()
+    assert "3" in capsys.readouterr().out.splitlines()

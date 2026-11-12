@@ -170,13 +170,32 @@ class AlgoShell(cmd.Cmd):
     def __init__(self, session: Session | None = None) -> None:
         super().__init__()
         self.session = session or Session()
+        # Where errors go: stdout at the prompt, where they belong with the
+        # rest of the conversation; `autombist algo --script` sends them to
+        # stderr (#57). `errors` counts them so the script can stop and fail.
+        self.stderr = None
+        self.errors = 0
 
     # -- output helpers ----------------------------------------------------
     def _out(self, msg: str) -> None:
         self.stdout.write(msg + "\n")
 
     def _err(self, msg: str) -> None:
-        self.stdout.write(f"error: {msg}\n")
+        self.errors += 1
+        (self.stderr or self.stdout).write(f"error: {msg}\n")
+
+    def cmdloop(self, intro: str | None = None) -> None:
+        """The REPL, surviving Ctrl-C: it interrupts the running command and
+        returns to the prompt, keeping the session's algorithms, fault types
+        and faults (#62). Ctrl-C at an empty prompt does the same; quit or
+        Ctrl-D leaves."""
+        while True:
+            try:
+                super().cmdloop(intro)
+                return
+            except KeyboardInterrupt:
+                self.stdout.write("^C (interrupted; 'quit' to leave)\n")
+                intro = ""
 
     def _require_memory(self) -> MemoryParams:
         if self.session.mem is None:
@@ -184,9 +203,13 @@ class AlgoShell(cmd.Cmd):
         return self.session.mem
 
     def _resolve_algo(self, name: str) -> AlgSpec:
-        key = ALGO_ALIASES.get(name.upper(), name).replace("-", "_")
-        if key in self.session.algos:
-            return self.session.algos[key]
+        # The exact registered name first: add_algo and synth register a name as
+        # typed, and an alias rewritten first hid `my-march` and turned a user's
+        # `x` into the built-in March X (#58). Then the -/_ spelling, then the
+        # built-in aliases.
+        for key in (name, name.replace("-", "_"), ALGO_ALIASES.get(name.upper())):
+            if key is not None and key in self.session.algos:
+                return self.session.algos[key]
         path = Path(name)
         if path.exists():
             spec = load_alg_file(path)
@@ -349,6 +372,14 @@ class AlgoShell(cmd.Cmd):
         spec = load_alg_file(path, name=name)
         self.session.algos[name] = spec
         self._out(f"algorithm '{name}' registered ({spec.length_n}n, {len(spec.elements)} elements)")
+        self._note_alias_shadow(name)
+
+    def _note_alias_shadow(self, name: str) -> None:
+        """A user name that is also a built-in alias now means the user's."""
+        target = ALGO_ALIASES.get(name.upper())
+        if target is not None and target != name:
+            self._out(f"note: '{name}' is also an alias for built-in {target}; '{name}' now runs yours, "
+                      f"'{target}' the built-in")
 
     def do_add_fsm(self, arg: str) -> None:
         """add_fsm <top.sv> [<dep1.sv> <dep2.sv> ...] [--name NAME] [--top MODULE]
@@ -678,6 +709,7 @@ class AlgoShell(cmd.Cmd):
             f"targets {len(result.targeted)}/{total} registry primitives "
             f"(excludes {', '.join(result.excluded_fixed)}: structurally fixed types)"
         )
+        self._note_alias_shadow(name)
         # Always state the covered count, then warn separately. Previously the
         # count only appeared when nothing was uncovered, so a partial result
         # showed the shortfall without ever showing what WAS achieved.
@@ -798,8 +830,25 @@ class AlgoShell(cmd.Cmd):
         outdir.mkdir(parents=True, exist_ok=True)
         engine_dir = find_engine_dir()
         self._render_fault_ram_for(outdir)
-        for name in ("march_engine.sv", "openram_shim.sv", "run_campaign.sh"):
+        mem = self.session.mem or MemoryParams(addr_width=8, data_width=8)
+        two_port = mem.num_ports == 2
+        engine, shim = ("march_engine_mp", "openram_shim_mp") if two_port else ("march_engine", "openram_shim")
+        for name in (f"{engine}.sv", f"{shim}.sv", "run_campaign.sh"):
             shutil.copy2(engine_dir / name, outdir / name)
+        # The session's memory, as the in-process build gets it (compile_engine's
+        # -G overrides, _common_plusargs' +INIT): without it the bundle built
+        # the engine's own 8x8 default whatever the session used (#53).
+        params = [f"AW={mem.addr_width}", f"DW={mem.data_width}"]
+        if mem.words_per_row != 1:
+            params.append(f"WORDS_PER_ROW={mem.words_per_row}")
+        (outdir / "bundle.env").write_text(
+            "# The session this bundle was exported from; run_campaign.sh reads it.\n"
+            f"ENGINE_TOP={engine}\n"
+            f'ENGINE_SOURCES="fault_ram.sv {engine}.sv"\n'
+            f'ENGINE_PARAMS="{" ".join(params)}"\n'
+            f'RUN_PLUSARGS="+INIT={mem.init_val}"\n',
+            encoding="utf-8", newline="\n",
+        )
         for name, spec in self.session.algos.items():
             spec.write_numeric(outdir / f"{name}.algc")
         if self.session.faults:

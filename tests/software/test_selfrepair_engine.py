@@ -33,8 +33,8 @@ class FakeChip:
         self.behave, self.observe_drop, self.finish = behave, observe_drop, finish
         self.runs = []
 
-    def __call__(self, module, *, extra_make_vars=None, **kwargs):
-        self.runs.append(extra_make_vars)
+    def __call__(self, module, *, extra_make_vars=None, memory_model=None, **kwargs):
+        self.runs.append({**(extra_make_vars or {}), "memory_model": memory_model})
         engine = self.engine
         sa0 = [int(x, 16) for x in engine.mask_paths[0].read_text().split()]
         sa1 = [int(x, 16) for x in engine.mask_paths[1].read_text().split()]
@@ -117,7 +117,7 @@ def test_a_clean_repair_counts_and_the_build_is_reused(config_path, monkeypatch)
     assert record.min_spares == 1
     engine.run_stuck({(4, 0): 0})
     assert all(run["COCOTB_TEST_MODULES"] == "test_selfrepair_sweep" for run in chip.runs)
-    assert all(run["SRAM_SOURCE"] == str(engine.model_path) for run in chip.runs)
+    assert all(run["memory_model"] == [engine.model_path] for run in chip.runs)
 
 
 def test_a_gave_up_analyzer_on_a_solvable_map_is_the_analyzers_fault(config_path, monkeypatch) -> None:

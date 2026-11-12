@@ -76,6 +76,18 @@ def test_the_deferred_analyzer_works_with_spare_retry(tmp_path: Path) -> None:
     assert record.repaired and record.extras["row_map"] == {3: 1}
 
 
+@pytest.mark.parametrize("retry", [False, True])
+def test_the_deferred_analyzer_keeps_the_first_pass_diagnosis(tmp_path: Path, retry: bool) -> None:
+    """#46: the deferred analyzer's second pass runs through the repair it just
+    applied and sees no fails. The log has to keep the first pass's rows, with
+    or without spare retry."""
+    cells = {(3, 2): 1, (9, 2): 1}
+    record = _engine(tmp_path, 4, 8, 2, 1, analyzer="deferred", spare_retry=retry,
+                     diagnosis_entries=4).run_stuck(cells)
+    assert record.repaired
+    assert record.extras["diag_rows"] == [3, 9]
+
+
 @pytest.mark.parametrize("mode", ["greedy", "deferred"])
 def test_the_rtl_makes_the_models_decisions(tmp_path: Path, mode: str) -> None:
     """Random fail maps (Ohler's mix d2, 2 spare rows and 2 spare columns): the

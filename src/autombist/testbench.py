@@ -101,7 +101,15 @@ def bist_cycles(config: dict[str, Any]) -> int:
     """The BIST's length in clk cycles, from start to done, as the generated
     controller runs it: every address of every memory a shared controller
     tests in turn (spare rows are not in the BIST's address space)."""
-    algo = str(config.get("algo", "march-c")).strip().lower()
+    if "algo" not in config:
+        # Not assumed march-c: a hand-written config sized the PDL/JTAG/STIL run
+        # loop for the wrong algorithm, and a slower one's testbench then
+        # failed on a good memory (#60). generate's snapshot records it.
+        raise TestbenchError(
+            "config has no algo key, so the BIST's length is unknown: pass the config.yml "
+            "snapshot generate wrote (it records the algorithm), or --bist-cycles"
+        )
+    algo = str(config["algo"]).strip().lower()
     try:
         fixed, reads = _CYCLES_PER_ADDRESS[algo]
     except KeyError:

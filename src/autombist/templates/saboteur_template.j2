@@ -1,4 +1,8 @@
 `timescale 1ns/1ps
+{# The macro's own write-enable polarity: the wrapper drives sram_we active-low
+   or active-high per we_active_low, so decode it the same way (#48). #}
+{% set _we_on = "~" if we_active_low else "" %}
+{% set _we_off = "" if we_active_low else "~" %}
 
 {% if normalized_ports|length == 1 %}
 {% set _rw = (normalized_ports.values() | list)[0] %}
@@ -26,8 +30,8 @@ module {{ memory_name }}_saboteur #(
     logic write_cycle;
     logic read_cycle;
 
-    assign write_cycle = (~{{ _rw.csb }}) & (~{{ _rw.we }});
-    assign read_cycle  = (~{{ _rw.csb }}) & ({{ _rw.we }});
+    assign write_cycle = (~{{ _rw.csb }}) & ({{ _we_on }}{{ _rw.we }});
+    assign read_cycle  = (~{{ _rw.csb }}) & ({{ _we_off }}{{ _rw.we }});
 
 {% if fault_type == "stuck-at" %}
     logic [DATA_WIDTH-1:0] sa0_mask [0:(1<<ADDR_WIDTH)-1];
@@ -331,10 +335,10 @@ module {{ memory_name }}_saboteur #(
     logic read_cycle0;
     logic read_cycle1;
 
-    assign write_cycle0 = (~{{ _p0.csb }}) & (~{{ _p0.we }});
-    assign write_cycle1 = (~{{ _p1.csb }}) & (~{{ _p1.we }});
-    assign read_cycle0  = (~{{ _p0.csb }}) & ({{ _p0.we }});
-    assign read_cycle1  = (~{{ _p1.csb }}) & ({{ _p1.we }});
+    assign write_cycle0 = (~{{ _p0.csb }}) & ({{ _we_on }}{{ _p0.we }});
+    assign write_cycle1 = (~{{ _p1.csb }}) & ({{ _we_on }}{{ _p1.we }});
+    assign read_cycle0  = (~{{ _p0.csb }}) & ({{ _we_off }}{{ _p0.we }});
+    assign read_cycle1  = (~{{ _p1.csb }}) & ({{ _we_off }}{{ _p1.we }});
 
 {% if fault_type == "stuck-at" %}
     // Shared across both ports: each port's dout is independently masked by
@@ -603,7 +607,7 @@ module {{ memory_name }}_saboteur #(
     logic write_cycle;
     logic read_cycle;
 
-    assign write_cycle = (~{{ _wport.csb }}) & (~{{ _wport.we }});
+    assign write_cycle = (~{{ _wport.csb }}) & ({{ _we_on }}{{ _wport.we }});
     assign read_cycle  = (~{{ _rport.csb }});
 
 {% if fault_type == "stuck-at" %}

@@ -84,9 +84,25 @@ def _skip_balanced(text: str, open_pos: int) -> int:
     raise FsmPortError("unbalanced parentheses while scanning the module declaration")
 
 
+_COMMENT_RE = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"', re.S)
+
+
+def _strip_comments(sv_text: str) -> str:
+    """SystemVerilog source without its comments, line numbers kept (a block
+    comment's newlines stay). String literals are left alone, so a `//` in
+    one is not taken for a comment."""
+    def blank(match: re.Match[str]) -> str:
+        text = match.group(0)
+        return text if text.startswith('"') else "\n" * text.count("\n") + " "
+    return _COMMENT_RE.sub(blank, sv_text)
+
+
 def parse_ports(sv_text: str, module_name: str | None = None) -> FsmPorts:
     """Extract the port list of a module. If module_name is given, find that
-    specific module; otherwise use the first 'module <name>' declaration."""
+    specific module; otherwise use the first 'module <name>' declaration.
+    Comments are not code: a header like `// This module for my SoC` was read
+    as a module named `for` (#63)."""
+    sv_text = _strip_comments(sv_text)
     if module_name is not None:
         match = re.search(rf"\bmodule\s+{re.escape(module_name)}\b", sv_text)
         if not match:

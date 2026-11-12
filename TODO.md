@@ -27,10 +27,6 @@ work it describes; don't let it silently go stale the way
 
 ## Not started (scoped as GitHub milestones, no work begun)
 
-- **IEEE 1450.6.2 memory modeling (CTL)** — describe a memory core's test
-  structure/repair mechanism in CTL for EDA-tool interop. (Confirmed
-  during milestone-4 scoping: this is a different problem from diagnosis
-  *result* reporting — don't conflate the two when scoping either.)
 - **UVM verification environment** — a UVM-based verification wrapper.
 
 ## Shared-bus follow-ups (deliberately deferred, not urgent)

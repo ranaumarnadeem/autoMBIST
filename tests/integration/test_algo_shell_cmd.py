@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -199,6 +200,28 @@ def test_export_tb_produces_runnable_bundle(tmp_path: Path) -> None:
     ])
     for name in ("fault_ram.sv", "march_engine.sv", "openram_shim.sv", "run_campaign.sh", "faults.txt"):
         assert (bundle_dir / name).exists(), name
+
+
+@pytest.mark.parametrize("memory", ["set_memory 6 16 --init 0", "set_memory 4 8 --ports 2"])
+def test_an_exported_bundle_reports_the_sessions_coverage(tmp_path: Path, memory: str) -> None:
+    """#53: the bundle built the engine's own 8x8 default whatever memory the
+    session had (and the 1-port engine for a 2-port session), so the same
+    faults scored differently in it."""
+    bundle_dir = tmp_path / "bundle"
+    shell, out = _run_script([memory, "gen_faults", "run march_c", f"export_tb {bundle_dir}"])
+    session = shell.session.last_results["march_c"]
+    assert session.golden_clean, out
+
+    result = subprocess.run(
+        ["bash", "run_campaign.sh", "faults.txt", "march_c"],
+        cwd=bundle_dir, capture_output=True, text=True, check=False, timeout=600,
+        env={**os.environ, "SIM": "verilator"},
+    )
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert f"coverage: {session.detected} / {session.total} detected" in result.stdout, (
+        f"session {session.detected}/{session.total}\n{combined}"
+    )
 
 
 def test_run_campaign_sh_runs_a_non_builtin_algo_from_its_own_bundle(tmp_path: Path) -> None:

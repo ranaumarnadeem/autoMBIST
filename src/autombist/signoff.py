@@ -204,6 +204,23 @@ def build_librelane_command(
 # --------------------------------------------------------------------------
 # Macro-internal DRC / LVS
 # --------------------------------------------------------------------------
+#: Where run_macro_signoff.sh is in an autoMBIST checkout. It checks the
+#: checkout's own flow/multimem macros, so the package does not ship it.
+DEFAULT_SIGNOFF_SCRIPT = Path(__file__).resolve().parents[2] / "flow" / "multimem" / "signoff" / "run_macro_signoff.sh"
+
+
+def signoff_script_problem(script: Path) -> str | None:
+    """Why ``script`` cannot run, or None. For the default, says it lives in a
+    checkout: an installed package has no flow/ and just said "not found" (#63)."""
+    if script.is_file():
+        return None
+    if script == DEFAULT_SIGNOFF_SCRIPT:
+        return (f"signoff script not found: {script} -- the default is "
+                "flow/multimem/signoff/run_macro_signoff.sh in an autoMBIST checkout, which an "
+                "installed package does not include; pass --script")
+    return f"signoff script not found: {script}"
+
+
 def build_macro_signoff_command(
     signoff_script: str | Path,
     macro_names: list[str] | None = None,

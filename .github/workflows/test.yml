@@ -65,6 +65,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-autombist-buildcache-
 
+      # The docs' first command: the dev shell has to put `autombist` on PATH.
+      - name: Dev shell provides the autombist command
+        run: nix develop --command autombist --help
+
       # Strict: a golden record off on the flake's own Yosys or Verilator fails
       # here, even on a version tests/golden/tool_versions.yml does not list.
       - name: Run test suite with coverage gate

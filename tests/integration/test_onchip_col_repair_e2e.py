@@ -36,6 +36,7 @@ if str(SRC_ROOT) not in sys.path:
 from autombist.bira_input import fail_cells  # noqa: E402
 from autombist.generator import generate_from_config  # noqa: E402
 from autombist.runner import run_simulation  # noqa: E402
+from fixture_models import fixture_model
 
 COL_PORTS = {
     "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0",
@@ -94,6 +95,7 @@ def _generate(tmp_path: Path, config: dict, subdir: str, algo: str = "march-c") 
 def _run(wrapper: Path, scenario: str, *, addr_width: int, data_width: int):
     return run_simulation(
         wrapper.parent,
+        memory_model=fixture_model(wrapper.parent),
         extra_make_vars={
             "COCOTB_TEST_MODULES": "test_onchip_col_repair",
             "COL_REPAIR_SCENARIO": scenario,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import functools
 import importlib.resources
 import re
 import shutil
@@ -118,25 +119,30 @@ _DuplicateKeyGuardLoader.add_constructor(
 )
 
 
+#: The algorithms `generate` builds a controller for: name -> its rtl/
+#: directory. The one list the name checks, the self-repair gates, the RTL
+#: copy and the --algo help read (#65); testbench's cycle table is checked
+#: against it by a test.
+RTL_ALGORITHMS: dict[str, str] = {
+    "march-c": "march_c",
+    "march-raw": "march_raw",
+    "march-1r1w": "march_1r1w",
+    "march-2rw": "march_2rw",
+    "march-x": "march_x",
+    "mats-plus": "mats_plus",
+    "checkerboard": "checkerboard",
+}
+RTL_ALGORITHM_LIST = ", ".join(RTL_ALGORITHMS)
+
+
 def _normalize_algo(algo: str) -> tuple[str, str]:
     algo_value = algo.strip().lower()
-    algo_map = {
-        "march-c": ("march_c", "march_c_top"),
-        "march-raw": ("march_raw", "march_raw_top"),
-        "march-1r1w": ("march_1r1w", "march_1r1w_top"),
-        "march-2rw": ("march_2rw", "march_2rw_top"),
-        "march-x": ("march_x", "march_x_top"),
-        "mats-plus": ("mats_plus", "mats_plus_top"),
-        "checkerboard": ("checkerboard", "checkerboard_top"),
-    }
-    if algo_value not in algo_map:
-        suggestion = difflib.get_close_matches(algo_value, algo_map, n=1)
+    if algo_value not in RTL_ALGORITHMS:
+        suggestion = difflib.get_close_matches(algo_value, RTL_ALGORITHMS, n=1)
         hint = f" -- did you mean {suggestion[0]!r}?" if suggestion else ""
-        raise ValueError(
-            f"algo {algo!r} is not recognized{hint}. Must be one of: march-c, march-raw, "
-            "march-1r1w, march-2rw, march-x, mats-plus, checkerboard"
-        )
-    return algo_map[algo_value]
+        raise ValueError(f"algo {algo!r} is not recognized{hint}. Must be one of: {RTL_ALGORITHM_LIST}")
+    algo_dir = RTL_ALGORITHMS[algo_value]
+    return algo_dir, f"{algo_dir}_top"
 
 
 # Algorithms whose FSM/top stream fail_valid/fail_addr AND whose wrapper
@@ -154,9 +160,7 @@ def _normalize_algo(algo: str) -> tuple[str, str]:
 # the same: single-port, fail_valid/fail_addr/fail_bitmask from day one -- its
 # address-dependent write/expected data never reaches the repair analyzer,
 # which only ever consumes fail_valid/fail_addr/fail_bitmask, never a value.
-_SELFREPAIR_ALGOS = frozenset(
-    {"march-c", "march-raw", "march-1r1w", "march-2rw", "march-x", "mats-plus", "checkerboard"}
-)
+_SELFREPAIR_ALGOS = frozenset(RTL_ALGORITHMS)
 
 # Algorithms wired for on-chip COLUMN repair -- now every _SELFREPAIR_ALGOS
 # member. march-1r1w's read port compares exactly like the four single-port
@@ -589,6 +593,15 @@ def _validate_shared_memories(loaded: dict[str, Any]) -> None:
 
         normalized.append({"name": name})
 
+    if len(normalized) < 2:
+        # One memory renders the dedicated wrapper (u_sram), while the manifest,
+        # runner and output naming would treat it as shared-bus (#50).
+        raise ConfigError(
+            "topology: shared-bus needs at least two memories (one controller "
+            "sequencing several); for a single memory leave out topology and "
+            "memories"
+        )
+
     loaded["memories"] = normalized
 
 
@@ -640,6 +653,33 @@ def _validate_repair_ports(loaded: dict[str, Any]) -> None:
     loaded["repair_ports"] = normalized
 
 
+_REDUNDANCY_KEYS = frozenset({
+    "num_spare_rows", "num_spare_cols", "words_per_row", "onchip_selfrepair",
+    "onchip_repair_persistence", "onchip_diagnosis", "num_diagnosis_entries",
+    "onchip_col_repair", "onchip_spare_retry", "onchip_analyzer",
+})
+# What _validate_redundancy writes back into the block for the template; the
+# config.yml snapshot carries them, so loading a snapshot again must accept them.
+_DERIVED_REDUNDANCY_KEYS = frozenset({
+    "base_words", "word_size", "mem_addr_width", "mem_data_width", "bit_index_width",
+})
+
+
+def _reject_unknown_redundancy_keys(block: dict[str, Any]) -> None:
+    """Each redundancy option selects hardware, and a misspelled one silently
+    took its default, leaving the feature out of the RTL (#51)."""
+    unknown = sorted(set(block) - _REDUNDANCY_KEYS - _DERIVED_REDUNDANCY_KEYS, key=str)
+    if not unknown:
+        return
+    key = str(unknown[0])
+    suggestion = difflib.get_close_matches(key, _REDUNDANCY_KEYS, n=1)
+    hint = f" -- did you mean {suggestion[0]!r}?" if suggestion else ""
+    raise ConfigError(
+        f"redundancy.{key} is not a redundancy option{hint}. "
+        f"Valid options: {', '.join(sorted(_REDUNDANCY_KEYS))}"
+    )
+
+
 def _validate_redundancy(loaded: dict[str, Any]) -> None:
     """Validate the OPTIONAL ``redundancy:`` block and derive its spare geometry.
 
@@ -675,6 +715,7 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
 
     if not isinstance(block, dict):
         raise ConfigError("redundancy must be a mapping")
+    _reject_unknown_redundancy_keys(block)
 
     onchip_selfrepair = block.get("onchip_selfrepair", False)
     if not isinstance(onchip_selfrepair, bool):
@@ -1047,15 +1088,35 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
     }
 
 
+def _reject_non_string_keys(node: Any, where: str) -> None:
+    """Every key in a config is a name. YAML 1.1 reads `on:`, `yes:` or `0:` as a
+    boolean or a number, which then broke the name checks with a TypeError."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if not isinstance(key, str):
+                hint = " (YAML reads on/off/yes/no as true/false: quote the key)" if isinstance(key, bool) else ""
+                raise ConfigError(f"config key {key!r}{' in ' + where if where else ''} is not a name{hint}")
+            _reject_non_string_keys(value, f"{where}.{key}" if where else key)
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            _reject_non_string_keys(item, f"{where}[{index}]")
+
+
 def load_config(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with config_path.open("r", encoding="utf-8") as handle:
-        loaded = yaml.load(handle, Loader=_DuplicateKeyGuardLoader)
+    # A YAML syntax error or a non-string key is a ConfigError here, so every
+    # front end (CLI, Tcl shell, Python API) reports it as one line (#59).
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            loaded = yaml.load(handle, Loader=_DuplicateKeyGuardLoader)
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"{config_path} is not valid YAML: {exc}") from None
 
     if not isinstance(loaded, dict):
         raise ConfigError("Config must be a YAML mapping")
+    _reject_non_string_keys(loaded, "")
 
     _require_keys(loaded, REQUIRED_TOP_KEYS, "root")
     _reject_unknown_top_keys(loaded)
@@ -1101,13 +1162,21 @@ def load_config(config_path: Path) -> dict[str, Any]:
     return loaded
 
 
-def _render_template(config: dict[str, Any], template_name: str) -> str:
-    env = Environment(
+@functools.lru_cache(maxsize=1)
+def _template_environment() -> Environment:
+    """One Environment for the process: it caches each compiled template, and
+    a new one per render recompiled wrapper_template.j2 (60-74 ms) every time
+    (#64). A template edited on disk is still picked up (auto_reload)."""
+    return Environment(
         loader=PackageLoader("autombist", "templates"),
         trim_blocks=True,
         lstrip_blocks=True,
         keep_trailing_newline=True,
     )
+
+
+def _render_template(config: dict[str, Any], template_name: str) -> str:
+    env = _template_environment()
 
     try:
         template = env.get_template(template_name)
@@ -1149,7 +1218,7 @@ def _find_rtl_dir() -> Path:
     )
 
 
-_ALGO_DIRS = {"march_c", "march_raw", "march_1r1w", "march_2rw", "march_x", "mats_plus", "checkerboard"}
+_ALGO_DIRS = set(RTL_ALGORITHMS.values())
 
 
 def copy_mbist_rtl(outdir: Path, algo_dir: str | None = None) -> None:
@@ -1193,7 +1262,25 @@ def generate_from_config(
             f"Invalid fault_type: {fault_type}. Must be one of: stuck-at, transition-up, transition-down, port-coupling"
         )
 
+    # The algorithm, resolved once and first: every check below, the snapshot
+    # and the simulator's ALGO= use this one spelling (#60). A mixed-case name
+    # used to pass here and then miss the case-sensitive RTL directory and the
+    # saboteur template's branches; a typo hit a port or self-repair gate's
+    # misleading message before the did-you-mean.
+    algo_dir, algo_top_module = _normalize_algo(algo)
+    algo = algo.strip().lower()
+
     config = load_config(config_path)
+    # algo and fault_type are command options; in a config they are snapshot
+    # keys generate writes, never reads. A user's `algo: march-raw` was
+    # silently replaced by the option's value (#60).
+    for key, given in (("algo", algo), ("fault_type", fault_type)):
+        if key in config and str(config[key]).strip().lower() != given:
+            raise ConfigError(
+                f"{config_path} sets {key}: {config[key]!r}, but this run was given {given!r}. "
+                f"{key} is not read from a config: pass --{key.replace('_', '-')} instead, and remove it "
+                "from the file"
+            )
 
     _validate_port_topology(config["normalized_ports"], algo)
 
@@ -1313,7 +1400,6 @@ def generate_from_config(
     render_config["autombist_pulse_width_ns"] = pulse_width_ns
     render_config["autombist_algo"] = algo
 
-    algo_dir, algo_top_module = _normalize_algo(algo)
     render_config["algo_dir"] = algo_dir
     render_config["algo_top_module"] = algo_top_module
     render_config["algo_port_suffixes"] = _algo_port_suffixes(config["normalized_ports"], algo)

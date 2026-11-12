@@ -48,10 +48,10 @@
 //                                              cycle, expects 0 (that same
 //                                              write's own new value)
 //   E4 (down, CONCURRENT WRITE/WRITE, diff addr):
-//                                              port0 writes 0 @ partner_addr,
-//                                              port1 writes 0 @ addr_q,
-//                                              same cycle (mirrors E1 with
-//                                              the roles/values swapped)
+//                                              port0 writes 0 @ addr_q,
+//                                              port1 writes 0 @ partner_addr,
+//                                              same cycle (E1's shape, with
+//                                              the value 0)
 //   E5 (down, port0 read only):               final read-only verification
 //                                              pass: read addr_q, expect 0
 //

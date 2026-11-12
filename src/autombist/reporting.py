@@ -414,7 +414,9 @@ def build_simulation_report(
         },
         "simulation": {
             "use_saboteur": use_saboteur,
-            "faults_requested": faults,
+            # generate records --faults' default even without --test; a clean
+            # run injects none, and its report claimed 50 (#63).
+            "faults_requested": faults if use_saboteur else 0,
             "fault_seed": fault_seed,
             "fault_type": fault_type,
             "pulse_width_ns": pulse_width_ns,
@@ -515,6 +517,12 @@ def _controller_section(block: dict[str, Any] | None, divider: str) -> list[str]
     ]
 
 
+def _shown(value: Any) -> Any:
+    """A report field for the text report: `unknown` when absent, and also
+    when present as None, which .get's default does not cover (#63)."""
+    return "unknown" if value is None else value
+
+
 def render_text_report(report: dict[str, Any], fault_log_text: str) -> str:
     config = report.get("config", {})
     simulation = report.get("simulation", {})
@@ -526,6 +534,10 @@ def render_text_report(report: dict[str, Any], fault_log_text: str) -> str:
     wrapper_module_name = config.get("wrapper_module_name", "unknown")
     coverage_percent = metrics.get("coverage_percent")
     coverage_text = f"{coverage_percent:.2f}%" if coverage_percent is not None else "not reported"
+    if simulation.get("use_saboteur") is False:
+        fault_model_text = "none (clean run, no faults injected)"
+    else:
+        fault_model_text = _shown(simulation.get("fault_type"))
     fault_summary_block = _extract_fault_summary_block(fault_log_text) or "Fault summary\n(none available)"
     junit_out = [entry for entry in junit.get("system_out", []) if entry][:3]
     junit_excerpt = "\n\n".join(junit_out) if junit_out else "(none)"
@@ -579,11 +591,11 @@ def render_text_report(report: dict[str, Any], fault_log_text: str) -> str:
         f"{'Address width:':<23}{config.get('addr_width', 'unknown')}",
         f"{'Data width:':<23}{config.get('data_width', 'unknown')}",
         f"{'Algorithm:':<23}{simulation.get('algo', 'unknown')}",
-        f"{'Fault model:':<23}{simulation.get('fault_type', 'unknown')}",
-        f"{'Faults requested:':<23}{simulation.get('faults_requested', 'unknown')}",
-        f"{'Injected faults (obs):':<23}{metrics.get('injected_faults', 'unknown')}",
-        f"{'Detected faults:':<23}{metrics.get('detected_faults', 'unknown')}",
-        f"{'Total fault sites:':<23}{metrics.get('total_fault_sites', 'unknown')}",
+        f"{'Fault model:':<23}{fault_model_text}",
+        f"{'Faults requested:':<23}{_shown(simulation.get('faults_requested'))}",
+        f"{'Injected faults (obs):':<23}{_shown(metrics.get('injected_faults'))}",
+        f"{'Detected faults:':<23}{_shown(metrics.get('detected_faults'))}",
+        f"{'Total fault sites:':<23}{_shown(metrics.get('total_fault_sites'))}",
         f"{'Coverage:':<23}{coverage_text}",
         f"{'Run status:':<23}{str(report.get('status', 'unknown')).upper()}",
         f"{'Runtime:':<23}{float(report.get('runtime_seconds', 0.0)):.3f} s",
@@ -712,3 +724,24 @@ def merge_faultflow_coverage(
         report["controller_grading"] = faultflow_block
         report["summary"] = format_simulation_summary(report)
     return report
+
+
+def merge_controller_grading(module_outdir: Path, coverage: dict[str, Any] | None) -> None:
+    """Merge a FaultFlow grading result into a run's reports: ``latest.json``
+    and ``report.txt``, which renders its CONTROLLER LOGIC section from the
+    merged block. The CLI and the Tcl shell both call this (#62); report.txt
+    used to be left without the section. Nothing to merge, or no simulation
+    report yet, leaves the reports as they are."""
+    reports_dir = Path(module_outdir) / "reports"
+    report_path = reports_dir / "latest.json"
+    if not coverage or not report_path.exists():
+        return
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    merge_faultflow_coverage(report, coverage)
+    write_simulation_report(report, reports_dir)
+    log_path = Path(module_outdir) / "simulate.log"
+    log_text = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+    write_text_report(report, reports_dir, log_text)

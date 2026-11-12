@@ -39,6 +39,7 @@ if str(SRC_ROOT) not in sys.path:
 from autombist.bira_input import fail_cells  # noqa: E402
 from autombist.generator import generate_from_config  # noqa: E402
 from autombist.runner import run_simulation  # noqa: E402
+from fixture_models import fixture_model
 
 ADDR_WIDTH = 2
 DATA_WIDTH = 4
@@ -79,6 +80,7 @@ def _generate(tmp_path: Path, config: dict, subdir: str) -> Path:
 def _run(wrapper: Path, scenario: str):
     return run_simulation(
         wrapper.parent,
+        memory_model=fixture_model(wrapper.parent),
         extra_make_vars={"COCOTB_TEST_MODULES": "test_onchip_col_repair", "COL_REPAIR_SCENARIO": scenario},
     )
 

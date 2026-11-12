@@ -14,6 +14,7 @@ reported, but left out of the repair rate rather than counted either way.
 from __future__ import annotations
 
 import hashlib
+import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -153,6 +154,40 @@ def _check_sweep_arguments(ks: Sequence[int], trials: int) -> None:
         raise ValueError(f"defect counts must not repeat (a repeat reruns the same seeds), got {list(ks)}")
 
 
+SWEEP_WORKERS_ENV = "AUTOMBIST_SWEEP_WORKERS"
+_MIN_TRIALS_FOR_WORKERS = 64  # below this, starting the processes costs more than it saves
+
+
+def _sweep_workers(engine: TrialEngine, n_trials: int) -> int:
+    """How many processes to run trials in: 1 unless the engine says its
+    trials are independent (``parallel_safe``; the RTL engines share one module
+    directory, so they are not). AUTOMBIST_SWEEP_WORKERS overrides the default
+    of the CPU count, at most 8; 1 runs serially."""
+    if not getattr(engine, "parallel_safe", False) or n_trials < _MIN_TRIALS_FOR_WORKERS:
+        return 1
+    raw = os.environ.get(SWEEP_WORKERS_ENV, "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return max(1, min(os.cpu_count() or 1, 8))
+
+
+def _run_one_trial(job: tuple[TrialEngine, int, int]) -> TrialRecord:
+    engine, k, seed = job
+    return engine.run_trial(k, seed)
+
+
+def _checked_records(engine, jobs, outcomes, progress):
+    for (k, i, _seed), record in zip(jobs, outcomes):
+        if record.k != k:
+            raise ValueError(f"engine {engine.name!r} returned a trial for k={record.k} when asked for k={k}")
+        if progress is not None:
+            progress(k, i, record)
+        yield record
+
+
 def run_sweep(
     engine: TrialEngine,
     ks: Sequence[int],
@@ -169,17 +204,24 @@ def run_sweep(
     _check_sweep_arguments(ks, trials)
     if seed_scheme not in SEED_SCHEMES:
         raise ValueError(f"unknown seed scheme {seed_scheme!r}: use one of {SEED_SCHEMES}")
+    jobs = [(k, i, derive_seed(seed_scheme, base_seed, k, i, trials)) for k in ks for i in range(trials)]
+    workers = _sweep_workers(engine, len(jobs))
+    if workers > 1:
+        # Trials in worker processes (#64). Each trial's seed is fixed above and
+        # the engine seeds its own RNG from it, so the records are the ones a
+        # serial run makes; map keeps their order for progress and the report.
+        from concurrent.futures import ProcessPoolExecutor
+
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            outcomes = pool.map(_run_one_trial, [(engine, k, seed) for k, _, seed in jobs],
+                                chunksize=max(1, len(jobs) // (workers * 8)))
+            records_in_order = list(_checked_records(engine, jobs, outcomes, progress))
+    else:
+        outcomes = (engine.run_trial(k, seed) for k, _, seed in jobs)
+        records_in_order = list(_checked_records(engine, jobs, outcomes, progress))
     points = []
-    for k in ks:
-        records = []
-        for i in range(trials):
-            record = engine.run_trial(k, derive_seed(seed_scheme, base_seed, k, i, trials))
-            if record.k != k:
-                raise ValueError(f"engine {engine.name!r} returned a trial for k={record.k} when asked for k={k}")
-            records.append(record)
-            if progress is not None:
-                progress(k, i, record)
-        points.append(PointResult(k=k, trials=tuple(records)))
+    for n, k in enumerate(ks):
+        points.append(PointResult(k=k, trials=tuple(records_in_order[n * trials:(n + 1) * trials])))
     return SweepResult(
         engine=engine.name, unit=engine.unit, description=dict(engine.describe()),
         trials_per_point=trials, base_seed=base_seed, seed_scheme=seed_scheme, points=tuple(points),

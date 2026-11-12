@@ -157,6 +157,9 @@
             pkgs.gnumake   # runner.py drives cocotb's Makefile.sim via `make`
             cxx            # verilator emits C++ that must be compiled
             pkgs.ccache    # verilated.mk reads $OBJCACHE, empty by default (see below)
+            # The `autombist` command the docs use, run from this checkout's
+            # src/ (on PYTHONPATH, below) so edits take effect without a rebuild.
+            (pkgs.writeShellScriptBin "autombist" ''exec python -m autombist "$@"'')
           ];
 
           # Resolve `import autombist` from the source tree (mirrors the

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import re
 import subprocess
 import sys
@@ -349,8 +350,8 @@ def test_cli_generate_errors_without_config(tmp_path: Path, monkeypatch: pytest.
     result = runner.invoke(app, ["generate", "--out", str(tmp_path / "out")])
 
     assert result.exit_code == 1
-    assert isinstance(result.exception, FileNotFoundError)
-    assert "Config file not found" in str(result.exception)
+    assert "autombist: Config file not found" in result.output  # one line, not a traceback (#59)
+    assert not isinstance(result.exception, FileNotFoundError)
 
 
 def test_cli_generate_defaults(tmp_path: Path, base_config: dict[str, object]) -> None:
@@ -421,12 +422,12 @@ def test_generated_fault_makefile_has_simple_targets(
 
     assert "all: fault-test" in makefile_text
     assert "fault-test:" in makefile_text
-    assert "debug: precheck" in makefile_text
-    assert "Python3 not found at $(PYTHON_BIN). Maybe use venv? or install Python3." in makefile_text
-    assert "$(MAKE) -C $(PROJECT_ROOT)/tests/hardware" in makefile_text
-    assert "PYTHON_BIN=$(PYTHON_BIN)" in makefile_text
-    assert "SIM_LOG ?= fault_sim.log" in makefile_text
-    assert "ALGO=march-c" in makefile_text
+    assert "debug:" in makefile_text
+    # #63: it drives `autombist simulate` on this directory, not a repo checkout's
+    # tests/hardware and venv, so it works in any project
+    assert "SIMULATE = $(AUTOMBIST) simulate --out $(MODULE_DIR) $(if $(MODEL),--model $(MODEL))" in makefile_text
+    assert "PROJECT_ROOT" not in makefile_text and "venv" not in makefile_text
+    assert "ALGO := march-c" in makefile_text
     assert "FAULT_TYPE := stuck-at" in makefile_text
     assert "PULSE_WIDTH_NS := 2" in makefile_text
 
@@ -664,6 +665,42 @@ def test_invalid_algo_raises(tmp_path: Path, base_config: dict[str, object]) -> 
 
     with pytest.raises(ValueError, match="is not recognized"):
         generate_from_config(config_path, outdir, algo="invalid-algo")
+
+
+def test_a_mixed_case_algo_is_recorded_in_its_canonical_spelling(tmp_path: Path, base_config: dict[str, object]) -> None:
+    """#60: the snapshot kept `MARCH-C`, and the simulator's case-sensitive
+    ALGO_DIR then missed march_c/."""
+    config_path = tmp_path / "config.yml"
+    _write_yaml(config_path, base_config)
+    wrapper = generate_from_config(config_path, tmp_path / "out", algo="MARCH-C")
+    snapshot = yaml.safe_load((wrapper.parent / "config.yml").read_text(encoding="utf-8"))
+    assert snapshot["algo"] == snapshot["autombist_algo"] == "march-c"
+    assert (wrapper.parent / "march_c" / "march_c_top.sv").exists()
+
+
+def test_an_algo_typo_gets_the_did_you_mean_before_any_port_check(tmp_path: Path) -> None:
+    """#60: march-2wr on a 2-port memory reported "requires exactly 1 port"."""
+    config = {
+        "memory_name": "sram_2rw", "wrapper_module_name": "sram_2rw_mbist", "addr_width": 4, "data_width": 8,
+        "we_active_low": True,
+        "ports": {
+            "porta": {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "csb": "csb0", "we": "web0"},
+            "portb": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "csb": "csb1", "we": "web1"},
+        },
+    }
+    config_path = tmp_path / "config.yml"
+    _write_yaml(config_path, config)
+    with pytest.raises(ValueError, match=r"did you mean 'march-2rw'\?"):
+        generate_from_config(config_path, tmp_path / "out", algo="march-2wr")
+
+
+def test_an_algo_in_the_config_that_the_run_overrides_is_an_error(tmp_path: Path, base_config: dict[str, object]) -> None:
+    """#60: `algo: march-raw` in config.yml was silently replaced by --algo's default."""
+    config_path = tmp_path / "config.yml"
+    _write_yaml(config_path, {**base_config, "algo": "march-raw"})
+    with pytest.raises(ConfigError, match="sets algo: 'march-raw', but this run was given 'march-c'"):
+        generate_from_config(config_path, tmp_path / "out")
+    generate_from_config(config_path, tmp_path / "out", algo="march-raw")  # agreeing is fine
 
 
 def test_invalid_algo_close_typo_suggests_the_real_name() -> None:
@@ -916,7 +953,7 @@ def test_cli_simulate_simulation_error_exits_1(
     _write_yaml(config_path, base_config)
     generate_from_config(config_path, outdir)
 
-    def fake_run_simulation(module_outdir: Path, *, verbose: bool = False):
+    def fake_run_simulation(module_outdir: Path, *, verbose: bool = False, memory_model=None):
         raise _SimulationError("sim boom")
 
     monkeypatch.setattr("autombist.cli.run_simulation", fake_run_simulation)
@@ -1024,7 +1061,7 @@ def test_cli_run_with_faultflow_flag_invokes_grading(
     outdir = tmp_path / "out"
     _write_yaml(config_path, base_config)
 
-    def fake_simulate(module_outdir: Path, verbose: bool, min_coverage=None, json_output=False) -> None:
+    def fake_simulate(module_outdir: Path, verbose: bool, min_coverage=None, json_output=False, memory_model=None) -> None:
         return None
 
     fake_coverage = {
@@ -1066,7 +1103,7 @@ def test_cli_run_faultflow_json_keeps_stdout_as_pure_json(
     outdir = tmp_path / "out"
     _write_yaml(config_path, base_config)
 
-    def fake_simulate(module_outdir: Path, verbose: bool, min_coverage=None, json_output=False) -> None:
+    def fake_simulate(module_outdir: Path, verbose: bool, min_coverage=None, json_output=False, memory_model=None) -> None:
         if json_output:
             typer.echo(json_module.dumps({"status": "pass"}))
 
@@ -1097,7 +1134,7 @@ def test_cli_run_faultflow_quiet_suppresses_coverage_echo(
     outdir = tmp_path / "out"
     _write_yaml(config_path, base_config)
 
-    def fake_simulate(module_outdir: Path, verbose: bool, min_coverage=None, json_output=False) -> None:
+    def fake_simulate(module_outdir: Path, verbose: bool, min_coverage=None, json_output=False, memory_model=None) -> None:
         return None
 
     def fake_run_controller_grading(module_outdir: Path, opts, *, run: bool = True):
@@ -1257,6 +1294,7 @@ def test_cli_test_command_custom_fault_types(tmp_path: Path, monkeypatch: pytest
 
     def fake_run_algo_campaign(mem, spec, records, *, sim="verilator", verbose=False, fault_ram_sv=None, progress_callback=None):
         captured["fault_ram_sv"] = fault_ram_sv
+        captured["existed_during_the_campaign"] = Path(str(fault_ram_sv)).exists()
         return _fake_campaign_result()
 
     monkeypatch.setattr("autombist.algo_engine.run_algo_campaign", fake_run_algo_campaign)
@@ -1275,7 +1313,9 @@ def test_cli_test_command_custom_fault_types(tmp_path: Path, monkeypatch: pytest
 
     assert result.exit_code == 0
     assert captured["fault_ram_sv"] is not None
-    assert Path(str(captured["fault_ram_sv"])).exists()
+    assert captured["existed_during_the_campaign"]
+    # and is gone afterwards: every --fault-types run used to leave one (#59)
+    assert not Path(str(captured["fault_ram_sv"])).parent.exists()
 
 
 def test_cli_test_command_fsm_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1364,6 +1404,44 @@ def test_cli_algo_command_script_stdin(tmp_path: Path) -> None:
     result = runner.invoke(app, ["algo", "--script", "-"], input="quit\n")
 
     assert result.exit_code == 0
+
+
+def test_cli_algo_script_stops_and_fails_at_a_failed_command() -> None:
+    """#57: a failing command printed an error and the script still exited 0,
+    so a broken session passed CI."""
+    result = runner.invoke(
+        app, ["algo", "--script", "-"], input="set_memory 4 4\nrun no_such_algo\nlist faults\nquit\n"
+    )
+    assert result.exit_code == 1
+    assert "error: " in result.output and "unknown algorithm" in result.output
+    assert "-:2: stopped at a failed command" in result.output
+    assert "faults:" not in result.output  # line 3 never ran
+
+
+def test_cli_algo_script_missing_file_is_one_error_line(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["algo", "--script", str(tmp_path / "missing.algo")])
+    assert result.exit_code == 1
+    assert "autombist: cannot read script" in result.output and "Traceback" not in result.output
+
+
+def test_algo_shell_survives_ctrl_c_with_its_session(monkeypatch) -> None:
+    """#62: Ctrl-C used to end the process and lose the session."""
+    import cmd as cmd_module
+
+    from autombist.algo_shell import AlgoShell, Session
+
+    shell = AlgoShell(Session())
+    shell.stdout = io.StringIO()
+    calls = iter([KeyboardInterrupt, None])
+
+    def fake_cmdloop(self, intro=None):
+        outcome = next(calls)
+        if outcome is not None:
+            raise outcome
+
+    monkeypatch.setattr(cmd_module.Cmd, "cmdloop", fake_cmdloop)
+    shell.cmdloop()
+    assert "interrupted" in shell.stdout.getvalue()
 
 
 # ---------------------------------------------------------------------------

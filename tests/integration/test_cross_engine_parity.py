@@ -56,6 +56,7 @@ from autombist.algo_engine import (  # noqa: E402
 )
 from autombist.generator import generate_from_config  # noqa: E402
 from autombist.runner import run_simulation  # noqa: E402
+from fixture_models import fixture_model  # noqa: E402
 
 # A small memory keeps both engines' campaigns fast. sram_tiny (2x4) has a DUT
 # at tests/hardware/sram_tiny.v (reused by test_array_e2e).
@@ -86,7 +87,7 @@ def _classic_single_fault(tmp_path: Path, seed: int) -> tuple[str, int, int, boo
         config_path, outdir, use_saboteur=True, faults=1, fault_seed=seed,
         fault_type="stuck-at", algo="march-c",
     )
-    result = run_simulation(wrapper_path.parent, verbose=False)
+    result = run_simulation(wrapper_path.parent, memory_model=fixture_model(wrapper_path.parent), verbose=False)
     assert result.returncode == 0, result.report.get("summary", "")
 
     sites = result.report["fault_details"]

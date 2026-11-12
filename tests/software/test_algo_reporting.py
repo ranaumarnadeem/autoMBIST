@@ -85,8 +85,26 @@ def test_render_campaign_json_roundtrips() -> None:
 
 def test_render_campaign_json_records_the_tool_versions(monkeypatch) -> None:
     monkeypatch.setattr("autombist.algo_reporting._verilator_version", lambda: "Verilator 5.048")
+    monkeypatch.setattr("autombist.algo_reporting._source_commit", lambda: None)
     payload = json.loads(render_campaign_json(_result("march_c", [("SA0", 1, 0, True)])))
     assert payload["tool_versions"] == {"autombist": autombist.__version__, "simulator": "Verilator 5.048"}
+
+
+def test_render_campaign_json_records_the_source_commit_in_a_checkout(monkeypatch) -> None:
+    """#61: the version alone named a release that did not have the code."""
+    monkeypatch.setattr("autombist.algo_reporting._verilator_version", lambda: "Verilator 5.048")
+    monkeypatch.setattr("autombist.algo_reporting._source_commit", lambda: "abc123-dirty")
+    payload = json.loads(render_campaign_json(_result("march_c", [("SA0", 1, 0, True)])))
+    assert payload["tool_versions"]["autombist_commit"] == "abc123-dirty"
+
+
+def test_the_source_commit_is_this_checkouts() -> None:
+    from autombist.algo_reporting import _source_commit
+
+    commit = _source_commit()
+    if commit is None:
+        pytest.skip("not running from a git checkout")
+    assert len(commit.removesuffix("-dirty")) == 40
 
 
 def test_render_campaign_json_without_verilator_says_unknown(monkeypatch) -> None:

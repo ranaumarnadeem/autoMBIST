@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import os
 import shutil
@@ -70,7 +71,8 @@ def _find_hardware_dir() -> Path:
         f"Hardware simulation directory not found. Looked in:\n"
         f"  - {installed_hardware}\n"
         f"  - {dev_hardware}\n"
-        f"\nMake sure 'tests' is included in your autombist installation, or set AUTOMBIST_HARDWARE_DIR environment variable."
+        f"\nThe autombist installation is missing its tests/hardware data; reinstall it "
+        f"(e.g. from the Nix flake) or run from an autoMBIST checkout."
     )
 
 
@@ -88,10 +90,56 @@ class SimulationResult:
     stdout: str
     stderr: str
     report: dict[str, Any]
+    # The memory simulation model(s) the run compiled (see resolve_memory_model).
+    memory_model: list[Path] | None = None
 
 
 class SimulationError(RuntimeError):
     """Raised when the simulation backend cannot be executed."""
+
+
+def _sim_build_dir(module_outdir: Path, algo: str, use_saboteur: bool, models: list[Path]) -> Path:
+    """The simulator build directory for this module, algorithm, saboteur choice
+    and memory model. The model part is its path, size and mtime: any change
+    gives a fresh build, an unchanged model reuses the last one."""
+    identity = "\n".join(f"{p}:{p.stat().st_size}:{p.stat().st_mtime_ns}" for p in models)
+    key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+    algo_dir = algo.strip().lower().replace("-", "_")
+    return module_outdir / "sim_build" / f"{algo_dir}_s{int(use_saboteur)}_{key}"
+
+
+def resolve_memory_model(
+    config: dict[str, Any],
+    module_outdir: Path,
+    memory_model: list[Path] | tuple[Path, ...] | None = None,
+) -> list[Path]:
+    """The memory simulation model(s) a simulation compiles, as absolute paths.
+
+    In order: the model(s) the caller gives (``--model``); else
+    ``<memory_name>.v`` in the current directory, where ``autombist init`` puts
+    the sample model a user replaces with their macro's own; else the
+    behavioral model ``generate`` derived from the config,
+    ``<module_outdir>/tb/<memory_name>_model.v``. Never a file from the
+    autoMBIST checkout: the hardware Makefile's own default
+    (``tests/hardware/<memory_name>.v``) is a test fixture, not the user's
+    memory, so the runner always passes the model explicitly."""
+    if memory_model:
+        paths = [Path(p).expanduser().resolve() for p in memory_model]
+        missing = [str(p) for p in paths if not p.is_file()]
+        if missing:
+            raise SimulationError(f"memory model not found: {', '.join(missing)}")
+        return paths
+    name = str(config["memory_name"])
+    local = Path.cwd() / f"{name}.v"
+    if local.is_file():
+        return [local.resolve()]
+    generated = (module_outdir / "tb" / f"{name}_model.v").resolve()
+    if generated.is_file():
+        return [generated]
+    raise SimulationError(
+        f"no simulation model for memory {name!r}: pass --model PATH, put {name}.v "
+        f"in the current directory, or run `autombist generate` again (it writes {generated})"
+    )
 
 
 def _get_run_metadata(config: dict[str, Any], key: str, default: Any) -> Any:
@@ -271,8 +319,13 @@ def run_simulation(
     fail_scan: bool = False,
     march_log: bool = False,
     extra_make_vars: dict[str, str] | None = None,
+    memory_model: list[Path] | tuple[Path, ...] | None = None,
 ) -> SimulationResult:
     """Run the generated MBIST simulation and build its JSON report.
+
+    ``memory_model`` is the memory's simulation model (one or more files);
+    without it, ``resolve_memory_model`` picks ``./<memory_name>.v`` or the
+    generated behavioral model. The result's ``memory_model`` says which ran.
 
     ``fail_scan`` (opt-in) runs the functional-port fail scan instead of the
     march detection test: it probes every cell and attaches an observation-
@@ -295,6 +348,9 @@ def run_simulation(
     if fail_scan and march_log:
         raise ValueError("fail_scan and march_log are separate runs; choose one")
     start_time = time.time()
+    # Absolute: make runs in another directory (`make -C tests/hardware`), so a
+    # relative module directory would resolve against that one instead.
+    module_outdir = Path(module_outdir).resolve()
     config = _load_simulation_config(module_outdir)
     wrapper_path = module_outdir / f"{_wrapper_output_stem(config)}_mbist.v"
 
@@ -315,6 +371,8 @@ def run_simulation(
             raise SimulationError(
                 f"Saboteur wrapper not found: {saboteur_path}. Run `autombist generate --test` first."
             )
+
+    models = resolve_memory_model(config, module_outdir, memory_model)
 
     _require_make()
 
@@ -359,6 +417,13 @@ def run_simulation(
             project_root=project_root,
         )
 
+    # The memory model, always explicit: the hardware Makefile's default is its
+    # own test fixture of the same name, which is not the user's memory. The
+    # build directory is keyed by the model too: make only compares mtimes, so
+    # switching to a model older than the last build would otherwise reuse a
+    # simulator compiled from the previous one.
+    command.insert(command.index("sim"), "SRAM_SOURCE=" + " ".join(str(p) for p in models))
+    command.insert(command.index("sim"), f"SIM_BUILD={_sim_build_dir(module_outdir, algo, use_saboteur, models)}")
     # Redundancy builds add the external row-repair remap RTL to the compile.
     if config.get("redundancy"):
         command.append("USE_REPAIR_REMAP=1")
@@ -382,18 +447,18 @@ def run_simulation(
     log_contents = "".join(part for part in (completed.stdout, completed.stderr) if part)
     log_path.write_text(log_contents, encoding="utf-8")
 
-    backend_log_name = "fault_sim.log" if use_saboteur else "simulate.log"
-    backend_log_path = module_outdir / backend_log_name
-    backend_log_contents = ""
-    if backend_log_path.exists():
-        backend_log_contents = backend_log_path.read_text(encoding="utf-8")
+    # This run's own output, fault-injection builds included (#52). They used
+    # to read fault_sim.log, which only the generated Makefile's manual target
+    # writes: absent, the text report lost the fault table; left over from an
+    # earlier run, its faults were merged into this run's report.
+    backend_log_contents = log_contents
 
     results_xml_path = module_outdir / "results.xml"
 
     reports_dir = module_outdir / "reports"
     runtime = time.time() - start_time
 
-    full_stdout = "".join(part for part in (completed.stdout, backend_log_contents) if part)
+    full_stdout = completed.stdout or ""
 
     report = build_simulation_report(
         tool_version=__version__,
@@ -427,6 +492,7 @@ def run_simulation(
         stdout=completed.stdout,
         stderr=completed.stderr,
         report=report,
+        memory_model=models,
     )
 
     if completed.returncode != 0:

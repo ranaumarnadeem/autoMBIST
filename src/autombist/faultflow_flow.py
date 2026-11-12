@@ -334,11 +334,16 @@ def grade_controller(
         return None
 
     run_sh = bundle / "run_faultflow.sh"
+    # The repo this bundle was rendered for, explicitly: the script prefers an
+    # exported FAULTFLOW_HOME, which then beat --faultflow-repo for ff.py and
+    # PYTHONPATH while the Python and liberty still came from the flag (#63).
+    env = {**os.environ, "FAULTFLOW_HOME": str(opts.resolved_repo())}
     completed = subprocess.run(
         ["bash", str(run_sh)],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     (bundle / "run.log").write_text(
         "".join(part for part in (completed.stdout, completed.stderr) if part),

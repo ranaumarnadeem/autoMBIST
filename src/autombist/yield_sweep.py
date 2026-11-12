@@ -797,9 +797,8 @@ class SelfRepairEngine:
         at 2^A + i, spare columns at bit W + k), value 0 or 1 each."""
         module = self.module_dir  # generated first: generating writes blank masks
         self._write_masks(stuck)
-        result = run_simulation(module, extra_make_vars={
-            "COCOTB_TEST_MODULES": SELF_REPAIR_TEST_MODULE, "SRAM_SOURCE": str(self.model_path),
-        })
+        result = run_simulation(module, extra_make_vars={"COCOTB_TEST_MODULES": SELF_REPAIR_TEST_MODULE},
+                                memory_model=[self.model_path])
         report = result.report
         base, faults, spare_cells = self._split(stuck)
         invalid = self._invalid_reason(report)

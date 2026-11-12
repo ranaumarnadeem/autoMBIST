@@ -276,6 +276,30 @@ def test_compare_multiport_per_port_multiset() -> None:
     assert all(d.port == 1 for d in bad.divergences)
 
 
+@pytest.mark.parametrize("num_ports", [1, 2])
+def test_compare_a_reversed_trace_diverges(num_ports: int) -> None:
+    """#56: the multi-port check compared multisets, so any reordering
+    passed. Each port's own stream is ordered and has to match."""
+    spec = parse_alg("up r0.0 w1.1\ndown r1.0 w0.1" if num_ports == 2 else "up r0 w1\ndown r1 w0", "rev")
+    blocks = expand_expected_blocks(spec, depth=4)
+    good = _obs_from_expected(expand_expected_trace(spec, depth=4), 8)
+    assert compare_trace(blocks, good, data_width=8, num_ports=num_ports).matches is True
+    reversed_trace = compare_trace(blocks, good[::-1], data_width=8, num_ports=num_ports)
+    assert reversed_trace.matches is False
+
+
+def test_compare_multiport_one_port_in_the_wrong_direction_diverges() -> None:
+    """Port 1 walks its fixed-direction element downward; port 0 is right."""
+    spec = parse_alg("up r0.0 w1.1", "dir")
+    blocks = expand_expected_blocks(spec, depth=3)
+    good = _obs_from_expected(expand_expected_trace(spec, depth=3), 8)
+    port0 = [o for o in good if o.port == 0]
+    port1 = [o for o in good if o.port == 1][::-1]
+    bad = compare_trace(blocks, port0 + port1, data_width=8, num_ports=2)
+    assert bad.matches is False
+    assert [d.port for d in bad.divergences] == [1]
+
+
 # --------------------------------------------------------------------------- #
 # Regression guards (Phase-1 plan)
 # --------------------------------------------------------------------------- #
@@ -311,3 +335,21 @@ def test_harness_render_seq_trace_adds_observer_only() -> None:
     # Multi-port observer emits both ports.
     on_mp = render_harness_mp(addr_width=8, data_width=8, fsm_module_name="march_2rw_top", emit_seq_trace=True)
     assert "ACCESS port=0 we=%0d" in on_mp and "ACCESS port=1 we=%0d" in on_mp
+
+
+def test_a_comment_mentioning_module_is_not_the_module() -> None:
+    """#63: `// This module for my SoC` made the FSM front validate `for`."""
+    from autombist.fsm_harness import parse_ports
+
+    text = (
+        "// This module for my SoC drives the march.\n"
+        "/* module also_not_this (input x); */\n"
+        "module my_ctrl (\n"
+        "    input  logic clk, // a module comment\n"
+        "    output logic done\n"
+        ");\nendmodule\n"
+    )
+    ports = parse_ports(text)
+    assert ports.module_name == "my_ctrl"
+    assert ports.ports == {"clk": "input", "done": "output"}
+    assert parse_ports(text + "module second (input a);\nendmodule\n", module_name="second").ports == {"a": "input"}

@@ -44,6 +44,7 @@ from autombist.repair import (  # noqa: E402
     encode_repair,
 )
 from autombist.runner import run_simulation  # noqa: E402
+from fixture_models import fixture_model
 
 ADDR_WIDTH = 2
 DATA_WIDTH = 4
@@ -102,6 +103,7 @@ def _run(wrapper_path: Path, **make_vars):
     compiled RTL, so reusing one generated wrapper is correct, not just faster."""
     return run_simulation(
         wrapper_path.parent,
+        memory_model=fixture_model(wrapper_path.parent),
         extra_make_vars={"COCOTB_TEST_MODULES": "test_repair_2d", **make_vars},
     )
 
@@ -213,6 +215,7 @@ def test_column_steering_is_physically_distinct_storage(tmp_path: Path) -> None:
     wrapper = _generate(tmp_path, "sram_spares_col_tiny")
     result = run_simulation(
         wrapper.parent,
+        memory_model=fixture_model(wrapper.parent),
         extra_make_vars={
             "COCOTB_TEST_MODULES": "test_repair_col_distinct",
             "TARGET_ADDR": 0,   # defect-free row, so the proof isolates steering

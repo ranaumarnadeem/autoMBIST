@@ -88,5 +88,11 @@ def test_the_version_is_the_second_word(monkeypatch: pytest.MonkeyPatch, tool: s
 
 
 def test_the_repo_lists_the_versions_the_records_were_checked_with() -> None:
+    """The file's shape, not its contents: an AUTOMBIST_UPDATE_GOLDEN run
+    rewrites it to the version it ran on, which pinned contents then failed
+    (#63)."""
     checked = golden_tools._checked()
-    assert checked == {"yosys": ["0.61+129", "0.62"], "verilator": ["5.048", "5.049"]}
+    assert set(checked) == {"yosys", "verilator"}
+    for tool, versions in checked.items():
+        assert versions and all(isinstance(v, str) and v for v in versions), (tool, versions)
+        assert len(set(versions)) == len(versions), (tool, versions)

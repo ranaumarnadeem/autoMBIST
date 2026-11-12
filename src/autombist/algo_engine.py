@@ -457,6 +457,15 @@ def write_fault_list(records: list[FaultRecord], path: Path) -> Path:
     return path
 
 
+def _single_fault_file(workdir: Path, index: int, record: FaultRecord) -> Path:
+    """One fault's own list, for its run (+FAULT_INDEX=0). fault_ram.sv parses
+    every line of the list it is given before keeping one, so handing every run
+    the whole list made a campaign O(F^2): minutes on a 20k-fault list (#64)."""
+    directory = Path(workdir) / "fault_runs"
+    directory.mkdir(exist_ok=True)
+    return write_fault_list([record], directory / f"{index}.txt")
+
+
 def _validate_fault_addresses(mem: MemoryParams, faults: list[FaultRecord]) -> None:
     """A fault record's address/bit/port fields feed registers in the
     generated testbench that are exactly ADDR_WIDTH/DATA_WIDTH/num_ports bits
@@ -789,7 +798,7 @@ def _source_digest(sources: list[Path]) -> str:
 
 def _engine_build_cache_key(
     mem: MemoryParams, sources: list[Path], top_module: str, sim: str,
-    num_memories: int = 1,
+    num_memories: int = 1, flags: list[str] | None = None,
 ) -> str:
     """Content-addressed: source bytes + top module + the only mem.* fields
     that actually reach a verilator -G flag (addr_width/data_width/
@@ -813,6 +822,9 @@ def _engine_build_cache_key(
         str(mem.words_per_row),
         str(num_memories),
         _source_digest(sources),
+        # The build's own flags: a changed flag with unchanged sources is a
+        # different binary, and CI restores this cache between runs (#64).
+        *(flags or []),
     ]
     digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
     return digest[:24]
@@ -824,12 +836,20 @@ def _materialize_exe(cached_exe: Path, dest: Path) -> None:
     data copy, and safe: the cache entry is never mutated after creation, so
     an extra directory entry pointing at the same inode cannot corrupt it),
     falling back to a real copy across filesystems (e.g. a user-configured
-    AUTOMBIST_ENGINE_CACHE on a different mount than the OS temp dir)."""
+    AUTOMBIST_ENGINE_CACHE on a different mount than the OS temp dir).
+
+    An existing `dest` is removed first, never written through: from an
+    earlier campaign in the same workdir it can be a hardlink to another cache
+    entry, which a copy onto it would overwrite in place (#55). The copy goes
+    to a temporary name and is renamed into place for the same reason."""
     dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.unlink(missing_ok=True)
     try:
         os.link(cached_exe, dest)
     except OSError:
-        shutil.copy2(cached_exe, dest)
+        partial = dest.with_name(dest.name + ".partial")
+        shutil.copy2(cached_exe, partial)
+        os.replace(partial, dest)
 
 
 def _populate_engine_cache(cmd: list[str], cache_entry_dir: Path, exe_name: str) -> Path:
@@ -860,9 +880,15 @@ def _populate_engine_cache(cmd: list[str], cache_entry_dir: Path, exe_name: str)
         built_exe = scratch / "obj_dir" / exe_name
         if not built_exe.exists():
             raise CampaignError(f"verilator did not produce the expected binary: {built_exe}")
-        (scratch / "build_seconds.txt").write_text(f"{build_seconds}\n", encoding="utf-8")
+        # Only the executable is kept: a hit uses nothing else, and the build
+        # tree around it (precompiled headers, objects) was ~146 MB per entry
+        # against the binary's ~0.4 MB (#64).
+        entry = scratch / "entry"
+        (entry / "obj_dir").mkdir(parents=True)
+        os.replace(str(built_exe), str(entry / "obj_dir" / exe_name))
+        (entry / "build_seconds.txt").write_text(f"{build_seconds}\n", encoding="utf-8")
         try:
-            os.replace(str(scratch), str(cache_entry_dir))
+            os.replace(str(entry), str(cache_entry_dir))
         except OSError:
             # Lost a race, or cache_entry_dir is a non-empty leftover from a
             # prior run under the same key -- either way, a build already
@@ -916,6 +942,9 @@ def compile_engine(
         # port contract; optional controller outputs (e.g. bist_busy) are left
         # unconnected by design, not by omission.
         "-Wno-PINMISSING",
+        # Compile the generated C++ on every core: 8.0 s -> 4.7 s on a cold
+        # build (#64), which is every build where ccache is off (macOS).
+        "-j", "0",
         f"-GAW={mem.addr_width}", f"-GDW={mem.data_width}",
         *words_per_row_flags,
         *num_memories_flags,
@@ -926,7 +955,9 @@ def compile_engine(
 
     if _engine_cache_enabled():
         cache_root = Path(cache_dir) if cache_dir is not None else _engine_cache_root()
-        key = _engine_build_cache_key(mem, sources, top_module, sim, num_memories=num_memories)
+        source_args = {str(s) for s in sources}
+        key = _engine_build_cache_key(mem, sources, top_module, sim, num_memories=num_memories,
+                                      flags=[arg for arg in cmd if arg not in source_args])
         cache_entry_dir = cache_root / key
         cached_exe = cache_entry_dir / "obj_dir" / exe_name
         start = time.time()
@@ -1001,9 +1032,9 @@ def _common_plusargs(mem: MemoryParams, background: DataBackground | None = None
 _FAULT_CONCURRENCY_ENV = "AUTOMBIST_FAULT_CONCURRENCY"
 # Deliberately modest, not os.cpu_count(): a per-fault run_one() call spawns
 # an already-COMPILED verilator binary (the heavy, memory-hungry step is the
-# BUILD -- compile_engine's own verilator invocation, which stays strictly
-# single-threaded per artifact regardless of this setting, protected by its
-# own build cache). Nothing in this repo's history documents a specific prior
+# BUILD -- compile_engine's own verilator invocation, which happens once per
+# artifact before any fault runs and is unaffected by this setting, protected
+# by its own build cache). Nothing in this repo's history documents a specific prior
 # concurrency-related OOM incident to size this against -- start conservative
 # and let AUTOMBIST_FAULT_CONCURRENCY raise it on a box known to tolerate
 # more, rather than guessing a number this code can't justify. "1" recovers
@@ -1147,7 +1178,6 @@ def _run_campaign_against_artifact(
     how many faults run concurrently -- see _run_faults_concurrently.
     """
     alg_file = alg.write_numeric(workdir / f"{alg.name}.algc")
-    fault_file = write_fault_list(faults, workdir / "faults.txt") if faults else None
     plusargs = _common_plusargs(mem, background)
 
     start = time.time()
@@ -1163,7 +1193,7 @@ def _run_campaign_against_artifact(
 
     def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
         out = run_one(
-            artifact, alg_file=alg_file, fault_file=fault_file, index=i,
+            artifact, alg_file=alg_file, fault_file=_single_fault_file(workdir, i, record), index=0,
             verbose=verbose, extra_plusargs=plusargs,
         )
         detected, elem, op, addr, xor_bits = parse_result_line(out)
@@ -1332,7 +1362,6 @@ def run_word_oriented_campaign(
 
         dbs_file = workdir / "dbs.txt"
         write_dbs_file(mem.data_width, dbs_file)
-        fault_file = write_fault_list(faults, workdir / "faults.txt") if faults else None
         plusargs = [f"+INIT={mem.init_val}", f"+DBS_FILE={dbs_file}"]
         if cfdst_mode:
             plusargs.append("+CFDST_MODE")
@@ -1349,7 +1378,7 @@ def run_word_oriented_campaign(
 
         def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
             out = run_one(
-                artifact, fault_file=fault_file, index=i,
+                artifact, fault_file=_single_fault_file(workdir, i, record), index=0,
                 verbose=verbose, extra_plusargs=plusargs,
             )
             detected, elem, op, addr, xor_bits = parse_result_line(out)
@@ -1482,9 +1511,13 @@ def run_shared_campaign(
                 extra.append("+FAULT_VERBOSE")
             out = run_one(artifact, extra_plusargs=extra)
             detected, elem, op, addr, xor_bits = parse_result_line(out)
+            # Only the faulted memory's fault_ram has a fault loaded, so the one
+            # FAULT_HITS line is this fault's. It was asked for and dropped (#60).
+            hits = parse_fault_hits(out) if verbose else None
             return FaultResult(
                 index=i, record=record, detected=detected,
                 elem=elem, op=op, addr=addr, xor=xor_bits,
+                activations=hits[2] if hits else None,
             )
 
         results = _run_faults_concurrently(
@@ -1766,7 +1799,6 @@ def run_fsm_campaign(
             cache_dir=cache_dir,
         )
 
-        fault_file = write_fault_list(faults, workdir / "faults.txt") if faults else None
         plusargs = _common_plusargs(mem)
 
         start = time.time()
@@ -1793,7 +1825,8 @@ def run_fsm_campaign(
             )
 
         def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
-            out = run_one(artifact, fault_file=fault_file, index=i, extra_plusargs=plusargs)
+            out = run_one(artifact, fault_file=_single_fault_file(workdir, i, record), index=0,
+                          extra_plusargs=plusargs)
             detected, elem, op, addr, xor_bits = parse_result_line(out)
             return FaultResult(index=i, record=record, detected=detected, elem=elem, op=op, addr=addr, xor=xor_bits)
 

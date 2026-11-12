@@ -460,7 +460,8 @@ ports: { ... }                     # single physical port only
 geometry is required — one controller, one mux bus), not one physical
 memory as it does under `topology: dedicated`. `memories:` is the list of
 **per-instance** labels — `wrapper_template.j2` renders one `u_mem_<name>`
-instantiation per entry, all of the same `memory_name` module.
+instantiation per entry, all of the same `memory_name` module. It needs at
+least two entries; for one memory, leave out `topology` and `memories`.
 
 Output naming differs too: a dedicated config's output directory and
 wrapper filename are keyed on `memory_name` (there's one memory to name

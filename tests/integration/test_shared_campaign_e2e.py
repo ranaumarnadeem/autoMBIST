@@ -91,3 +91,11 @@ def test_rejects_mismatched_geometry() -> None:
     ])
     with pytest.raises(CampaignError, match=r"memories\[1\]\.addr_width"):
         run_shared_campaign(shared, "MARCHCM", [])
+
+
+def test_verbose_reports_each_faults_activations() -> None:
+    """#60: +FAULT_VERBOSE was passed and its FAULT_HITS line never read, so
+    activations stayed empty for shared_* runs."""
+    faults = [FaultRecord(type="SA0", vaddr=3, vbit=2, mi=0), FaultRecord(type="SA1", vaddr=5, vbit=1, mi=1)]
+    result = run_shared_campaign(_shared(), "MARCHCM", faults, verbose=True)
+    assert all(r.activations is not None and r.activations > 0 for r in result.faults), result.faults

@@ -122,3 +122,32 @@ async def test_shared_selfrepair(dut):
         f"independent tester-driven verify pass found bist_fail={verify_bist_fail} after self-repair -- "
         "the chip's own self_repair_fail=0 status did not match a real re-run through the repaired remap"
     )
+
+    # #45: run self-repair twice more without a reset. Every memory still holds
+    # the first run's sticky done; the sequencer must not take that as this
+    # run's, or it moves the bus on while a controller is still running -- which
+    # then analyzes another memory's reads and burns spares on a good memory.
+    repairs = _repair_state(dut)
+    for rerun in (2, 3):
+        rerun_fail = await with_timeout(_run_self_repair_once(dut), 500_000, "ns")
+        assert rerun_fail == 0, f"self-repair run {rerun} without reset reported self_repair_fail={rerun_fail}"
+        # The last memory's controller returns to idle a few cycles after
+        # self_repair_start drops (sequencer SHB_DONE -> SHB_IDLE, then its
+        # own start input falls); a controller left running is busy for
+        # a whole pass, far longer than this.
+        await ClockCycles(dut.clk, 8)
+        busy = int(dut.self_repair_busy_arr.value)
+        assert busy == 0, f"run {rerun}: self_repair_done rose while controllers were still busy ({busy:#b})"
+        assert _repair_state(dut) == repairs, (
+            f"run {rerun} changed the repair state {repairs} -> {_repair_state(dut)}: spares used on a re-run"
+        )
+    verify_bist_fail = await with_timeout(_run_verify_bist_pass(dut), 500_000, "ns")
+    assert verify_bist_fail == 0, f"verify pass after the re-runs found bist_fail={verify_bist_fail}"
+
+
+def _repair_state(dut) -> dict[str, int]:
+    """Every memory's spare enables, packed as the wrapper holds them."""
+    state = {"row": int(dut.row_repair_en_arr.value)}
+    if hasattr(dut, "col_repair_en_arr"):
+        state["col"] = int(dut.col_repair_en_arr.value)
+    return state

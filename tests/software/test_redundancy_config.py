@@ -56,6 +56,27 @@ def _load(tmp_path: Path, config: dict) -> dict:
     return load_config(_write(tmp_path, config))
 
 
+@pytest.mark.parametrize(("typo", "meant"), [
+    ("onchip_diagnosys", "onchip_diagnosis"),
+    ("onchip_spare_rety", "onchip_spare_retry"),
+    ("onchip_analyser", "onchip_analyzer"),
+])
+def test_a_misspelled_redundancy_option_is_rejected(tmp_path: Path, typo: str, meant: str) -> None:
+    """#51: a typo used to take the option's default and leave the feature out."""
+    redundancy = {"num_spare_rows": 2, "onchip_selfrepair": True, typo: True}
+    with pytest.raises(ConfigError, match=rf"redundancy\.{typo} is not a redundancy option -- did you mean '{meant}'"):
+        _load(tmp_path, {**BASE, "redundancy": redundancy})
+
+
+def test_a_generated_snapshot_loads_again(tmp_path: Path) -> None:
+    """The derived keys generate writes into the snapshot's redundancy block
+    are not typos."""
+    config = {**BASE, "redundancy": {"num_spare_rows": 2}, "repair_ports": REPAIR_PORTS}
+    wrapper = generate_from_config(_write(tmp_path, config), tmp_path / "out")
+    reloaded = load_config(wrapper.parent / "config.yml")
+    assert reloaded["redundancy"]["num_spare_rows"] == 2
+
+
 # --------------------------------------------------------------------------- #
 # Valid + absent
 # --------------------------------------------------------------------------- #

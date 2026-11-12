@@ -46,6 +46,7 @@ from autombist.repair import (  # noqa: E402
     encode_row_repair,
 )
 from autombist.runner import run_simulation  # noqa: E402
+from fixture_models import fixture_model
 
 ADDR_WIDTH = 2
 DATA_WIDTH = 4
@@ -104,6 +105,7 @@ def _run(wrapper_path: Path, **repair_vars: int):
     not just an optimization."""
     return run_simulation(
         wrapper_path.parent,
+        memory_model=fixture_model(wrapper_path.parent),
         extra_make_vars={"COCOTB_TEST_MODULES": "test_repair_loop", **repair_vars},
     )
 

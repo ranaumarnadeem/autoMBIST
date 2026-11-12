@@ -573,16 +573,52 @@ def test_access_kwargs_from_config(config: Mapping[str, Any]) -> dict[str, Any]:
             "config is missing required key 'addr_width' -- is this a real generate "
             "config.yml snapshot?"
         )
-    redundancy = config.get("redundancy") or {}
+    # Each field checked by name: a malformed value (`addr_width: null`,
+    # `redundancy: 4`) is one error line naming it, not a TypeError (#59).
+    redundancy = config.get("redundancy")
+    if redundancy is None:
+        redundancy = {}
+    if not isinstance(redundancy, dict):
+        raise ValueError(f"config redundancy must be a mapping, got {redundancy!r}")
+    repair_ports = config.get("repair_ports") or ()
+    if not isinstance(repair_ports, (list, tuple)) or not all(isinstance(p, dict) for p in repair_ports):
+        raise ValueError(f"config repair_ports must be a list of mappings, got {repair_ports!r}")
+    for index, port in enumerate(repair_ports):
+        missing = [key for key in ("name", "width", "dir") if key not in port]
+        if missing:
+            raise ValueError(f"config repair_ports[{index}] is missing {', '.join(missing)}")
     return {
-        "onchip_selfrepair": bool(redundancy.get("onchip_selfrepair", False)),
-        "onchip_repair_persistence": bool(redundancy.get("onchip_repair_persistence", False)),
-        "onchip_diagnosis": bool(redundancy.get("onchip_diagnosis", False)),
-        "num_spare_rows": int(redundancy.get("num_spare_rows", 0) or 0),
-        "num_diagnosis_entries": int(redundancy.get("num_diagnosis_entries", 0) or 0),
-        "addr_width": int(config["addr_width"]),
-        "repair_ports": config.get("repair_ports") or (),
+        "onchip_selfrepair": _config_bool(redundancy, "onchip_selfrepair", "redundancy."),
+        "onchip_repair_persistence": _config_bool(redundancy, "onchip_repair_persistence", "redundancy."),
+        "onchip_diagnosis": _config_bool(redundancy, "onchip_diagnosis", "redundancy."),
+        "num_spare_rows": _config_int(redundancy, "num_spare_rows", "redundancy.", default=0),
+        "num_diagnosis_entries": _config_int(redundancy, "num_diagnosis_entries", "redundancy.", default=0),
+        "addr_width": _config_int(config, "addr_width", "", minimum=1),
+        "repair_ports": repair_ports,
     }
+
+
+def _config_int(mapping: dict, key: str, where: str, *, default: int | None = None, minimum: int = 0) -> int:
+    value = mapping.get(key, default)
+    if value is None and default is not None:
+        value = default
+    # Worded as testbench's own config checks, which run on the same fields.
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"config {where}{key} must be an integer, not {value!r}")
+    if value < 0:
+        raise ValueError(f"config {where}{key} must not be negative, not {value!r}")
+    if value < minimum:
+        raise ValueError(f"config {where}{key} must be at least {minimum}, not {value!r}")
+    return value
+
+
+def _config_bool(mapping: dict, key: str, where: str) -> bool:
+    value = mapping.get(key, False)
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ValueError(f"config {where}{key} must be true or false, got {value!r}")
+    return value
 
 
 test_access_kwargs_from_config.__test__ = False  # not a pytest test function -- name starts with "test_"
