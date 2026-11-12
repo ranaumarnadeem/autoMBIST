@@ -75,9 +75,13 @@ classic path's wrapper: instead of one `u_algo_top` wired straight to one
 memory, a sequencer time-multiplexes that **same, unmodified** algorithm
 controller across N physical memory instances, one at a time. The
 controller itself needs zero awareness of which memory it's currently
-driving — the sequencer and a `mem_sel_q`-indexed csb/dout mux sit strictly
-between it and the memory instantiations, and the controller's own
-address/data/write-enable path is untouched.
+driving — the sequencer and a per-memory mux sit strictly between it and
+the memory instantiations, and the controller's own address/data/write-enable
+path is untouched. In test mode the mux gives every memory the controller's
+address, data and write enable and enables only memory `mem_sel_q`; outside
+test mode it hands each memory to its own functional port
+(`func_*_<name>`), so the BIST sequencer's state never decides which memory
+mission-mode traffic reaches.
 
 ```systemverilog
 typedef enum logic [1:0] {SHB_IDLE, SHB_RUN, SHB_ADVANCE, SHB_DONE} shb_state_t;

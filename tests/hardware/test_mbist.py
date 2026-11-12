@@ -16,6 +16,19 @@ from autombist.fault_gen import generate_fault_files
 from autombist.fault_gen import FaultType
 
 
+def _idle_functional_ports(dut) -> None:
+    """Hold every functional input idle: chip select high, the rest 0. A
+    shared-bus wrapper has one set per memory, func_<signal>_<memory>."""
+    for signal, idle in (("csb", 1), ("addr", 0), ("din", 0), ("we", 0)):
+        single = getattr(dut, f"func_{signal}", None)
+        if single is not None:
+            single.value = idle
+            continue
+        for handle in dut:
+            if handle._name.startswith(f"func_{signal}_"):
+                handle.value = idle
+
+
 def _safe_int(handle) -> int | None:
     try:
         return int(handle.value)
@@ -377,10 +390,7 @@ async def _run_mbist_once(
     dut.test_mode.value = 1
     dut.bist_start.value = 0
 
-    dut.func_csb.value = 1
-    dut.func_addr.value = 0
-    dut.func_din.value = 0
-    dut.func_we.value = 0
+    _idle_functional_ports(dut)
 
     await ClockCycles(dut.clk, 4)
     dut.rst_n.value = 1
@@ -862,10 +872,7 @@ async def _march_log(dut, data_width: int) -> tuple[int, list[tuple[int, int]], 
     dut.rst_n.value = 0
     dut.test_mode.value = 1
     dut.bist_start.value = 0
-    dut.func_csb.value = 1
-    dut.func_addr.value = 0
-    dut.func_din.value = 0
-    dut.func_we.value = 0
+    _idle_functional_ports(dut)
     await ClockCycles(dut.clk, 4)
     dut.rst_n.value = 1
     await ClockCycles(dut.clk, 2)

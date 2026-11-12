@@ -971,7 +971,8 @@ behind a reset lead-in:
 
 Every pin of the wrapped top is declared, one STIL signal per bit of a bus
 (`"func_addr[0]"`): the inputs held at the values the JTAG testbench ties them to
-(the resets and `func_csb` high, the rest low), the outputs other than TDO
+(the resets and the functional chip selects, `func_csb` or a shared-bus wrapper's
+`func_csb_<name>`, high, the rest low), the outputs other than TDO
 declared `Out` and not compared. The run loop is one `Loop N` statement. In each
 TCK cycle TMS and TDI change at 0, TDO is compared at a quarter period, and TCK
 rises at half and falls at three quarters; `clk` has the same shape in its own

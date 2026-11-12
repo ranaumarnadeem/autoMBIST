@@ -26,6 +26,14 @@ everything that predates the migration.
   worked example a test re-runs, and what autoMBIST does not provide (#41).
 
 ### Fixed
+- A `topology: shared-bus` wrapper gives each memory its own functional port,
+  `func_csb_<name>`, `func_addr_<name>`, `func_din_<name>`, `func_we_<name>`
+  and `func_dout_<name>`, in place of the single `func_*` port. That port was
+  muxed by the BIST sequencer's memory select, so outside test mode it reached
+  only memory 0 after reset and only the last memory after any BIST or
+  self-repair run: the others could not be used, and data written before a run
+  read back from a different memory afterwards. This changes the wrapper's
+  ports; dedicated wrappers are unchanged.
 - `simulate` and `run` now test the user's memory model. They used to compile
   this repo's own test fixture of the same name (`tests/hardware/<memory_name>.v`)
   whatever model the project had, so a broken model still passed and any other

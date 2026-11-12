@@ -463,6 +463,14 @@ memory as it does under `topology: dedicated`. `memories:` is the list of
 instantiation per entry, all of the same `memory_name` module. It needs at
 least two entries; for one memory, leave out `topology` and `memories`.
 
+Only the BIST shares the bus. Outside test mode each memory keeps its own
+functional port, named after its entry: `func_csb_<name>`,
+`func_addr_<name>`, `func_din_<name>`, `func_we_<name>` and
+`func_dout_<name>` (so `func_csb_mem_bank0` and so on in the example above).
+A shared-bus wrapper has no plain `func_*` port. While test mode is on
+(including during on-chip self-repair), every memory is driven by the
+controller and only the one being tested is enabled.
+
 Output naming differs too: a dedicated config's output directory and
 wrapper filename are keyed on `memory_name` (there's one memory to name
 them after); a shared-bus config's are keyed on `wrapper_module_name`

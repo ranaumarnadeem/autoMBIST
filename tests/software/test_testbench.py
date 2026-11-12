@@ -95,6 +95,19 @@ def test_testbench_idles_every_other_input(tmp_path: Path) -> None:
     assert "localparam integer ADDR_WIDTH = 4;" in tb
 
 
+@pytest.mark.parametrize(
+    ("name", "high"),
+    [("func_csb", True), ("func_csb_mem_bank0", True), ("func_we", False),
+     ("func_we_mem_bank0", False), ("func_addr_mem_bank0", False), ("self_repair_start", False)],
+)
+def test_every_functional_chip_select_idles_high(name: str, high: bool) -> None:
+    """A shared-bus wrapper has one active-low chip select per memory; each must
+    idle high in the testbenches and the STIL, like a dedicated wrapper's."""
+    from autombist.testbench import _idles_high
+
+    assert _idles_high(name) is high
+
+
 def test_a_test_build_compiles_its_saboteur_too(tmp_path: Path) -> None:
     wrapper = _generate(tmp_path, {**BASE, "memory_name": "sram_x"}, use_saboteur=True, faults=2, fault_seed=1)
     snapshot = yaml.safe_load((wrapper.parent / "config.yml").read_text(encoding="utf-8"))

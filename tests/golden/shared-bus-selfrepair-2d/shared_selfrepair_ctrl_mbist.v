@@ -12,11 +12,18 @@ module shared_selfrepair_ctrl #(
     output logic                  bist_done,
     output logic                  bist_fail,
 
-    input  logic                  func_csb,
-    input  logic [ADDR_WIDTH-1:0] func_addr,
-    input  logic [DATA_WIDTH-1:0] func_din,
-    input  logic                  func_we,
-    output logic [DATA_WIDTH-1:0] func_dout
+    // One functional port per memory: outside test mode every memory is
+    // reached through its own port. Only BIST time-multiplexes them.
+    input  logic                  func_csb_mem_bank0,
+    input  logic [ADDR_WIDTH-1:0] func_addr_mem_bank0,
+    input  logic [DATA_WIDTH-1:0] func_din_mem_bank0,
+    input  logic                  func_we_mem_bank0,
+    output logic [DATA_WIDTH-1:0] func_dout_mem_bank0,
+    input  logic                  func_csb_mem_bank1,
+    input  logic [ADDR_WIDTH-1:0] func_addr_mem_bank1,
+    input  logic [DATA_WIDTH-1:0] func_din_mem_bank1,
+    input  logic                  func_we_mem_bank1,
+    output logic [DATA_WIDTH-1:0] func_dout_mem_bank1
   , input  logic self_repair_start
   , output logic self_repair_done
   , output logic self_repair_fail
@@ -30,8 +37,6 @@ module shared_selfrepair_ctrl #(
     logic [ADDR_WIDTH-1:0] mbist_sram_addr;
     logic [DATA_WIDTH-1:0] mbist_sram_din;
 
-    logic [ADDR_WIDTH-1:0] sram_addr;
-    logic [DATA_WIDTH-1:0] sram_din;
     logic [DATA_WIDTH-1:0] sram_dout;
     logic [DATA_WIDTH-1:0] sram_dbg_actual_word;
     logic [DATA_WIDTH-1:0] sram_dbg_fault_word;
@@ -40,10 +45,6 @@ module shared_selfrepair_ctrl #(
     logic [DATA_WIDTH-1:0] sram_dbg_attempted_write;
     logic [DATA_WIDTH-1:0] sram_dbg_actual_read;
     logic [DATA_WIDTH-1:0] sram_dbg_blocked_bits;
-    logic                  sram_csb;
-    logic                  sram_we;
-
-    logic selected_write_req;
     logic mbist_write_req;
 
     // Shared-controller self-repair (docs/shared-hierarchical-mbist-plan.md
@@ -97,10 +98,11 @@ module shared_selfrepair_ctrl #(
     // bist_start-drop restart path -- no new reset signal needed, see
     // docs/shared-hierarchical-mbist-plan.md §4a) before SHB_RUN re-raises it
     // for the next memory. u_algo_top itself needs zero awareness of which
-    // memory it's driving -- this sequencer and the csb/dout mux below sit
-    // strictly between it and the memory instantiation(s), and its own
-    // address/data/write-enable path (sram_addr/sram_din/sram_we above) is
-    // completely unchanged.
+    // memory it's driving -- this sequencer and the per-memory muxes below sit
+    // strictly between it and the memory instantiation(s). In test mode every
+    // memory sees the controller's address/data/write enable and only the
+    // selected one is enabled; outside test mode each memory is driven by its
+    // own func_*_<name> port.
     typedef enum logic [1:0] {
         SHB_IDLE,
         SHB_RUN,
@@ -120,6 +122,9 @@ module shared_selfrepair_ctrl #(
     // the memories' outputs drive nothing and opt_clean deletes the memories.
     // Indexing semantics are identical either way.
     logic [2-1:0]                 sram_csb_arr;
+    logic [2-1:0]                 sram_we_arr;
+    logic [2-1:0][ADDR_WIDTH-1:0] sram_addr_arr;
+    logic [2-1:0][DATA_WIDTH-1:0] sram_din_arr;
     logic [2-1:0][DATA_WIDTH-1:0] sram_dout_arr;
     // Second orchestration mode, docs/shared-hierarchical-mbist-plan.md §9b:
     // shb_selfrepair_mode_q, latched only at the SHB_IDLE exit that fires,
@@ -204,7 +209,7 @@ module shared_selfrepair_ctrl #(
             .ADDR_WIDTH(ADDR_WIDTH),
             .NUM_SPARE_ROWS(2)
         ) u_repair_remap (
-            .addr_in(sram_addr),
+            .addr_in(sram_addr_arr[gsr]),
             .addr_out(sram_addr_phys_arr[gsr])
           , .row_repair_en(row_repair_en_arr[gsr])
           , .faulty_row_addr(faulty_row_addr_arr[gsr])
@@ -214,7 +219,7 @@ module shared_selfrepair_ctrl #(
             .DATA_WIDTH(DATA_WIDTH),
             .NUM_SPARE_COLS(1)
         ) u_repair_remap_col (
-            .din_in(sram_din),
+            .din_in(sram_din_arr[gsr]),
             .din_out(sram_din_phys_arr[gsr]),
             .dout_in(sram_dout_phys_arr[gsr]),
             .dout_out(sram_dout_arr[gsr]),
@@ -240,8 +245,24 @@ module shared_selfrepair_ctrl #(
         shb_selfrepair_mode_q && (shb_state_q != SHB_IDLE) && (mem_sel_q == 1);
     assign bist_fail       = shb_fail_q;
     assign sram_dout       = sram_dout_arr[mem_sel_q];
-    assign sram_csb_arr[0] = (mem_sel_q == 0) ? sram_csb : 1'b1;
-    assign sram_csb_arr[1] = (mem_sel_q == 1) ? sram_csb : 1'b1;
+
+    // mem_bank0: the controller's selected memory in test mode, its own
+    // functional port otherwise.
+    assign sram_csb_arr[0]  = effective_test_mode ? ((mem_sel_q == 0) ? mbist_sram_csb : 1'b1)
+                                    : func_csb_mem_bank0;
+    assign sram_addr_arr[0] = effective_test_mode ? mbist_sram_addr : func_addr_mem_bank0;
+    assign sram_din_arr[0]  = effective_test_mode ? mbist_sram_din : func_din_mem_bank0;
+    assign sram_we_arr[0]   = ~(effective_test_mode ? mbist_write_req : func_we_mem_bank0);
+    assign func_dout_mem_bank0 = sram_dout_arr[0];
+
+    // mem_bank1: the controller's selected memory in test mode, its own
+    // functional port otherwise.
+    assign sram_csb_arr[1]  = effective_test_mode ? ((mem_sel_q == 1) ? mbist_sram_csb : 1'b1)
+                                    : func_csb_mem_bank1;
+    assign sram_addr_arr[1] = effective_test_mode ? mbist_sram_addr : func_addr_mem_bank1;
+    assign sram_din_arr[1]  = effective_test_mode ? mbist_sram_din : func_din_mem_bank1;
+    assign sram_we_arr[1]   = ~(effective_test_mode ? mbist_write_req : func_we_mem_bank1);
+    assign func_dout_mem_bank1 = sram_dout_arr[1];
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -333,14 +354,6 @@ module shared_selfrepair_ctrl #(
     );
 
     assign mbist_write_req    = ~mbist_sram_web;
-    assign selected_write_req = effective_test_mode ? mbist_write_req : func_we;
-
-    assign sram_we = ~selected_write_req;
-
-    assign sram_addr = effective_test_mode ? mbist_sram_addr : func_addr;
-    assign sram_din  = effective_test_mode ? mbist_sram_din : func_din;
-    assign sram_csb  = effective_test_mode ? mbist_sram_csb : func_csb;
-    assign func_dout = sram_dout;
 
     // Shared-controller self-repair (docs/shared-hierarchical-mbist-plan.md
     // §9b): the per-memory analyzer/ctrl/remap instances already exist above,
@@ -358,7 +371,7 @@ module shared_selfrepair_ctrl #(
         .csb0(sram_csb_arr[0]),
         .addr0(sram_addr_phys_arr[0]),
         .din0(sram_din_phys_arr[0]),
-        .web0(sram_we),
+        .web0(sram_we_arr[0]),
         .dout0(sram_dout_phys_arr[0])
       , .spare_wen0(spare_wen_arr[0])
     );
@@ -372,7 +385,7 @@ module shared_selfrepair_ctrl #(
         .csb0(sram_csb_arr[1]),
         .addr0(sram_addr_phys_arr[1]),
         .din0(sram_din_phys_arr[1]),
-        .web0(sram_we),
+        .web0(sram_we_arr[1]),
         .dout0(sram_dout_phys_arr[1])
       , .spare_wen0(spare_wen_arr[1])
     );

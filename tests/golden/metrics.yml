@@ -80,11 +80,11 @@ selfrepair-row-retry:
   selfrepair_cycles: 807
 shared-bus:
   bist_cycles: 1209
-  cells: 246
+  cells: 276
   flops: 22
 shared-bus-selfrepair-2d:
   bist_cycles: 806
-  cells: 1032
+  cells: 1055
   flops: 105
   selfrepair_cycles: 1618
 spare-wen-tied-off:

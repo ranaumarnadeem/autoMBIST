@@ -5,13 +5,8 @@ Self-contained, mirroring test_onchip_selfrepair.py's own pattern and its
 CRITICAL CONSTRAINT (never toggle rst_n between self_repair_done and
 verification -- the repair signature lives in flops rst_n clears).
 
-Unlike the single-memory self-repair test, the functional port (func_*) is
-NOT usable as an independent per-memory fail-scan here: it is time-muxed by
-the SAME mem_sel_q the BIST sequencer owns, so it can only ever reach
-whichever ONE memory the sequencer last selected -- an accurate reflection
-of what a real shared bus can do, not a test limitation to work around.
-Verification instead combines two independent signals, neither of which is
-just "trust the chip's own status pins":
+Verification combines three independent signals, none of which is just
+"trust the chip's own status pins":
 
   1. self_repair_fail_arr[i] for EVERY memory i (a per-instance internal
      signal each memory's own onchip_selfrepair_ctrl drives independently --
@@ -26,12 +21,68 @@ just "trust the chip's own status pins":
      bist_fail reads 0. This exercises the repaired remap through the exact
      path a real tester would use, independent of the self-repair FSM's own
      internal re-verify pass.
+  3. Mission mode (test_mode=0): every memory is written and read back
+     through its OWN func_*_<name> port, each with its own data. Every
+     memory must be reachable after a BIST run, keep its own contents, and
+     read back clean through its repaired remap.
 """
 import os
 
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge, Timer, with_timeout
+
+
+def _memory_names(num_memories):
+    names = os.getenv("MEMORY_NAMES")
+    if names:
+        return names.split(",")
+    return [f"mem_bank{i}" for i in range(num_memories)]
+
+
+def _func(dut, signal, name):
+    return getattr(dut, f"func_{signal}_{name}")
+
+
+def _mission_word(index, addr, data_mask):
+    """A different word per memory at the same address, so a read that
+    reaches the wrong memory shows up as a mismatch."""
+    return (addr * 5 + index * 3 + 1) & data_mask
+
+
+async def _mission_mode_mismatches(dut, names):
+    """Write every word of every memory through its own functional port, then
+    read every word back the same way. Returns [(memory, addr, read, expected)]."""
+    addr_width = len(_func(dut, "addr", names[0]))
+    data_mask = (1 << len(_func(dut, "din", names[0]))) - 1
+    depth = 1 << addr_width
+    dut.test_mode.value = 0
+    for index, name in enumerate(names):
+        for addr in range(depth):
+            _func(dut, "csb", name).value = 0
+            _func(dut, "we", name).value = 1
+            _func(dut, "addr", name).value = addr
+            _func(dut, "din", name).value = _mission_word(index, addr, data_mask)
+            await ClockCycles(dut.clk, 1)
+        _func(dut, "csb", name).value = 1
+        _func(dut, "we", name).value = 0
+    await ClockCycles(dut.clk, 2)
+    mismatches = []
+    for index, name in enumerate(names):
+        for addr in range(depth):
+            _func(dut, "csb", name).value = 0
+            _func(dut, "we", name).value = 0
+            _func(dut, "addr", name).value = addr
+            await ClockCycles(dut.clk, 3)
+            await Timer(1, unit="ns")
+            raw = _func(dut, "dout", name).value
+            read = int(raw) if raw.is_resolvable else None
+            expected = _mission_word(index, addr, data_mask)
+            if read != expected:
+                mismatches.append((name, addr, read, expected))
+        _func(dut, "csb", name).value = 1
+    await ClockCycles(dut.clk, 2)
+    return mismatches
 
 
 async def _run_self_repair_once(dut):
@@ -91,16 +142,18 @@ async def test_shared_selfrepair(dut):
     pass reading bist_fail == 0.
     """
     num_memories = int(os.getenv("NUM_MEMORIES", "2"))
+    names = _memory_names(num_memories)
 
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
 
     dut.rst_n.value = 0
     dut.test_mode.value = 0
     dut.bist_start.value = 0
-    dut.func_csb.value = 1
-    dut.func_we.value = 0
-    dut.func_addr.value = 0
-    dut.func_din.value = 0
+    for name in names:
+        _func(dut, "csb", name).value = 1
+        _func(dut, "we", name).value = 0
+        _func(dut, "addr", name).value = 0
+        _func(dut, "din", name).value = 0
     dut.self_repair_start.value = 0
     await ClockCycles(dut.clk, 4)
     dut.rst_n.value = 1
@@ -143,6 +196,15 @@ async def test_shared_selfrepair(dut):
         )
     verify_bist_fail = await with_timeout(_run_verify_bist_pass(dut), 500_000, "ns")
     assert verify_bist_fail == 0, f"verify pass after the re-runs found bist_fail={verify_bist_fail}"
+
+    # Mission mode after BIST: each memory through its own port. The shared
+    # sequencer has just left mem_sel_q on the last memory, which used to be
+    # the only one the functional port could reach.
+    mismatches = await with_timeout(_mission_mode_mismatches(dut, names), 500_000, "ns")
+    assert mismatches == [], (
+        "mission-mode write/read through each memory's own port failed "
+        f"(memory, addr, read, expected): {mismatches}"
+    )
 
 
 def _repair_state(dut) -> dict[str, int]:

@@ -12,11 +12,23 @@ module shared_bus_ctrl #(
     output logic                  bist_done,
     output logic                  bist_fail,
 
-    input  logic                  func_csb,
-    input  logic [ADDR_WIDTH-1:0] func_addr,
-    input  logic [DATA_WIDTH-1:0] func_din,
-    input  logic                  func_we,
-    output logic [DATA_WIDTH-1:0] func_dout
+    // One functional port per memory: outside test mode every memory is
+    // reached through its own port. Only BIST time-multiplexes them.
+    input  logic                  func_csb_mem_bank0,
+    input  logic [ADDR_WIDTH-1:0] func_addr_mem_bank0,
+    input  logic [DATA_WIDTH-1:0] func_din_mem_bank0,
+    input  logic                  func_we_mem_bank0,
+    output logic [DATA_WIDTH-1:0] func_dout_mem_bank0,
+    input  logic                  func_csb_mem_bank1,
+    input  logic [ADDR_WIDTH-1:0] func_addr_mem_bank1,
+    input  logic [DATA_WIDTH-1:0] func_din_mem_bank1,
+    input  logic                  func_we_mem_bank1,
+    output logic [DATA_WIDTH-1:0] func_dout_mem_bank1,
+    input  logic                  func_csb_mem_bank2,
+    input  logic [ADDR_WIDTH-1:0] func_addr_mem_bank2,
+    input  logic [DATA_WIDTH-1:0] func_din_mem_bank2,
+    input  logic                  func_we_mem_bank2,
+    output logic [DATA_WIDTH-1:0] func_dout_mem_bank2
 );
 
     logic                  mbist_busy;
@@ -26,8 +38,6 @@ module shared_bus_ctrl #(
     logic [ADDR_WIDTH-1:0] mbist_sram_addr;
     logic [DATA_WIDTH-1:0] mbist_sram_din;
 
-    logic [ADDR_WIDTH-1:0] sram_addr;
-    logic [DATA_WIDTH-1:0] sram_din;
     logic [DATA_WIDTH-1:0] sram_dout;
     logic [DATA_WIDTH-1:0] sram_dbg_actual_word;
     logic [DATA_WIDTH-1:0] sram_dbg_fault_word;
@@ -36,10 +46,6 @@ module shared_bus_ctrl #(
     logic [DATA_WIDTH-1:0] sram_dbg_attempted_write;
     logic [DATA_WIDTH-1:0] sram_dbg_actual_read;
     logic [DATA_WIDTH-1:0] sram_dbg_blocked_bits;
-    logic                  sram_csb;
-    logic                  sram_we;
-
-    logic selected_write_req;
     logic mbist_write_req;
 
     // Sequences u_algo_top across mem_sel_q = 0..NUM_MEMORIES-1: SHB_RUN holds
@@ -49,10 +55,11 @@ module shared_bus_ctrl #(
     // bist_start-drop restart path -- no new reset signal needed, see
     // docs/shared-hierarchical-mbist-plan.md §4a) before SHB_RUN re-raises it
     // for the next memory. u_algo_top itself needs zero awareness of which
-    // memory it's driving -- this sequencer and the csb/dout mux below sit
-    // strictly between it and the memory instantiation(s), and its own
-    // address/data/write-enable path (sram_addr/sram_din/sram_we above) is
-    // completely unchanged.
+    // memory it's driving -- this sequencer and the per-memory muxes below sit
+    // strictly between it and the memory instantiation(s). In test mode every
+    // memory sees the controller's address/data/write enable and only the
+    // selected one is enabled; outside test mode each memory is driven by its
+    // own func_*_<name> port.
     typedef enum logic [1:0] {
         SHB_IDLE,
         SHB_RUN,
@@ -72,15 +79,42 @@ module shared_bus_ctrl #(
     // the memories' outputs drive nothing and opt_clean deletes the memories.
     // Indexing semantics are identical either way.
     logic [3-1:0]                 sram_csb_arr;
+    logic [3-1:0]                 sram_we_arr;
+    logic [3-1:0][ADDR_WIDTH-1:0] sram_addr_arr;
+    logic [3-1:0][DATA_WIDTH-1:0] sram_din_arr;
     logic [3-1:0][DATA_WIDTH-1:0] sram_dout_arr;
 
     assign algo_bist_start = (shb_state_q == SHB_RUN);
     assign bist_done       = (shb_state_q == SHB_DONE);
     assign bist_fail       = shb_fail_q;
     assign sram_dout       = sram_dout_arr[mem_sel_q];
-    assign sram_csb_arr[0] = (mem_sel_q == 0) ? sram_csb : 1'b1;
-    assign sram_csb_arr[1] = (mem_sel_q == 1) ? sram_csb : 1'b1;
-    assign sram_csb_arr[2] = (mem_sel_q == 2) ? sram_csb : 1'b1;
+
+    // mem_bank0: the controller's selected memory in test mode, its own
+    // functional port otherwise.
+    assign sram_csb_arr[0]  = test_mode ? ((mem_sel_q == 0) ? mbist_sram_csb : 1'b1)
+                                    : func_csb_mem_bank0;
+    assign sram_addr_arr[0] = test_mode ? mbist_sram_addr : func_addr_mem_bank0;
+    assign sram_din_arr[0]  = test_mode ? mbist_sram_din : func_din_mem_bank0;
+    assign sram_we_arr[0]   = ~(test_mode ? mbist_write_req : func_we_mem_bank0);
+    assign func_dout_mem_bank0 = sram_dout_arr[0];
+
+    // mem_bank1: the controller's selected memory in test mode, its own
+    // functional port otherwise.
+    assign sram_csb_arr[1]  = test_mode ? ((mem_sel_q == 1) ? mbist_sram_csb : 1'b1)
+                                    : func_csb_mem_bank1;
+    assign sram_addr_arr[1] = test_mode ? mbist_sram_addr : func_addr_mem_bank1;
+    assign sram_din_arr[1]  = test_mode ? mbist_sram_din : func_din_mem_bank1;
+    assign sram_we_arr[1]   = ~(test_mode ? mbist_write_req : func_we_mem_bank1);
+    assign func_dout_mem_bank1 = sram_dout_arr[1];
+
+    // mem_bank2: the controller's selected memory in test mode, its own
+    // functional port otherwise.
+    assign sram_csb_arr[2]  = test_mode ? ((mem_sel_q == 2) ? mbist_sram_csb : 1'b1)
+                                    : func_csb_mem_bank2;
+    assign sram_addr_arr[2] = test_mode ? mbist_sram_addr : func_addr_mem_bank2;
+    assign sram_din_arr[2]  = test_mode ? mbist_sram_din : func_din_mem_bank2;
+    assign sram_we_arr[2]   = ~(test_mode ? mbist_write_req : func_we_mem_bank2);
+    assign func_dout_mem_bank2 = sram_dout_arr[2];
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -140,14 +174,6 @@ module shared_bus_ctrl #(
     );
 
     assign mbist_write_req    = ~mbist_sram_web;
-    assign selected_write_req = test_mode ? mbist_write_req : func_we;
-
-    assign sram_we = ~selected_write_req;
-
-    assign sram_addr = test_mode ? mbist_sram_addr : func_addr;
-    assign sram_din  = test_mode ? mbist_sram_din : func_din;
-    assign sram_csb  = test_mode ? mbist_sram_csb : func_csb;
-    assign func_dout = sram_dout;
 
     sram_bank #(
         .ADDR_WIDTH(ADDR_WIDTH),
@@ -155,9 +181,9 @@ module shared_bus_ctrl #(
     ) u_mem_mem_bank0 (
         .clk0(mbist_sram_clk),
         .csb0(sram_csb_arr[0]),
-        .addr0(sram_addr),
-        .din0(sram_din),
-        .web0(sram_we),
+        .addr0(sram_addr_arr[0]),
+        .din0(sram_din_arr[0]),
+        .web0(sram_we_arr[0]),
         .dout0(sram_dout_arr[0])
     );
     sram_bank #(
@@ -166,9 +192,9 @@ module shared_bus_ctrl #(
     ) u_mem_mem_bank1 (
         .clk0(mbist_sram_clk),
         .csb0(sram_csb_arr[1]),
-        .addr0(sram_addr),
-        .din0(sram_din),
-        .web0(sram_we),
+        .addr0(sram_addr_arr[1]),
+        .din0(sram_din_arr[1]),
+        .web0(sram_we_arr[1]),
         .dout0(sram_dout_arr[1])
     );
     sram_bank #(
@@ -177,9 +203,9 @@ module shared_bus_ctrl #(
     ) u_mem_mem_bank2 (
         .clk0(mbist_sram_clk),
         .csb0(sram_csb_arr[2]),
-        .addr0(sram_addr),
-        .din0(sram_din),
-        .web0(sram_we),
+        .addr0(sram_addr_arr[2]),
+        .din0(sram_din_arr[2]),
+        .web0(sram_we_arr[2]),
         .dout0(sram_dout_arr[2])
     );
 
