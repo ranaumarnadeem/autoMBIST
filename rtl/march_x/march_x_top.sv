@@ -1,5 +1,8 @@
 `timescale 1ns/1ps
 
+// Rendered from src/autombist/templates/sp_controller_top.sv.j2 by
+// autombist.sp_controller_gen. Edit the template, not this file (see
+// march_x_fsm.sv).
 module march_x_top #(
     parameter integer ADDR_WIDTH   = 10,
     parameter integer DATA_WIDTH   = 32,

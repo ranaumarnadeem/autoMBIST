@@ -12,16 +12,17 @@ LOOKUP, ``(phase, op_step) -> (phase_dir_up, do_read, do_write, expected_data,
 write_data, last_step)``, where ``phase`` is the march element index and
 ``op_step`` the op index within that element. That is exactly an
 :class:`~autombist.alg_spec.AlgSpec`'s shape, so the spec fully determines the
-file. The surrounding ``_fsm.sv``/``_top.sv`` are (near-)boilerplate and are NOT
-rendered here -- see "Scope" below.
+file. The surrounding ``_fsm.sv``/``_top.sv`` of a single-port algorithm are
+rendered from its table by :mod:`autombist.sp_controller_gen`, not here -- see
+"Scope" below.
 
 Structured like :mod:`autombist.fault_ram_gen`: pure functions build the per-
 element case-arm text, and a thin Jinja template loops over them. Same one-way
 dependency -- this imports ``alg_spec`` and nothing imports it back.
 
 Scope: this module renders the algorithm TABLE only. It deliberately does not
-touch ``_fsm.sv``, ``_top.sv``, ``copy_mbist_rtl``, or the CLI, so no generated
-file is wired into any build and every hardened design keeps its hand-written
+touch ``_fsm.sv``, ``_top.sv``, ``copy_mbist_rtl``, or the CLI, so no table it renders
+is wired into any build and every hardened design keeps its checked-in
 RTL. The FSM constraints in :data:`MAX_RTL_ELEMENTS`/:data:`MAX_RTL_OPS` are
 what currently keep March SS and March B off the classic path.
 """
@@ -39,7 +40,7 @@ __all__ = [
     "resolve_directions",
 ]
 
-# Limits imposed by the EXISTING hand-written FSM's port widths, not by the .alg
+# Limits imposed by the EXISTING single-port FSM's port widths, not by the .alg
 # grammar (which allows MAX_ELEMENTS=16 / MAX_OPS=8): `_fsm.sv` declares
 # `phase` as [2:0] and drives `op_step` from a register at most 2 bits wide.
 # Rendering past these would produce a table the FSM cannot address, so

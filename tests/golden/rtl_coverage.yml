@@ -13,9 +13,9 @@ files:
     covered: 35
     points: 38
     uncovered:
-    - 170:33 branch if
-    - 194:37 branch if
-    - 219:17 line case
+    - 174:33 branch if
+    - 198:37 branch if
+    - 224:17 line case
   rtl/march_1r1w/march_1r1w_algo.sv:
     covered: 7
     points: 8
@@ -51,9 +51,9 @@ files:
     covered: 35
     points: 38
     uncovered:
-    - 160:33 branch if
-    - 184:37 branch if
-    - 209:17 line case
+    - 173:33 branch if
+    - 197:37 branch if
+    - 223:17 line case
   rtl/march_raw/march_raw_algo.sv:
     covered: 19
     points: 20
@@ -63,9 +63,9 @@ files:
     covered: 35
     points: 38
     uncovered:
-    - 160:33 branch if
-    - 184:37 branch if
-    - 209:17 line case
+    - 173:33 branch if
+    - 197:37 branch if
+    - 222:17 line case
   rtl/march_x/march_x_algo.sv:
     covered: 9
     points: 10
@@ -75,9 +75,9 @@ files:
     covered: 35
     points: 38
     uncovered:
-    - 166:33 branch if
-    - 190:37 branch if
-    - 215:17 line case
+    - 173:33 branch if
+    - 197:37 branch if
+    - 223:17 line case
   rtl/mats_plus/mats_plus_algo.sv:
     covered: 8
     points: 9
@@ -87,11 +87,11 @@ files:
     covered: 33
     points: 38
     uncovered:
-    - 167:33 branch if
-    - 186:34 branch else
-    - 191:37 branch if
-    - 191:38 branch else
-    - 216:17 line case
+    - 173:33 branch if
+    - 192:34 branch else
+    - 197:37 branch if
+    - 197:38 branch else
+    - 223:17 line case
   rtl/onchip_2d_repair_analyzer.sv:
     covered: 63
     points: 65
