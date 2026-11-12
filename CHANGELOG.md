@@ -26,6 +26,13 @@ everything that predates the migration.
   worked example a test re-runs, and what autoMBIST does not provide (#41).
 
 ### Fixed
+- The `algo` shell's comparison matrix (`compare_algo`, then `write_report`)
+  gives every fault its own row. Faults of one type at one victim that differ
+  only in aggressor or `p0`/`p1` shared a row, so a later one overwrote an
+  earlier one: a detected fault could show as escaped while the totals still
+  counted both. Such rows now carry `<aaddr.abit/p0.p1`, and an exact repeat
+  `~n`; every other key is unchanged. Two algorithms with one name get columns
+  `name` and `name (2)` instead of one overwriting the other.
 - The ICL `wrap-test-access --emit-icl` writes declares `clk` as a `ClockPort`
   of the top module. The `run_mbist` PDL's run loop counts `clk`
   (`iRunLoop N -sck clk`), and IEEE 1687 needs that port to be a clock port, so a

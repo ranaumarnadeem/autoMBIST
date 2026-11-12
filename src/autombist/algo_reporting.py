@@ -152,22 +152,38 @@ def write_campaign_report(result: CampaignResult, path: Path, fmt: str = "md") -
 # --------------------------------------------------------------------------- #
 # Multi-algorithm comparison matrix
 # --------------------------------------------------------------------------- #
+def _column_names(results: list[CampaignResult]) -> list[str]:
+    """One column name per result: its algo_name, with ' (2)', ' (3)', ... added
+    to a name an earlier result already took (two .alg files with one stem, or
+    one algorithm compared twice), so no result's marks overwrite another's."""
+    names: list[str] = []
+    taken: set[str] = set()
+    for result in results:
+        name, n = result.algo_name, 1
+        while name in taken:
+            n += 1
+            name = f"{result.algo_name} ({n})"
+        taken.add(name)
+        names.append(name)
+    return names
+
+
 def _matrix_rows(results: list[CampaignResult]) -> tuple[list[str], dict[str, dict[str, str]]]:
-    """Returns (ordered fault keys, {fault_key: {algo_name: 'D'/'E'}})."""
+    """Returns (ordered fault keys, {fault_key: {column name: 'D'/'E'}})."""
     fault_keys: list[str] = []
     seen: set[str] = set()
     cells: dict[str, dict[str, str]] = {}
-    for result in results:
+    for column, result in zip(_column_names(results), results):
         for key, mark in result.matrix_row().items():
             if key not in seen:
                 seen.add(key)
                 fault_keys.append(key)
-            cells.setdefault(key, {})[result.algo_name] = mark
+            cells.setdefault(key, {})[column] = mark
     return fault_keys, cells
 
 
 def render_matrix_csv(results: list[CampaignResult]) -> str:
-    algo_names = [r.algo_name for r in results]
+    algo_names = _column_names(results)
     fault_keys, cells = _matrix_rows(results)
     lines = [",".join(["fault", *algo_names])]
     for key in fault_keys:
@@ -179,7 +195,7 @@ def render_matrix_csv(results: list[CampaignResult]) -> str:
 
 
 def render_matrix_md(results: list[CampaignResult]) -> str:
-    algo_names = [r.algo_name for r in results]
+    algo_names = _column_names(results)
     fault_keys, cells = _matrix_rows(results)
     columns = ("fault", *algo_names)
     rows: list[tuple[str, ...]] = []
@@ -191,12 +207,13 @@ def render_matrix_md(results: list[CampaignResult]) -> str:
 
 
 def render_matrix_json(results: list[CampaignResult]) -> str:
+    names = _column_names(results)
     fault_keys, cells = _matrix_rows(results)
     payload = {
         "schema_version": SCHEMA_VERSION,
-        "algos": [r.algo_name for r in results],
-        "totals": {r.algo_name: {"detected": r.detected, "total": r.total,
-                                   "coverage_percent": r.coverage_percent} for r in results},
+        "algos": names,
+        "totals": {name: {"detected": r.detected, "total": r.total,
+                          "coverage_percent": r.coverage_percent} for name, r in zip(names, results)},
         "matrix": [{"fault": key, **cells.get(key, {})} for key in fault_keys],
     }
     return json.dumps(payload, indent=2, sort_keys=False)

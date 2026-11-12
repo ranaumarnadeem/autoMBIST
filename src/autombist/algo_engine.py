@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -304,12 +305,29 @@ class CampaignResult:
         physical port the victim/aggressor access uses (e.g. a same-port vs.
         cross-port coupling variant of the same CFIN@addr.bit) get distinct
         rows instead of colliding; single-port sessions (num_ports == 1, the
-        default) keep the original, unsuffixed key unchanged."""
-        row: dict[str, str] = {}
-        for r in self.faults:
+        default) keep the original, unsuffixed key unchanged.
+
+        Faults that still share a key (same type and victim, a different
+        aggressor or p0/p1, e.g. two CFIN at one victim) get the aggressor and
+        parameters appended, '<aaddr.abit/p0.p1', and an exact repeat a
+        '~n' occurrence number, so every fault keeps its own row. A key no
+        other fault in the list shares is unchanged."""
+        def base(r: FaultResult) -> str:
             key = f"{r.record.type}@{r.record.vaddr}.{r.record.vbit}"
             if self.mem.num_ports > 1:
                 key = f"{key}#{r.record.vport}.{r.record.aport}"
+            return key
+
+        shared = Counter(base(r) for r in self.faults)
+        seen: Counter[str] = Counter()
+        row: dict[str, str] = {}
+        for r in self.faults:
+            key = base(r)
+            if shared[key] > 1:
+                key = f"{key}<{r.record.aaddr}.{r.record.abit}/{r.record.p0}.{r.record.p1}"
+            seen[key] += 1
+            if seen[key] > 1:
+                key = f"{key}~{seen[key]}"
             row[key] = "D" if r.detected else "E"
         return row
 
