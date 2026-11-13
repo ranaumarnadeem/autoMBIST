@@ -25,10 +25,6 @@ work it describes; don't let it silently go stale the way
   - `docs/diagnosis-yield-analysis-plan.md` (gitignored) is superseded by
     `docs/source/yield-analysis.md`.
 
-## Not started (scoped as GitHub milestones, no work begun)
-
-- **UVM verification environment** — a UVM-based verification wrapper.
-
 ## Shared-bus follow-ups (deliberately deferred, not urgent)
 
 `topology: shared-bus` + `redundancy:` currently supports on-chip
