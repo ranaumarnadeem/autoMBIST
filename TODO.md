@@ -5,36 +5,40 @@ snapshot, same spirit as `docs/source/roadmap.md`. Update this alongside the
 work it describes; don't let it silently go stale the way
 `docs/source/roadmap.md` did (see below).
 
-## In progress
+## Unreleased
 
-- **Milestone 4 — Diagnosis & yield analysis.** Built on `dev` (2026-10-20),
-  not yet released: `yield-sim`, `yield-sweep` (functional or march
-  observation, `--self-repair` with defects in the spares), `yield-multiplier`,
-  `analyze_detailed()` (minimum spares, faulty spares), the shape classifier,
-  and the calibration (ITC'2020 gate failed, honestly reported). Documented in
-  `docs/source/yield-analysis.md`; README/CHANGELOG/roadmap mention it, so it
-  is public as soon as `dev` is pushed. Still open:
-  - Release, on the owner's go-ahead.
-  - The ITC'2020 gap: the per-bank reading is 0.35-1.5 points off Table II at
-    every count. Any further reading is post-hoc and must be labelled so.
-  - Deferred: shared (global/common) spares across banks, `words_per_row` > 1
-    and address scrambling, mixed fault types in one RTL sweep, parallel trials,
-    run-length names for unknown shapes, a pure-Python model of the on-chip
-    analyzer, a `PART_FIX`/SEMI G91 export, Tcl shell commands for the yield
-    commands.
-  - `docs/diagnosis-yield-analysis-plan.md` (gitignored) is superseded by
-    `docs/source/yield-analysis.md`.
+`main` has unreleased work since v0.6.0 (PRs #42, #67 and #69), including a
+breaking change: shared-bus wrappers now have one functional port per memory.
+The next release, 0.7.0, waits on the owner's go-ahead.
+
+## Diagnosis & yield analysis (milestone 4, released in 0.4.0) — still open
+
+Documented in `docs/source/yield-analysis.md`.
+
+- The ITC'2020 gap: the per-bank reading is 0.35-1.5 points off Table II at
+  every count. Any further reading is post-hoc and must be labelled so.
+- Deferred: shared (global/common) spares across banks, `words_per_row` > 1
+  and address scrambling, mixed fault types in one RTL sweep, parallel RTL
+  trials (`yield-sim`'s bitmap trials already run in parallel; the RTL
+  engines share one module directory), run-length names for unknown shapes,
+  a `PART_FIX`/SEMI G91 export, Tcl shell commands for the yield commands.
+- `docs/diagnosis-yield-analysis-plan.md` (gitignored) is superseded by
+  `docs/source/yield-analysis.md`.
 
 ## Shared-bus follow-ups (deliberately deferred, not urgent)
 
 `topology: shared-bus` + `redundancy:` currently supports on-chip
-row-and-column self-repair only. Still rejected, each its own separately-
-scoped follow-up:
+row-and-column self-repair with the greedy analyzer only. Still rejected,
+each its own separately-scoped follow-up:
 - Tester-driven redundancy under shared-bus (repair_ports pins would bind
   to a single physical remap, meaningless across N memories).
 - Persisted-repair-signature load (`onchip_repair_persistence`) under
   shared-bus.
 - On-chip diagnosis log (`onchip_diagnosis`) under shared-bus.
+- Spare retry (`onchip_spare_retry`) and the deferred two-pass analyzer
+  (`onchip_analyzer: deferred`) under shared-bus.
+- Fault-injection (`--test`, saboteur) builds under shared-bus. Shared-bus
+  fault coverage is measured by the algorithm-engine campaign instead.
 - Multi-port memories combined with shared-bus (shared-bus is currently
   single-port only).
 - A hierarchical controller-of-controllers orchestrator built on top of
@@ -59,8 +63,11 @@ scoped follow-up:
   `sram_1rw` with march-c: controller 554/680 (81.47%), 126 faults
   testable only through the memory.
 - JTAG/IJTAG-wrapped designs (`wrap-test-access --manifest`'s `test_access`
-  block) — **not graded yet.** FaultFlow reads the block but doesn't
-  interpret it; that is FaultFlow-side work.
+  block) — FaultFlow now builds the JTAG-wrapped netlist from that block
+  (`faultflow/integrations/autombist.py`): the TAP and IJTAG network are
+  kept out of scan and tested through TCK, or made scan flops with
+  `scan_tap`. Not re-verified end to end from autoMBIST's side, and
+  autoMBIST's `grade-controller` bundle still grades the collar only.
 - Part B (autoMBIST bug fixes) — **confirmed fixed** (2026-09-22): sim-time
   fault-mask re-randomization, the `REPO_ROOT`/`--out` path-resolution bug,
   and the hardcoded `READ_LATENCY`. The "O(depth)/clock transition saboteur"
@@ -122,12 +129,10 @@ Yosys and at gate level (BIST passes a good memory, fails a stuck-bit one).
   standalone from the wrapped file; glue with them blackboxed leaves exactly
   the listed instances). BSR (boundary-scan register) insertion is a
   separate warptap step `wrap-test-access` does not do.
-- **Not started (FaultFlow repo, separate PR)**: consuming the manifest —
-  subprocess-invoke `autombist generate --emit-manifest` (and optionally
-  `autombist wrap-test-access --manifest DIR`), load and validate
-  `manifest.json`, generate per-block/glue synth scripts for the collar or
-  the JTAG-wrapped netlist, splice, then `sim`/`scan` — plus
-  `autombist-generate` CLI and Tcl commands.
+- ~~Consuming the manifest in the FaultFlow repo~~ — done there
+  (`faultflow/integrations/autombist.py`, `autombist-generate`): per-block
+  and glue synthesis for the collar or the JTAG-wrapped netlist, splice,
+  then `sim`/`scan`.
 
 ### Network access description (BSDL) — autoMBIST side done, two things open
 
