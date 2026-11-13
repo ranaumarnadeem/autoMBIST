@@ -19,11 +19,11 @@ from pathlib import Path
 from typing import Any
 
 from .generator import _render_template
+from .testaccess import SYSTEM_CLOCK as SYSTEM_CLOCK  # re-exported: the PDL's run-loop clock
 from .testaccess import NetworkAccess
-from .testbench import _IDLE_HIGH, TB_DIRNAME, TestbenchError, _chmod_x, render_run_script
+from .testbench import TB_DIRNAME, TestbenchError, _chmod_x, _idles_high, render_run_script
 
-# The clock the MBIST runs on, as the PDL's iRunLoop -sck names it.
-SYSTEM_CLOCK = "clk"
+# SYSTEM_CLOCK (testaccess) is the clock the PDL's iRunLoop -sck names; the ICL declares it.
 _JTAG_INPUTS = ("tck", "tms", "tdi", "trst_n")
 _DRIVEN = ("clk", "rst_n", *_JTAG_INPUTS)
 # Control ports wrapping makes JTAG-only: their pins are held at 0, unused.
@@ -282,7 +282,7 @@ def render_jtag_testbench(
         "read_labels": read_labels,
         "instruction": instruction,
         "idle_inputs": [
-            {"name": p.name, "range": p.range, "idle": "'1" if p.name in _IDLE_HIGH else "'0"}
+            {"name": p.name, "range": p.range, "idle": "'1" if _idles_high(p.name) else "'0"}
             for p in ports if p.direction == "input" and p.name not in special
         ],
         "outputs": [p for p in ports if p.direction == "output" and p.name != "tdo"],
@@ -302,9 +302,9 @@ STIL_MIN_WARPTAP = (0, 0, 4)
 DEFAULT_STIL_CLK_PERIOD_NS = 100.0
 # Pins to_stil declares itself.
 _TAP_PINS = ("tck", "tms", "tdi", "tdo")
-# Inputs a STIL pattern holds high: the functional port's active-low chip select, and
+# Inputs a STIL pattern holds high besides the functional chip selects (_idles_high):
 # the two active-low resets, which the lead-in pulls low and then releases.
-_STIL_HIGH = (*_IDLE_HIGH, "rst_n", "trst_n")
+_STIL_HIGH_RESETS = ("rst_n", "trst_n")
 
 
 @dataclass(frozen=True)
@@ -352,7 +352,7 @@ def stil_pins(ports: list[NetlistPort]) -> tuple[dict[str, int], list[str]]:
             continue
         for bit in _bit_names(port):
             if port.direction == "input":
-                inputs[bit] = 1 if port.name in _STIL_HIGH else 0
+                inputs[bit] = 1 if _idles_high(port.name) or port.name in _STIL_HIGH_RESETS else 0
             else:
                 outputs.append(bit)
     return inputs, outputs

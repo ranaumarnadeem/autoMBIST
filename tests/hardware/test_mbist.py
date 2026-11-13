@@ -16,6 +16,19 @@ from autombist.fault_gen import generate_fault_files
 from autombist.fault_gen import FaultType
 
 
+def _idle_functional_ports(dut) -> None:
+    """Hold every functional input idle: chip select high, the rest 0. A
+    shared-bus wrapper has one set per memory, func_<signal>_<memory>."""
+    for signal, idle in (("csb", 1), ("addr", 0), ("din", 0), ("we", 0)):
+        single = getattr(dut, f"func_{signal}", None)
+        if single is not None:
+            single.value = idle
+            continue
+        for handle in dut:
+            if handle._name.startswith(f"func_{signal}_"):
+                handle.value = idle
+
+
 def _safe_int(handle) -> int | None:
     try:
         return int(handle.value)
@@ -377,10 +390,7 @@ async def _run_mbist_once(
     dut.test_mode.value = 1
     dut.bist_start.value = 0
 
-    dut.func_csb.value = 1
-    dut.func_addr.value = 0
-    dut.func_din.value = 0
-    dut.func_we.value = 0
+    _idle_functional_ports(dut)
 
     await ClockCycles(dut.clk, 4)
     dut.rst_n.value = 1
@@ -471,7 +481,7 @@ async def _run_mbist_once(
             pending_sa_checks = next_sa_checks
 
         if int(dut.rst_n.value) == 1 and int(dut.test_mode.value) == 1:
-            is_concurrent_rw = False
+            read_addr0: int | None = None  # march-1r1w: the address port 0 reads this cycle
             if algo_name == "march-1r1w":
                 # march_1r1w_fsm has no single mem_addr/mem_en/mem_we -- it
                 # drives two independent port buses (mem_addr0/mem_en0 for the
@@ -482,17 +492,17 @@ async def _run_mbist_once(
                 # and a read-port enable always means a read.
                 en0 = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_en0")
                 en1 = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_en1")
+                if en0 == 1:
+                    read_addr0 = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_addr0")
                 if en0 == 1 and en1 == 1:
-                    # Genuine same-cycle read(port0) + write(port1) issue --
-                    # exactly the coincidence port-coupling needs. Both ports
-                    # share the single addr_q register (see march_1r1w_fsm.sv),
-                    # so mem_addr0 == mem_addr1 here by construction, but read
-                    # via mem_addr1 (the write side) to mirror the RTL's own
-                    # same-address equality check.
+                    # Genuine same-cycle read(port0) + write(port1) issue, on
+                    # different addresses (port 1 writes the address port 0
+                    # read on the step before, see march_1r1w_fsm.sv). This
+                    # logical view follows the write; port 0's read is in
+                    # read_addr0.
                     addr = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_addr1")
                     mem_en = 1
                     mem_we = 1
-                    is_concurrent_rw = True
                 elif en1 == 1:
                     addr = _get_hier_value(dut, f"u_algo_top.{fsm_name}.mem_addr1")
                     mem_en = 1
@@ -535,15 +545,15 @@ async def _run_mbist_once(
                         {"addr": addr, "cycles_left": max(read_latency + 1, 1)}
                     )
             elif fault_type == "port-coupling":
-                if use_saboteur and is_concurrent_rw:
-                    # port-coupling is only sensitized by a genuinely
-                    # concurrent same-address read+write issue cycle. The
+                if use_saboteur and read_addr0 is not None:
+                    # port-coupling is sensitized by a write made while port 0
+                    # reads, and shows on a later read of the written word. The
                     # saboteur's real_dout comes from the same registered-read
                     # memory macro instance as stuck-at, so the faulted read
                     # data for this address becomes valid on the same timing
                     # stuck-at already waits for.
                     pending_sa_checks.append(
-                        {"addr": addr, "cycles_left": max(read_latency + 1, 1)}
+                        {"addr": read_addr0, "cycles_left": max(read_latency + 1, 1)}
                     )
             elif use_saboteur:
                 if mem_en == 1 and mem_we == 1:
@@ -662,8 +672,8 @@ async def test_transition_faults(dut):
 @cocotb.test()
 async def test_port_coupling_faults(dut):
     """A genuinely concurrent 1R1W march (march-1r1w) must detect an
-    inter-port bridging defect that only manifests on a same-address,
-    same-cycle read+write coincidence -- the whole reason multi-port MBIST
+    inter-port bridging defect that only manifests when a write is made
+    while the other port reads -- the whole reason multi-port MBIST
     exists as a discipline over "test each port separately" algorithms."""
     if os.getenv("FAULT_MODE", "clean").strip().lower() != "faults":
         return
@@ -862,10 +872,7 @@ async def _march_log(dut, data_width: int) -> tuple[int, list[tuple[int, int]], 
     dut.rst_n.value = 0
     dut.test_mode.value = 1
     dut.bist_start.value = 0
-    dut.func_csb.value = 1
-    dut.func_addr.value = 0
-    dut.func_din.value = 0
-    dut.func_we.value = 0
+    _idle_functional_ports(dut)
     await ClockCycles(dut.clk, 4)
     dut.rst_n.value = 1
     await ClockCycles(dut.clk, 2)

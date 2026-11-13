@@ -1,5 +1,13 @@
 `timescale 1ns/1ps
 
+// Rendered from src/autombist/templates/sp_controller_fsm.sv.j2 by
+// autombist.sp_controller_gen -- the one single-port march controller. Edit
+// the template, not this file: tests/software/test_sp_controller_gen.py fails
+// while they differ, and its docstring says how to re-render.
+//
+// march_raw's own content is all in march_raw_algo.sv: this FSM walks its
+// (phase, op_step) table over every address. The phase count and the
+// direction of each phase below were read from that table's case arms.
 module march_raw_fsm #(
     parameter integer ADDR_WIDTH   = 10,
     parameter integer DATA_WIDTH   = 32,
@@ -19,8 +27,8 @@ module march_raw_fsm #(
     output logic                  done,
     output logic                  fail,
 
-    // On-chip BIRA streaming interface (Step E): fires the SAME cycle/condition
-    // that already sets fail_q below, but exposes it as a live per-cell strobe
+    // On-chip BIRA streaming interface: fires the SAME cycle/condition that
+    // already sets fail_q below, but exposes it as a live per-cell strobe
     // instead of only a sticky aggregate -- an on-chip analyzer can register
     // every distinct failing row as the march passes over it, not just "some
     // row failed." Purely additive: no existing signal's timing changes.
@@ -37,6 +45,7 @@ module march_raw_fsm #(
     output logic [DATA_WIDTH-1:0] fail_bitmask
 );
 
+    // 6 elements (phases 0-5), from march_raw_algo.sv's case table.
     localparam logic [2:0] LAST_PHASE = 3'd5;
     localparam logic [ADDR_WIDTH-1:0] MAX_ADDR = {ADDR_WIDTH{1'b1}};
 
@@ -79,6 +88,10 @@ module march_raw_fsm #(
         .last_step(last_step)
     );
 
+    // Direction of a given phase, for the address the next phase starts at:
+    // E0-E2 ascend, E3-E5 descend. This lookahead must match
+    // march_raw_algo.sv's own phase_dir_up assignments, which is why it is
+    // read from them.
     function automatic logic phase_is_up(input logic [2:0] phase);
         phase_is_up = (phase <= 3'd2);
     endfunction

@@ -26,6 +26,57 @@ everything that predates the migration.
   worked example a test re-runs, and what autoMBIST does not provide (#41).
 
 ### Fixed
+- The Python model of the on-chip repair analyzer reads march-c's last pass
+  descending, as the RTL does. It could not change a repair decision (every
+  spare a word can take is taken before that pass), so no repair figure
+  changes.
+- Generated fault lists no longer contain an `AF_ALIAS` aliasing a word to
+  itself, which changes nothing and so was reported escaped for every
+  algorithm. The all-types list made one at a 2-word depth, and a random list
+  whenever its aggressor draw hit the victim; that aggressor is now the next
+  address, and the rest of a seeded list is unchanged.
+- A shared-controller campaign's reports name each fault's memory when its
+  faults are on more than memory 0: `mi` in the JSON, a `memory` column in the
+  CSV and Markdown, and diagnosis cells keyed by memory as well as address and
+  bit. The same fault on two memories used to be two identical rows, and one
+  diagnosis cell shown as both detected and escaped. The safety report's
+  fault-list hash includes the memory index, so two lists that differ only in
+  it no longer hash alike; lists without one hash as before.
+- The `algo` shell's comparison matrix (`compare_algo`, then `write_report`)
+  gives every fault its own row. Faults of one type at one victim that differ
+  only in aggressor or `p0`/`p1` shared a row, so a later one overwrote an
+  earlier one: a detected fault could show as escaped while the totals still
+  counted both. Such rows now carry `<aaddr.abit/p0.p1`, and an exact repeat
+  `~n`; every other key is unchanged. Two algorithms with one name get columns
+  `name` and `name (2)` instead of one overwriting the other.
+- The ICL `wrap-test-access --emit-icl` writes declares `clk` as a `ClockPort`
+  of the top module. The `run_mbist` PDL's run loop counts `clk`
+  (`iRunLoop N -sck clk`), and IEEE 1687 needs that port to be a clock port, so a
+  strict retargeting tool could refuse the procedure, or count TCK instead and
+  never clock the BIST.
+- `march-1r1w`, and element E3 of `march-2rw`, no longer read an address in the
+  cycle the other port writes it. A compiled two-port macro, OpenRAM's
+  included, does not define that read, so on silicon a good memory could fail
+  the BIST and on-chip self-repair could spend spares on good rows. The write
+  port now writes the address the read port read on the previous step, and
+  each read checks the value the previous element left: `march-1r1w` is March
+  C- with its reads on the read port and its writes on the write port. Each
+  such element takes one extra write-only step (8 cycles for `march-1r1w`, 2
+  for `march-2rw`).
+  - The behavioral model `generate` writes for a multi-port memory returns X
+    for a read of an address another port writes in the same cycle, where it
+    used to pass the written data through.
+  - The `port-coupling` fault is now triggered by a write made while the read
+    port reads (any address), the access the algorithm makes, instead of a
+    same-address one.
+- A `topology: shared-bus` wrapper gives each memory its own functional port,
+  `func_csb_<name>`, `func_addr_<name>`, `func_din_<name>`, `func_we_<name>`
+  and `func_dout_<name>`, in place of the single `func_*` port. That port was
+  muxed by the BIST sequencer's memory select, so outside test mode it reached
+  only memory 0 after reset and only the last memory after any BIST or
+  self-repair run: the others could not be used, and data written before a run
+  read back from a different memory afterwards. This changes the wrapper's
+  ports; dedicated wrappers are unchanged.
 - `simulate` and `run` now test the user's memory model. They used to compile
   this repo's own test fixture of the same name (`tests/hardware/<memory_name>.v`)
   whatever model the project had, so a broken model still passed and any other
@@ -163,6 +214,13 @@ everything that predates the migration.
   bank and `--y0` the memory's. A sweep that placed the faults over the whole
   memory (`--itc-reading each-memory`, the default, or `total-memory`) is
   refused for more than one bank, since no bank's own count is known (#66).
+
+### Changed
+- The `config.yml` snapshot `generate` writes names each run parameter once:
+  `use_saboteur`, `algo`, `fault_type`, `fault_count`, `fault_seed` and
+  `pulse_width_ns`, without the `autombist_use_saboteur`, `autombist_algo`, ...
+  copies. `fault_count` and `fault_seed` are now there for clean builds too.
+  `simulate` and `run` still read an older snapshot's `autombist_` names (#65).
 
 ### Performance
 Results are unchanged in every case (#64).

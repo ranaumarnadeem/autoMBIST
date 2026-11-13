@@ -27,8 +27,10 @@ TB_DIRNAME = "tb"
 # itself; every other input is held at its idle value.
 _DRIVEN = ("clk", "rst_n", "test_mode", "bist_start")
 _CHECKED = ("bist_done", "bist_fail")
-# Inputs whose idle value is all ones: the functional port's active-low chip select.
-_IDLE_HIGH = ("func_csb",)
+def _idles_high(name: str) -> bool:
+    """Whether an input idles at all ones: a functional port's active-low chip
+    select, ``func_csb`` or, on a shared-bus wrapper, ``func_csb_<memory>``."""
+    return name == "func_csb" or name.startswith("func_csb_")
 
 # Clock cycles the generated controller spends per address, per algorithm, as
 # (fixed, reads): fixed + reads * READ_LATENCY. A write takes ISSUE -> CHECK
@@ -50,6 +52,10 @@ _CYCLES_PER_ADDRESS: dict[str, tuple[int, int]] = {
 # Cycles per memory outside the address loop: start, done, and a shared
 # controller's switch to its next memory.
 _CYCLES_PER_MEMORY = 3
+# Write-only tail steps (ISSUE -> CHECK, 2 cycles each) a two-port controller adds
+# once per read-and-write element: its writes trail its reads by one address, so
+# the last address of such an element is written after the sweep.
+_TAIL_CYCLES: dict[str, int] = {"march-1r1w": 4 * 2, "march-2rw": 1 * 2}
 # Margin on the computed BIST length: the timeout and the PDL's run loop need
 # an upper bound. Repair and diagnosis add no cycles in the configurations
 # tests/golden/metrics.yml measures, but one it does not measure may.
@@ -122,7 +128,7 @@ def bist_cycles(config: dict[str, Any]) -> int:
         raise ValueError(f"config memories must be a list, not {listed!r}")
     memories = len(listed) or 1
     per_address = fixed + reads * _config_count(config, "read_latency", 1)
-    return memories * (words * per_address + _CYCLES_PER_MEMORY)
+    return memories * (words * per_address + _CYCLES_PER_MEMORY + _TAIL_CYCLES.get(algo, 0))
 
 
 def _config_count(config: dict[str, Any], key: str, default: int | None = None) -> int:
@@ -146,7 +152,7 @@ def bist_cycle_bound(config: dict[str, Any]) -> int:
 
 
 def _idle_value(port: WrapperPort) -> str:
-    return "'1" if port.name in _IDLE_HIGH else "'0"
+    return "'1" if _idles_high(port.name) else "'0"
 
 
 def render_bist_testbench(config: dict[str, Any], ports: list[WrapperPort], max_cycles: int) -> str:

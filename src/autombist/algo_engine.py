@@ -17,6 +17,7 @@ Verilog supports.
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import functools
 import hashlib
 import math
@@ -27,9 +28,10 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from .alg_spec import WAIT_BASE, AlgSpec, expand_expected_blocks, find_engine_dir
 from .seq_check import SequenceResult, compare_trace, parse_observed_trace
@@ -303,12 +305,29 @@ class CampaignResult:
         physical port the victim/aggressor access uses (e.g. a same-port vs.
         cross-port coupling variant of the same CFIN@addr.bit) get distinct
         rows instead of colliding; single-port sessions (num_ports == 1, the
-        default) keep the original, unsuffixed key unchanged."""
-        row: dict[str, str] = {}
-        for r in self.faults:
+        default) keep the original, unsuffixed key unchanged.
+
+        Faults that still share a key (same type and victim, a different
+        aggressor or p0/p1, e.g. two CFIN at one victim) get the aggressor and
+        parameters appended, '<aaddr.abit/p0.p1', and an exact repeat a
+        '~n' occurrence number, so every fault keeps its own row. A key no
+        other fault in the list shares is unchanged."""
+        def base(r: FaultResult) -> str:
             key = f"{r.record.type}@{r.record.vaddr}.{r.record.vbit}"
             if self.mem.num_ports > 1:
                 key = f"{key}#{r.record.vport}.{r.record.aport}"
+            return key
+
+        shared = Counter(base(r) for r in self.faults)
+        seen: Counter[str] = Counter()
+        row: dict[str, str] = {}
+        for r in self.faults:
+            key = base(r)
+            if shared[key] > 1:
+                key = f"{key}<{r.record.aaddr}.{r.record.abit}/{r.record.p0}.{r.record.p1}"
+            seen[key] += 1
+            if seen[key] > 1:
+                key = f"{key}~{seen[key]}"
             row[key] = "D" if r.detected else "E"
         return row
 
@@ -351,6 +370,13 @@ class CampaignResult:
                 for r in self.faults
             ],
         }
+        # A shared-controller list with faults off memory 0 records each fault's
+        # memory: the same (vaddr, vbit) exists in every memory, so without it two
+        # faults on different memories read as one. Absent otherwise, so a
+        # single-memory report is unchanged.
+        if any(r.record.mi != 0 for r in self.faults):
+            for fault, r in zip(d["faults"], self.faults):
+                fault["mi"] = r.record.mi
         # Sequence-correctness result is present only when a check was requested
         # (FSM front with an expected spec); omitted entirely otherwise so
         # existing consumers see a byte-identical dict.
@@ -546,7 +572,10 @@ def generate_all_types_faults(mem: MemoryParams) -> list[FaultRecord]:
         ab = vb
         p0, p1 = _coupling_p0_p1(t)
         if t == "AF_ALIAS":
-            aa = (va + 2) % depth
+            # The alias target must be another address: aliasing a word to itself
+            # changes nothing, so the fault could never be detected. (va + 2) %
+            # depth is va itself when depth is 2.
+            aa = (va + 2) % depth if (va + 2) % depth != va else (va + 1) % depth
         elif t == "DRF":
             # AADDR/ABIT unused (matches SOF/AF_NOACC's convention). P0 is the
             # idle-cycle threshold, not a polarity/direction selector like
@@ -629,14 +658,17 @@ def generate_random_faults(mem: MemoryParams, n: int, seed: int = 0) -> list[Fau
     types = _effective_all_types(mem)
     records: list[FaultRecord] = []
     for _ in range(n):
-        records.append(
-            FaultRecord(
-                type=rng.choice(types),
-                vaddr=rng.randrange(depth), vbit=rng.randrange(dw),
-                aaddr=rng.randrange(depth), abit=rng.randrange(dw),
-                p0=rng.randrange(3), p1=rng.randrange(2),
-            )
+        record = FaultRecord(
+            type=rng.choice(types),
+            vaddr=rng.randrange(depth), vbit=rng.randrange(dw),
+            aaddr=rng.randrange(depth), abit=rng.randrange(dw),
+            p0=rng.randrange(3), p1=rng.randrange(2),
         )
+        if record.type == "AF_ALIAS" and record.aaddr == record.vaddr and depth > 1:
+            # A word aliased to itself is no fault at all: take the next address
+            # (not a new draw, so the rest of a seeded list stays the same).
+            record.aaddr = (record.vaddr + 1) % depth
+        records.append(record)
     return records
 
 
@@ -1121,6 +1153,82 @@ def _run_faults_concurrently(
     return results_by_index  # type: ignore[return-value]  # every slot filled: one future per index, all awaited above
 
 
+# The scaffolding every campaign runner shares (#65): the workdir, the golden
+# pass, one result per fault, and the tally. Each runner keeps only what is its
+# own -- its sources, its plusargs and how one fault is run.
+
+@contextlib.contextmanager
+def _campaign_workdir(workdir: Path | None, prefix: str) -> Iterator[Path]:
+    """The caller's workdir (created if missing, and kept), or a temporary one
+    removed when the campaign ends."""
+    if workdir is not None:
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+        yield workdir
+        return
+    with tempfile.TemporaryDirectory(prefix=prefix) as tmp:
+        yield Path(tmp)
+
+
+def _golden_run(
+    artifact: BuildArtifact, plusargs: list[str], *, what: str, broken: str,
+    alg_file: Path | None = None,
+) -> str:
+    """Run with no fault injected; a DETECTED verdict means the algorithm,
+    engine or wiring is broken, not the memory. Returns the run's output."""
+    out = run_one(artifact, alg_file=alg_file, extra_plusargs=plusargs)
+    detected, *_ = parse_result_line(out)
+    if detected:
+        raise CampaignError(
+            f"golden run for {what} unexpectedly reported DETECTED "
+            f"(no faults were injected). {broken}\n{out}"
+        )
+    return out
+
+
+def _fault_result(i: int, record: FaultRecord, out: str, *, with_hits: bool) -> FaultResult:
+    """One fault's verdict from its run's output; ``with_hits`` also reads the
+    FAULT_HITS line a ``+FAULT_VERBOSE`` run prints."""
+    detected, elem, op, addr, xor_bits = parse_result_line(out)
+    hits = parse_fault_hits(out) if with_hits else None
+    return FaultResult(
+        index=i, record=record, detected=detected,
+        elem=elem, op=op, addr=addr, xor=xor_bits,
+        activations=hits[2] if hits else None,
+    )
+
+
+def _run_faults_and_tally(
+    faults: list[FaultRecord],
+    run_one_fault: Callable[[int, FaultRecord], FaultResult],
+    *,
+    algo_name: str,
+    mem: MemoryParams,
+    artifact: BuildArtifact,
+    sim: str,
+    start: float,
+    progress_callback: Callable[[int, int], None] | None,
+    max_workers: int | None,
+    sequence: SequenceResult | None = None,
+) -> CampaignResult:
+    """Run every fault (see _run_faults_concurrently) and total the coverage;
+    ``start`` is when the golden pass began, so run_seconds includes it."""
+    results = _run_faults_concurrently(
+        faults, run_one_fault, progress_callback,
+        max_workers if max_workers is not None else _fault_concurrency(),
+    )
+    run_seconds = time.time() - start
+    detected_count = sum(1 for r in results if r.detected)
+    total = len(results)
+    coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
+    return CampaignResult(
+        algo_name=algo_name, mem=mem, golden_clean=True, faults=results,
+        detected=detected_count, total=total, coverage_percent=coverage,
+        build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
+        sequence=sequence,
+    )
+
+
 def _resolve_engine_sources(mem: MemoryParams, engine_dir: Path, workdir: Path,
                              fault_ram_sv: Path | None) -> tuple[list[Path], str]:
     """Dispatch on mem.num_ports for the algo front.
@@ -1182,44 +1290,33 @@ def _run_campaign_against_artifact(
 
     start = time.time()
 
-    golden_out = run_one(artifact, alg_file=alg_file, extra_plusargs=plusargs)
-    golden_detected, *_ = parse_result_line(golden_out)
-    if golden_detected:
-        bg_note = f" (background={background.name})" if background is not None else ""
-        raise CampaignError(
-            f"golden run for algorithm '{alg.name}'{bg_note} unexpectedly reported DETECTED "
-            f"(no faults were injected). The algorithm spec or engine is broken.\n{golden_out}"
-        )
+    bg_note = f" (background={background.name})" if background is not None else ""
+    _golden_run(
+        artifact, plusargs, alg_file=alg_file,
+        what=f"algorithm '{alg.name}'{bg_note}", broken="The algorithm spec or engine is broken.",
+    )
 
     def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
         out = run_one(
             artifact, alg_file=alg_file, fault_file=_single_fault_file(workdir, i, record), index=0,
             verbose=verbose, extra_plusargs=plusargs,
         )
-        detected, elem, op, addr, xor_bits = parse_result_line(out)
-        activations = None
-        if verbose:
-            hits = parse_fault_hits(out)
-            activations = hits[2] if hits else None
-        return FaultResult(
-            index=i, record=record, detected=detected,
-            elem=elem, op=op, addr=addr, xor=xor_bits, activations=activations,
-        )
+        return _fault_result(i, record, out, with_hits=verbose)
 
-    results = _run_faults_concurrently(
-        faults, _run_one_fault, progress_callback,
-        max_workers if max_workers is not None else _fault_concurrency(),
+    return _run_faults_and_tally(
+        faults, _run_one_fault, algo_name=alg.name, mem=mem, artifact=artifact, sim=sim,
+        start=start, progress_callback=progress_callback, max_workers=max_workers,
     )
 
-    run_seconds = time.time() - start
-    detected_count = sum(1 for r in results if r.detected)
-    total = len(results)
-    coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
 
-    return CampaignResult(
-        algo_name=alg.name, mem=mem, golden_clean=True, faults=results,
-        detected=detected_count, total=total, coverage_percent=coverage,
-        build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
+def _compile_algo_front(
+    mem: MemoryParams, workdir: Path, *, sim: str, fault_ram_sv: Path | None, cache_dir: Path | None,
+) -> BuildArtifact:
+    """march_engine (or march_engine_mp), the .alg-driven front."""
+    sources, top_module = _resolve_engine_sources(mem, find_engine_dir(), workdir, fault_ram_sv)
+    return compile_engine(
+        mem, sources=sources, top_module=top_module,
+        workdir=workdir, sim=sim, cache_dir=cache_dir,
     )
 
 
@@ -1259,30 +1356,12 @@ def run_algo_campaign(
     behavior.
     """
     _validate_fault_addresses(mem, faults)
-    own_tmp: tempfile.TemporaryDirectory[str] | None = None
-    if workdir is None:
-        own_tmp = tempfile.TemporaryDirectory(prefix="autombist-algo-")
-        workdir = Path(own_tmp.name)
-    else:
-        workdir = Path(workdir)
-        workdir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        engine_dir = find_engine_dir()
-        sources, top_module = _resolve_engine_sources(mem, engine_dir, workdir, fault_ram_sv)
-
-        artifact = compile_engine(
-            mem, sources=sources, top_module=top_module,
-            workdir=workdir, sim=sim, cache_dir=cache_dir,
-        )
-
+    with _campaign_workdir(workdir, "autombist-algo-") as workdir:
+        artifact = _compile_algo_front(mem, workdir, sim=sim, fault_ram_sv=fault_ram_sv, cache_dir=cache_dir)
         return _run_campaign_against_artifact(
             artifact, mem, alg, faults, workdir=workdir, sim=sim, verbose=verbose,
             progress_callback=progress_callback, max_workers=max_workers,
         )
-    finally:
-        if own_tmp is not None:
-            own_tmp.cleanup()
 
 
 _WORD_ORIENTED_MODES = {"cfid": ("CFID_WOM", False), "cfdst": ("CFDST_WOM", True)}
@@ -1340,15 +1419,7 @@ def run_word_oriented_campaign(
     algo_name, cfdst_mode = _WORD_ORIENTED_MODES[mode]
     _validate_fault_addresses(mem, faults)
 
-    own_tmp: tempfile.TemporaryDirectory[str] | None = None
-    if workdir is None:
-        own_tmp = tempfile.TemporaryDirectory(prefix="autombist-wom-")
-        workdir = Path(own_tmp.name)
-    else:
-        workdir = Path(workdir)
-        workdir.mkdir(parents=True, exist_ok=True)
-
-    try:
+    with _campaign_workdir(workdir, "autombist-wom-") as workdir:
         from .word_oriented import write_dbs_file
 
         engine_dir = find_engine_dir()
@@ -1367,48 +1438,19 @@ def run_word_oriented_campaign(
             plusargs.append("+CFDST_MODE")
 
         start = time.time()
-
-        golden_out = run_one(artifact, extra_plusargs=plusargs)
-        golden_detected, *_ = parse_result_line(golden_out)
-        if golden_detected:
-            raise CampaignError(
-                f"golden run for '{algo_name}' unexpectedly reported DETECTED "
-                f"(no faults were injected). The engine is broken.\n{golden_out}"
-            )
+        _golden_run(artifact, plusargs, what=f"'{algo_name}'", broken="The engine is broken.")
 
         def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
             out = run_one(
                 artifact, fault_file=_single_fault_file(workdir, i, record), index=0,
                 verbose=verbose, extra_plusargs=plusargs,
             )
-            detected, elem, op, addr, xor_bits = parse_result_line(out)
-            activations = None
-            if verbose:
-                hits = parse_fault_hits(out)
-                activations = hits[2] if hits else None
-            return FaultResult(
-                index=i, record=record, detected=detected,
-                elem=elem, op=op, addr=addr, xor=xor_bits, activations=activations,
-            )
+            return _fault_result(i, record, out, with_hits=verbose)
 
-        results = _run_faults_concurrently(
-            faults, _run_one_fault, progress_callback,
-            max_workers if max_workers is not None else _fault_concurrency(),
+        return _run_faults_and_tally(
+            faults, _run_one_fault, algo_name=algo_name, mem=mem, artifact=artifact, sim=sim,
+            start=start, progress_callback=progress_callback, max_workers=max_workers,
         )
-
-        run_seconds = time.time() - start
-        detected_count = sum(1 for r in results if r.detected)
-        total = len(results)
-        coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
-
-        return CampaignResult(
-            algo_name=algo_name, mem=mem, golden_clean=True, faults=results,
-            detected=detected_count, total=total, coverage_percent=coverage,
-            build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
-        )
-    finally:
-        if own_tmp is not None:
-            own_tmp.cleanup()
 
 
 _SHARED_CAMPAIGN_ALGO_NAMES = {
@@ -1468,15 +1510,7 @@ def run_shared_campaign(
 
     algo_name = _SHARED_CAMPAIGN_ALGO_NAMES[alg]
 
-    own_tmp: tempfile.TemporaryDirectory[str] | None = None
-    if workdir is None:
-        own_tmp = tempfile.TemporaryDirectory(prefix="autombist-shared-")
-        workdir = Path(own_tmp.name)
-    else:
-        workdir = Path(workdir)
-        workdir.mkdir(parents=True, exist_ok=True)
-
-    try:
+    with _campaign_workdir(workdir, "autombist-shared-") as workdir:
         engine_dir = find_engine_dir()
         sources = [engine_dir / "fault_ram.sv", engine_dir / "shared_engine.sv"]
         top_module = "shared_engine"
@@ -1490,14 +1524,7 @@ def run_shared_campaign(
         plusargs = [f"+INIT={mem.init_val}", f"+ALG={alg}"]
 
         start = time.time()
-
-        golden_out = run_one(artifact, extra_plusargs=plusargs)
-        golden_detected, *_ = parse_result_line(golden_out)
-        if golden_detected:
-            raise CampaignError(
-                f"golden run for '{algo_name}' unexpectedly reported DETECTED "
-                f"(no faults were injected). The engine is broken.\n{golden_out}"
-            )
+        _golden_run(artifact, plusargs, what=f"'{algo_name}'", broken="The engine is broken.")
 
         def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
             fault_file = workdir / f"fault_{i}.txt"
@@ -1510,34 +1537,14 @@ def run_shared_campaign(
             if verbose:
                 extra.append("+FAULT_VERBOSE")
             out = run_one(artifact, extra_plusargs=extra)
-            detected, elem, op, addr, xor_bits = parse_result_line(out)
             # Only the faulted memory's fault_ram has a fault loaded, so the one
-            # FAULT_HITS line is this fault's. It was asked for and dropped (#60).
-            hits = parse_fault_hits(out) if verbose else None
-            return FaultResult(
-                index=i, record=record, detected=detected,
-                elem=elem, op=op, addr=addr, xor=xor_bits,
-                activations=hits[2] if hits else None,
-            )
+            # FAULT_HITS line is this fault's.
+            return _fault_result(i, record, out, with_hits=verbose)
 
-        results = _run_faults_concurrently(
-            faults, _run_one_fault, progress_callback,
-            max_workers if max_workers is not None else _fault_concurrency(),
+        return _run_faults_and_tally(
+            faults, _run_one_fault, algo_name=algo_name, mem=mem, artifact=artifact, sim=sim,
+            start=start, progress_callback=progress_callback, max_workers=max_workers,
         )
-
-        run_seconds = time.time() - start
-        detected_count = sum(1 for r in results if r.detected)
-        total = len(results)
-        coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
-
-        return CampaignResult(
-            algo_name=algo_name, mem=mem, golden_clean=True, faults=results,
-            detected=detected_count, total=total, coverage_percent=coverage,
-            build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
-        )
-    finally:
-        if own_tmp is not None:
-            own_tmp.cleanup()
 
 
 def run_background_campaign(
@@ -1572,23 +1579,8 @@ def run_background_campaign(
     if not backgrounds:
         raise CampaignError("run_background_campaign: no backgrounds to run")
 
-    own_tmp: tempfile.TemporaryDirectory[str] | None = None
-    if workdir is None:
-        own_tmp = tempfile.TemporaryDirectory(prefix="autombist-algo-bg-")
-        workdir = Path(own_tmp.name)
-    else:
-        workdir = Path(workdir)
-        workdir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        engine_dir = find_engine_dir()
-        sources, top_module = _resolve_engine_sources(mem, engine_dir, workdir, fault_ram_sv)
-
-        artifact = compile_engine(
-            mem, sources=sources, top_module=top_module,
-            workdir=workdir, sim=sim, cache_dir=cache_dir,
-        )
-
+    with _campaign_workdir(workdir, "autombist-algo-bg-") as workdir:
+        artifact = _compile_algo_front(mem, workdir, sim=sim, fault_ram_sv=fault_ram_sv, cache_dir=cache_dir)
         results: dict[str, CampaignResult] = {}
         for background in backgrounds:
             results[background.name] = _run_campaign_against_artifact(
@@ -1597,9 +1589,6 @@ def run_background_campaign(
                 max_workers=max_workers,
             )
         return results
-    finally:
-        if own_tmp is not None:
-            own_tmp.cleanup()
 
 
 def merge_background_results(per_background: dict[str, CampaignResult]) -> CampaignResult:
@@ -1740,14 +1729,6 @@ def run_fsm_campaign(
     from .fsm_harness import HARNESS_TOP, check_ports, parse_ports, render_harness, render_harness_mp
 
     _validate_fault_addresses(mem, faults)
-    own_tmp: tempfile.TemporaryDirectory[str] | None = None
-    if workdir is None:
-        own_tmp = tempfile.TemporaryDirectory(prefix="autombist-fsm-")
-        workdir = Path(own_tmp.name)
-    else:
-        workdir = Path(workdir)
-        workdir.mkdir(parents=True, exist_ok=True)
-
     check_sequence = expected_spec is not None
     if check_sequence:
         assert expected_spec is not None  # for type checkers
@@ -1764,7 +1745,7 @@ def run_fsm_campaign(
             "a WORDS_PER_ROW top parameter to Verilator's -G override in this phase; the "
             "generated FSM harness does not"
         )
-    try:
+    with _campaign_workdir(workdir, "autombist-fsm-") as workdir:
         engine_dir = find_engine_dir()
         resolved_fault_ram, shim_sv = _resolve_fsm_engine_sources(mem, engine_dir, workdir, fault_ram_sv)
 
@@ -1807,13 +1788,10 @@ def run_fsm_campaign(
         # without it), so per-fault runs stay identical whether or not a
         # sequence check was requested.
         golden_plusargs = plusargs + ["+SEQ_TRACE"] if check_sequence else plusargs
-        golden_out = run_one(artifact, extra_plusargs=golden_plusargs)
-        golden_detected, *_ = parse_result_line(golden_out)
-        if golden_detected:
-            raise CampaignError(
-                f"golden run for FSM '{fsm_module_name}' unexpectedly reported DETECTED "
-                f"(no faults were injected). The FSM or harness wiring is broken.\n{golden_out}"
-            )
+        golden_out = _golden_run(
+            artifact, golden_plusargs,
+            what=f"FSM '{fsm_module_name}'", broken="The FSM or harness wiring is broken.",
+        )
 
         sequence: SequenceResult | None = None
         if check_sequence:
@@ -1827,25 +1805,10 @@ def run_fsm_campaign(
         def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
             out = run_one(artifact, fault_file=_single_fault_file(workdir, i, record), index=0,
                           extra_plusargs=plusargs)
-            detected, elem, op, addr, xor_bits = parse_result_line(out)
-            return FaultResult(index=i, record=record, detected=detected, elem=elem, op=op, addr=addr, xor=xor_bits)
+            return _fault_result(i, record, out, with_hits=False)
 
-        results = _run_faults_concurrently(
-            faults, _run_one_fault, progress_callback,
-            max_workers if max_workers is not None else _fault_concurrency(),
-        )
-
-        run_seconds = time.time() - start
-        detected_count = sum(1 for r in results if r.detected)
-        total = len(results)
-        coverage = 100.0 if total == 0 else (detected_count / total) * 100.0
-
-        return CampaignResult(
-            algo_name=f"FSM:{fsm_module_name}", mem=mem, golden_clean=True, faults=results,
-            detected=detected_count, total=total, coverage_percent=coverage,
-            build_seconds=artifact.build_seconds, run_seconds=run_seconds, sim=sim,
+        return _run_faults_and_tally(
+            faults, _run_one_fault, algo_name=f"FSM:{fsm_module_name}", mem=mem, artifact=artifact,
+            sim=sim, start=start, progress_callback=progress_callback, max_workers=max_workers,
             sequence=sequence,
         )
-    finally:
-        if own_tmp is not None:
-            own_tmp.cleanup()

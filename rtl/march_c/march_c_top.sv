@@ -1,5 +1,8 @@
 `timescale 1ns/1ps
 
+// Rendered from src/autombist/templates/sp_controller_top.sv.j2 by
+// autombist.sp_controller_gen. Edit the template, not this file (see
+// march_c_fsm.sv).
 module march_c_top #(
     parameter integer ADDR_WIDTH   = 10,
     parameter integer DATA_WIDTH   = 32,
@@ -13,8 +16,8 @@ module march_c_top #(
     output logic                  bist_done,
     output logic                  bist_fail,
 
-    // On-chip BIRA streaming interface (Step E) -- pass-through of the FSM's
-    // own fail_valid/fail_addr. Unconnected/unused by every existing consumer.
+    // On-chip BIRA streaming interface -- pass-through of the FSM's own
+    // fail_valid/fail_addr. Unconnected/unused by every existing consumer.
     output logic                  bist_fail_valid,
     output logic [ADDR_WIDTH-1:0] bist_fail_addr,
     output logic [DATA_WIDTH-1:0] bist_fail_bitmask,

@@ -13,7 +13,7 @@ from typing import Any
 
 from autombist import __version__
 
-from .generator import load_config
+from .generator import RUN_PARAMETER_LEGACY_KEYS, load_config
 from .reporting import build_simulation_report, write_simulation_report, write_text_report
 
 
@@ -143,7 +143,11 @@ def resolve_memory_model(
 
 
 def _get_run_metadata(config: dict[str, Any], key: str, default: Any) -> Any:
-    value = config.get(key, default)
+    """A run parameter from a config.yml snapshot, or from its old
+    ``autombist_`` name in a snapshot written before that name was dropped."""
+    value = config.get(key)
+    if value is None:
+        value = config.get(RUN_PARAMETER_LEGACY_KEYS[key])
     return default if value is None else value
 
 
@@ -214,12 +218,12 @@ def _load_simulation_config(module_outdir: Path) -> dict[str, Any]:
         "addr_width": int(makefile_metadata.get("ADDR_WIDTH", "4")),
         "data_width": int(makefile_metadata.get("DATA_WIDTH", "8")),
         "we_active_low": we_active_low,
-        "autombist_use_saboteur": makefile_metadata.get("USE_SABOTEUR", "1") not in {"0", "false", "False"},
-        "autombist_faults": int(makefile_metadata.get("FAULTS", "0")),
-        "autombist_fault_seed": None if not makefile_metadata.get("FAULT_SEED") else int(makefile_metadata["FAULT_SEED"]),
-        "autombist_fault_type": makefile_metadata.get("FAULT_TYPE", "stuck-at"),
-        "autombist_pulse_width_ns": int(makefile_metadata.get("PULSE_WIDTH_NS", "2")),
-        "autombist_algo": makefile_metadata.get("ALGO", "march-c"),
+        "use_saboteur": makefile_metadata.get("USE_SABOTEUR", "1") not in {"0", "false", "False"},
+        "fault_count": int(makefile_metadata.get("FAULTS", "0")),
+        "fault_seed": None if not makefile_metadata.get("FAULT_SEED") else int(makefile_metadata["FAULT_SEED"]),
+        "fault_type": makefile_metadata.get("FAULT_TYPE", "stuck-at"),
+        "pulse_width_ns": int(makefile_metadata.get("PULSE_WIDTH_NS", "2")),
+        "algo": makefile_metadata.get("ALGO", "march-c"),
     }
 
 
@@ -359,9 +363,9 @@ def run_simulation(
             f"Generated wrapper not found: {wrapper_path}. Run `autombist generate` first."
         )
 
-    config_declares_saboteur = "autombist_use_saboteur" in config
+    config_declares_saboteur = "use_saboteur" in config or RUN_PARAMETER_LEGACY_KEYS["use_saboteur"] in config
     if config_declares_saboteur:
-        use_saboteur = bool(config.get("autombist_use_saboteur"))
+        use_saboteur = bool(_get_run_metadata(config, "use_saboteur", False))
     else:
         # Backward compatibility for legacy outputs that did not snapshot metadata.
         use_saboteur = (module_outdir / "Makefile").exists()
@@ -379,11 +383,11 @@ def run_simulation(
     hardware_dir = _find_hardware_dir()
     repo_root = Path(__file__).resolve().parents[2]
 
-    algo = str(_get_run_metadata(config, "autombist_algo", "march-c"))
-    fault_seed = _get_run_metadata(config, "autombist_fault_seed", None)
-    faults = int(_get_run_metadata(config, "autombist_faults", 0))
-    fault_type = str(_get_run_metadata(config, "autombist_fault_type", "stuck-at"))
-    pulse_width_ns = int(_get_run_metadata(config, "autombist_pulse_width_ns", 2))
+    algo = str(_get_run_metadata(config, "algo", "march-c"))
+    fault_seed = _get_run_metadata(config, "fault_seed", None)
+    faults = int(_get_run_metadata(config, "fault_count", 0))
+    fault_type = str(_get_run_metadata(config, "fault_type", "stuck-at"))
+    pulse_width_ns = int(_get_run_metadata(config, "pulse_width_ns", 2))
 
     # Determine PROJECT_ROOT for the makefile
     # Try dev mode first, then fallback to hardware_dir parent

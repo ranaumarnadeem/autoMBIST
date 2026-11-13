@@ -1,5 +1,13 @@
 `timescale 1ns/1ps
 
+// Rendered from src/autombist/templates/sp_controller_fsm.sv.j2 by
+// autombist.sp_controller_gen -- the one single-port march controller. Edit
+// the template, not this file: tests/software/test_sp_controller_gen.py fails
+// while they differ, and its docstring says how to re-render.
+//
+// march_x's own content is all in march_x_algo.sv: this FSM walks its
+// (phase, op_step) table over every address. The phase count and the
+// direction of each phase below were read from that table's case arms.
 module march_x_fsm #(
     parameter integer ADDR_WIDTH   = 10,
     parameter integer DATA_WIDTH   = 32,
@@ -19,10 +27,11 @@ module march_x_fsm #(
     output logic                  done,
     output logic                  fail,
 
-    // On-chip BIRA streaming interface (self-repair-ready from day one, mirroring
-    // march_c_fsm.sv/march_raw_fsm.sv): fires the SAME cycle/condition that
+    // On-chip BIRA streaming interface: fires the SAME cycle/condition that
     // already sets fail_q below, but exposes it as a live per-cell strobe
-    // instead of only a sticky aggregate.
+    // instead of only a sticky aggregate -- an on-chip analyzer can register
+    // every distinct failing row as the march passes over it, not just "some
+    // row failed." Purely additive: no existing signal's timing changes.
     output logic                  fail_valid,
     output logic [ADDR_WIDTH-1:0] fail_addr,
 
@@ -36,9 +45,7 @@ module march_x_fsm #(
     output logic [DATA_WIDTH-1:0] fail_bitmask
 );
 
-    // March X has 4 elements (phases 0-3); LAST_PHASE and phase_is_up are
-    // sized for this algo's own phase count/direction sequence -- see
-    // march_x_algo.sv's case table for the direction each phase actually runs.
+    // 4 elements (phases 0-3), from march_x_algo.sv's case table.
     localparam logic [2:0] LAST_PHASE = 3'd3;
     localparam logic [ADDR_WIDTH-1:0] MAX_ADDR = {ADDR_WIDTH{1'b1}};
 
@@ -53,7 +60,7 @@ module march_x_fsm #(
     march_x_state_t state_q;
 
     logic [2:0]            phase_q;
-    logic                  substep_q;
+    logic                  op_step_q;
     logic [ADDR_WIDTH-1:0] addr_q;
     logic [DATA_WIDTH-1:0] expected_q;
     logic                  fail_q;
@@ -66,25 +73,25 @@ module march_x_fsm #(
     logic                  do_write;
     logic [DATA_WIDTH-1:0] expected_data;
     logic [DATA_WIDTH-1:0] write_data;
-    logic                  last_substep;
+    logic                  last_step;
 
     march_x_algo #(
         .DATA_WIDTH(DATA_WIDTH)
     ) u_march_x_algo (
         .phase(phase_q),
-        .op_step({1'b0, substep_q}),
+        .op_step({1'b0, op_step_q}),
         .phase_dir_up(phase_dir_up),
         .do_read(do_read),
         .do_write(do_write),
         .expected_data(expected_data),
         .write_data(write_data),
-        .last_step(last_substep)
+        .last_step(last_step)
     );
 
-    // Direction of a given phase: E0-E1 ascend, E2-E3 descend (matches
-    // march_x_algo.sv's own phase_dir_up assignments -- this lookahead must
-    // stay in lockstep with that table, see march_c_fsm.sv's identical
-    // convention).
+    // Direction of a given phase, for the address the next phase starts at:
+    // E0-E1 ascend, E2-E3 descend. This lookahead must match
+    // march_x_algo.sv's own phase_dir_up assignments, which is why it is
+    // read from them.
     function automatic logic phase_is_up(input logic [2:0] phase);
         phase_is_up = (phase <= 3'd1);
     endfunction
@@ -114,7 +121,7 @@ module march_x_fsm #(
         if (!rst_n) begin
             state_q    <= ST_IDLE;
             phase_q    <= '0;
-            substep_q  <= 1'b0;
+            op_step_q  <= '0;
             addr_q     <= '0;
             expected_q <= '0;
             fail_q     <= 1'b0;
@@ -123,7 +130,7 @@ module march_x_fsm #(
             case (state_q)
                 ST_IDLE: begin
                     phase_q    <= '0;
-                    substep_q  <= 1'b0;
+                    op_step_q  <= '0;
                     addr_q     <= '0;
                     expected_q <= '0;
                     fail_q     <= 1'b0;
@@ -160,14 +167,14 @@ module march_x_fsm #(
                         fail_q <= 1'b1;
                     end
 
-                    if (last_substep) begin
+                    if (last_step) begin
                         if (phase_dir_up) begin
                             if (addr_q == MAX_ADDR) begin
                                 if (phase_q == LAST_PHASE) begin
                                     state_q <= ST_DONE;
                                 end else begin
                                     phase_q   <= phase_q + 1'b1;
-                                    substep_q <= 1'b0;
+                                    op_step_q <= '0;
                                     if (phase_is_up(phase_q + 1'b1)) begin
                                         addr_q <= '0;
                                     end else begin
@@ -177,7 +184,7 @@ module march_x_fsm #(
                                 end
                             end else begin
                                 addr_q    <= addr_q + 1'b1;
-                                substep_q <= 1'b0;
+                                op_step_q <= '0;
                                 state_q   <= ST_ISSUE;
                             end
                         end else begin
@@ -186,7 +193,7 @@ module march_x_fsm #(
                                     state_q <= ST_DONE;
                                 end else begin
                                     phase_q   <= phase_q + 1'b1;
-                                    substep_q <= 1'b0;
+                                    op_step_q <= '0;
                                     if (phase_is_up(phase_q + 1'b1)) begin
                                         addr_q <= '0;
                                     end else begin
@@ -196,12 +203,13 @@ module march_x_fsm #(
                                 end
                             end else begin
                                 addr_q    <= addr_q - 1'b1;
-                                substep_q <= 1'b0;
+                                op_step_q <= '0;
                                 state_q   <= ST_ISSUE;
                             end
                         end
                     end else begin
-                        substep_q <= 1'b1;
+                        // A one-bit step's only non-last value is 0.
+                        op_step_q <= 1'b1;
                         state_q   <= ST_ISSUE;
                     end
                 end

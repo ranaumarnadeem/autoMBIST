@@ -53,7 +53,8 @@ def _bits(mask: int) -> Iterable[int]:
 def march_c_events(stuck: Mapping[Cell, int], rows: int) -> list[Event]:
     """The failing reads of march-c over ``rows`` words with these stuck cells
     (value 0 or 1): up r0 (stuck-at-1 bits fail), up r1 (stuck-at-0 bits), down
-    r0, down r1, then up r0 again."""
+    r0, down r1, then down r0 again (rtl/march_c/march_c_algo.sv's last element
+    descends)."""
     sa1: dict[int, int] = {}
     sa0: dict[int, int] = {}
     for (row, bit), value in stuck.items():
@@ -61,7 +62,7 @@ def march_c_events(stuck: Mapping[Cell, int], rows: int) -> list[Event]:
         table[row] = table.get(row, 0) | (1 << bit)
     up, down = range(rows), range(rows - 1, -1, -1)
     events: list[Event] = []
-    for order, table in ((up, sa1), (up, sa0), (down, sa1), (down, sa0), (up, sa1)):
+    for order, table in ((up, sa1), (up, sa0), (down, sa1), (down, sa0), (down, sa1)):
         events += [(addr, table[addr]) for addr in order if addr in table]
     return events
 

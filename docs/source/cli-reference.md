@@ -197,12 +197,12 @@ names and widths as the blackbox stub the wrapper is synthesized against
 1R1W or 2RW memory, one instance per memory of a shared-bus controller). It is
 idealized: fault-free, no timing checks, contents power up unknown. It follows
 `read_latency`: `0` registers the inputs on the rising edge and does the write
-and read on the falling edge, as OpenRAM's own models do (a multi-port model
-also forwards a write to a concurrent read of the same address, which the
-two-port algorithms expect); `1` or more registers the address and presents
-`dout` one clock later and holds it. A passing run shows the generated RTL and
-a model built to its configuration agree; it says nothing about the macro,
-whose own model you should still run.
+and read on the falling edge, as OpenRAM's own models do; `1` or more registers the
+address and presents `dout` one clock later and holds it. In a multi-port model,
+a read of the address another port writes in the same cycle returns X: a
+compiled macro does not define it, and the two-port algorithms never do it.
+A passing run shows the generated RTL and a model built to its configuration
+agree; it says nothing about the macro, whose own model you should still run.
 
 The testbench resets the design with `test_mode=1`, sets `bist_start=1` and
 holds it (the controller keeps its result only while start stays high, just
@@ -971,7 +971,8 @@ behind a reset lead-in:
 
 Every pin of the wrapped top is declared, one STIL signal per bit of a bus
 (`"func_addr[0]"`): the inputs held at the values the JTAG testbench ties them to
-(the resets and `func_csb` high, the rest low), the outputs other than TDO
+(the resets and the functional chip selects, `func_csb` or a shared-bus wrapper's
+`func_csb_<name>`, high, the rest low), the outputs other than TDO
 declared `Out` and not compared. The run loop is one `Loop N` statement. In each
 TCK cycle TMS and TDI change at 0, TDO is compared at a quarter period, and TCK
 rises at half and falls at three quarters; `clk` has the same shape in its own

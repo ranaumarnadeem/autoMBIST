@@ -6,8 +6,8 @@ test_1r1w_e2e.py's structure exactly, but exercises fault_type=
 
 This is the HIGH-LEVEL half of the differential proof for the port-coupling
 fault type. march-1r1w's own algorithm (rtl/march_1r1w/march_1r1w_algo.sv,
-elements E1-E4) already issues several genuinely same-cycle, same-address
-concurrent read(port0)+write(port1) accesses as part of its normal march
+elements E1-E4) already issues several genuinely same-cycle
+read(port0)+write(port1) accesses (on neighbouring addresses) as part of its normal march
 sequence -- no special-casing is needed to sensitize the fault, a real
 concurrent MBIST run naturally exercises it.
 
@@ -62,8 +62,8 @@ def _write_config(path: Path, config: dict) -> None:
 def test_port_coupling_fault_is_detected(tmp_path: Path) -> None:
     """POSITIVE CONTROL: a real march-1r1w run with fault_type="port-coupling"
     and faults actually injected must report bist_fail == 1 INSIDE the
-    simulation. march-1r1w's E1-E4 phases issue genuine same-cycle,
-    same-address read(port0)+write(port1) accesses as part of the
+    simulation. march-1r1w's E1-E4 phases issue genuine same-cycle
+    read(port0)+write(port1) accesses as part of the
     algorithm's normal sequence (see march_1r1w_algo.sv's header comment) --
     no special test sequencing is needed for the concurrent algorithm to
     sensitize the fault.

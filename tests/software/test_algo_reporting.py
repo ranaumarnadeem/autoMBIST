@@ -163,6 +163,49 @@ def test_matrix_row_single_port_key_unchanged() -> None:
     assert r.matrix_row() == {"SA0@1.0": "D"}
 
 
+def _records_result(algo_name: str, records: list[tuple[FaultRecord, bool]]) -> CampaignResult:
+    faults = [FaultResult(index=i, record=rec, detected=det) for i, (rec, det) in enumerate(records)]
+    detected = sum(1 for f in faults if f.detected)
+    return CampaignResult(
+        algo_name=algo_name, mem=MemoryParams(addr_width=4, data_width=4), golden_clean=True,
+        faults=faults, detected=detected, total=len(faults),
+        coverage_percent=detected / len(faults) * 100.0, build_seconds=0.0, run_seconds=0.0, sim="verilator",
+    )
+
+
+def test_matrix_keeps_faults_that_differ_only_by_aggressor_or_polarity_apart() -> None:
+    """Two CFIN at one victim with different aggressors, and the same aggressor
+    with a different p0, used to share the key CFIN@5.0: the later one overwrote
+    the earlier, so a detected fault showed as escaped and one fault vanished."""
+    r = _records_result("march_c", [
+        (FaultRecord("CFIN", 5, 0, 3, 0, 0, 0), True),
+        (FaultRecord("CFIN", 5, 0, 7, 0, 1, 0), False),
+        (FaultRecord("CFIN", 5, 0, 7, 0, 0, 0), True),
+        (FaultRecord("SA0", 2, 1, 0, 0, 0, 0), True),
+    ])
+
+    assert r.matrix_row() == {
+        "CFIN@5.0<3.0/0.0": "D", "CFIN@5.0<7.0/1.0": "E", "CFIN@5.0<7.0/0.0": "D",
+        "SA0@2.1": "D",  # a key no other fault shares stays as it was
+    }
+    csv = render_matrix_csv([r]).splitlines()
+    assert len(csv) == 1 + 4 + 1  # header, one row per fault, totals
+
+
+def test_matrix_keeps_an_exact_repeat_and_two_algorithms_of_one_name_apart() -> None:
+    sa = FaultRecord("SA0", 1, 0, 0, 0, 0, 0)
+    first = _records_result("march_c", [(sa, True), (sa, False)])
+    second = _records_result("march_c", [(sa, False), (sa, False)])
+
+    assert first.matrix_row() == {"SA0@1.0<0.0/0.0": "D", "SA0@1.0<0.0/0.0~2": "E"}
+    csv = render_matrix_csv([first, second]).splitlines()
+    assert csv[0] == "fault,march_c,march_c (2)"
+    assert csv[1:] == ["SA0@1.0<0.0/0.0,D,E", "SA0@1.0<0.0/0.0~2,E,E", "total,1/2,0/2"]
+    payload = json.loads(render_matrix_json([first, second]))
+    assert payload["algos"] == ["march_c", "march_c (2)"]
+    assert payload["totals"]["march_c"]["detected"] == 1 and payload["totals"]["march_c (2)"]["detected"] == 0
+
+
 def test_campaign_csv_gains_port_columns_only_when_multi_port() -> None:
     r = _mp_result("march_c", [("CFIN", 5, 1, 0, 1, True)])
     csv = render_campaign_csv(r)
@@ -550,3 +593,43 @@ def test_write_syndrome_report_json_format(tmp_path: Path) -> None:
     path = write_syndrome_report(_syndrome_result(), tmp_path / "syn.json", fmt="json")
     payload = json.loads(path.read_text())
     assert "groups" in payload
+
+
+def _shared_result() -> CampaignResult:
+    """A shared-controller campaign: SA0 at (5, 0) on memory 0 (detected) and on
+    memory 1 (escaped)."""
+    faults = [
+        FaultResult(index=0, record=FaultRecord("SA0", 5, 0, mi=0), detected=True,
+                    elem=1, op=0, addr=5, xor="0001"),
+        FaultResult(index=1, record=FaultRecord("SA0", 5, 0, mi=1), detected=False),
+    ]
+    return CampaignResult(
+        algo_name="march_c", mem=MemoryParams(addr_width=4, data_width=4), golden_clean=True,
+        faults=faults, detected=1, total=2, coverage_percent=50.0,
+        build_seconds=0.0, run_seconds=0.0, sim="verilator",
+    )
+
+
+def test_a_shared_campaign_names_each_faults_memory() -> None:
+    """Without the memory index the two faults were identical rows, and the
+    diagnosis merged them into one cell shown both detected and escaped."""
+    result = _shared_result()
+
+    assert [f["mi"] for f in result.to_dict()["faults"]] == [0, 1]
+    csv = render_campaign_csv(result).splitlines()
+    assert csv[0].endswith(",memory") and csv[1].endswith(",0") and csv[2].endswith(",1")
+
+    cells = build_diagnosis_cells(result)
+    assert [(c["memory"], c["addr"], c["bit"], c["role"]) for c in cells] == [
+        (0, 5, 0, "both"), (1, 5, 0, "injection"),
+    ]
+    assert cells[0]["escaped_types_here"] == [] and cells[1]["escaped_types_here"] == ["SA0"]
+    assert render_diagnosis_csv(result).splitlines()[0].startswith("memory,addr,bit,")
+
+
+def test_a_single_memory_campaign_has_no_memory_field() -> None:
+    result = _result("march_c", [("SA0", 1, 0, True)])
+
+    assert "mi" not in result.to_dict()["faults"][0]
+    assert "memory" not in render_campaign_csv(result).splitlines()[0]
+    assert all("memory" not in cell for cell in build_diagnosis_cells(result))

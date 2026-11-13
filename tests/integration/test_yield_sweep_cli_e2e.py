@@ -1,8 +1,7 @@
 """Real, non-mocked end-to-end proof that `autombist yield-sweep` works
-through the actual CLI entrypoint -- see test_yield_sweep_report.py for the
-fast, pure-Python schema tests this builds on, and test_yield_sweep_e2e.py
-for the direct real-Icarus proof of the underlying sweep()/run_trial()
-functions this CLI command wraps unchanged.
+through the actual CLI entrypoint, on RtlEngine and yieldsim.sweep -- see
+test_yield_sweep_engine.py and test_yieldsim_sweep.py for the fast tests this
+builds on, and test_yield_sweep_engine_e2e.py for the engine on real RTL.
 """
 from __future__ import annotations
 
@@ -55,7 +54,7 @@ def test_cli_yield_sweep_writes_a_real_report_and_json_round_trips(tmp_path: Pat
     assert point["faults"] == 1
     assert len(point["trials"]) == 2
     # A single-fault trial on this geometry is deterministically repairable
-    # with 1 spare row -- see test_yield_sweep_e2e.py's own proof of why.
+    # with 1 spare row: one stuck cell is confined to one row.
     assert point["repair_rate"] == 1.0
 
     report_path = out_dir / "yield_sweep.json"

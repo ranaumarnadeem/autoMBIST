@@ -41,15 +41,23 @@ which is non-negotiable for this to mean anything).
 
 autoMBIST exposes two independent, purpose-built March algorithms for this:
 
-- **march-1r1w** exploits the 1R1W topology's concurrency directly: the read
-  port and write port issue to the *same address on the same clock edge*,
-  which is exactly the condition needed to catch inter-port bridging defects.
+- **march-1r1w** exploits the 1R1W topology's concurrency directly. It is
+  March C- with every read on the read port and every write on the write
+  port: in each read-and-write element the read port reads one address while,
+  on the same clock edge, the write port writes the address read on the step
+  before. So every element after the first reads what the previous one wrote,
+  through the other port.
 - **march-2rw** generalizes further to two fully symmetric read/write ports,
   letting the algorithm exercise access patterns march-1r1w structurally
   cannot express — concurrent write/write to two *different* addresses, and
   concurrent read/read to the *same* address — on top of the same
-  read(one port)/write(other port) same-address case march-1r1w already
-  covers.
+  read(one port)/write(other port) element march-1r1w uses.
+
+Neither algorithm reads an address in the cycle the other port writes it. A
+compiled two-port macro, OpenRAM's included, does not define that read (its
+own simulation model prints a warning for it), so a test relying on it could
+fail a good die. The behavioral model `generate` writes returns X for such a
+read, so a controller that did it would fail its own testbench.
 
 ## 2. Classic path: configuring and generating a multi-port memory
 
@@ -168,9 +176,9 @@ access.
 ### 2b. The `port-coupling` fault type, and its topology restriction
 
 In addition to `stuck-at`, `transition-up`, and `transition-down`,
-autoMBIST's classic path supports a fourth fault type: `port-coupling` — an
-aggressor write on the write port disturbing a victim read on the read port,
-sensitized only by a genuine same-cycle, same-address concurrent access.
+autoMBIST's classic path supports a fourth fault type: `port-coupling` — a
+write on the write port that stores a corrupted word because the read port
+was reading (another address) on the same clock edge.
 
 **`port-coupling` is restricted to `march-1r1w` only.** It requires exactly
 the asymmetric one-read-port/one-write-port topology to have a well-defined
@@ -214,13 +222,14 @@ address on the two ports, so a same-cycle OR of both compares is correct
 — hardened as a regression assertion (`tests/hardware/test_march_2rw.py`),
 not just assumed.
 
-march-1r1w's mechanism works because both ports share the FSM's single
-`addr_q` register (`rtl/march_1r1w/march_1r1w_fsm.sv`): the read port and
-write port always access the same address on the same cycle, so one
-`fail_valid`/`fail_addr` stream and one shared `repair_remap_row` (plus,
-under `onchip_col_repair: true`, one shared `repair_remap_col`) steer both
-ports together. march-2rw's row repair OR-combines `fail_bitmask` across
-both ports on that same same-address-when-concurrent invariant
+march-1r1w's mechanism works because only the read port ever compares, so
+there is one `fail_valid`/`fail_addr` stream, at the address the read port
+read. Each port has its own `repair_remap_row`, since the write port writes
+a different address from the one being read, and under `onchip_col_repair:
+true` one shared `repair_remap_col` steers bit lanes for both ports (a column
+claim is a lane, the same at every address). march-2rw's row repair
+OR-combines `fail_bitmask` across both ports, which is sound because the
+ports compare in the same cycle only when both read one address (E2)
 (`rtl/march_2rw/march_2rw_fsm.sv`), but its column repair needs **two**
 independent `repair_remap_col` instances — one per port, each with its
 own `spare_wen` — because march-2rw's two ports can write *different*

@@ -13,7 +13,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 import autombist.runner as runner_mod
-from autombist.generator import generate_from_config
+from autombist.generator import RUN_PARAMETER_LEGACY_KEYS, generate_from_config
 from autombist.runner import (
     SimulationError,
     _build_clean_command,
@@ -260,12 +260,12 @@ def test_load_simulation_config_fallback_uses_makefile_metadata(tmp_path: Path) 
     assert config["wrapper_module_name"] == "sram_1rw_mbist"
     assert config["addr_width"] == 10
     assert config["data_width"] == 32
-    assert config["autombist_use_saboteur"] is True
-    assert config["autombist_faults"] == 5
-    assert config["autombist_fault_seed"] == 42
-    assert config["autombist_fault_type"] == "stuck-at"
-    assert config["autombist_pulse_width_ns"] == 3
-    assert config["autombist_algo"] == "march-c"
+    assert config["use_saboteur"] is True
+    assert config["fault_count"] == 5
+    assert config["fault_seed"] == 42
+    assert config["fault_type"] == "stuck-at"
+    assert config["pulse_width_ns"] == 3
+    assert config["algo"] == "march-c"
 
 
 def test_load_simulation_config_detects_active_low_write_enable(tmp_path: Path) -> None:
@@ -437,6 +437,59 @@ def test_run_simulation_passes_the_model_and_an_absolute_module_dir(tmp_path: Pa
     assert f"SRAM_SOURCE={generated}" in captured["command"]
     assert f"MODULE_OUTDIR={module_outdir}" in captured["command"]
     assert captured["command"][-1] == "sim"
+
+
+def _fault_run_command(tmp_path: Path, monkeypatch, *, legacy_snapshot: bool) -> list[str]:
+    config_path = tmp_path / "config.yml"
+    _write_yaml(config_path, _base_config())
+    wrapper = generate_from_config(
+        config_path, tmp_path / "out", use_saboteur=True, faults=3, fault_seed=7,
+        fault_type="stuck-at", pulse_width_ns=4, algo="march-raw",
+    )
+    snapshot_path = wrapper.parent / "config.yml"
+    snapshot = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
+    if legacy_snapshot:
+        # A snapshot from before #65 names every run parameter autombist_*.
+        for key, legacy in RUN_PARAMETER_LEGACY_KEYS.items():
+            snapshot[legacy] = snapshot.pop(key)
+        _write_yaml(snapshot_path, snapshot)
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(runner_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("autombist.runner.subprocess.run", fake_run)
+    run_simulation(wrapper.parent)
+    return captured["command"]
+
+
+@pytest.mark.parametrize("legacy_snapshot", [False, True])
+def test_the_run_parameters_come_from_the_snapshot_under_either_spelling(
+    tmp_path: Path, monkeypatch, legacy_snapshot: bool,
+) -> None:
+    command = _fault_run_command(tmp_path, monkeypatch, legacy_snapshot=legacy_snapshot)
+    for arg in ("USE_SABOTEUR=1", "FAULTS=3", "FAULT_SEED=7", "FAULT_TYPE=stuck-at",
+                "PULSE_WIDTH_NS=4", "ALGO=march-raw"):
+        assert arg in command
+
+
+def test_the_snapshot_spells_each_run_parameter_once(tmp_path: Path) -> None:
+    """#65: generate wrote every run parameter twice, as `x` and `autombist_x`.
+    A pre-#65 snapshot given back as --config must not carry its old spellings
+    into the new one either."""
+    old = _base_config()
+    old.update({legacy: "stale" for legacy in RUN_PARAMETER_LEGACY_KEYS.values()})
+    config_path = tmp_path / "config.yml"
+    _write_yaml(config_path, old)
+    wrapper = generate_from_config(config_path, tmp_path / "out", use_saboteur=False)
+    snapshot = yaml.safe_load((wrapper.parent / "config.yml").read_text(encoding="utf-8"))
+    assert not [key for key in snapshot if key.startswith("autombist_")]
+    assert {key: snapshot[key] for key in RUN_PARAMETER_LEGACY_KEYS} == {
+        "use_saboteur": False, "algo": "march-c", "fault_type": "stuck-at",
+        "fault_count": 0, "fault_seed": None, "pulse_width_ns": 2,
+    }
 
 
 # ---------------------------------------------------------------------------

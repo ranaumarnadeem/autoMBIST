@@ -351,6 +351,32 @@ DEFAULT_TCK_MAX_FREQ_HZ = 10e6
 attribute and nothing in the RTL says what it is, so this is an assumption; the CLI says so
 whenever it applies it."""
 
+SYSTEM_CLOCK = "clk"
+"""The clock the MBIST runs on: the run_mbist PDL's ``iRunLoop -sck`` names it, so the
+ICL's top module declares it as a ClockPort."""
+
+_TRST_PORT_LINE = re.compile(r"^(?P<indent>[ \t]+)TRSTPort [^;\n]+;[ \t]*\n", re.MULTILINE)
+
+
+def declare_system_clock(icl: str, module: str, clock: str = SYSTEM_CLOCK) -> str:
+    """``icl`` with ``ClockPort <clock>;`` added to ``module``'s port declarations, after
+    its TRSTPort. warptap's ICL declares only the TAP's ports, while the PDL's run loop
+    counts ``clock``; IEEE 1687 needs an ``iRunLoop -sck`` port to be a clock port of the
+    module the procedures are for. Raises ValueError when ``module`` is missing or has
+    no TRSTPort, and leaves an ICL that already declares the clock unchanged."""
+    start = icl.find(f"Module {module} {{")
+    if start < 0:
+        raise ValueError(f"the ICL has no module {module!r} to declare {clock!r} in")
+    end = icl.find("\n}", start)
+    stop = end + 1 if end >= 0 else len(icl)  # through the newline before the closing brace
+    if re.search(rf"\bClockPort\s+{re.escape(clock)}\s*;", icl[start:stop]):
+        return icl
+    trst = _TRST_PORT_LINE.search(icl, start, stop)
+    if trst is None:
+        raise ValueError(f"the ICL's module {module!r} has no TRSTPort to place ClockPort {clock} after")
+    return f"{icl[:trst.end()]}{trst.group('indent')}ClockPort {clock};\n{icl[trst.end():]}"
+
+
 _NO_IDCODE_SUPPORT = (
     "the installed warptap cannot set a TAP IDCODE (no idcode_value support) -- upgrade "
     "warptap, or omit --idcode to keep its placeholder"
@@ -469,6 +495,7 @@ def describe_test_access_tap(
             icl = to_icl(graph, root, include_access_link=True, bsdl_entity_name=entity, **icl_extra)
         except TypeError as exc:
             raise (_missing_feature(exc, icl_extra) or TestAccessUnavailable(_NO_BSDL_SUPPORT)) from exc
+        icl = declare_system_clock(icl, root.name)
         return TapDescription(icl=icl, bsdl=bsdl, entity=entity, tck_max_freq_hz=float(tck_max_freq_hz))
     raise ValueError(f"no BSDL entity name works for module {root.name!r}: {failure}")
 
@@ -563,7 +590,7 @@ def test_access_kwargs_from_config(config: Mapping[str, Any]) -> dict[str, Any]:
     dict render_wrapper() itself renders from). Deliberately does not use
     generator.load_config(): that validates RAW USER INPUT (rejects unknown top-level
     keys), while a config.yml snapshot is the RESOLVED render_config, a superset with
-    many keys (algo_dir, autombist_*, ...) load_config would reject as unrecognized.
+    many keys (algo_dir, normalized_ports, ...) load_config would reject as unrecognized.
 
     Raises ValueError if ``config`` is missing ``addr_width`` -- the cheapest signal
     that this isn't really a generate config.yml snapshot at all.

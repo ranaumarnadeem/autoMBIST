@@ -8,20 +8,16 @@
 // read_cycle from the read port (csb0/addr0). Debug taps
 // sample the read path (port 0), matching test_mbist.py's dbg_* sampling.
 //
-// port-coupling models an inter-port bridging defect: an aggressor write on
-// the write port disturbs a victim read on the read port ONLY when both
-// touch the SAME address on the SAME clock edge (genuine concurrent access).
-// The march_1r1w controller (march_1r1w_fsm.sv) asserts read_cycle for
-// EXACTLY ONE CYCLE (the ST_ISSUE cycle), then waits READ_LATENCY more
-// cycles (ST_WAIT/ST_CHECK) before actually comparing mem_rdata0 against the
-// expected value -- so the corruption must still be visible on dout that
-// many cycles later, not just on the issue cycle itself. The real memory
-// macro's own registered dout holds a write's value stable from one cycle
-// after the write until the address is written again; the coupling flag
-// must have that SAME per-address, write-scoped lifetime (set on a write
-// cycle that coincides with a same-address read issue, cleared on the next
-// write to that address) so it stays valid for however long the controller
-// takes to actually sample it, instead of only for one cycle.
+// port-coupling models an inter-port bridging defect: a write on the write
+// port made while the read port is reading (any other address -- the
+// controllers never read and write one address in the same cycle) stores
+// the word with the fault-list bits flipped. The march_1r1w controller
+// (march_1r1w_fsm.sv) reads that word in a later element and waits
+// READ_LATENCY cycles before comparing, so the corruption must stay visible
+// on dout until then. The real memory macro's own registered dout holds a
+// write's value until the address is written again; the coupling flag has
+// that SAME per-address, write-scoped lifetime (set by a write that
+// coincides with a read, cleared by the next write to that address).
 module sram_sabpc_saboteur #(
     parameter integer ADDR_WIDTH = 4,
     parameter integer DATA_WIDTH = 8
@@ -58,8 +54,8 @@ module sram_sabpc_saboteur #(
 
     logic [DATA_WIDTH-1:0] pc_mask [0:(1<<ADDR_WIDTH)-1];
     // Per-address sticky coupling-corruption flags: set (to the fault
-    // pattern) on a write cycle that coincides with a same-address read
-    // issued the SAME cycle -- a genuine concurrent access -- and cleared on
+    // pattern) on a write cycle that coincides with a read issued on the
+    // read port the SAME cycle -- a genuine concurrent access -- and cleared on
     // the NEXT write to that same address (whether or not that later write
     // is itself coincident). This mirrors blocked_bits_q's per-address,
     // write-scoped lifetime in the transition-fault branches above: the
@@ -83,7 +79,7 @@ module sram_sabpc_saboteur #(
     always_ff @(posedge clk1) begin
         if (write_cycle) begin
             coupling_bits_q[addr1] <=
-                (read_cycle && (addr0 == addr1)) ? pc_mask[addr1] : '0;
+                read_cycle ? pc_mask[addr1] : '0;
         end
     end
 

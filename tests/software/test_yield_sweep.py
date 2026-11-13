@@ -1,68 +1,17 @@
-"""Fast, pure-Python tests for yield_sweep's dataclass logic -- no real
-simulation. See test_yield_sweep_e2e.py for the real-Icarus proof that
-run_trial()/sweep() actually produce correct data from a real fault
-injection; these tests cover only the pure repair_rate/repaired arithmetic
-built on top of that data.
+"""Fast, pure-Python tests for yield_sweep's helpers -- no real simulation:
+which fault types the functional scan can observe, when a trial's simulation
+report cannot be trusted as a fail bitmap, and where the sweep report is
+written. RtlEngine and SelfRepairEngine have their own tests
+(test_yield_sweep_engine.py, test_selfrepair_sweep.py).
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
-from autombist.repair.types import RepairSolution, Unrepairable
-from autombist.yield_sweep import DensityPoint, TrialResult, _trial_invalid_reason, check_observable, sweep
-
-
-def _trial(repaired: bool, seed: int = 0) -> TrialResult:
-    outcome = RepairSolution(row_map={}) if repaired else Unrepairable(faulty_rows=(0, 1), num_spare_rows=1)
-    return TrialResult(faults=1, seed=seed, fail_cells=frozenset(), outcome=outcome)
-
-
-def test_trial_result_repaired_reflects_outcome_type() -> None:
-    assert _trial(repaired=True).repaired is True
-    assert _trial(repaired=False).repaired is False
-
-
-def test_density_point_repair_rate_is_fraction_repaired() -> None:
-    point = DensityPoint(faults=5, trials=(_trial(True, 0), _trial(True, 1), _trial(False, 2), _trial(False, 3)))
-    assert point.repair_rate == 0.5
-
-
-def test_density_point_repair_rate_all_repaired_is_one() -> None:
-    point = DensityPoint(faults=1, trials=(_trial(True, 0), _trial(True, 1)))
-    assert point.repair_rate == 1.0
-
-
-def test_density_point_repair_rate_none_repaired_is_zero() -> None:
-    point = DensityPoint(faults=16, trials=(_trial(False, 0), _trial(False, 1)))
-    assert point.repair_rate == 0.0
-
-
-def test_density_point_repair_rate_empty_trials_is_zero_not_a_division_error() -> None:
-    point = DensityPoint(faults=0, trials=())
-    assert point.repair_rate == 0.0
-
-
-def _invalid(seed: int = 9) -> TrialResult:
-    return TrialResult(faults=1, seed=seed, fail_cells=frozenset(), outcome=None, invalid_reason="no marker")
-
-
-def test_an_invalid_trial_is_neither_repaired_nor_counted() -> None:
-    trial = _invalid()
-    assert (trial.valid, trial.repaired, trial.status) == (False, False, "invalid")
-    assert _trial(True).status == "repaired" and _trial(False).status == "unrepairable"
-
-    point = DensityPoint(faults=1, trials=(_trial(True, 0), _trial(False, 1), _invalid(2)))
-    assert (point.valid_trials, point.repaired_count, point.repair_rate) == (2, 1, 0.5)
-
-
-def test_a_point_with_only_invalid_trials_has_rate_zero_and_says_none_were_valid() -> None:
-    point = DensityPoint(faults=1, trials=(_invalid(0), _invalid(1)))
-    assert (point.valid_trials, point.repair_rate) == (0, 0.0)
-
-
-# --- validity of a trial's simulation report -------------------------------------
-
-
+from autombist.yield_sweep import _trial_invalid_reason, check_observable, write_sweep_report
 
 
 def _report(**overrides):
@@ -101,14 +50,11 @@ def test_fault_types_the_scan_cannot_see_are_refused(fault_type: str) -> None:
     check_observable("stuck-at")
 
 
-@pytest.mark.parametrize(("kwargs", "fragment"), [
-    ({"fault_type": "transition-up"}, "stuck-at faults only"),
-    ({"trials_per_point": 0}, "at least 1"),
-    ({"fault_counts": [2, -1]}, "non-negative"),
-    ({"fault_counts": [2, 2]}, "must not repeat"),
-])
-def test_sweep_refuses_bad_arguments_before_running_anything(tmp_path, kwargs, fragment: str) -> None:
-    args = {"fault_counts": [1], "trials_per_point": 1, "num_spare_rows": 1, "fault_type": "stuck-at"}
-    args.update(kwargs)
-    with pytest.raises(ValueError, match=fragment):
-        sweep(tmp_path / "missing.yml", tmp_path / "out", **args)
+def test_write_sweep_report_writes_yield_sweep_json(tmp_path: Path) -> None:
+    report = {"schema_version": "1.1", "points": [{"faults": 1, "trials": [{"row_map": {0: 0}}]}]}
+
+    report_path = write_sweep_report(report, tmp_path / "out")
+
+    assert report_path == tmp_path / "out" / "yield_sweep.json"
+    # JSON object keys are always strings, so row_map's int keys become "0".
+    assert json.loads(report_path.read_text(encoding="utf-8")) == json.loads(json.dumps(report))

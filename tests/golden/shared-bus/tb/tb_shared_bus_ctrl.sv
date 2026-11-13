@@ -25,11 +25,21 @@ module tb_shared_bus_ctrl;
     logic bist_start = 1'b0;
     wire  bist_done;
     wire  bist_fail;
-    logic func_csb = '1;
-    logic [ADDR_WIDTH-1:0] func_addr = '0;
-    logic [DATA_WIDTH-1:0] func_din = '0;
-    logic func_we = '0;
-    wire  [DATA_WIDTH-1:0] func_dout;
+    logic func_csb_mem_bank0 = '1;
+    logic [ADDR_WIDTH-1:0] func_addr_mem_bank0 = '0;
+    logic [DATA_WIDTH-1:0] func_din_mem_bank0 = '0;
+    logic func_we_mem_bank0 = '0;
+    logic func_csb_mem_bank1 = '1;
+    logic [ADDR_WIDTH-1:0] func_addr_mem_bank1 = '0;
+    logic [DATA_WIDTH-1:0] func_din_mem_bank1 = '0;
+    logic func_we_mem_bank1 = '0;
+    logic func_csb_mem_bank2 = '1;
+    logic [ADDR_WIDTH-1:0] func_addr_mem_bank2 = '0;
+    logic [DATA_WIDTH-1:0] func_din_mem_bank2 = '0;
+    logic func_we_mem_bank2 = '0;
+    wire  [DATA_WIDTH-1:0] func_dout_mem_bank0;
+    wire  [DATA_WIDTH-1:0] func_dout_mem_bank1;
+    wire  [DATA_WIDTH-1:0] func_dout_mem_bank2;
 
     shared_bus_ctrl dut (
         .clk(clk),
@@ -38,11 +48,21 @@ module tb_shared_bus_ctrl;
         .bist_start(bist_start),
         .bist_done(bist_done),
         .bist_fail(bist_fail),
-        .func_csb(func_csb),
-        .func_addr(func_addr),
-        .func_din(func_din),
-        .func_we(func_we),
-        .func_dout(func_dout)
+        .func_csb_mem_bank0(func_csb_mem_bank0),
+        .func_addr_mem_bank0(func_addr_mem_bank0),
+        .func_din_mem_bank0(func_din_mem_bank0),
+        .func_we_mem_bank0(func_we_mem_bank0),
+        .func_dout_mem_bank0(func_dout_mem_bank0),
+        .func_csb_mem_bank1(func_csb_mem_bank1),
+        .func_addr_mem_bank1(func_addr_mem_bank1),
+        .func_din_mem_bank1(func_din_mem_bank1),
+        .func_we_mem_bank1(func_we_mem_bank1),
+        .func_dout_mem_bank1(func_dout_mem_bank1),
+        .func_csb_mem_bank2(func_csb_mem_bank2),
+        .func_addr_mem_bank2(func_addr_mem_bank2),
+        .func_din_mem_bank2(func_din_mem_bank2),
+        .func_we_mem_bank2(func_we_mem_bank2),
+        .func_dout_mem_bank2(func_dout_mem_bank2)
     );
 
     always #5 clk = ~clk;

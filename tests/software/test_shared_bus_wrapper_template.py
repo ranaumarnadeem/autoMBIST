@@ -12,8 +12,8 @@ Two guarantees fixed here:
     the new is_shared_bus path at all.
   * `memories` present (2+ entries) renders a real N-instance memory-select
     mux: one algo controller (u_algo_top), N memory instances demuxed by a
-    new mem_sel_q sequencer, csb/dout arrays sized to N, sram_addr/sram_din
-    fanned out unchanged to every instance.
+    new mem_sel_q sequencer, and one functional port per memory that drives
+    that memory whenever test mode is off.
 
 This is template-rendering only (render_wrapper on a hand-built dict) --
 the config-schema -> render_config wiring is step 2, not covered here.
@@ -79,14 +79,34 @@ def test_shared_bus_demuxes_csb_and_muxes_dout_per_memory() -> None:
     # makes Yosys drop every memory instance (see the template's own note).
     assert "logic [2-1:0]                 sram_csb_arr;" in text
     assert "logic [2-1:0][DATA_WIDTH-1:0] sram_dout_arr;" in text
-    assert re.search(r"\bsram_(csb|dout)_arr\s*\[\d+\]\s*;", text) is None
-    assert "assign sram_csb_arr[0] = (mem_sel_q == 0) ? sram_csb : 1'b1;" in text
-    assign_csb_arr_1 = "assign sram_csb_arr[1] = (mem_sel_q == 1) ? sram_csb : 1'b1;"
-    assert assign_csb_arr_1 in text
+    assert re.search(r"\blogic\b[^;=]*\bsram_(csb|we|addr|din|dout)_arr\s*\[\d+\]\s*;", text) is None
+    for i, name in enumerate(("a", "b")):
+        # Test mode: only the selected memory is enabled. Otherwise: its own port.
+        assert (
+            f"assign sram_csb_arr[{i}]  = test_mode ? ((mem_sel_q == {i}) ? mbist_sram_csb : 1'b1)\n"
+            f"                                    : func_csb_{name};"
+        ) in text
+        assert f"assign sram_addr_arr[{i}] = test_mode ? mbist_sram_addr : func_addr_{name};" in text
+        assert f"assign sram_din_arr[{i}]  = test_mode ? mbist_sram_din : func_din_{name};" in text
+        assert f"assign sram_we_arr[{i}]   = ~(test_mode ? mbist_write_req : func_we_{name});" in text
+        assert f"assign func_dout_{name} = sram_dout_arr[{i}];" in text
+        assert f".addr0(sram_addr_arr[{i}])" in text and f".web0(sram_we_arr[{i}])" in text
     assert "assign sram_dout       = sram_dout_arr[mem_sel_q];" in text
-    # sram_addr/sram_din fan out to every instance unchanged -- only csb/dout differ.
-    assert text.count(".addr0(sram_addr)") == 2
-    assert text.count(".din0(sram_din)") == 2
+
+
+def test_shared_bus_has_one_functional_port_per_memory() -> None:
+    """The wrapper's mission-mode interface: every memory reachable on its own
+    port, never one functional port muxed by the BIST sequencer's mem_sel_q."""
+    text = _render_shared_bus(["a", "b", "c"])
+    for name in ("a", "b", "c"):
+        for port in (f"input  logic                  func_csb_{name}",
+                     f"input  logic [ADDR_WIDTH-1:0] func_addr_{name}",
+                     f"input  logic [DATA_WIDTH-1:0] func_din_{name}",
+                     f"input  logic                  func_we_{name}",
+                     f"output logic [DATA_WIDTH-1:0] func_dout_{name}"):
+            assert port in text
+    assert re.search(r"\bfunc_(csb|addr|din|we|dout)\b", text) is None
+    assert "output logic [DATA_WIDTH-1:0] func_dout_c\n);" in text
 
 
 def test_shared_bus_routes_algo_top_through_the_sequencer_not_wrapper_ports_directly() -> None:

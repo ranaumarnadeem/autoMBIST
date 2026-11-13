@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -124,6 +125,12 @@ def test_emit_icl_writes_a_bsdl_the_icl_the_pdl_and_the_manifest_point_at(tmp_pa
     assert f"# BSDL: {bsdl_path.name}" in pdl and f"# ICL: {top}_test_access.icl" in pdl
     assert Path(block["bsdl_path"]) == bsdl_path
     assert Path(block["icl_path"]).name == f"{top}_test_access.icl"
+
+    # every clock the PDL's run loop counts is a clock port of the ICL's top module (IEEE
+    # 1687 needs an iRunLoop -sck port to be one)
+    sck = set(re.findall(r"iRunLoop\s+\d+\s+-sck\s+(\w+)", pdl))
+    top_module = icl[icl.index(f"Module {top} {{"):]
+    assert sck == {"clk"} and all(f"ClockPort {port};" in top_module for port in sck), (sck, top_module[:400])
 
     # the BSDL's IJTAG_ACCESS and instruction length are what the vectors really load, and
     # what the manifest tells FaultFlow

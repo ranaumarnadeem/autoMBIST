@@ -3,9 +3,10 @@ uses the behavioral model generated from the config (tb/<memory>_model.v).
 
 A pass is only worth something if the model is a real memory and the testbench
 really compares data, so there are controls: a stuck bit mutated into the
-generated model fails the BIST, the write-forwarding a falling-edge two-port model
-needs is removed and the BIST fails, and a model given on the command line replaces
-the generated one (the macro's own model still runs, and still catches a fault).
+generated model fails the BIST, a two-port controller reading the address the other
+port writes in the same cycle (undefined on a macro, X in the model) fails, and a
+model given on the command line replaces the generated one (the macro's own model
+still runs, and still catches a fault).
 
 Skips without Icarus Verilog; the JTAG case also needs warptap and Yosys.
 """
@@ -122,7 +123,7 @@ def test_the_generated_testbench_runs_the_bist_with_no_model_argument(tmp_path: 
         ("march-c-rl1", "dout0 <= mem[p0_addr_q];", "dout0 <= mem[p0_addr_q] & ~4'b0001;"),
         ("march-c-rl0", "dout0 <= mem[p0_addr_q];", "dout0 <= mem[p0_addr_q] & ~4'b0001;"),
         # port 1 reads in one element only, which expects ones: a stuck-at-0 is what it can see
-        ("2rw-rl1", "dout1 <= mem[p1_addr_q];", "dout1 <= mem[p1_addr_q] & ~4'b0001;"),
+        ("2rw-rl1", "dout1 <= p1_read(p1_addr_q);", "dout1 <= p1_read(p1_addr_q) & ~4'b0001;"),
     ],
     ids=["stuck-bit-rl1", "stuck-bit-rl0", "stuck-bit-2rw-port1"],
 )
@@ -139,11 +140,19 @@ def test_a_stuck_bit_mutated_into_the_generated_model_fails_the_bist(
     assert "MBIST RESULT: FAIL -- bist_fail=1" in run.stdout + run.stderr
 
 
-def test_without_forwarding_a_falling_edge_two_port_model_fails(tmp_path: Path) -> None:
-    """Control: the 1R1W algorithm reads a address while writing it and expects the new
-    data. Take the forwarding out of the latency-0 model and the BIST must fail."""
-    module_outdir = _generate(tmp_path, "1r1w-rl0")
-    _mutate_model(module_outdir, "dout0 <= p0_read(p0_addr_q);", "dout0 <= mem[p0_addr_q];")
+@pytest.mark.parametrize("case", ["1r1w-rl0", "1r1w-rl1", "2rw-rl0", "2rw-rl1"])
+def test_a_controller_reading_the_address_the_other_port_writes_fails(tmp_path: Path, case: str) -> None:
+    """Control: a compiled two-port macro leaves a read of the address the other port
+    writes in the same cycle undefined, and so does the generated model (it reads X).
+    Make port 1 write the address port 0 is reading, as march-1r1w and march-2rw used
+    to, and the BIST must fail."""
+    module_outdir = _generate(tmp_path, case)
+    algo = "march_1r1w" if case.startswith("1r1w") else "march_2rw"
+    (fsm,) = module_outdir.rglob(f"{algo}_fsm.sv")
+    text = fsm.read_text(encoding="utf-8")
+    old = "lagged ? prev_addr_q : addr_q"
+    assert old in text and "(!lagged || prev_valid_q)" in text
+    fsm.write_text(text.replace(old, "addr_q").replace("(!lagged || prev_valid_q)", "1'b1"), encoding="utf-8")
 
     run = _run_tb(module_outdir)
 

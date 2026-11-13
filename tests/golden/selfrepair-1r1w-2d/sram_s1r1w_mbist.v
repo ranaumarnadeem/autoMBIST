@@ -122,13 +122,10 @@ module sram_s1r1w_mbist #(
     assign sram_csb1  = effective_test_mode ? mbist_sram_csb1 : func_csb;
 
     // On-chip self-repair: one external repair remap PER PORT, each steering
-    // that port's own address independently. This is general on purpose, not
-    // special-cased per algo -- march-1r1w's two ports happen to always carry
-    // the identical logical address (one shared addr_q, no partner-address
-    // concept anywhere in march_1r1w_fsm.sv), so its second remap instance is
-    // a provably harmless duplicate, not a structural requirement. march-2rw's
-    // ports do NOT share an address in general (addr_q vs.
-    // addr_q ^ PARTNER_XOR under use_partner_addr1) -- collapsing both onto
+    // that port's own address independently. Neither two-port algorithm keeps
+    // its ports on one address: march-1r1w writes port 1 one address behind
+    // port 0's read, and march-2rw does the same and also uses
+    // addr_q ^ PARTNER_XOR under use_partner_addr1 -- collapsing both onto
     // one remap fed by only one port's address would silently discard the
     // other port's real address the moment self-repair is enabled, corrupting
     // normal dual-port addressing, not just leaving repair redirection

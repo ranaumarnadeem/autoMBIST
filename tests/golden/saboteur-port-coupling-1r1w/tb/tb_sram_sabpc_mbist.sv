@@ -9,10 +9,10 @@
 // from the simulator -- on a failure or a timeout. run_tb.sh compiles it with
 // the generated RTL and the memory's own simulation model.
 //
-// Timeout: 360 clk cycles, autombist's bound on this
+// Timeout: 370 clk cycles, autombist's bound on this
 // configuration's BIST length; override with -DMBIST_MAX_CYCLES=<n>.
 `ifndef MBIST_MAX_CYCLES
-`define MBIST_MAX_CYCLES 360
+`define MBIST_MAX_CYCLES 370
 `endif
 
 module tb_sram_sabpc_mbist;

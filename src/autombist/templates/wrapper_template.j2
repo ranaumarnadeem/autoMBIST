@@ -176,11 +176,23 @@ module {{ wrapper_module_name }} #(
     output logic                  bist_done,
     output logic                  bist_fail,
 
+{% if is_shared_bus %}
+    // One functional port per memory: outside test mode every memory is
+    // reached through its own port. Only BIST time-multiplexes them.
+{% for mem in memories %}
+    input  logic                  func_csb_{{ mem.name }},
+    input  logic [ADDR_WIDTH-1:0] func_addr_{{ mem.name }},
+    input  logic [DATA_WIDTH-1:0] func_din_{{ mem.name }},
+    input  logic                  func_we_{{ mem.name }},
+    output logic [DATA_WIDTH-1:0] func_dout_{{ mem.name }}{{ "," if not loop.last }}
+{% endfor %}
+{% else %}
     input  logic                  func_csb,
     input  logic [ADDR_WIDTH-1:0] func_addr,
     input  logic [DATA_WIDTH-1:0] func_din,
     input  logic                  func_we,
     output logic [DATA_WIDTH-1:0] func_dout
+{% endif %}
 {% if repair_ports %}
 {% for rp in repair_ports %}
   , {{ rp.dir }} logic [{{ rp.width }}-1:0] {{ rp.name }}
@@ -213,8 +225,10 @@ module {{ wrapper_module_name }} #(
     logic [ADDR_WIDTH-1:0] mbist_sram_addr;
     logic [DATA_WIDTH-1:0] mbist_sram_din;
 
+{% if not is_shared_bus %}
     logic [ADDR_WIDTH-1:0] sram_addr;
     logic [DATA_WIDTH-1:0] sram_din;
+{% endif %}
     logic [DATA_WIDTH-1:0] sram_dout;
     logic [DATA_WIDTH-1:0] sram_dbg_actual_word;
     logic [DATA_WIDTH-1:0] sram_dbg_fault_word;
@@ -223,10 +237,12 @@ module {{ wrapper_module_name }} #(
     logic [DATA_WIDTH-1:0] sram_dbg_attempted_write;
     logic [DATA_WIDTH-1:0] sram_dbg_actual_read;
     logic [DATA_WIDTH-1:0] sram_dbg_blocked_bits;
+{% if not is_shared_bus %}
     logic                  sram_csb;
     logic                  sram_we;
 
     logic selected_write_req;
+{% endif %}
     logic mbist_write_req;
 
 {% if has_onchip_selfrepair and not is_shared_bus %}
@@ -321,10 +337,11 @@ module {{ wrapper_module_name }} #(
     // bist_start-drop restart path -- no new reset signal needed, see
     // docs/shared-hierarchical-mbist-plan.md §4a) before SHB_RUN re-raises it
     // for the next memory. u_algo_top itself needs zero awareness of which
-    // memory it's driving -- this sequencer and the csb/dout mux below sit
-    // strictly between it and the memory instantiation(s), and its own
-    // address/data/write-enable path (sram_addr/sram_din/sram_we above) is
-    // completely unchanged.
+    // memory it's driving -- this sequencer and the per-memory muxes below sit
+    // strictly between it and the memory instantiation(s). In test mode every
+    // memory sees the controller's address/data/write enable and only the
+    // selected one is enabled; outside test mode each memory is driven by its
+    // own func_*_<name> port.
     typedef enum logic [1:0] {
         SHB_IDLE,
         SHB_RUN,
@@ -344,6 +361,9 @@ module {{ wrapper_module_name }} #(
     // the memories' outputs drive nothing and opt_clean deletes the memories.
     // Indexing semantics are identical either way.
     logic [{{ num_memories }}-1:0]                 sram_csb_arr;
+    logic [{{ num_memories }}-1:0]                 sram_we_arr;
+    logic [{{ num_memories }}-1:0][ADDR_WIDTH-1:0] sram_addr_arr;
+    logic [{{ num_memories }}-1:0][DATA_WIDTH-1:0] sram_din_arr;
     logic [{{ num_memories }}-1:0][DATA_WIDTH-1:0] sram_dout_arr;
 {% if has_onchip_selfrepair %}
     // Second orchestration mode, docs/shared-hierarchical-mbist-plan.md §9b:
@@ -453,7 +473,7 @@ module {{ wrapper_module_name }} #(
             .ADDR_WIDTH(ADDR_WIDTH),
             .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
         ) u_repair_remap (
-            .addr_in(sram_addr),
+            .addr_in(sram_addr_arr[gsr]),
             .addr_out(sram_addr_phys_arr[gsr])
           , .row_repair_en(row_repair_en_arr[gsr])
           , .faulty_row_addr(faulty_row_addr_arr[gsr])
@@ -464,7 +484,7 @@ module {{ wrapper_module_name }} #(
             .DATA_WIDTH(DATA_WIDTH),
             .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
         ) u_repair_remap_col (
-            .din_in(sram_din),
+            .din_in(sram_din_arr[gsr]),
             .din_out(sram_din_phys_arr[gsr]),
             .dout_in(sram_dout_phys_arr[gsr]),
             .dout_out(sram_dout_arr[gsr]),
@@ -496,8 +516,21 @@ module {{ wrapper_module_name }} #(
 {% endif %}
     assign bist_fail       = shb_fail_q;
     assign sram_dout       = sram_dout_arr[mem_sel_q];
-{% for i in range(num_memories) %}
-    assign sram_csb_arr[{{ i }}] = (mem_sel_q == {{ i }}) ? sram_csb : 1'b1;
+{% for mem in memories %}
+{% set i = loop.index0 %}
+
+    // {{ mem.name }}: the controller's selected memory in test mode, its own
+    // functional port otherwise.
+    assign sram_csb_arr[{{ i }}]  = {{ mode_signal }} ? ((mem_sel_q == {{ i }}) ? mbist_sram_csb : 1'b1)
+                                    : func_csb_{{ mem.name }};
+    assign sram_addr_arr[{{ i }}] = {{ mode_signal }} ? mbist_sram_addr : func_addr_{{ mem.name }};
+    assign sram_din_arr[{{ i }}]  = {{ mode_signal }} ? mbist_sram_din : func_din_{{ mem.name }};
+{% if we_active_low %}
+    assign sram_we_arr[{{ i }}]   = ~({{ mode_signal }} ? mbist_write_req : func_we_{{ mem.name }});
+{% else %}
+    assign sram_we_arr[{{ i }}]   = {{ mode_signal }} ? mbist_write_req : func_we_{{ mem.name }};
+{% endif %}
+    assign func_dout_{{ mem.name }} = sram_dout_arr[{{ i }}];
 {% endfor %}
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -631,6 +664,7 @@ module {{ wrapper_module_name }} #(
     );
 
     assign mbist_write_req    = ~mbist_sram_web;
+{% if not is_shared_bus %}
     assign selected_write_req = {{ mode_signal }} ? mbist_write_req : func_we;
 
 {% if we_active_low %}
@@ -643,6 +677,7 @@ module {{ wrapper_module_name }} #(
     assign sram_din  = {{ mode_signal }} ? mbist_sram_din : func_din;
     assign sram_csb  = {{ mode_signal }} ? mbist_sram_csb : func_csb;
     assign func_dout = sram_dout;
+{% endif %}
 
 {% if use_saboteur %}
     {% for pname, pdata in normalized_ports.items() %}
@@ -794,12 +829,12 @@ module {{ wrapper_module_name }} #(
         .{{ pdata.addr }}(sram_addr_phys_arr[{{ loop.index0 }}]),
 {% if has_onchip_col_repair %}
         .{{ pdata.din }}(sram_din_phys_arr[{{ loop.index0 }}]),
-        .{{ pdata.we }}(sram_we),
+        .{{ pdata.we }}(sram_we_arr[{{ loop.index0 }}]),
         .{{ pdata.dout }}(sram_dout_phys_arr[{{ loop.index0 }}])
       , .{{ pdata.spare_wen }}(spare_wen_arr[{{ loop.index0 }}])
 {% else %}
-        .{{ pdata.din }}(sram_din),
-        .{{ pdata.we }}(sram_we),
+        .{{ pdata.din }}(sram_din_arr[{{ loop.index0 }}]),
+        .{{ pdata.we }}(sram_we_arr[{{ loop.index0 }}]),
         .{{ pdata.dout }}(sram_dout_arr[{{ loop.index0 }}])
 {% if pdata.spare_wen %}
       // Macro has a spare-column write enable but this design has no
@@ -864,9 +899,9 @@ module {{ wrapper_module_name }} #(
 {% endif %}
         .{{ pdata.clk }}(mbist_sram_clk),
         .{{ pdata.csb }}(sram_csb_arr[{{ loop.index0 }}]),
-        .{{ pdata.addr }}(sram_addr),
-        .{{ pdata.din }}(sram_din),
-        .{{ pdata.we }}(sram_we),
+        .{{ pdata.addr }}(sram_addr_arr[{{ loop.index0 }}]),
+        .{{ pdata.din }}(sram_din_arr[{{ loop.index0 }}]),
+        .{{ pdata.we }}(sram_we_arr[{{ loop.index0 }}]),
         .{{ pdata.dout }}(sram_dout_arr[{{ loop.index0 }}])
 {% if pdata.spare_wen %}
       // Macro has a spare-column write enable but this design has no
@@ -1095,13 +1130,10 @@ module {{ wrapper_module_name }} #(
 
 {% if has_onchip_selfrepair %}
     // On-chip self-repair: one external repair remap PER PORT, each steering
-    // that port's own address independently. This is general on purpose, not
-    // special-cased per algo -- march-1r1w's two ports happen to always carry
-    // the identical logical address (one shared addr_q, no partner-address
-    // concept anywhere in march_1r1w_fsm.sv), so its second remap instance is
-    // a provably harmless duplicate, not a structural requirement. march-2rw's
-    // ports do NOT share an address in general (addr_q vs.
-    // addr_q ^ PARTNER_XOR under use_partner_addr1) -- collapsing both onto
+    // that port's own address independently. Neither two-port algorithm keeps
+    // its ports on one address: march-1r1w writes port 1 one address behind
+    // port 0's read, and march-2rw does the same and also uses
+    // addr_q ^ PARTNER_XOR under use_partner_addr1 -- collapsing both onto
     // one remap fed by only one port's address would silently discard the
     // other port's real address the moment self-repair is enabled, corrupting
     // normal dual-port addressing, not just leaving repair redirection
