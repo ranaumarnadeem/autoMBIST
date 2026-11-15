@@ -93,3 +93,53 @@ def test_zero_spares_still_emitted_explicitly() -> None:
     text = synthesize_sram.build_config_text(_args(tech="scn4m_subm", num_spare_rows=0, num_spare_cols=0), "sram")
     assert "num_spare_rows = 0" in text
     assert "num_spare_cols = 0" in text
+
+
+# OpenRAM 1.2.50 exits 0 whatever its DRC/LVS found, so ram-synth's
+# run_drc_lvs verdict is read from the macro's log. These lines are copied from
+# real runs: sky130_sram_32b256w (clean) and sky130_sram_8b1024w (118 DRC
+# errors, LVS mismatch), both of which OpenRAM itself exited 0 on.
+_CELL = "sky130_sram_32b256w"
+_DRC_CLEAN = f"[2026-11-15 03:56:49.088169] [openram.verify.magic/run_drc]: DRC Errors {_CELL}\t0\n"
+_LVS_CLEAN = f"[2026-11-15 03:59:36.444004] [openram.verify.magic/run_lvs]: {_CELL}\tLVS matches\n"
+
+
+def test_signoff_needs_both_clean_results() -> None:
+    assert synthesize_sram.signoff_problem(_DRC_CLEAN + _LVS_CLEAN, _CELL) is None
+
+
+def test_signoff_fails_on_drc_errors() -> None:
+    log = f"WARNING: file magic.py: line 259: DRC Errors {_CELL}\t118\n" + _LVS_CLEAN
+    assert synthesize_sram.signoff_problem(log, _CELL) == f"DRC of {_CELL} found 118 error(s)"
+
+
+def test_signoff_fails_on_an_lvs_mismatch() -> None:
+    log = _DRC_CLEAN + (
+        f"ERROR: file magic.py: line 392: {_CELL}\tLVS mismatch "
+        "(results in /tmp/openram_temp/x.lvs.report)\n"
+    )
+    assert "does not match" in synthesize_sram.signoff_problem(log, _CELL)
+
+
+def test_signoff_without_a_result_line_is_not_a_pass() -> None:
+    """The silence OpenRAM leaves without -v is not a pass."""
+    assert "no DRC result" in synthesize_sram.signoff_problem(_LVS_CLEAN, _CELL)
+    assert "no LVS result" in synthesize_sram.signoff_problem(_DRC_CLEAN, _CELL)
+    assert "no DRC result" in synthesize_sram.signoff_problem("", _CELL)
+
+
+def test_signoff_fails_when_magic_produced_no_result() -> None:
+    log = "ERROR: file magic.py: line 245: Unable to find the total error line in Magic output.\n"
+    assert "did not run" in synthesize_sram.signoff_problem(log + _DRC_CLEAN + _LVS_CLEAN, _CELL)
+
+
+def test_signoff_ignores_another_cells_results() -> None:
+    """A submodule's line (<cell>_pnand2) or a longer name ending in the cell's
+    is not this macro's result."""
+    log = (
+        f"DRC Errors {_CELL}_pnand2\t0\n"
+        f"x_{_CELL}\tLVS matches\n"
+        f"{_CELL}_pnand2\tLVS matches\n"
+    )
+    assert "no DRC result" in synthesize_sram.signoff_problem(log, _CELL)
+    assert "no LVS result" in synthesize_sram.signoff_problem(_DRC_CLEAN + log, _CELL)

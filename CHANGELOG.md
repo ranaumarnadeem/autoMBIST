@@ -214,6 +214,11 @@ everything that predates the migration.
   bank and `--y0` the memory's. A sweep that placed the faults over the whole
   memory (`--itc-reading each-memory`, the default, or `total-memory`) is
   refused for more than one bank, since no bank's own count is known (#66).
+- `ram-synth` with `run_drc_lvs: true` exited 0 whatever OpenRAM's DRC and LVS
+  found, because OpenRAM itself does: a DRC error count is only a warning, and an
+  LVS mismatch is logged as an error but does not stop it. `ram-synth` now exits 1
+  unless the macro's log shows 0 DRC errors and an LVS match, and runs OpenRAM at
+  `-v` so a clean result is logged too.
 
 ### Changed
 - The `config.yml` snapshot `generate` writes names each run parameter once:
@@ -221,6 +226,14 @@ everything that predates the migration.
   `pulse_width_ns`, without the `autombist_use_saboteur`, `autombist_algo`, ...
   copies. `fault_count` and `fault_seed` are now there for clean builds too.
   `simulate` and `run` still read an older snapshot's `autombist_` names (#65).
+- `ram-synth` is tested against OpenRAM 1.2.50, which runs inside its own
+  `nix develop` shell. Your OpenRAM checkout needs `git checkout v1.2.50` and
+  `git apply ../scripts/openram-local.patch` (the spare-column workarounds; the
+  spare-column write fix is now upstream). `setup_sky130: true` fetches the sky130
+  SRAM cell library that version pins. Per-macro DRC/LVS of the demo macros, by
+  OpenRAM's own check: `sky130_sram_32b256w` and `sky130_sram_32b512w` pass;
+  `sky130_sram_8b1024w` fails (118 DRC errors, and an LVS mismatch with one extra
+  net in every subcircuit), in OpenRAM's layout of that shape.
 
 ### Performance
 Results are unchanged in every case (#64).

@@ -217,10 +217,10 @@ address per cycle (an invariant `tests/hardware/test_march_2rw.py` asserts).
 
 This tier proves physical *integration* — the top-level LibreLane
 place-and-route closure, treating each macro as opaque hard IP — not full
-tapeout signoff, which is the downstream PD/STA flow's job. Note that
-per-macro DRC/LVS signoff for these specific demo macros' own GDS is
-currently unresolved (a stale vendored OpenRAM checkout, not a defect in
-this project's RTL — see {doc}`challenges`).
+tapeout signoff, which is the downstream PD/STA flow's job. Note that by
+OpenRAM's own DRC/LVS, two of these demo macros pass (`32b256w`, `32b512w`)
+and one fails (`8b1024w`, in OpenRAM's layout of that shape, not this
+project's RTL — see {doc}`challenges`).
 
 Because repair pins never touch the macro's own views, hardening a self-repair
 design in LibreLane needed **no new LEF/Liberty/`vh`/GDS work at all** — the

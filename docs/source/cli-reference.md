@@ -1032,6 +1032,22 @@ SRAM macro is written to the `output_root`/`output_name` location configured in 
 OpenRAM config (defaults to an `input/` directory at the repo root). Exits with
 OpenRAM's own return code on failure.
 
+With `run_drc_lvs: true` in the config, OpenRAM also runs its own DRC and LVS on the
+macro, and `ram-synth` exits 1 unless the macro's log shows 0 DRC errors and an LVS
+match. OpenRAM itself exits 0 whatever those checks find, so its return code alone is
+not a signoff answer. This is the macro signoff that counts; `macro-signoff` is only
+indicative.
+
+OpenRAM 1.2.50, the version this repo is tested with, expects to run inside its own
+Nix dev shell, which provides magic, netgen, ngspice and klayout. Run `ram-synth` from
+it, and set `setup_sky130: true` once to fetch the sky130 SRAM cell library OpenRAM
+pins:
+
+```bash
+cd OpenRAM && nix develop
+autombist ram-synth --config openram.yml
+```
+
 ---
 
 ## init
@@ -1240,10 +1256,11 @@ autombist macro-signoff --show-command           # print, don't run
 | `--script PATH` | `flow/multimem/signoff/run_macro_signoff.sh` | The signoff script to run |
 | `--show-command` | off | Print the command instead of running it |
 
-For this repo's own demo macros, this currently does not produce a clean
-signoff answer — a stale vendored OpenRAM checkout, not a defect in this
-project's RTL; see `run_macro_signoff.sh`'s own header for the full root
-cause.
+Its result is indicative only: it extracts the GDS with the standard sky130
+magic setup rather than OpenRAM's own, which reports about a million spurious
+DRC violations and a spurious LVS mismatch even on a macro OpenRAM's own check
+passes. For a signoff answer, run `ram-synth` with `run_drc_lvs: true`; see
+`run_macro_signoff.sh`'s header for the measured results.
 
 ## doctor
 

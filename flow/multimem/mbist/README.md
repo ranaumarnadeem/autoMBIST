@@ -91,29 +91,37 @@ blackboxes, and `mem_subsystem_mbist.sv`.
   non-fatal and lets `harden --run` exit 0 reproducibly.
   Top-level integration P&Rs LVS-clean; see [../](../) for the full recipe
   write-up and [../signoff](../signoff) for the per-macro scripts.
-- **Macro-internal DRC/LVS signoff for these three macros' own GDS is
-  currently unresolved — a separate, more serious question than the DRC
-  noise above.** `../signoff/run_macro_signoff.sh` (the per-macro
-  DRC/LVS check) was found to have never actually run against real PDK
-  data — `PDK_ROOT` was set but not `export`ed, so magic's "clean" 0-count
-  result meant "nothing was checked," not "nothing was found" (fixed in
-  commit `ab22cd6`). Fixing that surfaced a real LVS mismatch, root-caused
-  (not merely worked around, commit `4ea312b`) to the vendored `OpenRAM/`
-  checkout predating two upstream fixes (2026-04-28, 2026-05-14) for a
-  wordline-pin-numbering defect in the sky130 replica bitcell array.
-  Reproducing OpenRAM's own authoritative regeneration flow independently
-  confirms the same failure inside OpenRAM's own module, before any
-  openMBIST-authored logic runs. Net effect: until `OpenRAM/` is updated
-  past those two commits, neither this script's raw-GDS check nor OpenRAM's
-  own regeneration gives a clean signoff answer, so the three macros are
-  unverified rather than confirmed either good or bad when regenerated from
-  that checkout. (Their `.gds`/`.lvs.sp` are not committed — they are
-  gitignored build products of `autombist ram-synth`.) This does
-  not implicate autoMBIST's own generated RTL — physical macro signoff is
-  the memory generator's responsibility, not the integrator's — and it does
-  not affect the top-level P&R LVS-clean result above, which treats the
-  macro as opaque hard IP. See `../signoff/run_macro_signoff.sh`'s header
-  for the full root-cause writeup.
+- **Macro-internal DRC/LVS signoff for the three macros' own GDS — two pass,
+  one fails (re-checked 2026-11-15 on OpenRAM 1.2.50).** The authority is
+  OpenRAM's own DRC/LVS (its tech/cif setup), run by
+  `autombist ram-synth` with `run_drc_lvs: true` inside OpenRAM's
+  `nix develop` shell (magic 8.3.629, netgen 1.5.318):
+
+  | Macro | OpenRAM DRC | OpenRAM LVS |
+  |---|---|---|
+  | `sky130_sram_32b256w` | 0 errors | matches |
+  | `sky130_sram_32b512w` | 0 errors | matches |
+  | `sky130_sram_8b1024w` | 118 errors | mismatch: every subcircuit, from `pnand2` up, has one more net extracted than in the netlist |
+
+  The earlier blocker is gone: the vendored `OpenRAM/` was 449781d2
+  (2026-04-08), older than upstream's two fixes for a wordline-pin-numbering
+  defect in the sky130 replica bitcell array (50772821, 8c4f4ef2); it is now
+  the v1.2.50 release, with `../../../scripts/openram-local.patch` applied.
+  The `8b1024w` failure is a different one, in OpenRAM's layout of that 8-bit
+  word shape (the two 32-bit macros pass with the same OpenRAM, cell library
+  and tools), so it is OpenRAM's to fix (not yet reported upstream). Physical macro signoff
+  is the memory generator's responsibility, not the integrator's; none of this
+  touches autoMBIST's own generated RTL, or the top-level P&R LVS-clean result
+  above, which treats each macro as opaque hard IP. (The macros'
+  `.gds`/`.lvs.sp` are not committed — they are gitignored build products of
+  `autombist ram-synth`.)
+
+  `../signoff/run_macro_signoff.sh` (`autombist macro-signoff`) is not that
+  authority: it loads the GDS into ciel's standard-flow magicrc, not
+  OpenRAM's, which flags ~1.09M DRC violations and an LVS mismatch even on
+  `32b256w` — the same device counts on both sides, with the extracted layout
+  split into extra disconnected nets (transistor bodies, the bitcell
+  wordline). See its header.
 - **Self-repair timing against the real macros — `read_latency: 0` required,
   now fixed and tested.** This subsystem was originally only
   elaboration-checked (see "Two build views" above), never simulated with

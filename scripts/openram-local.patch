@@ -1,0 +1,78 @@
+diff --git a/compiler/sram.py b/compiler/sram.py
+index 4008e2a6..b2438359 100644
+--- a/compiler/sram.py
++++ b/compiler/sram.py
+@@ -122,13 +122,22 @@ class sram():
+         # Save stimulus and measurement file
+         start_time = datetime.datetime.now()
+         debug.print_raw("DELAY: Writing stimulus...")
+-        d = delay(self.s, spname, ("TT", 5, 25), output_path=OPTS.output_path)
+-        probe_address = get_probe_address(self.s)
+-        probe_data = self.s.word_size - 1
+-        d.analysis_init(probe_address, probe_data)
+-        d.targ_read_ports.extend(self.s.read_ports)
+-        d.targ_write_ports = [self.s.write_ports[0]]
+-        d.write_delay_stimulus()
++        # LOCAL WORKAROUND (openMBIST): OpenRAM's delay characterizer cannot
++        # find the bitline net when spare columns are present, aborting save()
++        # before the GDS/LEF are written. We only need the physical views
++        # (GDS/LEF) + behavioral .v for the LibreLane harden, not the .lib, so
++        # make the timing-stimulus step non-fatal.
++        try:
++            d = delay(self.s, spname, ("TT", 5, 25), output_path=OPTS.output_path)
++            probe_address = get_probe_address(self.s)
++            probe_data = self.s.word_size - 1
++            d.analysis_init(probe_address, probe_data)
++            d.targ_read_ports.extend(self.s.read_ports)
++            d.targ_write_ports = [self.s.write_ports[0]]
++            d.write_delay_stimulus()
++        except Exception as _e:
++            debug.print_raw("WARNING: delay-stimulus characterization skipped "
++                            "(spare-column limitation): {0}".format(_e))
+         print_time("DELAY", datetime.datetime.now(), start_time)
+ 
+         # Save trimmed spice file
+@@ -186,7 +195,11 @@ class sram():
+         start_time = datetime.datetime.now()
+         from openram.characterizer import lib
+         debug.print_raw("LIB: Characterizing... ")
+-        lib(out_dir=OPTS.output_path, sram=self.s, sp_file=sp_file)
++        try:
++            lib(out_dir=OPTS.output_path, sram=self.s, sp_file=sp_file)
++        except Exception as _e:
++            debug.print_raw("WARNING: .lib characterization skipped "
++                            "(spare-column limitation): {0}".format(_e))
+         print_time("Characterization", datetime.datetime.now(), start_time)
+ 
+         # Write the config file
+@@ -204,7 +217,15 @@ class sram():
+         from openram.datasheet import datasheet_gen
+         dname = OPTS.output_path + self.s.name + ".html"
+         debug.print_raw("Datasheet: Writing to {0}".format(dname))
+-        datasheet_gen.datasheet_write(dname)
++        # LOCAL WORKAROUND (openMBIST): the datasheet reads datasheet.info,
++        # which .lib characterization writes; with spare columns that step is
++        # skipped above, so the datasheet must not abort save() before the
++        # Verilog model below is written.
++        try:
++            datasheet_gen.datasheet_write(dname)
++        except Exception as _e:
++            debug.print_raw("WARNING: datasheet skipped "
++                            "(spare-column limitation): {0}".format(_e))
+         print_time("Datasheet", datetime.datetime.now(), start_time)
+ 
+         # Write a verilog model
+diff --git a/technology/scn4m_subm/tech/tech.py b/technology/scn4m_subm/tech/tech.py
+index bd870740..3349929b 100644
+--- a/technology/scn4m_subm/tech/tech.py
++++ b/technology/scn4m_subm/tech/tech.py
+@@ -76,6 +76,9 @@ m1_stack = ("m1", "via1", "m2")
+ m2_stack = ("m2", "via2", "m3")
+ m3_stack = ("m3", "via3", "m4")
+ 
++# Required by ROM modules imported by the common module package in newer OpenRAM releases.
++lef_rom_interconnect = ["m1", "m2", "m3", "m4"]
++
+ layer_indices = {"poly": 0,
+                  "active": 0,
+                  "m1": 1,

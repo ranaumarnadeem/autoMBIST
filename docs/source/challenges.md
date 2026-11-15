@@ -15,11 +15,13 @@ against and using that consistently.
 
 Generating macros with spare *columns* enabled surfaced a couple of rough
 edges: one geometry hit an edge case in how a write mask interacted with the
-spare column, and characterization crashed on another. Both are fixed in the
-vendored OpenRAM copy — the write-mask one at the root cause (the emitted
-Verilog was sizing the base write to exclude the spare columns, orphaning the
-top data bit), the characterization one by making that step non-fatal so it
-cannot abort before the GDS/LEF are written.
+spare column, and characterization crashed on another. The write-mask one is
+fixed at the root cause (the emitted Verilog was sizing the base write to
+exclude the spare columns, orphaning the top data bit), now upstream in
+OpenRAM 1.2.50. The characterization one is a local patch
+(`scripts/openram-local.patch`) that makes timing characterization and the
+datasheet that reads it non-fatal, so they cannot abort before the GDS, LEF
+and Verilog model are written.
 
 For a long time we sidestepped the whole area by using row-only spares, which
 matched the repair granularity we then needed. That is no longer the case:

@@ -195,14 +195,16 @@ end (its own integration tests against a 1.1.0 manifest).
   out" into "Done" (row + column), and the diagnosis-logging bullet's
   stale "JTAG/IJTAG wrapping still pending" note removed (`wrap-test-access`
   already covers it). `yield-sweep`/milestone 4 deliberately still excluded.
-- **Per-macro OpenRAM signoff (DRC/LVS on the macros' own GDS) is
-  unresolved** — a stale vendored OpenRAM checkout, not a defect in this
-  project's own RTL. Re-confirmed 2026-09-23 during the docs full-audit
-  pass: vendored `OpenRAM/` HEAD is still `449781d2` (2026-04-08); the two
-  upstream fixes (`5077282`/`8c4f4ef`, dated 2026-04-28/2026-05-14) are
-  still not ancestors of it. Already documented honestly in
-  `flow/multimem/mbist/README.md#honest-signoff-caveats`; tracked here so
-  it doesn't get lost.
+- **Per-macro OpenRAM signoff (DRC/LVS on the macros' own GDS)** —
+  re-checked 2026-11-15 after updating the vendored `OpenRAM/` from
+  `449781d2` to the v1.2.50 release (plus `scripts/openram-local.patch`),
+  with OpenRAM's own DRC/LVS through `ram-synth`'s `run_drc_lvs: true`:
+  `sky130_sram_32b256w` and `32b512w` pass. Still open:
+  - `sky130_sram_8b1024w` fails OpenRAM's own check (118 DRC errors; LVS
+    has one extra net in every subcircuit). OpenRAM's layout of that shape,
+    not this project's RTL; not yet reported upstream.
+  - The `.gds`/`.lvs.sp` of the passing macros are regenerated build
+    products, not committed, so the result is reproducible but not stored.
 - ~~MAINTAINERS.md does not exist yet~~ — done 2026-09-22.
 - ~~GitHub repo description/topics refresh~~ — done 2026-09-22 (description
   now mentions shared-bus/multi-memory + row/column repair; added

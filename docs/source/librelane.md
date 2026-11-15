@@ -118,10 +118,10 @@ Timing signoff and merged full-hierarchy DRC are the downstream PD/STA flow's
 responsibility, not autoMBIST's — autoMBIST generates and functionally
 verifies RTL, and hardening treats each memory as opaque hard IP.
 
-What *is* worth flagging: macro-internal DRC/LVS signoff (`macro-signoff`,
-above) is unresolved for the demo macros, blocked on the vendored OpenRAM
-update described above — so if you regenerate them, treat the result as
-unverified rather than clean.
+What *is* worth flagging: macro-internal DRC/LVS signoff. By OpenRAM's own
+check (`ram-synth` with `run_drc_lvs: true`, on OpenRAM 1.2.50), the
+`sky130_sram_32b256w` and `32b512w` demo macros pass, and `8b1024w` fails with
+118 DRC errors and an LVS mismatch. `macro-signoff`, above, is only indicative.
 
 march-1r1w's self-repair wrapper is also not part of the "proven" list above,
 but not for lack of a real macro to test it against — a genuinely dual-port

@@ -93,9 +93,9 @@ Result, as of this writing: **DRT 0 violations, LVS-clean including power**,
 die 0.91 mm², 7,189 standard cells (the self-repair logic across all three
 memories) plus the three macros at their fixed area. This is the top-level
 LibreLane place-and-route closure, which treats each macro as opaque hard
-IP; per-macro DRC/LVS signoff for these three macros' own GDS is currently
-unresolved (a stale vendored OpenRAM checkout, not a defect in this
-project's RTL) — see
+IP. Per-macro DRC/LVS signoff for the three macros' own GDS, by OpenRAM's own
+check: `32b256w` and `32b512w` pass, and `8b1024w` fails (118 DRC errors and an
+LVS mismatch in OpenRAM's layout of that shape, not this project's RTL) — see
 [`flow/multimem/mbist/README.md`](https://github.com/ranaumarnadeem/autoMBIST/blob/main/flow/multimem/mbist/README.md#honest-signoff-caveats)
 for the root cause. Full recipe and the gotchas it took to get there:
 {doc}`librelane`.
