@@ -218,14 +218,14 @@ capacitive proximity) -- a cousin of NPSF, not an instance of it.
 **`words_per_row` and the row-membership test.** `MemoryParams.words_per_row`
 (default 1; `set_memory --words-per-row N` on the shell) is this project's
 existing name for "how many logical addresses share one physical row due to
-column muxing" -- reused verbatim from `flow/multimem/mbist/README.md`'s
-pre-existing repair-addressing correctness finding (verified there against
-three real OpenRAM macros, all with `words_per_row == 1`, i.e. no muxing).
+column muxing" -- the same name as `redundancy.words_per_row` in the
+generator config (see `flow/multimem/mbist/README.md`'s repair caveat: the
+real OpenRAM macros there have 4 and 16 words per row).
 Two addresses are in the same physical row iff `row(a) == row(b)`, where
 `row(addr) = addr / words_per_row` (integer division) -- a contiguous block
-of `words_per_row` consecutive addresses per row, matching that same finding
-(`ADDR_WIDTH == ceil(log2(words+spares))` is only self-consistent under a
-contiguous-block grouping). `words_per_row` is a compile-time `WORDS_PER_ROW`
+of `words_per_row` consecutive addresses per row. That matches OpenRAM, which
+wires the low `log2(words_per_row)` address bits to the column decoder and
+the rest to the row decoder (`bank.py`). `words_per_row` is a compile-time `WORDS_PER_ROW`
 module parameter (`fault_ram`, `march_engine.sv`, `march_engine_mp.sv`), not
 a per-fault field -- it describes a physical macro property, not a property
 of any one fault instance.

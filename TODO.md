@@ -207,6 +207,17 @@ end (its own integration tests against a 1.1.0 manifest).
     the same family as upstream's open VLSIDA/OpenRAM#340.
   - The `.gds`/`.lvs.sp` of the passing macros are regenerated build
     products, not committed, so the result is reproducible but not stored.
+- **Row repair on column-muxed macros.** The demo OpenRAM macros have 4 or 16
+  words per row, and every real OpenRAM macro built here so far is muxed. The
+  row remap replaces one word, not a physical row, so a whole-row defect needs
+  `words_per_row` spares (see `flow/multimem/mbist/README.md`). The fix is
+  physical-row repair: compare only the row bits of the address, steer to
+  `{spare row, column bits}`, and let the analyzer group failing addresses by
+  `addr / words_per_row`. After that, `redundancy.words_per_row` could accept
+  the macro's real value. `ram-synth` could record that value from OpenRAM's log.
+  Column repair under muxing stays rejected: OpenRAM shares one spare column
+  set per physical row, but its behavioral `.v` gives every word its own spare
+  bit, so a simulation would not show the difference.
 - ~~MAINTAINERS.md does not exist yet~~ — done 2026-09-22.
 - ~~GitHub repo description/topics refresh~~ — done 2026-09-22 (description
   now mentions shared-bus/multi-memory + row/column repair; added

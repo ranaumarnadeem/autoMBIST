@@ -64,18 +64,29 @@ blackboxes, and `mem_subsystem_mbist.sv`.
 
 ## Honest signoff caveats
 
-- **Repair addressing on column-muxed macros** — checked, not just assumed:
-  the row remap steers a faulty logical address to `2**addr_width + i`, which
-  matches OpenRAM's spare-row physical address only when a macro has no
-  column muxing (`words_per_row == 1`). Traced OpenRAM's own row-decoder
-  wiring and confirmed all three real macros here (`sky130_sram_32b256w`,
-  `32b512w`, `8b1024w`) have `words_per_row == 1` — each macro's `ADDR_WIDTH`
-  matches the no-muxing formula `ceil(log2(words+spares))` exactly. So this
-  *is* trusted functionally on these three real macros, not only on the
-  behavioral `sram_model_spares` loop. The latent gap is only for a
-  *future* macro that does trigger column muxing (repair would then remap
-  just the one observed-faulty word address, not every word sharing that
-  physical row) — not a live issue here.
+- **Repair on column-muxed macros: one spare word, not one spare row.** All
+  three macros here are column-muxed. OpenRAM's build log says "Set SRAM
+  Words Per Row" 4 for `sky130_sram_32b256w` and `32b512w`, and 16 for
+  `8b1024w`. (An earlier version of this note said all three had no muxing,
+  because each `ADDR_WIDTH` matches `ceil(log2(words+spares))`. That formula
+  gives the same width with or without muxing, so it proved nothing.)
+  OpenRAM puts the column address in the low address bits and the spare rows
+  after the regular rows (`sram_config.py` `recompute_sizes`, `bank.py`). So
+  address `2**addr_width + i`, where the row remap sends faulty address `i`'s
+  replacement, is word `i` of the first spare row. What this means:
+  - A fault confined to one word (a stuck bit, a transition fault) is
+    repaired correctly: the replacement word is a real, unused location.
+  - Each spare row repairs one word, not a physical row. A defect that breaks
+    a whole physical row (a wordline open) shows up as 4 or 16 faulty
+    addresses, more than the one spare. The analyzer reports it as
+    unrepairable (`bist_fail`), so it is a lost repair, not a missed fault.
+  - The simulations cannot show either point. OpenRAM's behavioral `.v`
+    gives every address its own storage, so the tests here pass with
+    defect-free macros either way.
+
+  `redundancy.words_per_row` is the config's name for this, and the
+  generator rejects any value but 1. The configs here leave it at its
+  default of 1, which is not what the macros are.
 - **Macro-internal DRC** was root-caused, not left open: the "thousands of
   errors" originally reported here are OpenRAM SRAM-macro bitcell/periphery
   cells using legitimate sky130 GDS layer/datatype pairs (e.g. `CFOMDROP`,

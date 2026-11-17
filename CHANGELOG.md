@@ -235,6 +235,12 @@ everything that predates the migration.
   `sky130_sram_8b1024w` fails (118 DRC errors, all in the column decoder's 4-to-16
   predecoder and the bank's metal3 routing, and an LVS mismatch), in OpenRAM's
   layout of that shape: it is the only demo macro with 16 words per row.
+- Corrected: the demo OpenRAM macros are column-muxed (4 words per row for
+  `sky130_sram_32b256w` and `32b512w`, 16 for `8b1024w`). The self-repair docs
+  said they had none. On these macros each spare row replaces one faulty word,
+  not a physical row. A fault inside one word is repaired. A defect that breaks
+  a whole physical row is reported unrepairable (`bist_fail`). The generator still
+  accepts only `redundancy.words_per_row: 1`.
 
 ### Performance
 Results are unchanged in every case (#64).

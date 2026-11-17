@@ -827,10 +827,11 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         )
 
     # words_per_row: the column-mux factor. Optional, defaults to 1 (no muxing).
-    # Rejected unconditionally when != 1 -- not just for column configs -- because
-    # the row-side spare address convention (2**addr_width + i) has the same
-    # latent caveat under muxing (see flow/multimem/mbist/README.md). Nothing sets
-    # this key today, so the default keeps every existing config unaffected.
+    # Rejected unconditionally when != 1 -- not just for column configs --
+    # because under muxing the row remap (2**addr_width + i) replaces one word,
+    # not a physical row (see flow/multimem/mbist/README.md). Nothing derives
+    # this key from the macro: the shipped configs leave it at 1 although the
+    # real OpenRAM macros they wrap have 4 or 16 words per row.
     words_per_row = block.get("words_per_row", 1)
     if isinstance(words_per_row, bool) or not isinstance(words_per_row, int) or words_per_row < 1:
         raise ConfigError("redundancy.words_per_row must be a positive integer")
