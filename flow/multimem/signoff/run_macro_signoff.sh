@@ -25,9 +25,10 @@
 # scripts/openram-local.patch, magic 8.3.629, netgen 1.5.318:
 #   sky130_sram_32b256w  DRC 0    LVS matches
 #   sky130_sram_32b512w  DRC 0    LVS matches
-#   sky130_sram_8b1024w  DRC 118  LVS mismatch (one extra net in every
-#                                 subcircuit) -- an OpenRAM layout failure
-#                                 for that shape, not yet reported upstream.
+#   sky130_sram_8b1024w  DRC 118  LVS mismatch -- an OpenRAM layout failure
+#                                 for that shape (16 words per row): the DRC
+#                                 errors are all in the column decoder's
+#                                 4-to-16 predecoder and the bank's metal3.
 # The earlier blocker -- the vendored checkout (449781d2, 2026-04-08) predated
 # upstream's fixes for a wordline-pin-numbering defect in the sky130 replica
 # bitcell array (50772821, 8c4f4ef2), so OpenRAM's own check failed on every

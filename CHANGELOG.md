@@ -232,8 +232,9 @@ everything that predates the migration.
   spare-column write fix is now upstream). `setup_sky130: true` fetches the sky130
   SRAM cell library that version pins. Per-macro DRC/LVS of the demo macros, by
   OpenRAM's own check: `sky130_sram_32b256w` and `sky130_sram_32b512w` pass;
-  `sky130_sram_8b1024w` fails (118 DRC errors, and an LVS mismatch with one extra
-  net in every subcircuit), in OpenRAM's layout of that shape.
+  `sky130_sram_8b1024w` fails (118 DRC errors, all in the column decoder's 4-to-16
+  predecoder and the bank's metal3 routing, and an LVS mismatch), in OpenRAM's
+  layout of that shape: it is the only demo macro with 16 words per row.
 
 ### Performance
 Results are unchanged in every case (#64).

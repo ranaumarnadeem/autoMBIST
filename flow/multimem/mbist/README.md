@@ -101,7 +101,7 @@ blackboxes, and `mem_subsystem_mbist.sv`.
   |---|---|---|
   | `sky130_sram_32b256w` | 0 errors | matches |
   | `sky130_sram_32b512w` | 0 errors | matches |
-  | `sky130_sram_8b1024w` | 118 errors | mismatch: every subcircuit, from `pnand2` up, has one more net extracted than in the netlist |
+  | `sky130_sram_8b1024w` | 118 errors, all in the column decoder's 4-to-16 predecoder (`pand4`) and the bank's metal3 routing | mismatch: split `vdd` and wordline nets in many cells, and at the top level `p_en_bar0` against a column-mux select |
 
   The earlier blocker is gone: the vendored `OpenRAM/` was 449781d2
   (2026-04-08), older than upstream's two fixes for a wordline-pin-numbering

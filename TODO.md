@@ -200,9 +200,11 @@ end (its own integration tests against a 1.1.0 manifest).
   `449781d2` to the v1.2.50 release (plus `scripts/openram-local.patch`),
   with OpenRAM's own DRC/LVS through `ram-synth`'s `run_drc_lvs: true`:
   `sky130_sram_32b256w` and `32b512w` pass. Still open:
-  - `sky130_sram_8b1024w` fails OpenRAM's own check (118 DRC errors; LVS
-    has one extra net in every subcircuit). OpenRAM's layout of that shape,
-    not this project's RTL; not yet reported upstream.
+  - `sky130_sram_8b1024w` fails OpenRAM's own check (118 DRC errors, all in
+    the column decoder's 4-to-16 predecoder `pand4` cells and the bank's
+    metal3 routing; LVS mismatch). It is the only demo macro with 16 words
+    per row. OpenRAM's layout of that shape, not this project's RTL; likely
+    the same family as upstream's open VLSIDA/OpenRAM#340.
   - The `.gds`/`.lvs.sp` of the passing macros are regenerated build
     products, not committed, so the result is reproducible but not stored.
 - ~~MAINTAINERS.md does not exist yet~~ — done 2026-09-22.
