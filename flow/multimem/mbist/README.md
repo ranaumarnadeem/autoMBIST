@@ -109,7 +109,7 @@ blackboxes, and `mem_subsystem_mbist.sv`.
   the v1.2.50 release, with `../../../scripts/openram-local.patch` applied.
   The `8b1024w` failure is a different one, in OpenRAM's layout of that 8-bit
   word shape (the two 32-bit macros pass with the same OpenRAM, cell library
-  and tools), so it is OpenRAM's to fix (not yet reported upstream). Physical macro signoff
+  and tools), so it is OpenRAM's to fix (reported upstream in VLSIDA/OpenRAM#340). Physical macro signoff
   is the memory generator's responsibility, not the integrator's; none of this
   touches autoMBIST's own generated RTL, or the top-level P&R LVS-clean result
   above, which treats each macro as opaque hard IP. (The macros'
