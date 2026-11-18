@@ -3,7 +3,8 @@
 A defect is one physical event; it fails one or more cells. Coordinates are
 ``(row, col)`` in the array the model is given, row = word address and col =
 bit, the ``(addr, bit)`` pairs ``autombist.repair`` takes (one word per row, so a
-row is a word line and a column a bit line). That is the base array, or the
+row is a word line and a column a bit line; with several words per row the
+bitmap engine maps each physical cell to its word and bit). That is the base array, or the
 physical array with its spares when a sweep exposes them
 (:class:`.bitmap_engine.BitmapEngine`). The layout follows OpenRAM's port 0: the
 row decoder on the left (column 0) and the sense amplifiers below (row 0), so a

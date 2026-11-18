@@ -113,3 +113,22 @@ def test_classes_add_a_shape_table_and_report_block(tmp_path: Path) -> None:
     report = json.loads((tmp_path / "out" / "yield_sim.json").read_text(encoding="utf-8"))
     assert report["points"][0]["shapes"]["merge_rate"] == 0.0
     assert "shape_classifier" in report
+
+
+def test_words_per_row_models_a_column_muxed_array(tmp_path: Path) -> None:
+    result = _invoke(tmp_path, "--array", "8x32", "--words-per-row", "4", "--spare-rows", "1",
+                     "--defects", "ohler-d2", "--faults", "1..2", "--trials", "20", "--json")
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["geometry"]["words_per_row"] == 4 and report["geometry"]["rows"] == 8
+
+    table = _invoke(tmp_path, "--array", "8x32", "--words-per-row", "4", "--spare-rows", "1",
+                    "--faults", "1", "--trials", "5")
+    assert table.exit_code == 0 and "4 words per row" in table.output
+
+
+def test_words_per_row_refuses_spare_columns(tmp_path: Path) -> None:
+    result = _invoke(tmp_path, "--array", "8x32", "--words-per-row", "4", "--spare-rows", "1",
+                     "--spare-cols", "1", "--faults", "1", "--trials", "5")
+    assert result.exit_code == 1
+    assert "spare columns are not modelled" in result.output

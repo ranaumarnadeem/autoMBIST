@@ -31,7 +31,13 @@ everything that predates the migration.
   `num_spare_rows * words_per_row` may not exceed `2**addr_width`. At the
   default of 1 the generated RTL is unchanged. `ram-synth` prints the macro's
   words per row (from OpenRAM's `datasheet.info`). The real-macro wrappers have
-  been simulated with it but not re-hardened.
+  been simulated with it but not re-hardened. The 1r1w macro has 2 words per
+  row, and `flow/newalgo`'s march-1r1w config now says so.
+- `yield-sim` and `yield-sweep` take `--words-per-row N` for a column-muxed
+  array: defects land on the physical cells, each row holds N words with their
+  bits interleaved as OpenRAM builds it, and a spare row replaces a physical
+  row. `yield-sweep --self-repair` builds the wrapper with
+  `redundancy.words_per_row`. Spare columns are refused with it.
 - [Using the Safety Report in an FMEDA](docs/source/safety-report.md): the inputs a
   safety engineer must supply, unweighted coverage against diagnostic coverage, a
   worked example a test re-runs, and what autoMBIST does not provide (#41).

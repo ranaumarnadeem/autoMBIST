@@ -13,6 +13,15 @@ spare columns and a bit-line defect up into the spare rows, and every cell that
 lands in a spare is a spare fault the solver must respect. The defect count k
 is then per physical array, so the yield weighting needs the area ratio the
 report records.
+
+With ``words_per_row`` above 1 the array is column-muxed the way OpenRAM builds
+one: each physical row holds ``words_per_row`` words, the bits of those words
+interleaved (physical column ``c`` is bit ``c // words_per_row`` of word column
+``c % words_per_row``), and the column bits are the low address bits. Defects
+still land on the physical array; each failed cell becomes the logical
+``(row * words_per_row + c % words_per_row, c // words_per_row)`` the solver
+takes, and a spare row replaces a whole physical row. Spare columns are not
+modelled under muxing (``SpareGeometry`` rejects them).
 """
 from __future__ import annotations
 
@@ -53,17 +62,27 @@ class BitmapEngine:
         expose_spares: bool = False,
         min_spares: bool = False,
         classify_shapes: bool = False,
+        words_per_row: int = 1,
     ) -> None:
         if spare_rows < 0 or spare_cols < 0:
             raise ValueError(f"spare counts must be non-negative, got {spare_rows} rows, {spare_cols} columns")
+        if words_per_row < 1 or words_per_row & (words_per_row - 1):
+            raise ValueError(f"words per row must be a power of two, got {words_per_row}")
+        if geometry.cols % words_per_row:
+            raise ValueError(
+                f"the array's {geometry.cols} columns do not split into {words_per_row} words per row"
+            )
+        if words_per_row > 1 and spare_cols:
+            raise ValueError(f"spare columns are not modelled with {words_per_row} words per row; use 0")
+        self.words_per_row = words_per_row
         self.geometry = geometry
         self.model = model
         self.expose_spares = expose_spares
         self.min_spares = min_spares
         self.classify_shapes = classify_shapes
         self.spares = SpareGeometry(
-            base_words=geometry.rows, word_size=geometry.cols,
-            num_spare_rows=spare_rows, num_spare_cols=spare_cols,
+            base_words=geometry.rows * words_per_row, word_size=geometry.cols // words_per_row,
+            num_spare_rows=spare_rows, num_spare_cols=spare_cols, words_per_row=words_per_row,
         )
         self.placement = (
             ArrayGeometry(rows=geometry.rows + spare_rows, cols=geometry.cols + spare_cols, banks=geometry.banks)
@@ -78,12 +97,14 @@ class BitmapEngine:
 
     def describe(self) -> dict[str, Any]:
         rows, cols = self.spares.num_spare_rows, self.spares.num_spare_cols
+        muxed = {"words_per_row": self.words_per_row} if self.words_per_row != 1 else {}
         shapes = {"shape_classifier": {"module": "yieldsim.shapes", "line_density": 0.5,
                                        "cluster_density": 0.75, "distance": 1}} if self.classify_shapes else {}
         return {
             **shapes,
             "geometry": {
                 **self.geometry.describe(),
+                **muxed,
                 "spare_rows_per_bank": rows,
                 "spare_cols_per_bank": cols,
                 "spares_exposed": self.expose_spares,
@@ -96,8 +117,14 @@ class BitmapEngine:
                          "min_spares": self.min_spares},
         }
 
+    def _logical(self, cell: Cell) -> Cell:
+        """A physical base cell's ``(addr, bit)``: the identity at one word per row."""
+        r, c = cell
+        wpr = self.words_per_row
+        return (r * wpr + c % wpr, c // wpr)
+
     def _banks(self, cells: set[Cell]) -> list[tuple[set[Cell], SpareFaults | None, int]]:
-        """Per bank: its base cells, its spare faults, and how many spare cells failed."""
+        """Per bank: its base cells (physical), its spare faults, and how many spare cells failed."""
         if not self.expose_spares:
             return [(bank_cells, None, 0) for bank_cells in self.geometry.split(cells)]
         rows, cols, width = self.geometry.rows, self.geometry.cols, self.placement.cols
@@ -108,7 +135,7 @@ class BitmapEngine:
             if r < rows and c < cols:
                 base.add((r, c))
             elif r >= rows and c < cols:
-                row_cells.setdefault(r - rows, set()).add(c)
+                row_cells.setdefault(r - rows, set()).add(c // self.words_per_row)
             elif r < rows:
                 col_cells.setdefault(c - cols, set()).add(r)
             else:
@@ -164,13 +191,14 @@ class BitmapEngine:
         for bank, (bank_cells, faults, bank_spare_cells) in enumerate(banks):
             base_cells += len(bank_cells)
             spare_cells += bank_spare_cells
-            first = analyze_detailed(bank_cells, self.spares, spare_faults=faults)
+            logical = bank_cells if self.words_per_row == 1 else {self._logical(cell) for cell in bank_cells}
+            first = analyze_detailed(logical, self.spares, spare_faults=faults)
             if not first.repaired:
                 failing_banks.append(bank)
                 continue
             used += first.spares_used
             if self.min_spares:
-                fewest += analyze_detailed(bank_cells, self.spares, objective="min_spares",
+                fewest += analyze_detailed(logical, self.spares, objective="min_spares",
                                            spare_faults=faults).spares_used
         repaired = not failing_banks
         extras: dict[str, Any] = {"defects": class_counts(defects)}

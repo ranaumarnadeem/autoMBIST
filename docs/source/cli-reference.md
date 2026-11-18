@@ -457,9 +457,10 @@ autombist yield-sim --array ROWSxCOLS --spare-rows N --faults K [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--array ROWSxCOLS` | required | Base array per bank (rows are words, columns bits) |
+| `--array ROWSxCOLS` | required | Base array per bank, in cells (rows are words and columns bits at one word per row) |
 | `--banks N` | 1 | Banks side by side, each with its own spares; a memory is repaired only if every bank is |
 | `--spare-rows N` / `--spare-cols N` | required / 0 | Spares per bank |
+| `--words-per-row N` | 1 | Words on each physical row, the macro's column mux (`ram-synth` prints it): each row holds N words with their bits interleaved, and a spare row replaces a physical row. Above 1 it needs `--spare-cols 0` |
 | `--defects PRESET` | `singles` | `singles`, `ohler-d1`..`d3`, `itc2020-1020`/`1050`/`3020`/`3050` |
 | `--itc-reading NAME` | `each-memory` | How an `itc2020` preset reads the paper's two open points |
 | `--faults K` | required | Defect count to sweep; repeatable, and a value may be a range (`1..15`). For `itc2020` presets k is faulty cells per bank |
@@ -479,6 +480,7 @@ autombist yield-sim --array ROWSxCOLS --spare-rows N --faults K [OPTIONS]
 autombist yield-sim --array 1024x1024 --spare-rows 5 --spare-cols 5 --defects ohler-d2 --faults 1..15
 autombist yield-sim --array 512x256 --banks 2 --spare-rows 3 --spare-cols 3 --defects itc2020-3050 --faults 8..12 --itc-reading each-bank
 autombist yield-sim --array 256x64 --spare-rows 2 --spare-cols 2 --defects ohler-d2 --faults 1..8 --expose-spares --min-spares
+autombist yield-sim --array 64x128 --words-per-row 4 --spare-rows 1 --defects ohler-d2 --faults 1..4
 ```
 
 ---
@@ -514,6 +516,7 @@ autombist yield-sweep --config config.yml --spare-rows N --faults K [OPTIONS]
 | `--diagnosis-entries N` | 0 | With `--self-repair`: also build the diagnosis log and count its overflows |
 | `--spare-retry` | off | With `--self-repair`: build with `redundancy.onchip_spare_retry`, so a faulty spare the verify pass catches is retired and the repair retried |
 | `--analyzer` | `greedy` | With `--self-repair` and spare columns: the on-chip 2D analyzer, `greedy` (one pass) or `deferred` (two passes, `redundancy.onchip_analyzer: deferred`) |
+| `--words-per-row N` | 1 | Words on each physical row, the macro's column mux (`ram-synth` prints it): a `--defects` preset lands on the physical array, a spare row replaces a physical row, and `--self-repair` builds with `redundancy.words_per_row`. Above 1 it needs `--spare-cols 0` |
 | `--trial-detail` | `all` | Per-trial records kept: `all`, `failures` or `none` |
 | `--seed N` | 0 | Base seed (trial seed = seed + k x trials + i, as before) |
 | `--out DIR` | `out` | Where the build and `yield_sweep.json` go |
@@ -525,6 +528,7 @@ autombist yield-sweep --config config.yml --spare-rows N --faults K [OPTIONS]
 autombist yield-sweep --config config.yml --faults 1..8 --trials 20 --spare-rows 2
 autombist yield-sweep --config config.yml --faults 1..4 --spare-rows 1 --observe march --fault-type transition-up --algo march-raw
 autombist yield-sweep --config config.yml --faults 1..6 --spare-rows 2 --spare-cols 1 --self-repair --expose-spares --defects ohler-d2
+autombist yield-sweep --config config.yml --faults 1..4 --spare-rows 1 --words-per-row 4 --self-repair --defects ohler-d2
 ```
 
 ### Output

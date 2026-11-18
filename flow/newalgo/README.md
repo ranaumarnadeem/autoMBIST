@@ -84,7 +84,8 @@ read_latency: 0
 ports:
   rport: {type: r, clk: clkA, addr: addrA, dout: doutA, csb: csbA}
   wport: {type: w, clk: clkB, addr: addrB, din: dinB, csb: csbB, we: webB}
-redundancy: {num_spare_rows: 2, num_spare_cols: 0, onchip_selfrepair: true}
+# sky130_sram_1r1w_32b256w is column-muxed, 2 words per row (its datasheet.info).
+redundancy: {num_spare_rows: 2, num_spare_cols: 0, words_per_row: 2, onchip_selfrepair: true}
 YAML
 
 # 3. Harden (flow/newalgo/sram_wrap_1r1w.sv is the real-macro adapter):

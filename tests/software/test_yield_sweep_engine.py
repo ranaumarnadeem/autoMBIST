@@ -153,3 +153,56 @@ def test_the_report_carries_the_engine_blocks_and_observed_versus_truth(config_p
 def test_impossible_setups_are_refused(config_path, monkeypatch, kwargs, fragment: str) -> None:
     with pytest.raises(ValueError, match=fragment):
         _engine(config_path, monkeypatch, FakeRtl(), **kwargs)
+
+
+# --- column-muxed memories (words_per_row) -----------------------------------------
+
+def test_a_physical_cell_maps_to_its_word_as_openram_interleaves_them() -> None:
+    assert ys._to_word((1, 5), 4) == (5, 1)  # physical column 5: bit 1 of word column 1
+    assert ys._to_word((3, 2), 1) == (3, 2)
+
+
+def test_a_row_repair_covers_its_whole_physical_row() -> None:
+    from autombist.repair.types import RepairSolution, SpareGeometry
+
+    solution = RepairSolution(row_map={5: 0}, col_map={})
+    muxed = SpareGeometry(base_words=8, word_size=4, num_spare_rows=1, words_per_row=4)
+    assert ys._escapes({(4, 0), (7, 3)}, solution, muxed) == 0
+    assert ys._escapes({(3, 0), (4, 0)}, solution, muxed) == 1
+    flat = SpareGeometry(base_words=8, word_size=4, num_spare_rows=1)
+    assert ys._escapes({(4, 0)}, solution, flat) == 1
+
+
+def test_a_muxed_word_line_defect_fails_its_physical_row_and_takes_one_spare(config_path, monkeypatch) -> None:
+    from autombist.yieldsim.defects import MixModel
+
+    engine = _engine(config_path, monkeypatch, FakeRtl(), num_spare_rows=1, defects="singles", words_per_row=4)
+    engine.model = MixModel(weights={"full_row": 1.0})
+    for seed in range(6):
+        record = engine.run_trial(1, seed)
+        stuck = ys._stuck_cells(*_read_masks(engine.module_dir), CONFIG["data_width"])
+        (row,) = {addr // 4 for addr, _ in stuck}
+        assert stuck == {(addr, bit) for addr in range(row * 4, row * 4 + 4) for bit in range(4)}
+        assert record.repaired and record.spares_used == 1 and record.extras["escapes"] == 0
+
+
+def test_muxed_repair_counts_physical_rows_not_words(config_path, monkeypatch) -> None:
+    engine = _engine(config_path, monkeypatch, FakeRtl(), num_spare_rows=1, words_per_row=4)
+    outcomes = set()
+    for seed in range(40):
+        record = engine.run_trial(2, seed)
+        stuck = ys._stuck_cells(*_read_masks(engine.module_dir), CONFIG["data_width"])
+        one_row = len({addr // 4 for addr, _ in stuck}) == 1
+        assert record.repaired == one_row
+        outcomes.add((one_row, len({addr for addr, _ in stuck})))
+    assert (True, 2) in outcomes  # two words on one physical row, one spare
+
+
+def test_muxed_setup_is_described_and_checked(config_path, monkeypatch) -> None:
+    engine = _engine(config_path, monkeypatch, FakeRtl(), num_spare_rows=1, words_per_row=4)
+    assert engine.describe()["config"]["words_per_row"] == 4
+    assert "words_per_row" not in _engine(config_path, monkeypatch, FakeRtl()).describe()["config"]
+    with pytest.raises(ValueError, match="power of two"):
+        _engine(config_path, monkeypatch, FakeRtl(), words_per_row=3)
+    with pytest.raises(ValueError, match="spare columns are not supported"):
+        _engine(config_path, monkeypatch, FakeRtl(), words_per_row=4, num_spare_cols=1)

@@ -10,8 +10,13 @@ a physical row (tests/hardware/sram_spares_muxed.v) -- and check that:
   * a second spare row is found at 2**addr_width + 1*words_per_row, not + 1;
   * the negative control: the same memory with words_per_row left at 1 spends
     a spare per faulty WORD, runs out, and reports unrepairable;
+  * march-1r1w repairs the 1-read + 1-write port version
+    (sram_spares_muxed_1r1w.v, 2 words per row), and fails at words_per_row 1;
   * the tester-driven loop (fail scan -> BIRA -> BISR -> repair pins) repairs it
     with words_per_row in the geometry, and BIRA calls it unrepairable without.
+  * yield-sweep's engines take words_per_row: the self-repair engine builds
+    with it and repairs the defect (and runs out of spares without it), and
+    the scan engine observes a muxed defect preset exactly.
 
 The memory model has storage only for real rows (reads past the last spare row
 return X), so a remap that steers off the array fails the re-scan.
@@ -175,3 +180,78 @@ def test_tester_driven_loop_repairs_a_wordline_defect(tmp_path: Path) -> None:
     )
     assert after.returncode == 0, after.stdout
     assert fail_cells(after.report) == set()
+
+
+# The 1-read + 1-write port model: 2 words per row, the value OpenRAM picks for
+# sky130_sram_1r1w_32b256w. Bit 3 stuck-at-1 in both words of physical row 1.
+MUXED_1R1W = HARDWARE / "sram_spares_muxed_1r1w.v"
+PORTS_1R1W = {
+    "rport": {"type": "r", "clk": "clk0", "addr": "addr0", "dout": "dout0", "csb": "csb0"},
+    "wport": {"type": "w", "clk": "clk1", "addr": "addr1", "din": "din1", "csb": "csb1", "we": "web1"},
+}
+ROW1_DEFECT_1R1W = {(2, 3), (3, 3)}
+
+
+def _config_1r1w(words_per_row: int | None) -> dict:
+    config = _config("sram_spares_muxed_1r1w", _redundancy(1, words_per_row, onchip=True))
+    config["ports"] = PORTS_1R1W
+    return config
+
+
+def test_march_1r1w_self_repairs_a_wordline_defect_with_one_spare(tmp_path: Path) -> None:
+    wrapper = _generate(tmp_path, _config_1r1w(2), algo="march-1r1w")
+    result = _self_repair(wrapper, [MUXED_1R1W], "repairable")
+    assert result.returncode == 0, result.stdout
+    assert fail_cells(result.report) == set()
+
+
+def test_march_1r1w_word_level_repair_runs_out_of_spares(tmp_path: Path) -> None:
+    """Negative control: the same dual-port memory with words_per_row left at 1."""
+    wrapper = _generate(tmp_path, _config_1r1w(None), algo="march-1r1w")
+    result = _self_repair(wrapper, [MUXED_1R1W], "unrepairable")
+    assert result.returncode == 0, result.stdout
+    remaining = fail_cells(result.report)
+    assert remaining < ROW1_DEFECT_1R1W
+    assert len(remaining) == 1
+
+
+# --- yield-sweep's engines on a muxed memory ---------------------------------------
+
+def _sweep_config(tmp_path: Path) -> Path:
+    path = tmp_path / "sweep.yml"
+    path.write_text(yaml.safe_dump({
+        "memory_name": "sram_sweep", "wrapper_module_name": "sram_sweep_mbist", "addr_width": ADDR_WIDTH,
+        "data_width": DATA_WIDTH, "we_active_low": True, "ports": BASE_PORTS,
+    }, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def test_yield_sweep_self_repair_fixes_a_muxed_word_line_defect(tmp_path: Path) -> None:
+    from autombist.yield_sweep import SelfRepairEngine
+
+    engine = SelfRepairEngine(_sweep_config(tmp_path), tmp_path / "work", num_spare_rows=1,
+                              words_per_row=WORDS_PER_ROW)
+    record = engine.run_stuck({cell: 1 for cell in ROW1_DEFECT})
+    assert record.repaired, record.extras
+    assert record.extras["truth_repairable"] and record.extras["cause"] is None
+    assert record.extras["residual_cells"] == 0
+
+
+def test_yield_sweep_self_repair_word_level_runs_out_of_spares(tmp_path: Path) -> None:
+    """Negative control: the same defect on a build left at one word per row."""
+    from autombist.yield_sweep import SelfRepairEngine
+
+    engine = SelfRepairEngine(_sweep_config(tmp_path), tmp_path / "work", num_spare_rows=1)
+    record = engine.run_stuck({cell: 1 for cell in ROW1_DEFECT})
+    assert not record.repaired
+    assert record.extras["onchip_fail"] == 1 and not record.extras["truth_repairable"]
+
+
+def test_yield_sweep_scan_observes_a_muxed_defect_preset_exactly(tmp_path: Path) -> None:
+    from autombist.yield_sweep import RtlEngine
+
+    engine = RtlEngine(_sweep_config(tmp_path), tmp_path / "dut", num_spare_rows=1, defects="ohler-d2",
+                       words_per_row=WORDS_PER_ROW)
+    records = [engine.run_trial(1, seed) for seed in range(4)]
+    assert all(r.valid and r.extras["overkill"] == 0 for r in records)
+    assert all(r.extras["fail_cell_count"] == r.extras["truth_cells"] for r in records)

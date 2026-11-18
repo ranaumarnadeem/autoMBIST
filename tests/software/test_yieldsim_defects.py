@@ -261,3 +261,68 @@ def test_min_spares_and_the_overused_spares_rate() -> None:
     spares = report["points"][1]["spares"]
     assert spares["mean_min"] <= spares["mean_used"] and spares["ros"] >= 0.0
     assert spares["utilization"] == pytest.approx(spares["mean_used"] / 6)
+
+
+# --- column-muxed arrays (words_per_row) -------------------------------------------
+
+def test_a_muxed_cell_maps_to_its_word_and_bit_as_openram_interleaves_them() -> None:
+    engine = BitmapEngine(ArrayGeometry(rows=8, cols=32), spare_rows=1, spare_cols=0,
+                          model=defect_model("singles"), words_per_row=4)
+    # physical column c is bit c // 4 of word column c % 4; the column bits are the low address bits
+    assert engine._logical((1, 5)) == (5, 1)
+    assert engine._logical((7, 31)) == (31, 7)
+    assert (engine.spares.base_words, engine.spares.word_size, engine.spares.words_per_row) == (32, 8, 4)
+
+
+def test_one_spare_row_repairs_a_muxed_word_line_defect() -> None:
+    """A full-row defect fails every word on the physical row: one spare row."""
+    engine = BitmapEngine(ArrayGeometry(rows=8, cols=32), spare_rows=1, spare_cols=0,
+                          model=MixModel(weights={"full_row": 1.0}), words_per_row=4)
+    for seed in range(10):
+        record = engine.run_trial(1, seed)
+        assert record.repaired and record.spares_used == 1 and record.cells == 32
+
+
+def test_muxed_repair_counts_physical_rows_not_words() -> None:
+    """Two single-cell defects need one spare row exactly when they share a
+    physical row, whichever words they hit."""
+    model = defect_model("singles")
+    engine = BitmapEngine(ArrayGeometry(rows=4, cols=16), spare_rows=1, spare_cols=0,
+                          model=model, words_per_row=4)
+    same_row_two_words = 0
+    for seed in range(200):
+        cells = union_cells(model.draw(random.Random(seed), engine.placement, 2))
+        rows = {r for r, _ in cells}
+        words = {engine._logical(cell)[0] for cell in cells}
+        assert engine.run_trial(2, seed).repaired == (len(rows) == 1)
+        same_row_two_words += len(rows) == 1 and len(words) == 2
+    assert same_row_two_words > 0
+
+
+def test_a_muxed_bit_line_defect_is_not_row_repairable() -> None:
+    engine = BitmapEngine(ArrayGeometry(rows=8, cols=16), spare_rows=1, spare_cols=0,
+                          model=MixModel(weights={"full_col": 1.0}), words_per_row=2)
+    assert not engine.run_trial(1, seed=0).repaired
+
+
+def test_a_cell_in_a_muxed_spare_row_is_a_fault_on_its_bit() -> None:
+    engine = BitmapEngine(ArrayGeometry(rows=4, cols=8), spare_rows=1, spare_cols=0,
+                          model=defect_model("singles"), expose_spares=True, words_per_row=4)
+    ((base, faults, n),) = engine._banks({(0, 1), (4, 6)})
+    assert base == {(0, 1)} and n == 1
+    assert faults.row_cells == {0: frozenset({1})}  # physical column 6 is bit 1
+    assert not analyze_detailed({engine._logical(c) for c in base}, engine.spares, spare_faults=faults).repaired
+
+
+def test_muxed_geometry_is_described_and_checked() -> None:
+    engine = BitmapEngine(ArrayGeometry(rows=8, cols=32), spare_rows=1, spare_cols=0,
+                          model=defect_model("singles"), words_per_row=4)
+    assert engine.describe()["geometry"]["words_per_row"] == 4
+    for kwargs, fragment in [
+        ({"words_per_row": 3}, "power of two"),
+        ({"words_per_row": 64}, "do not split"),
+        ({"words_per_row": 4, "spare_cols": 1}, "spare columns are not modelled"),
+    ]:
+        args = {"spare_rows": 1, "spare_cols": 0, **kwargs}
+        with pytest.raises(ValueError, match=fragment):
+            BitmapEngine(ArrayGeometry(rows=8, cols=32), model=defect_model("singles"), **args)

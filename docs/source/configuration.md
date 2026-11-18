@@ -192,8 +192,8 @@ redundancy:
 Most real SRAM macros are column-muxed: several consecutive addresses share one
 physical row, and the low address bits pick the word within it. OpenRAM picks
 the factor itself unless its config sets one, and every sky130 macro built here
-is muxed: 4 words per row for `sky130_sram_32b256w` and `32b512w`, 16 for
-`sky130_sram_8b1024w`. `autombist ram-synth` prints the value for the macro it
+is muxed: 4 words per row for `sky130_sram_32b256w` and `32b512w`, 2 for the
+dual-port `sky130_sram_1r1w_32b256w`, 16 for `sky130_sram_8b1024w`. `autombist ram-synth` prints the value for the macro it
 builds (from OpenRAM's `datasheet.info`). Set it on the redundancy block:
 
 ```yaml
@@ -213,6 +213,11 @@ one spare.
 Left at the default of 1 on a muxed macro, repair still fixes a fault inside
 one word, but spends a spare per faulty *word*: the same broken wordline needs
 `words_per_row` spares and is usually reported unrepairable.
+
+The yield commands take the same value as `--words-per-row`: `yield-sim` and
+`yield-sweep` then place defects on the physical array, so a word-line defect
+fails every word of its row and takes one spare row (see
+[Repair Yield Analysis](yield-analysis.md)).
 
 Rules: a power of two; `num_spare_rows * words_per_row` may not exceed
 `2**addr_width`; and `num_spare_cols` must be 0, since column repair is not
