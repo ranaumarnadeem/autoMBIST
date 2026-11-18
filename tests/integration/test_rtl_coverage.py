@@ -214,8 +214,11 @@ def _scenarios(snapshot: dict) -> list[tuple[str, str, dict, dict]]:
                 # faulty at row 5; retired, four faulty rows are left for two spare rows
                 out.append(("selfrepair-faulty-spare-col", "selfrepair", {**column, (5, width): 1}, {"fail": 1}))
         faulty_rows = rows + cols + 1 + redundancy.get("num_diagnosis_entries", 0)
+        # One cell in each of that many PHYSICAL rows: on a column-muxed memory
+        # a row is words_per_row consecutive addresses, and one spare covers it.
+        wpr = redundancy.get("words_per_row", 1)
         out.append(("selfrepair-unrepairable", "selfrepair",
-                    {(r, r % width): 1 for r in range(min(faulty_rows, depth))}, {"fail": 1}))
+                    {(r * wpr, r % width): 1 for r in range(min(faulty_rows, depth // wpr))}, {"fail": 1}))
     if redundancy.get("onchip_repair_persistence"):
         out.append(("repair-load", "load", {}, {}))
     return out

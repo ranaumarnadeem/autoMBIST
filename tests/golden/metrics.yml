@@ -43,6 +43,11 @@ selfrepair-1r1w-2d:
   cells: 621
   flops: 60
   selfrepair_cycles: 567
+selfrepair-1r1w-row-muxed:
+  bist_cycles: 281
+  cells: 345
+  flops: 42
+  selfrepair_cycles: 567
 selfrepair-2d:
   bist_cycles: 401
   cells: 581
@@ -55,7 +60,7 @@ selfrepair-2d-deferred-diagnosis:
   selfrepair_cycles: 1211
 selfrepair-2d-deferred-retry-diagnosis:
   bist_cycles: 401
-  cells: 1046
+  cells: 1047
   flops: 147
   selfrepair_cycles: 1211
 selfrepair-2rw-2d-retry:
@@ -67,6 +72,11 @@ selfrepair-row:
   bist_cycles: 401
   cells: 330
   flops: 41
+  selfrepair_cycles: 807
+selfrepair-row-muxed-retry:
+  bist_cycles: 401
+  cells: 347
+  flops: 39
   selfrepair_cycles: 807
 selfrepair-row-persistence-diagnosis:
   bist_cycles: 401
@@ -87,6 +97,11 @@ shared-bus-selfrepair-2d:
   cells: 1055
   flops: 105
   selfrepair_cycles: 1618
+shared-bus-selfrepair-muxed:
+  bist_cycles: 806
+  cells: 464
+  flops: 49
+  selfrepair_cycles: 1618
 spare-wen-tied-off:
   bist_cycles: 401
   cells: 185
@@ -98,4 +113,8 @@ tester-row-col-repair:
 tester-row-repair:
   bist_cycles: 401
   cells: 211
+  flops: 15
+tester-row-repair-muxed:
+  bist_cycles: 401
+  cells: 199
   flops: 15

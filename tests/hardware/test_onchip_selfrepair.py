@@ -194,6 +194,8 @@ async def test_onchip_selfrepair(dut):
         analyzer's accumulate-for-the-chip's-lifetime defect state gives the
         SAME repair result both times, not a fresh (and wrong) empty
         signature on the second pass.
+      * SELFREPAIR_SCENARIO=unrepairable -- any DUT; self_repair_fail must be
+        1, and the caller checks the remaining cells itself.
       * SELFREPAIR_SCENARIO=partial      -- sram_spares_tiny_2defect.v (2
         defects, 1 spare): self_repair_fail must read 1 (unrepairable), AND
         the independent re-scan must show EXACTLY ONE of the two original
@@ -259,7 +261,11 @@ async def test_onchip_selfrepair(dut):
         print("FAIL_CELL " + json.dumps({"addr": addr, "bit": bit}))
     print(f"FAIL_SCAN_COMPLETE cells={len(fails)}")
 
-    if scenario == "partial":
+    if scenario == "unrepairable":
+        # The caller checks which cells remain (from the FAIL_CELL lines);
+        # here only that the chip did not claim a repair it could not make.
+        assert self_repair_fail == 1, "expected the self-repair to report unrepairable"
+    elif scenario == "partial":
         assert self_repair_fail == 1, "2 distinct faulty rows / 1 spare must be unrepairable"
         remaining = set(fails)
         known_defects = {(3, 3), (1, 1)}

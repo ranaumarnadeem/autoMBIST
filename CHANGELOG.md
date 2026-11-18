@@ -21,6 +21,17 @@ everything that predates the migration.
   Annex D; it prints no rating and makes no ASIL claim (#39, #40).
 - The JSON campaign report (`autombist test --report x.json --fmt json`) records
   `tool_versions` (#40).
+- Row repair on column-muxed memories: `redundancy.words_per_row` (a power of
+  two, the macro's column-mux factor) makes a spare row replace a whole physical
+  row. `repair_remap_row` and `onchip_row_repair_analyzer` take a
+  `WORDS_PER_ROW` parameter and compare only the row bits; BIRA counts faulty
+  physical rows; spare row `i` is at `2**addr_width + i*words_per_row`, where
+  OpenRAM puts it. Works on the tester-driven and on-chip paths, single-port,
+  multi-port and shared-bus. Column repair stays rejected under muxing, and
+  `num_spare_rows * words_per_row` may not exceed `2**addr_width`. At the
+  default of 1 the generated RTL is unchanged. `ram-synth` prints the macro's
+  words per row (from OpenRAM's `datasheet.info`). The real-macro wrappers have
+  been simulated with it but not re-hardened.
 - [Using the Safety Report in an FMEDA](docs/source/safety-report.md): the inputs a
   safety engineer must supply, unweighted coverage against diagnostic coverage, a
   worked example a test re-runs, and what autoMBIST does not provide (#41).
@@ -237,10 +248,10 @@ everything that predates the migration.
   layout of that shape: it is the only demo macro with 16 words per row.
 - Corrected: the demo OpenRAM macros are column-muxed (4 words per row for
   `sky130_sram_32b256w` and `32b512w`, 16 for `8b1024w`). The self-repair docs
-  said they had none. On these macros each spare row replaces one faulty word,
-  not a physical row. A fault inside one word is repaired. A defect that breaks
-  a whole physical row is reported unrepairable (`bist_fail`). The generator still
-  accepts only `redundancy.words_per_row: 1`.
+  said they had none. Without `redundancy.words_per_row` (below), each spare row
+  on these macros replaces one faulty word, not a physical row: a fault inside
+  one word is repaired, a defect that breaks a whole physical row is reported
+  unrepairable (`bist_fail`). The demo configs and real-macro tests now set it.
 
 ### Performance
 Results are unchanged in every case (#64).

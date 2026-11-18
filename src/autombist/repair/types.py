@@ -58,6 +58,15 @@ class SpareGeometry:
     # tester-driven (repair_ports) path. Still rejected for onchip_selfrepair, whose
     # analyzer (rtl/onchip_row_repair_analyzer.sv) is row-only -- see generator.py.
     num_spare_cols: int = 0
+    # The column-mux factor: how many consecutive addresses share one physical
+    # row (OpenRAM's "words per row"). A spare row replaces a whole physical
+    # row, so BIRA counts faulty rows as distinct addr // words_per_row, and
+    # spare row i covers addresses base_words + i*words_per_row onwards. Column
+    # repair is not modelled under muxing: OpenRAM gives each physical row ONE
+    # cell per spare column, shared by all its words, which a per-bit-lane
+    # column model does not express -- so words_per_row > 1 requires
+    # num_spare_cols == 0.
+    words_per_row: int = 1
 
     def __post_init__(self) -> None:
         if self.base_words <= 0 or self.word_size <= 0:
@@ -66,11 +75,34 @@ class SpareGeometry:
             raise SpareGeometryError(
                 "num_spare_rows and num_spare_cols must be non-negative"
             )
+        wpr = self.words_per_row
+        if wpr < 1 or wpr & (wpr - 1):
+            raise SpareGeometryError(f"words_per_row must be a power of two, got {wpr}")
+        if self.base_words % wpr:
+            raise SpareGeometryError(
+                f"words_per_row ({wpr}) must divide base_words ({self.base_words}) -- "
+                "a physical row holds words_per_row whole words"
+            )
+        if wpr > 1 and self.num_spare_cols > 0:
+            raise SpareGeometryError(
+                "spare columns are not supported with words_per_row > 1: OpenRAM "
+                "shares one spare-column cell per physical row across its muxed "
+                "words, which the per-bit-lane column model does not express"
+            )
+
+    def row_of(self, addr: int) -> int:
+        """The physical row a logical address sits in: ``addr // words_per_row``."""
+        return addr // self.words_per_row
+
+    @property
+    def num_rows(self) -> int:
+        """Physical (non-spare) row count: ``base_words // words_per_row``."""
+        return self.base_words // self.words_per_row
 
     @property
     def total_words(self) -> int:
         """Physical word count including spare rows."""
-        return self.base_words + self.num_spare_rows
+        return self.base_words + self.num_spare_rows * self.words_per_row
 
     @property
     def addr_width(self) -> int:
@@ -89,7 +121,7 @@ class SpareGeometry:
     @property
     def mem_addr_width(self) -> int:
         """Physical address width the spare-augmented memory needs:
-        ``ceil(log2(base_words + num_spare_rows))``.
+        ``ceil(log2(base_words + num_spare_rows * words_per_row))``.
 
         This is the ONE place that formula lives -- both the RTL parameterization
         and any address-space reasoning call it rather than re-deriving it. Spare

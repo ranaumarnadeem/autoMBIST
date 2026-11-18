@@ -695,7 +695,9 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
     Column repair (M > 0) is tester-driven only in this phase: it requires the
     memory's ``spare_wen`` port role and the canonical ``col_repair_en``/
     ``faulty_bit`` repair pins, and is rejected for ``onchip_selfrepair`` (whose
-    analyzer is row-only) and for ``words_per_row != 1`` (column muxing).
+    analyzer is row-only) and for ``words_per_row != 1`` (column muxing). Row
+    repair supports column muxing: ``words_per_row`` makes a spare replace a
+    whole physical row.
 
     ``redundancy`` and ``repair_ports`` are a required pair: spares need repair
     pins to drive the remap, and (now that repair pins bind to the remap, not a
@@ -826,23 +828,38 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
             "wrapper's redundancy path is gated on having at least one spare row"
         )
 
-    # words_per_row: the column-mux factor. Optional, defaults to 1 (no muxing).
-    # Rejected unconditionally when != 1 -- not just for column configs --
-    # because under muxing the row remap (2**addr_width + i) replaces one word,
-    # not a physical row (see flow/multimem/mbist/README.md). Nothing derives
-    # this key from the macro: the shipped configs leave it at 1 although the
-    # real OpenRAM macros they wrap have 4 or 16 words per row.
+    # words_per_row: the memory's column-mux factor (OpenRAM's "Words Per Row",
+    # which `ram-synth` prints). Optional, defaults to 1 (no muxing). A spare
+    # row replaces a whole physical row of words_per_row consecutive addresses:
+    # repair_remap_row and onchip_row_repair_analyzer compare only the row bits.
+    # Leaving it at 1 on a muxed macro still repairs a fault inside one word,
+    # but spends a spare per faulty WORD, so a broken wordline is unrepairable.
     words_per_row = block.get("words_per_row", 1)
-    if isinstance(words_per_row, bool) or not isinstance(words_per_row, int) or words_per_row < 1:
-        raise ConfigError("redundancy.words_per_row must be a positive integer")
-    if words_per_row != 1:
+    if (
+        isinstance(words_per_row, bool)
+        or not isinstance(words_per_row, int)
+        or words_per_row < 1
+        or words_per_row & (words_per_row - 1)
+    ):
         raise ConfigError(
-            f"redundancy.words_per_row must be 1, got {words_per_row} -- column "
-            "muxing is not supported by the repair path. Under muxing OpenRAM "
-            "shares ONE spare-column set per PHYSICAL row across the muxed words "
-            "(functional.py:71-77), which repair/bira.py's global bit-lane column "
-            "model does not express"
+            f"redundancy.words_per_row must be a power of two (1, 2, 4, 8, 16), got {words_per_row!r}"
         )
+    if words_per_row > 1:
+        if num_spare_cols > 0:
+            raise ConfigError(
+                f"redundancy.num_spare_cols must be 0 with words_per_row={words_per_row} -- "
+                "column repair is not supported on a column-muxed memory. OpenRAM "
+                "gives each physical row ONE cell per spare column, shared by all "
+                "its muxed words (its behavioral .v gives each word its own, so a "
+                "simulation would not show the difference)"
+            )
+        base_words = 1 << int(loaded["addr_width"])
+        if num_spare_rows * words_per_row > base_words:
+            raise ConfigError(
+                f"redundancy: num_spare_rows ({num_spare_rows}) x words_per_row "
+                f"({words_per_row}) spare words exceed the {base_words} logical "
+                "words -- more spare rows than the array has rows"
+            )
 
     # Hoisted above both consumers below (the num_spare_cols>0 shape gate
     # further down, and the multi-port shape gate right after it) -- needs to
@@ -950,6 +967,7 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
             word_size=int(loaded["data_width"]),
             num_spare_rows=num_spare_rows,
             num_spare_cols=num_spare_cols,
+            words_per_row=words_per_row,
         )
     except SpareGeometryError as exc:
         raise ConfigError(f"redundancy: {exc}") from exc

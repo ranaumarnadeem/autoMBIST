@@ -40,6 +40,35 @@ def signoff_problem(log_text: str, cell: str) -> str | None:
     return None
 
 
+def words_per_row(datasheet_text: str | None, log_text: str | None) -> int | None:
+    """The macro's column-mux factor as OpenRAM chose it, or None if unknown.
+
+    OpenRAM picks it itself when the config does not set it, so a macro with no
+    words_per_row in its config can still be column-muxed (every sky130 demo
+    macro here is: 4 or 16). ``datasheet.info`` is one comma-separated record
+    holding ``words_per_row,<n>``; the log has ``Set SRAM Words Per Row=<n>``
+    only at -v. This is the value autoMBIST's ``redundancy.words_per_row``
+    needs, so that a spare row replaces a whole physical row.
+    """
+    if datasheet_text:
+        fields = [f.strip() for f in datasheet_text.split(",")]
+        for key, value in zip(fields, fields[1:]):
+            if key == "words_per_row" and value.isdigit():
+                return int(value)
+    if log_text:
+        found = re.findall(r"Set SRAM Words Per Row=(\d+)", log_text)
+        if found:
+            return int(found[-1])
+    return None
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
 def run_cmd(cmd: list[str], cwd: Path, env: dict[str, str]) -> None:
     print("$", " ".join(cmd))
     subprocess.run(cmd, cwd=str(cwd), env=env, check=True)
@@ -278,6 +307,13 @@ def main() -> int:
         config_path.unlink(missing_ok=True)
 
     print(f"SRAM generation complete: {output_dir}")
+    wpr = words_per_row(
+        _read_text(output_dir / "datasheet.info"), _read_text(output_dir / f"{output_name}.log")
+    )
+    if wpr is None:
+        print("Words per row: unknown (no datasheet.info and no -v log line)")
+    else:
+        print(f"Words per row: {wpr} (set redundancy.words_per_row: {wpr} for this macro)")
     if args.run_drc_lvs:
         log_path = output_dir / f"{output_name}.log"
         try:

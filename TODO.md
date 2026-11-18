@@ -207,17 +207,16 @@ end (its own integration tests against a 1.1.0 manifest).
     the same family as upstream's open VLSIDA/OpenRAM#340.
   - The `.gds`/`.lvs.sp` of the passing macros are regenerated build
     products, not committed, so the result is reproducible but not stored.
-- **Row repair on column-muxed macros.** The demo OpenRAM macros have 4 or 16
-  words per row, and every real OpenRAM macro built here so far is muxed. The
-  row remap replaces one word, not a physical row, so a whole-row defect needs
-  `words_per_row` spares (see `flow/multimem/mbist/README.md`). The fix is
-  physical-row repair: compare only the row bits of the address, steer to
-  `{spare row, column bits}`, and let the analyzer group failing addresses by
-  `addr / words_per_row`. After that, `redundancy.words_per_row` could accept
-  the macro's real value. `ram-synth` could record that value from OpenRAM's log.
-  Column repair under muxing stays rejected: OpenRAM shares one spare column
-  set per physical row, but its behavioral `.v` gives every word its own spare
-  bit, so a simulation would not show the difference.
+- **Column-muxed macros (`redundancy.words_per_row`)** — row repair now
+  replaces a physical row. Still open:
+  - The real-macro wrappers with `words_per_row` set have been simulated, not
+    re-hardened (`harden --run` on `flow/multimem/mbist/harden.yml`).
+  - The 1r1w macro's (`sky130_sram_1r1w_32b256w`) words per row is not
+    recorded here, so `flow/newalgo`'s 1r1w config still leaves it at 1.
+  - Column repair under muxing stays rejected: OpenRAM shares one spare column
+    set per physical row, but its behavioral `.v` gives every word its own
+    spare bit, so a simulation would not show the difference.
+  - `yield-sim`/`yield-sweep` still model one word per row.
 - ~~MAINTAINERS.md does not exist yet~~ — done 2026-09-22.
 - ~~GitHub repo description/topics refresh~~ — done 2026-09-22 (description
   now mentions shared-bus/multi-memory + row/column repair; added

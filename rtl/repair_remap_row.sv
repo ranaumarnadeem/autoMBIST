@@ -10,15 +10,23 @@
 //
 // Repair config (driven later by BISR / by the tester): for each of the
 // NUM_SPARE_ROWS spares, row_repair_en[i] enables spare i, and the i-th slice of
-// faulty_row_addr gives the LOGICAL address it replaces. On a match, the access
-// is steered to physical address (2**ADDR_WIDTH + i) -- the top addresses where
-// the spare rows live (mirroring OpenRAM's addressable spares). No clock/reset:
+// faulty_row_addr gives a LOGICAL address in the row it replaces. No clock/reset:
 // a future BISR load block registers the config UPSTREAM of these inputs without
 // touching this module.
+//
+// WORDS_PER_ROW is the memory's column-mux factor (a power of two). A physical
+// row holds WORDS_PER_ROW consecutive addresses: OpenRAM wires the low
+// log2(WORDS_PER_ROW) address bits to the column decoder and the rest to the row
+// decoder, and puts the spare rows after the last regular row. So spare row i
+// starts at 2**ADDR_WIDTH + i*WORDS_PER_ROW. A spare replaces the WHOLE physical
+// row: any address whose row bits match the slice is steered to spare row i,
+// keeping its column bits. At the default of 1 (no muxing) the row is one word
+// and spare i sits at 2**ADDR_WIDTH + i, as before this parameter existed.
 module repair_remap_row #(
     parameter integer ADDR_WIDTH     = 10,   // logical (pre-repair) address width
     parameter integer NUM_SPARE_ROWS = 1,
-    parameter integer MEM_ADDR_WIDTH = $clog2((1 << ADDR_WIDTH) + NUM_SPARE_ROWS)
+    parameter integer WORDS_PER_ROW  = 1,    // column-mux factor, a power of two
+    parameter integer MEM_ADDR_WIDTH = $clog2((1 << ADDR_WIDTH) + NUM_SPARE_ROWS * WORDS_PER_ROW)
 ) (
     input  logic [ADDR_WIDTH-1:0]                addr_in,
     output logic [MEM_ADDR_WIDTH-1:0]            addr_out,
@@ -28,6 +36,8 @@ module repair_remap_row #(
 );
 
     localparam integer BASE_WORDS = (1 << ADDR_WIDTH);
+    localparam integer COL_BITS   = $clog2(WORDS_PER_ROW);
+    localparam logic [ADDR_WIDTH-1:0] COL_MASK = WORDS_PER_ROW - 1;
 
     always_comb begin
         // Default: pass the logical address straight through (auto zero-extended
@@ -35,9 +45,9 @@ module repair_remap_row #(
         addr_out = addr_in;
         for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
             if (row_repair_en[i] &&
-                addr_in == faulty_row_addr[i*ADDR_WIDTH +: ADDR_WIDTH]) begin
-                // Steer to spare row i -- it lives at the top of the address space.
-                addr_out = BASE_WORDS + i;
+                (addr_in >> COL_BITS) == (faulty_row_addr[i*ADDR_WIDTH +: ADDR_WIDTH] >> COL_BITS)) begin
+                // Steer to the same column of spare row i, past the last regular row.
+                addr_out = BASE_WORDS + i * WORDS_PER_ROW + (addr_in & COL_MASK);
             end
         end
     end

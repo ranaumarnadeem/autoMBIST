@@ -58,9 +58,15 @@
 //     the analyze pass: the row's own defect shows again and takes the next
 //     spare that is neither claimed nor bad. With verify_enable and retire tied
 //     low (the default wrapper), none of this ever fires.
+//   * A "row" is a PHYSICAL row: WORDS_PER_ROW consecutive addresses on a
+//     column-muxed memory (the same grouping rtl/repair_remap_row.sv uses).
+//     Two fail addresses with the same row bits are one faulty row and take one
+//     spare. The stored address is the first failing one seen in that row; the
+//     remap only compares its row bits. At the default of 1, a row is a word.
 module onchip_row_repair_analyzer #(
     parameter integer ADDR_WIDTH     = 10,
-    parameter integer NUM_SPARE_ROWS = 1
+    parameter integer NUM_SPARE_ROWS = 1,
+    parameter integer WORDS_PER_ROW  = 1    // column-mux factor, a power of two
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -120,6 +126,8 @@ module onchip_row_repair_analyzer #(
     output logic                                 has_suspect    // a verify fail hit a remapped row
 );
 
+    localparam integer COL_BITS = $clog2(WORDS_PER_ROW);
+
     logic                  live_valid [0:NUM_SPARE_ROWS-1];
     logic [ADDR_WIDTH-1:0] live_addr  [0:NUM_SPARE_ROWS-1];
     logic                  live_unrepairable;
@@ -137,7 +145,7 @@ module onchip_row_repair_analyzer #(
         found_free_slot    = 1'b0;
         free_slot          = 0;
         for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
-            if (live_valid[i] && live_addr[i] == fail_addr) begin
+            if (live_valid[i] && (live_addr[i] >> COL_BITS) == (fail_addr >> COL_BITS)) begin
                 already_registered = 1'b1;
             end
             if (!found_free_slot && !live_valid[i] && !bad_row[i]) begin
@@ -164,7 +172,7 @@ module onchip_row_repair_analyzer #(
             // Verify pass: a fail at a remapped row blames that row's spare.
             if (verify_enable && fail_valid) begin
                 for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
-                    if (live_valid[i] && live_addr[i] == fail_addr) begin
+                    if (live_valid[i] && (live_addr[i] >> COL_BITS) == (fail_addr >> COL_BITS)) begin
                         suspect_row[i] <= 1'b1;
                     end
                 end

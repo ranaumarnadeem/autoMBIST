@@ -143,3 +143,31 @@ def test_signoff_ignores_another_cells_results() -> None:
     )
     assert "no DRC result" in synthesize_sram.signoff_problem(log, _CELL)
     assert "no LVS result" in synthesize_sram.signoff_problem(_DRC_CLEAN + log, _CELL)
+
+
+# The head of a real sky130_sram_8b1024w datasheet.info (OpenRAM v1.2.50 writes
+# one comma-separated record); words_per_row sits mid-record.
+_DATASHEET = (
+    "sky130_sram_8b1024w,1024,1,1,0,0,sky130,25,1.8,TT,1.753,/out/,/out/x.lib,8,"
+    "449781d2,2026-07-16,True,skipped,skipped,133410.47,din0[7:0],0.103,"
+    "words_per_row,16,slews,[0.00125, 0.005, 0.04],loads,[1.7225, 6.89]"
+)
+
+
+def test_words_per_row_reads_the_datasheet() -> None:
+    assert synthesize_sram.words_per_row(_DATASHEET, None) == 16
+
+
+def test_words_per_row_falls_back_to_the_verbose_log() -> None:
+    log = (
+        "[openram.sram_config/recompute_sizes]: Recomputing with words per row: 4\n"
+        "[openram.sram_config/compute_sizes]: Set SRAM Words Per Row=4\n"
+    )
+    assert synthesize_sram.words_per_row(None, log) == 4
+    # The datasheet wins over the log when both are there.
+    assert synthesize_sram.words_per_row(_DATASHEET, log) == 16
+
+
+def test_words_per_row_unknown_without_either_source() -> None:
+    assert synthesize_sram.words_per_row(None, None) is None
+    assert synthesize_sram.words_per_row("a,b,c", "no such line") is None

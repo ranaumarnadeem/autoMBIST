@@ -1032,6 +1032,11 @@ SRAM macro is written to the `output_root`/`output_name` location configured in 
 OpenRAM config (defaults to an `input/` directory at the repo root). Exits with
 OpenRAM's own return code on failure.
 
+It then prints the macro's words per row (its column-mux factor, which OpenRAM picks
+itself unless the config sets it), read from OpenRAM's `datasheet.info`. Copy it into
+the generator config's `redundancy.words_per_row` so a spare row replaces a whole
+physical row (see [Configuration](configuration.md)).
+
 With `run_drc_lvs: true` in the config, OpenRAM also runs its own DRC and LVS on the
 macro, and `ram-synth` exits 1 unless the macro's log shows 0 DRC errors and an LVS
 match. OpenRAM itself exits 0 whatever those checks find, so its return code alone is

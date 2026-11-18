@@ -4,7 +4,7 @@
 // flow/soc's toy defect-injectable behavioral fixtures.
 //
 // Reuses selfrepair_a/selfrepair_b UNCHANGED -- same module names, same
-// generator config (redundancy: {num_spare_rows: 1, onchip_selfrepair: true},
+// generator config (redundancy: {num_spare_rows: 1, words_per_row: 4, onchip_selfrepair: true},
 // algo march-c) as flow/multimem/mbist/mem_subsystem_mbist.sv, which already
 // hardens clean (0 DRT, LVS-clean incl. power). This file only adds a real
 // RV32I CPU driving that same proven wrapper/macro pair through real

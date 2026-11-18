@@ -40,7 +40,8 @@ data_width: 32
 we_active_low: true
 read_latency: 0
 ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
-redundancy: {num_spare_rows: 1, num_spare_cols: 0, onchip_selfrepair: true}
+# sky130_sram_32b256w is column-muxed, 4 words per row (`ram-synth` prints it).
+redundancy: {num_spare_rows: 1, num_spare_cols: 0, words_per_row: 4, onchip_selfrepair: true}
 YAML
 
 # 2. Harden (edit flow/newalgo/harden_x.yml's paths to your generated

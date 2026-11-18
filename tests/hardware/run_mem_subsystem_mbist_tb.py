@@ -49,7 +49,9 @@ WRAPPERS = [
 ]
 
 
-def _generate(memory_name: str, wrapper_name: str, addr_width: int, data_width: int, subdir: str) -> Path:
+def _generate(
+    memory_name: str, wrapper_name: str, addr_width: int, data_width: int, subdir: str, words_per_row: int
+) -> Path:
     config = {
         "memory_name": memory_name,
         "wrapper_module_name": wrapper_name,
@@ -57,7 +59,11 @@ def _generate(memory_name: str, wrapper_name: str, addr_width: int, data_width: 
         "data_width": data_width,
         "we_active_low": True,
         "ports": BASE_PORTS,
-        "redundancy": {"num_spare_rows": 1, "num_spare_cols": 0, "onchip_selfrepair": True},
+        # The real OpenRAM macros are column-muxed: 4 words per row for the
+        # 32-bit ones, 16 for sky130_sram_8b1024w (OpenRAM's datasheet.info).
+        "redundancy": {
+            "num_spare_rows": 1, "num_spare_cols": 0, "words_per_row": words_per_row, "onchip_selfrepair": True,
+        },
         "read_latency": 0,
     }
     GEN_DIR.mkdir(parents=True, exist_ok=True)
@@ -70,9 +76,9 @@ def main() -> int:
     from cocotb_tools.runner import get_runner
 
     # slot c is the 8-bit macro; a/b are 32-bit.
-    wrapper_a = _generate("sram_wrap_a", "selfrepair_a", 8, 32, "gen_a")
-    wrapper_b = _generate("sram_wrap_b", "selfrepair_b", 9, 32, "gen_b")
-    wrapper_c = _generate("sram_wrap_c", "selfrepair_c", 10, 8, "gen_c")
+    wrapper_a = _generate("sram_wrap_a", "selfrepair_a", 8, 32, "gen_a", 4)
+    wrapper_b = _generate("sram_wrap_b", "selfrepair_b", 9, 32, "gen_b", 4)
+    wrapper_c = _generate("sram_wrap_c", "selfrepair_c", 10, 8, "gen_c", 16)
 
     shared_dir = wrapper_a.parent  # one copy of march_c/ + onchip_*.sv + repair_remap_row.sv
 

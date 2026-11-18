@@ -41,7 +41,7 @@
 // Valid only for words_per_row == 1 (no column muxing). Under column muxing
 // OpenRAM shares ONE spare-column set per PHYSICAL row across the muxed words
 // (OpenRAM's functional.py:71-77), which this global bit-lane model does not
-// express -- generator.py rejects redundancy.words_per_row != 1 for that reason.
+// express -- generator.py rejects num_spare_cols > 0 with words_per_row > 1.
 module repair_remap_col #(
     parameter integer DATA_WIDTH     = 32,   // logical (pre-repair) word width
     parameter integer NUM_SPARE_COLS = 1,

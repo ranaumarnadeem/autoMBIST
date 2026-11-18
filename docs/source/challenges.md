@@ -31,8 +31,11 @@ spare-write semantics are checked against real OpenRAM output rather than only
 against themselves. One genuine limitation remains, and it is a modelling one
 rather than a toolchain one: under column muxing OpenRAM shares a single
 spare-column set across every word in a physical row, which the repair model's
-global bit-lane view does not express — so configs with more than one word per
-row are rejected rather than silently mis-repaired.
+global bit-lane view does not express — so column repair with more than one
+word per row is rejected rather than silently mis-repaired. Row repair does
+handle muxing (`redundancy.words_per_row`), and needs to: every sky130 macro
+built here has 4 or 16 words per row, and until that option existed a spare
+row replaced one word rather than a physical row.
 
 ## LEF units
 
