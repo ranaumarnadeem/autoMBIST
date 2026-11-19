@@ -61,12 +61,21 @@ provisioned via nix — all reachable through
 currently `3.0.5`) rather than floating on `main`. See {doc}`librelane` for
 the full recipe.
 
-`ram-synth` is separate, and nix/ciel don't provision it: it drives a
+`ram-synth` is separate, and this repo's flake doesn't provision it: it drives a
 locally-checked-out [OpenRAM](https://github.com/VLSIDA/OpenRAM) compiler
-(`--openram-dir`, default `./OpenRAM`) that brings its own embedded Python
-environment and its own sky130 PDK bootstrap (`make sky130-pdk` / `make
-sky130-install` inside that checkout) — clone OpenRAM yourself before
-running `ram-synth`.
+(`--openram-dir`, default `./OpenRAM`). Clone OpenRAM yourself at the tested
+release and apply this repo's local patches (spare-column workarounds):
+
+```bash
+git clone https://github.com/VLSIDA/OpenRAM.git && cd OpenRAM
+git checkout v1.2.50
+git apply ../scripts/openram-local.patch
+nix develop        # OpenRAM's own shell: magic, netgen, ngspice, klayout
+```
+
+Run `ram-synth` from that shell. Its sky130 PDK bootstrap (`make sky130-pdk` /
+`make sky130-install` inside the checkout) runs when the OpenRAM config sets
+`setup_sky130: true`.
 
 ## Verify the install
 

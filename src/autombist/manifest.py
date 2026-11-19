@@ -104,7 +104,17 @@ def _geometry(config: dict[str, Any]) -> dict[str, int]:
         "num_diagnosis_entries": int(redundancy.get("num_diagnosis_entries", 0) or 0),
         "mem_addr_width": int(redundancy.get("mem_addr_width", aw) or aw),
         "mem_data_width": int(redundancy.get("mem_data_width", dw) or dw),
+        "words_per_row": int(redundancy.get("words_per_row", 1) or 1),
     }
+
+
+def _row_repair_params(geo: dict[str, int]) -> dict[str, int]:
+    """repair_remap_row / onchip_row_repair_analyzer parameters, as the wrapper
+    sets them: WORDS_PER_ROW only when the memory is column-muxed."""
+    params = {"ADDR_WIDTH": geo["addr_width"], "NUM_SPARE_ROWS": geo["num_spare_rows"]}
+    if geo["words_per_row"] != 1:
+        params["WORDS_PER_ROW"] = geo["words_per_row"]
+    return params
 
 
 def _memory_connection_widths(config: dict[str, Any], flags: dict[str, bool]) -> tuple[int, int]:
@@ -241,7 +251,7 @@ def _analyzer(path_prefix: str, config: dict[str, Any], flags: dict[str, bool]) 
             params["DEFERRED"] = 1
     else:
         module_type = "onchip_row_repair_analyzer"
-        params = {"ADDR_WIDTH": geo["addr_width"], "NUM_SPARE_ROWS": geo["num_spare_rows"]}
+        params = _row_repair_params(geo)
     return _instrument(
         f"{path_prefix}u_onchip_analyzer", "u_onchip_analyzer", module_type,
         "self_repair", "redundancy.onchip_selfrepair", params,
@@ -268,7 +278,7 @@ def _remap_row(path_prefix: str, name: str, config: dict[str, Any], why: str) ->
     geo = _geometry(config)
     return _instrument(
         f"{path_prefix}{name}", name, "repair_remap_row", "repair_remap", why,
-        {"ADDR_WIDTH": geo["addr_width"], "NUM_SPARE_ROWS": geo["num_spare_rows"]},
+        _row_repair_params(geo),
     )
 
 

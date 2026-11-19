@@ -21,6 +21,23 @@ everything that predates the migration.
   Annex D; it prints no rating and makes no ASIL claim (#39, #40).
 - The JSON campaign report (`autombist test --report x.json --fmt json`) records
   `tool_versions` (#40).
+- Row repair on column-muxed memories: `redundancy.words_per_row` (a power of
+  two, the macro's column-mux factor) makes a spare row replace a whole physical
+  row. `repair_remap_row` and `onchip_row_repair_analyzer` take a
+  `WORDS_PER_ROW` parameter and compare only the row bits; BIRA counts faulty
+  physical rows; spare row `i` is at `2**addr_width + i*words_per_row`, where
+  OpenRAM puts it. Works on the tester-driven and on-chip paths, single-port,
+  multi-port and shared-bus. Column repair stays rejected under muxing, and
+  `num_spare_rows * words_per_row` may not exceed `2**addr_width`. At the
+  default of 1 the generated RTL is unchanged. `ram-synth` prints the macro's
+  words per row (from OpenRAM's `datasheet.info`). The real-macro wrappers have
+  been simulated with it but not re-hardened. The 1r1w macro has 2 words per
+  row, and `flow/newalgo`'s march-1r1w config now says so.
+- `yield-sim` and `yield-sweep` take `--words-per-row N` for a column-muxed
+  array: defects land on the physical cells, each row holds N words with their
+  bits interleaved as OpenRAM builds it, and a spare row replaces a physical
+  row. `yield-sweep --self-repair` builds the wrapper with
+  `redundancy.words_per_row`. Spare columns are refused with it.
 - [Using the Safety Report in an FMEDA](docs/source/safety-report.md): the inputs a
   safety engineer must supply, unweighted coverage against diagnostic coverage, a
   worked example a test re-runs, and what autoMBIST does not provide (#41).
@@ -214,6 +231,11 @@ everything that predates the migration.
   bank and `--y0` the memory's. A sweep that placed the faults over the whole
   memory (`--itc-reading each-memory`, the default, or `total-memory`) is
   refused for more than one bank, since no bank's own count is known (#66).
+- `ram-synth` with `run_drc_lvs: true` exited 0 whatever OpenRAM's DRC and LVS
+  found, because OpenRAM itself does: a DRC error count is only a warning, and an
+  LVS mismatch is logged as an error but does not stop it. `ram-synth` now exits 1
+  unless the macro's log shows 0 DRC errors and an LVS match, and runs OpenRAM at
+  `-v` so a clean result is logged too.
 
 ### Changed
 - The `config.yml` snapshot `generate` writes names each run parameter once:
@@ -221,6 +243,21 @@ everything that predates the migration.
   `pulse_width_ns`, without the `autombist_use_saboteur`, `autombist_algo`, ...
   copies. `fault_count` and `fault_seed` are now there for clean builds too.
   `simulate` and `run` still read an older snapshot's `autombist_` names (#65).
+- `ram-synth` is tested against OpenRAM 1.2.50, which runs inside its own
+  `nix develop` shell. Your OpenRAM checkout needs `git checkout v1.2.50` and
+  `git apply ../scripts/openram-local.patch` (the spare-column workarounds; the
+  spare-column write fix is now upstream). `setup_sky130: true` fetches the sky130
+  SRAM cell library that version pins. Per-macro DRC/LVS of the demo macros, by
+  OpenRAM's own check: `sky130_sram_32b256w` and `sky130_sram_32b512w` pass;
+  `sky130_sram_8b1024w` fails (118 DRC errors, all in the column decoder's 4-to-16
+  predecoder and the bank's metal3 routing, and an LVS mismatch), in OpenRAM's
+  layout of that shape: it is the only demo macro with 16 words per row.
+- Corrected: the demo OpenRAM macros are column-muxed (4 words per row for
+  `sky130_sram_32b256w` and `32b512w`, 16 for `8b1024w`). The self-repair docs
+  said they had none. Without `redundancy.words_per_row` (below), each spare row
+  on these macros replaces one faulty word, not a physical row: a fault inside
+  one word is repaired, a defect that breaks a whole physical row is reported
+  unrepairable (`bist_fail`). The demo configs and real-macro tests now set it.
 
 ### Performance
 Results are unchanged in every case (#64).

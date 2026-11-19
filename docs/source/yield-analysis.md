@@ -83,7 +83,7 @@ them to the printed digit.
 ## Defect models
 
 `yield-sim` and `yield-sweep --defects` draw from these presets. Coordinates
-are (row, bit), one word per row, laid out as OpenRAM's port 0: the row decoder
+are (row, bit), one word per row unless `--words-per-row` says otherwise, laid out as OpenRAM's port 0: the row decoder
 on the left, the sense amplifiers below, spare rows above the array and spare
 columns to its right.
 
@@ -102,6 +102,15 @@ columns and spare rows. Fig. 5 of the ITC'2020 paper leaves two points open,
 whether p_line applies to each orientation or to both together and whether k
 counts faults per bank or over the whole memory, so each combination is a named
 reading (`--itc-reading`).
+
+A column-muxed memory (`--words-per-row N` on `yield-sim` and `yield-sweep`,
+the macro's column mux, which `ram-synth` prints) keeps the defects on the physical array: `--array`
+is then rows by cells, and each row holds N words with their bits interleaved
+as OpenRAM builds it (physical column c is bit c / N of word column c mod N,
+and the column bits are the low address bits). A word-line defect then fails N
+words, and a spare row replaces the whole physical row. `yield-sweep` injects
+each cell at its word and bit, and with `--self-repair` builds the wrapper with
+`redundancy.words_per_row`. Spare columns are not modelled under muxing.
 
 ## Calibration
 
@@ -291,7 +300,7 @@ spares retired, the remaining budget leaves no slack for a heuristic.
 
 - Banks are independent: no spares shared between banks (the ITC'2020 global and
   common spares).
-- One word per row (`words_per_row` 1) and logical coordinates; column-mux
-  interleaving and address scrambling are not modelled.
+- Column-muxed memories (`--words-per-row`) are modelled without spare
+  columns. Address scrambling is not modelled.
 - One fault type per RTL sweep; trials run one after another.
 - Unknown bitmap shapes are classed `other`, not named by run-length strings.

@@ -68,6 +68,9 @@
     onchip_row_repair_analyzer #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
+{% if redundancy.words_per_row != 1 %}
+      , .WORDS_PER_ROW({{ redundancy.words_per_row }})
+{% endif %}
     ) u_onchip_analyzer (
         .clk(clk),
         .rst_n(rst_n),
@@ -427,6 +430,9 @@ module {{ wrapper_module_name }} #(
         onchip_row_repair_analyzer #(
             .ADDR_WIDTH(ADDR_WIDTH),
             .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
+{% if redundancy.words_per_row != 1 %}
+          , .WORDS_PER_ROW({{ redundancy.words_per_row }})
+{% endif %}
         ) u_onchip_analyzer (
             .clk(clk),
             .rst_n(rst_n),
@@ -472,6 +478,9 @@ module {{ wrapper_module_name }} #(
         repair_remap_row #(
             .ADDR_WIDTH(ADDR_WIDTH),
             .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
+{% if redundancy.words_per_row != 1 %}
+          , .WORDS_PER_ROW({{ redundancy.words_per_row }})
+{% endif %}
         ) u_repair_remap (
             .addr_in(sram_addr_arr[gsr]),
             .addr_out(sram_addr_phys_arr[gsr])
@@ -727,6 +736,9 @@ module {{ wrapper_module_name }} #(
     repair_remap_row #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
+{% if redundancy.words_per_row != 1 %}
+      , .WORDS_PER_ROW({{ redundancy.words_per_row }})
+{% endif %}
     ) u_repair_remap (
         .addr_in(sram_addr),
         .addr_out(sram_addr_phys)
@@ -763,6 +775,9 @@ module {{ wrapper_module_name }} #(
     repair_remap_row #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
+{% if redundancy.words_per_row != 1 %}
+      , .WORDS_PER_ROW({{ redundancy.words_per_row }})
+{% endif %}
     ) u_repair_remap (
         .addr_in(sram_addr),
         .addr_out(sram_addr_phys)
@@ -1153,6 +1168,9 @@ module {{ wrapper_module_name }} #(
     repair_remap_row #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }})
+{% if redundancy.words_per_row != 1 %}
+      , .WORDS_PER_ROW({{ redundancy.words_per_row }})
+{% endif %}
     ) u_repair_remap{{ suffix }} (
         .addr_in(sram_addr{{ suffix }})
       , .addr_out(sram_addr_phys{{ suffix }})

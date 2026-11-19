@@ -110,8 +110,8 @@ class MemoryParams:
                                # Default 1 -> row(addr) = addr, so "different
                                # address, same row" is mathematically unsatisfiable
                                # and HSD is provably inert -- see engine/README.md
-                               # and flow/multimem/mbist/README.md's pre-existing
-                               # words_per_row finding (same term, same formula).
+                               # (same term as the generator's
+                               # redundancy.words_per_row).
                                # Validated (>=1, <=depth, depth%words_per_row==0)
                                # at point-of-use (algo_shell.do_set_memory AND
                                # compile_engine both call _validate_words_per_row),
@@ -752,9 +752,8 @@ def _require_verilator(sim: str) -> None:
 def _validate_words_per_row(mem: MemoryParams) -> None:
     """words_per_row must describe a shape a real column-muxed macro could
     actually have: >=1 (0/negative divides by zero or is meaningless), <=depth
-    and an exact divisor of depth (a partial trailing physical row can't exist
-    -- see flow/multimem/mbist/README.md's words_per_row finding, which derives
-    ADDR_WIDTH from an EXACT words+spares/words_per_row relationship). Called by
+    and an exact divisor of depth (a partial trailing physical row can't exist:
+    OpenRAM sizes the array as words / words_per_row rows). Called by
     both compile_engine (algo front) and run_fsm_campaign's FSM-front guard."""
     wpr = mem.words_per_row
     if wpr < 1:

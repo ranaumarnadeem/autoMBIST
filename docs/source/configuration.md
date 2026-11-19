@@ -187,6 +187,42 @@ redundancy:
   onchip_selfrepair: true
 ```
 
+### Column-muxed memories: `words_per_row`
+
+Most real SRAM macros are column-muxed: several consecutive addresses share one
+physical row, and the low address bits pick the word within it. OpenRAM picks
+the factor itself unless its config sets one, and every sky130 macro built here
+is muxed: 4 words per row for `sky130_sram_32b256w` and `32b512w`, 2 for the
+dual-port `sky130_sram_1r1w_32b256w`, 16 for `sky130_sram_8b1024w`. `autombist ram-synth` prints the value for the macro it
+builds (from OpenRAM's `datasheet.info`). Set it on the redundancy block:
+
+```yaml
+redundancy:
+  num_spare_rows: 1
+  words_per_row: 4            # the macro's column-mux factor, a power of two
+  onchip_selfrepair: true
+```
+
+A spare row then replaces a whole physical row, the way the silicon does:
+`repair_remap_row` and the on-chip analyzer compare only the row bits of an
+address, failing addresses in the same physical row take one spare, and spare
+row `i` is addressed at `2**addr_width + i*words_per_row` plus the column bits,
+where OpenRAM puts it. A broken wordline (every word of one row failing) takes
+one spare.
+
+Left at the default of 1 on a muxed macro, repair still fixes a fault inside
+one word, but spends a spare per faulty *word*: the same broken wordline needs
+`words_per_row` spares and is usually reported unrepairable.
+
+The yield commands take the same value as `--words-per-row`: `yield-sim` and
+`yield-sweep` then place defects on the physical array, so a word-line defect
+fails every word of its row and takes one spare row (see
+[Repair Yield Analysis](yield-analysis.md)).
+
+Rules: a power of two; `num_spare_rows * words_per_row` may not exceed
+`2**addr_width`; and `num_spare_cols` must be 0, since column repair is not
+supported under muxing (see "Column repair" below).
+
 `onchip_selfrepair` currently requires `--algo` to be one of `march-c`,
 `march-raw`, `march-1r1w` (a 1-read-port + 1-write-port config, `type: r`/
 `type: w`), `march-2rw` (a 2-read-write-port config; its concurrent
@@ -375,9 +411,11 @@ This requires three additional things:
 * two extra `repair_ports` with canonical names and exact widths —
   `col_repair_en` (`num_spare_cols` bits) and `faulty_bit`
   (`num_spare_cols * ceil(log2(data_width))` bits);
-* `words_per_row: 1` (the default). Column muxing is rejected: OpenRAM shares
-  one spare-column set per *physical* row across the muxed words, which the
-  repair model's global bit-lane view does not express.
+* `words_per_row: 1` (the default). Column repair on a column-muxed memory is
+  rejected: OpenRAM gives each *physical* row one cell per spare column,
+  shared by all its muxed words, which the repair model's per-bit-lane view
+  does not express (and OpenRAM's behavioral `.v` gives every word its own
+  spare bit, so a simulation would not show the difference).
 
 ```yaml
 ports:

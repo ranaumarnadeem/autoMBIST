@@ -69,3 +69,25 @@ def test_self_repair_options_need_self_repair(tmp_path: Path, flag: list[str]) -
                       encoding="utf-8")
     result = _invoke(tmp_path, "--config", str(config), "--faults", "1", *flag)
     assert result.exit_code == 1 and "need --self-repair" in result.output
+
+
+def test_words_per_row_reaches_both_engines(tmp_path: Path, monkeypatch) -> None:
+    import autombist.cli as cli_mod
+
+    seen = {}
+
+    def capture(name):
+        def make(*args, **kwargs):
+            seen[name] = kwargs.get("words_per_row")
+            raise ValueError("stop here")
+        return make
+
+    monkeypatch.setattr(cli_mod, "RtlEngine", capture("rtl"))
+    monkeypatch.setattr(cli_mod, "SelfRepairEngine", capture("selfrepair"))
+    config = tmp_path / "config.yml"
+    config.write_text("memory_name: m\naddr_width: 3\ndata_width: 4\n", encoding="utf-8")
+    args = ["--config", str(config), "--faults", "1", "--words-per-row", "4"]
+    for extra in ([], ["--self-repair"]):
+        result = _invoke(tmp_path, *args, *extra)
+        assert result.exit_code == 1 and "stop here" in result.output
+    assert seen == {"rtl": 4, "selfrepair": 4}

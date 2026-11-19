@@ -105,7 +105,7 @@ assumed), confirming the actual bits landed where the remap says they should.
 
 `hardened/soc_top_hw.sv` reuses `selfrepair_a`/`selfrepair_b` unchanged from
 `flow/multimem/mbist/` — same generator config
-(`redundancy: {num_spare_rows: 1, onchip_selfrepair: true}`, algo march-c) —
+(`redundancy: {num_spare_rows: 1, words_per_row: 4, onchip_selfrepair: true}`, algo march-c) —
 and drives them with this same real RV32I CPU instead of
 `mem_subsystem_mbist.sv`'s plain functional bus. Real macros have no
 defect-injection knob pre-silicon, so this isn't a second repair-correctness

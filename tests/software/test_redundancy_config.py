@@ -91,7 +91,7 @@ def test_valid_redundancy_derives_geometry(tmp_path: Path) -> None:
         "mem_addr_width": 3,    # ceil(log2(4 + 2))
         "mem_data_width": 4,    # word_size + num_spare_cols(0)
         "bit_index_width": 2,   # ceil(log2(word_size 4))
-        "words_per_row": 1,     # no column muxing (the only supported value)
+        "words_per_row": 1,     # no column muxing (the default)
         "onchip_selfrepair": False,
         "onchip_repair_persistence": False,
         "onchip_diagnosis": False,
@@ -424,16 +424,15 @@ def test_words_per_row_defaults_to_one(tmp_path: Path) -> None:
     assert loaded["redundancy"]["words_per_row"] == 1
 
 
-def test_words_per_row_other_than_one_rejected(tmp_path: Path) -> None:
-    """Column muxing shares ONE spare-column set per PHYSICAL row, which BIRA's
-    global bit-lane column model does not express. Rejected unconditionally --
-    the row-side spare-address convention has the same latent caveat."""
-    with pytest.raises(ConfigError, match="words_per_row"):
-        _load(tmp_path, {
-            **BASE,
-            "redundancy": {"num_spare_rows": 1, "words_per_row": 2},
-            "repair_ports": REPAIR_PORTS,
-        })
+def test_words_per_row_over_one_accepted_for_row_repair(tmp_path: Path) -> None:
+    """A column-muxed memory: a spare row replaces a physical row (see
+    test_words_per_row_repair.py). Column repair under muxing stays refused."""
+    loaded = _load(tmp_path, {
+        **BASE,
+        "redundancy": {"num_spare_rows": 1, "words_per_row": 2},
+        "repair_ports": REPAIR_PORTS_1ROW,
+    })
+    assert loaded["redundancy"]["words_per_row"] == 2
 
 
 @pytest.mark.parametrize("bad", [0, -1, True, "two", 1.5])

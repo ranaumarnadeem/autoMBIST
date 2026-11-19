@@ -57,7 +57,8 @@ def _generate(algo: str, memory_name: str, wrapper_name: str, addr_width: int, d
         "data_width": data_width,
         "we_active_low": True,
         "ports": BASE_PORTS,
-        "redundancy": {"num_spare_rows": 1, "num_spare_cols": 0, "onchip_selfrepair": True},
+        # sky130_sram_32b256w and 32b512w are column-muxed, 4 words per row.
+        "redundancy": {"num_spare_rows": 1, "num_spare_cols": 0, "words_per_row": 4, "onchip_selfrepair": True},
         "read_latency": 0,
     }
     GEN_DIR.mkdir(parents=True, exist_ok=True)

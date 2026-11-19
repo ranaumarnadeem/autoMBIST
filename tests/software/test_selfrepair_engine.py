@@ -206,3 +206,53 @@ def test_the_diagnosis_log_rows_are_decoded(config_path, monkeypatch) -> None:
                                    "diag_addr": (6 << 6) | (7 << 3) | 2, "diag_overflow": 0}, set()))
     record = _engine(config_path, monkeypatch, chip, diagnosis_entries=3).run_stuck({(2, 1): 1, (5, 0): 0})
     assert record.extras["diag_rows"] == [2, 6] and record.extras["diag_overflow"] == 0
+
+
+# --- column-muxed memories (words_per_row) -----------------------------------------
+
+def test_a_muxed_build_carries_words_per_row(config_path, monkeypatch) -> None:
+    engine = _engine(config_path, monkeypatch, num_spare_rows=1, words_per_row=4)
+    snapshot = yaml.safe_load((engine.module_dir / "config.yml").read_text(encoding="utf-8"))
+    assert snapshot["redundancy"]["words_per_row"] == 4
+    assert engine.geometry.mem_addr_width == 4  # 8 words + one spare row of 4
+    assert (engine.placement.rows, engine.placement.cols) == (2, 16)
+    geometry = engine.describe()["geometry"]
+    assert (geometry["rows"], geometry["cols"], geometry["words_per_row"]) == (2, 16, 4)
+    exposed = _engine(config_path, monkeypatch, num_spare_rows=1, words_per_row=4, expose_spares=True)
+    assert (exposed.placement.rows, exposed.placement.cols) == (3, 16)
+    assert exposed.describe()["geometry"]["rows"] == 2
+    assert exposed.area_ratio == pytest.approx(48 / 32)
+
+
+def test_a_cell_in_a_muxed_spare_row_is_a_fault_on_that_spare(config_path, monkeypatch) -> None:
+    engine = _engine(config_path, monkeypatch, num_spare_rows=2, words_per_row=4)
+    base, faults, spare = engine._split({(5, 1): 1, (9, 2): 0, (15, 0): 1})
+    assert base == {(5, 1)} and spare == 2
+    assert faults.row_cells == {0: frozenset({2}), 1: frozenset({0})}
+
+
+def test_a_muxed_word_line_defect_lands_on_every_word_of_its_row(config_path, monkeypatch) -> None:
+    from autombist.yieldsim.defects import MixModel
+
+    seen = []
+
+    def behave(base):
+        seen.append(base)
+        return {"self_repair_fail": 0, "unrepairable": 0, "row_repair_en": 1,
+                "faulty_row_addr": max(base)[0]}, set()
+
+    chip = FakeChip(behave)
+    engine = _engine(config_path, monkeypatch, chip, num_spare_rows=1, words_per_row=4)
+    engine.model = MixModel(weights={"full_row": 1.0})
+    record = engine.run_trial(1, seed=3)
+    (row,) = {addr // 4 for addr, _ in seen[0]}
+    assert seen[0] == {(addr, bit) for addr in range(row * 4, row * 4 + 4) for bit in range(4)}
+    # the chip latched the row's last word, not its first: still the same physical row
+    assert record.repaired and record.extras["truth_repairable"] and record.extras["cause"] is None
+
+
+def test_muxed_self_repair_refuses_what_the_wrapper_cannot_build(config_path, monkeypatch) -> None:
+    with pytest.raises(ValueError, match="exceed the 8 logical words"):
+        _engine(config_path, monkeypatch, num_spare_rows=3, words_per_row=4)
+    with pytest.raises(ValueError, match="spare columns are not supported"):
+        _engine(config_path, monkeypatch, num_spare_rows=1, num_spare_cols=1, words_per_row=4)

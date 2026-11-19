@@ -66,6 +66,25 @@ def _validate_fail_cells(
             )
 
 
+def _fold_rows(
+    fail_cells: set[tuple[int, int]], spare_geometry: SpareGeometry
+) -> set[tuple[int, int]]:
+    """Name each failing cell's row by the FIRST address of its physical row.
+
+    On a column-muxed memory (``words_per_row > 1``) one spare row replaces a
+    whole physical row of ``words_per_row`` addresses, so faults at two
+    addresses in the same physical row need one spare, not two. Folding every
+    address to ``row * words_per_row`` makes the row algorithm below count
+    physical rows, and the ``row_map`` keys it returns are addresses the remap
+    accepts (``repair_remap_row.sv`` compares only the row bits). With
+    ``words_per_row == 1`` this is the identity.
+    """
+    wpr = spare_geometry.words_per_row
+    if wpr == 1:
+        return fail_cells
+    return {((addr // wpr) * wpr, bit) for addr, bit in fail_cells}
+
+
 def _forced_row(remaining: set[tuple[int, int]], c_left: int) -> int | None:
     """The smallest-address row whose remaining distinct-column count exceeds
     ``c_left`` -- i.e. cannot possibly be fully covered by column repairs alone,
@@ -214,8 +233,13 @@ def analyze(
     Raises ``ValueError`` if any ``(addr, bit)`` is outside the geometry's
     logical bounds -- that means the caller fed a fail map inconsistent with the
     stated geometry.
+
+    On a column-muxed geometry (``words_per_row > 1``) a repaired row is a
+    physical row, named in ``row_map`` (and ``Unrepairable.faulty_rows``) by its
+    first address -- see :func:`_fold_rows`.
     """
     _validate_fail_cells(fail_cells, spare_geometry)
+    fail_cells = _fold_rows(fail_cells, spare_geometry)
 
     forced = _must_repair(
         fail_cells, spare_geometry.num_spare_rows, spare_geometry.num_spare_cols
@@ -408,6 +432,7 @@ def analyze_detailed(
     if objective not in OBJECTIVES:
         raise ValueError(f"objective must be one of {OBJECTIVES}, got {objective!r}")
     _validate_fail_cells(fail_cells, spare_geometry)
+    fail_cells = _fold_rows(fail_cells, spare_geometry)
     faults = spare_faults if spare_faults is not None else SpareFaults()
     _validate_spare_faults(faults, spare_geometry)
     n_rows, n_cols = spare_geometry.num_spare_rows, spare_geometry.num_spare_cols
@@ -490,8 +515,12 @@ def verify_solution(
                 problems.append(f"repaired {label} {line} is outside the logical array")
             if not 0 <= spare < spares:
                 problems.append(f"spare {label} {spare} does not exist")
+    # A row repair covers its whole physical row (one word when words_per_row == 1).
+    repaired_rows = {spare_geometry.row_of(a) for a in solution.row_map}
+    if len(repaired_rows) != len(solution.row_map):
+        problems.append("two row repairs name the same physical row")
     for addr, bit in sorted(fail_cells):
-        if addr not in solution.row_map and bit not in solution.col_map:
+        if spare_geometry.row_of(addr) not in repaired_rows and bit not in solution.col_map:
             problems.append(f"faulty cell {(addr, bit)} is not covered")
     used_rows = set(solution.row_map.values())
     used_cols = set(solution.col_map.values())

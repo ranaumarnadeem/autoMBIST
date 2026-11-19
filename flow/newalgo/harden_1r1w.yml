@@ -23,7 +23,7 @@
 #   ports:
 #     rport: {type: r, clk: clkA, addr: addrA, dout: doutA, csb: csbA}
 #     wport: {type: w, clk: clkB, addr: addrB, din: dinB, csb: csbB, we: webB}
-#   redundancy: {num_spare_rows: 2, num_spare_cols: 0, onchip_selfrepair: true}
+#   redundancy: {num_spare_rows: 2, num_spare_cols: 0, words_per_row: 2, onchip_selfrepair: true}
 #   YAML
 #   autombist harden --config flow/newalgo/harden_1r1w.yml --run
 #

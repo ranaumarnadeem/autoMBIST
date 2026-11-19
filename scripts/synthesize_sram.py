@@ -5,10 +5,68 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+
+def signoff_problem(log_text: str, cell: str) -> str | None:
+    """Why OpenRAM's own DRC/LVS of ``cell`` did not pass, or None when it did.
+
+    OpenRAM exits 0 whatever its checks found: a DRC error count is only a
+    warning, and its LVS mismatch is a debug.error() whose default return value
+    makes it non-fatal. So the verdict has to be read from the log, and a pass
+    needs positive evidence (both result lines, which OpenRAM writes at -v),
+    not just the absence of an error.
+    """
+    if "Unable to find the total error line" in log_text or "Unable to load DRC results" in log_text:
+        return f"DRC of {cell} did not run: magic produced no result (see the OpenRAM log)"
+    if "Unable to load LVS results" in log_text:
+        return f"LVS of {cell} did not run: netgen produced no result (see the OpenRAM log)"
+    # The cell name is anchored: a submodule's line (<cell>_pnand2) or another
+    # macro's (<prefix><cell>) is not this macro's result.
+    name = rf"(?<![\w]){re.escape(cell)}\t"
+    drc = re.findall(rf"DRC Errors {name}(\d+)", log_text)
+    if not drc:
+        return f"no DRC result for {cell} in the OpenRAM log"
+    if int(drc[-1]) > 0:
+        return f"DRC of {cell} found {drc[-1]} error(s)"
+    if re.search(rf"{name}LVS mismatch", log_text):
+        return f"LVS of {cell}: the layout does not match the netlist"
+    if not re.search(rf"{name}LVS matches", log_text):
+        return f"no LVS result for {cell} in the OpenRAM log"
+    return None
+
+
+def words_per_row(datasheet_text: str | None, log_text: str | None) -> int | None:
+    """The macro's column-mux factor as OpenRAM chose it, or None if unknown.
+
+    OpenRAM picks it itself when the config does not set it, so a macro with no
+    words_per_row in its config can still be column-muxed (every sky130 demo
+    macro here is: 4 or 16). ``datasheet.info`` is one comma-separated record
+    holding ``words_per_row,<n>``; the log has ``Set SRAM Words Per Row=<n>``
+    only at -v. This is the value autoMBIST's ``redundancy.words_per_row``
+    needs, so that a spare row replaces a whole physical row.
+    """
+    if datasheet_text:
+        fields = [f.strip() for f in datasheet_text.split(",")]
+        for key, value in zip(fields, fields[1:]):
+            if key == "words_per_row" and value.isdigit():
+                return int(value)
+    if log_text:
+        found = re.findall(r"Set SRAM Words Per Row=(\d+)", log_text)
+        if found:
+            return int(found[-1])
+    return None
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def run_cmd(cmd: list[str], cwd: Path, env: dict[str, str]) -> None:
@@ -237,7 +295,9 @@ def main() -> int:
     cmd = [compiler, str(openram_dir / "sram_compiler.py")]
     if not args.run_drc_lvs:
         cmd.append("-n")
-    if args.verbose:
+    # -v makes OpenRAM log a clean DRC/LVS result too, not only a failing one;
+    # signoff_problem needs both lines to call the macro clean.
+    if args.verbose or args.run_drc_lvs:
         cmd.append("-v")
     cmd.append(str(config_path))
 
@@ -247,6 +307,25 @@ def main() -> int:
         config_path.unlink(missing_ok=True)
 
     print(f"SRAM generation complete: {output_dir}")
+    wpr = words_per_row(
+        _read_text(output_dir / "datasheet.info"), _read_text(output_dir / f"{output_name}.log")
+    )
+    if wpr is None:
+        print("Words per row: unknown (no datasheet.info and no -v log line)")
+    else:
+        print(f"Words per row: {wpr} (set redundancy.words_per_row: {wpr} for this macro)")
+    if args.run_drc_lvs:
+        log_path = output_dir / f"{output_name}.log"
+        try:
+            log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            print(f"cannot read the OpenRAM log {log_path}: {exc}", file=sys.stderr)
+            return 1
+        problem = signoff_problem(log_text, output_name)
+        if problem:
+            print(f"OpenRAM DRC/LVS failed: {problem} ({log_path})", file=sys.stderr)
+            return 1
+        print(f"OpenRAM DRC/LVS: {output_name} has 0 DRC errors and LVS matches")
     return 0
 
 

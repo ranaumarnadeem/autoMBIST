@@ -49,7 +49,9 @@ read_latency: 0          # REQUIRED for the real OpenRAM macro (see caveats belo
                          # the default of 1 is for this project's toy fixtures and
                          # would make self-repair phantom-fail on the real macro.
 ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
-redundancy: {num_spare_rows: 1, num_spare_cols: 0, onchip_selfrepair: true}
+# words_per_row: the macro's column-mux factor (4 for the 32-bit macros, 16 for
+# sky130_sram_8b1024w; `ram-synth` prints it), so a spare replaces a whole row.
+redundancy: {num_spare_rows: 1, num_spare_cols: 0, words_per_row: 4, onchip_selfrepair: true}
 YAML
 
 # 2. Harden the assembled top with the proven macro recipe (dogfoods the CLI;
@@ -64,18 +66,26 @@ blackboxes, and `mem_subsystem_mbist.sv`.
 
 ## Honest signoff caveats
 
-- **Repair addressing on column-muxed macros** — checked, not just assumed:
-  the row remap steers a faulty logical address to `2**addr_width + i`, which
-  matches OpenRAM's spare-row physical address only when a macro has no
-  column muxing (`words_per_row == 1`). Traced OpenRAM's own row-decoder
-  wiring and confirmed all three real macros here (`sky130_sram_32b256w`,
-  `32b512w`, `8b1024w`) have `words_per_row == 1` — each macro's `ADDR_WIDTH`
-  matches the no-muxing formula `ceil(log2(words+spares))` exactly. So this
-  *is* trusted functionally on these three real macros, not only on the
-  behavioral `sram_model_spares` loop. The latent gap is only for a
-  *future* macro that does trigger column muxing (repair would then remap
-  just the one observed-faulty word address, not every word sharing that
-  physical row) — not a live issue here.
+- **The macros are column-muxed, so the configs set `words_per_row`.**
+  OpenRAM's `datasheet.info` gives 4 words per row for `sky130_sram_32b256w`
+  and `32b512w`, and 16 for `8b1024w`. (An earlier version of this note said
+  all three had no muxing, because each `ADDR_WIDTH` matches
+  `ceil(log2(words+spares))`. That formula gives the same width with or
+  without muxing, so it proved nothing.) OpenRAM puts the column address in
+  the low address bits and the spare rows after the regular rows
+  (`sram_config.py` `recompute_sizes`, `bank.py`). With
+  `redundancy.words_per_row` set, the remap and the on-chip analyzer work on
+  physical rows: a spare replaces all 4 or 16 words of a faulty row, at
+  `2**addr_width + i*words_per_row` plus the column bits.
+  - Without it (the default, 1), a fault inside one word is still repaired,
+    but each spare covers one word, so a broken wordline (4 or 16 faulty
+    addresses) is reported unrepairable.
+  - OpenRAM's behavioral `.v` gives every address its own storage, so the
+    real-macro simulation here cannot show the difference; it shows that
+    self-repair runs clean on defect-free macros with these settings.
+    `tests/integration/test_repair_muxed_e2e.py` proves the row repair on a
+    muxed model with a planted wordline defect, with a negative control at
+    `words_per_row: 1`.
 - **Macro-internal DRC** was root-caused, not left open: the "thousands of
   errors" originally reported here are OpenRAM SRAM-macro bitcell/periphery
   cells using legitimate sky130 GDS layer/datatype pairs (e.g. `CFOMDROP`,
@@ -91,29 +101,37 @@ blackboxes, and `mem_subsystem_mbist.sv`.
   non-fatal and lets `harden --run` exit 0 reproducibly.
   Top-level integration P&Rs LVS-clean; see [../](../) for the full recipe
   write-up and [../signoff](../signoff) for the per-macro scripts.
-- **Macro-internal DRC/LVS signoff for these three macros' own GDS is
-  currently unresolved — a separate, more serious question than the DRC
-  noise above.** `../signoff/run_macro_signoff.sh` (the per-macro
-  DRC/LVS check) was found to have never actually run against real PDK
-  data — `PDK_ROOT` was set but not `export`ed, so magic's "clean" 0-count
-  result meant "nothing was checked," not "nothing was found" (fixed in
-  commit `ab22cd6`). Fixing that surfaced a real LVS mismatch, root-caused
-  (not merely worked around, commit `4ea312b`) to the vendored `OpenRAM/`
-  checkout predating two upstream fixes (2026-04-28, 2026-05-14) for a
-  wordline-pin-numbering defect in the sky130 replica bitcell array.
-  Reproducing OpenRAM's own authoritative regeneration flow independently
-  confirms the same failure inside OpenRAM's own module, before any
-  openMBIST-authored logic runs. Net effect: until `OpenRAM/` is updated
-  past those two commits, neither this script's raw-GDS check nor OpenRAM's
-  own regeneration gives a clean signoff answer, so the three macros are
-  unverified rather than confirmed either good or bad when regenerated from
-  that checkout. (Their `.gds`/`.lvs.sp` are not committed — they are
-  gitignored build products of `autombist ram-synth`.) This does
-  not implicate autoMBIST's own generated RTL — physical macro signoff is
-  the memory generator's responsibility, not the integrator's — and it does
-  not affect the top-level P&R LVS-clean result above, which treats the
-  macro as opaque hard IP. See `../signoff/run_macro_signoff.sh`'s header
-  for the full root-cause writeup.
+- **Macro-internal DRC/LVS signoff for the three macros' own GDS — two pass,
+  one fails (re-checked 2026-11-15 on OpenRAM 1.2.50).** The authority is
+  OpenRAM's own DRC/LVS (its tech/cif setup), run by
+  `autombist ram-synth` with `run_drc_lvs: true` inside OpenRAM's
+  `nix develop` shell (magic 8.3.629, netgen 1.5.318):
+
+  | Macro | OpenRAM DRC | OpenRAM LVS |
+  |---|---|---|
+  | `sky130_sram_32b256w` | 0 errors | matches |
+  | `sky130_sram_32b512w` | 0 errors | matches |
+  | `sky130_sram_8b1024w` | 118 errors, all in the column decoder's 4-to-16 predecoder (`pand4`) and the bank's metal3 routing | mismatch: split `vdd` and wordline nets in many cells, and at the top level `p_en_bar0` against a column-mux select |
+
+  The earlier blocker is gone: the vendored `OpenRAM/` was 449781d2
+  (2026-04-08), older than upstream's two fixes for a wordline-pin-numbering
+  defect in the sky130 replica bitcell array (50772821, 8c4f4ef2); it is now
+  the v1.2.50 release, with `../../../scripts/openram-local.patch` applied.
+  The `8b1024w` failure is a different one, in OpenRAM's layout of that 8-bit
+  word shape (the two 32-bit macros pass with the same OpenRAM, cell library
+  and tools), so it is OpenRAM's to fix (reported upstream in VLSIDA/OpenRAM#340). Physical macro signoff
+  is the memory generator's responsibility, not the integrator's; none of this
+  touches autoMBIST's own generated RTL, or the top-level P&R LVS-clean result
+  above, which treats each macro as opaque hard IP. (The macros'
+  `.gds`/`.lvs.sp` are not committed — they are gitignored build products of
+  `autombist ram-synth`.)
+
+  `../signoff/run_macro_signoff.sh` (`autombist macro-signoff`) is not that
+  authority: it loads the GDS into ciel's standard-flow magicrc, not
+  OpenRAM's, which flags ~1.09M DRC violations and an LVS mismatch even on
+  `32b256w` — the same device counts on both sides, with the extracted layout
+  split into extra disconnected nets (transistor bodies, the bitcell
+  wordline). See its header.
 - **Self-repair timing against the real macros — `read_latency: 0` required,
   now fixed and tested.** This subsystem was originally only
   elaboration-checked (see "Two build views" above), never simulated with

@@ -21,6 +21,12 @@ of the wrapper's own config: this is OFFLINE analysis ("would this budget
 have repaired what was actually observed"), not on-chip self-repair, so the
 same simulated array can be evaluated against several hypothetical budgets
 without regenerating anything.
+
+With ``words_per_row`` above 1 the memory is column-muxed as OpenRAM builds it:
+a defect preset lands on the physical array (``depth / words_per_row`` rows of
+``data_width * words_per_row`` cells, the words' bits interleaved), each cell
+becomes the word and bit it holds (:func:`_to_word`), and a spare row replaces
+a physical row. Spare columns are not modelled with it.
 """
 from __future__ import annotations
 
@@ -120,6 +126,25 @@ def _stuck_cells(sa0: list[int], sa1: list[int], data_width: int) -> set[tuple[i
             if not (w0 >> bit) & 1 or (w1 >> bit) & 1}
 
 
+def _to_word(cell: tuple[int, int], words_per_row: int) -> tuple[int, int]:
+    """A physical-array cell's ``(address, bit)``: physical column ``c`` is bit
+    ``c // words_per_row`` of word column ``c % words_per_row``, and the column
+    bits are the low address bits (OpenRAM's layout). The identity at 1."""
+    row, col = cell
+    return row * words_per_row + col % words_per_row, col // words_per_row
+
+
+def _physical_array(depth: int, width: int, words_per_row: int) -> ArrayGeometry:
+    """The base array a defect preset lands on: physical rows by physical columns."""
+    return ArrayGeometry(rows=depth // words_per_row, cols=width * words_per_row)
+
+
+def _escapes(cells: set[tuple[int, int]], solution: RepairSolution, geometry: SpareGeometry) -> int:
+    """Cells no spare in ``solution`` covers; a row repair covers its whole physical row."""
+    rows = {geometry.row_of(addr) for addr in solution.row_map}
+    return sum(1 for addr, bit in cells if geometry.row_of(addr) not in rows and bit not in solution.col_map)
+
+
 class RtlEngine:
     """Trials on the generated RTL, compiled once per sweep.
 
@@ -153,6 +178,7 @@ class RtlEngine:
         fault_type: str = "stuck-at",
         defects: str | None = None,
         pulse_width_ns: int = 2,
+        words_per_row: int = 1,
     ) -> None:
         if observe not in OBSERVATIONS:
             raise ValueError(f"unknown observation {observe!r}: use one of {sorted(OBSERVATIONS)}")
@@ -170,7 +196,9 @@ class RtlEngine:
         self.depth = 1 << self.config["addr_width"]
         self.width = self.config["data_width"]
         self.geometry = SpareGeometry(base_words=self.depth, word_size=self.width,
-                                      num_spare_rows=num_spare_rows, num_spare_cols=num_spare_cols)
+                                      num_spare_rows=num_spare_rows, num_spare_cols=num_spare_cols,
+                                      words_per_row=words_per_row)
+        self.words_per_row = words_per_row
         self.defects = defects
         self.model = defect_model(defects) if defects is not None else None
         self.unit = self.model.unit if self.model is not None else "cells"
@@ -189,6 +217,7 @@ class RtlEngine:
                 "data_width": self.config["data_width"],
                 "algo": self.algo,
                 "fault_type": self.fault_type,
+                **({"words_per_row": self.words_per_row} if self.words_per_row != 1 else {}),
             },
             "spare_budget": {"num_spare_rows": self.geometry.num_spare_rows,
                              "num_spare_cols": self.geometry.num_spare_cols},
@@ -221,11 +250,11 @@ class RtlEngine:
                      {(a, b) for a, word in enumerate(mask1) for b in range(self.width) if (word >> b) & 1})
         else:
             rng = random.Random(seed)
-            drawn = self.model.draw(rng, ArrayGeometry(rows=self.depth, cols=self.width), k)
+            drawn = self.model.draw(rng, _physical_array(self.depth, self.width, self.words_per_row), k)
             mask1, mask2 = [(1 << self.width) - 1] * self.depth, [0] * self.depth
             for defect in drawn:
                 high = rng.randrange(2) == 1
-                for row, bit in defect.cells:
+                for row, bit in (_to_word(cell, self.words_per_row) for cell in defect.cells):
                     if high:
                         mask1[row] |= 1 << bit
                         mask2[row] |= 1 << bit
@@ -269,7 +298,7 @@ class RtlEngine:
         }
         solution = from_observed.result
         if isinstance(solution, RepairSolution):
-            escapes = sum(1 for a, b in truth if a not in solution.row_map and b not in solution.col_map)
+            escapes = _escapes(truth, solution, self.geometry)
             extras.update({"escapes": escapes, "row_map": solution.row_map, "col_map": solution.col_map})
             status = "repaired" if escapes == 0 else "unrepairable"
         else:
@@ -300,8 +329,8 @@ def _unpack(value: int | None, width: int, count: int) -> list[int]:
     return [(value >> (width * i)) & ((1 << width) - 1) for i in range(count)]
 
 
-def _uncovered(cells: set[tuple[int, int]], solution: RepairSolution) -> bool:
-    return any(row not in solution.row_map and bit not in solution.col_map for row, bit in cells)
+def _uncovered(cells: set[tuple[int, int]], solution: RepairSolution, geometry: SpareGeometry) -> bool:
+    return _escapes(cells, solution, geometry) > 0
 
 
 def _flat_ports(ports: dict[str, Any]) -> bool:
@@ -343,6 +372,7 @@ class SelfRepairEngine:
         diagnosis_entries: int = 0,
         spare_retry: bool = False,
         analyzer: str = "greedy",
+        words_per_row: int = 1,
     ) -> None:
         if num_spare_rows < 1:
             raise ValueError("on-chip self-repair needs at least one spare row (the wrapper's redundancy path requires one)")
@@ -357,10 +387,16 @@ class SelfRepairEngine:
         self.depth = 1 << base["addr_width"]
         self.width = base["data_width"]
         self.geometry = SpareGeometry(base_words=self.depth, word_size=self.width,
-                                      num_spare_rows=num_spare_rows, num_spare_cols=num_spare_cols)
+                                      num_spare_rows=num_spare_rows, num_spare_cols=num_spare_cols,
+                                      words_per_row=words_per_row)
+        if num_spare_rows * words_per_row > self.depth:
+            raise ValueError(f"{num_spare_rows} spare rows of {words_per_row} words exceed the "
+                             f"{self.depth} logical words")
+        self.words_per_row = words_per_row
         self.expose_spares = expose_spares
-        self.placement = (ArrayGeometry(rows=self.depth + num_spare_rows, cols=self.width + num_spare_cols)
-                          if expose_spares else ArrayGeometry(rows=self.depth, cols=self.width))
+        physical = _physical_array(self.depth, self.width, words_per_row)
+        self.placement = (ArrayGeometry(rows=physical.rows + num_spare_rows, cols=physical.cols + num_spare_cols)
+                          if expose_spares else physical)
         self.defects = defects or "singles"
         self.model = defect_model(self.defects)
         self.unit = self.model.unit
@@ -381,6 +417,8 @@ class SelfRepairEngine:
             "num_spare_cols": self.geometry.num_spare_cols,
             "onchip_selfrepair": True,
         }
+        if self.words_per_row != 1:
+            redundancy["words_per_row"] = self.words_per_row
         if self.geometry.num_spare_cols:
             redundancy["onchip_col_repair"] = True
             ports = config.get("ports") or {}
@@ -405,7 +443,8 @@ class SelfRepairEngine:
             "config": {"memory_name": self.config["memory_name"], "addr_width": self.config["addr_width"],
                        "data_width": self.width, "algo": self.algo, "fault_type": "stuck-at"},
             "spare_budget": {"num_spare_rows": self.geometry.num_spare_rows, "num_spare_cols": cols},
-            "geometry": {"rows": self.depth, "cols": self.width, "banks": 1,
+            "geometry": {"rows": self.geometry.num_rows, "cols": self.width * self.words_per_row, "banks": 1,
+                         **({"words_per_row": self.words_per_row} if self.words_per_row != 1 else {}),
                          "spare_rows_per_bank": self.geometry.num_spare_rows, "spare_cols_per_bank": cols,
                          "spares_exposed": self.expose_spares, "area_ratio": self.area_ratio},
             "observation": {"mode": "onchip-selfrepair", "uses_algo": True},
@@ -470,7 +509,7 @@ class SelfRepairEngine:
             if row < self.depth and col < self.width:
                 base.add((row, col))
             elif col < self.width:
-                row_cells.setdefault(row - self.depth, set()).add(col)
+                row_cells.setdefault((row - self.depth) // self.words_per_row, set()).add(col)
             elif row < self.depth:
                 col_cells.setdefault(col - self.width, set()).add(row)
             else:
@@ -515,15 +554,16 @@ class SelfRepairEngine:
         for defect in drawn:
             value = rng.randrange(2)
             for cell in defect.cells:
-                stuck[cell] = value
+                stuck[_to_word(cell, self.words_per_row)] = value
         return self.run_stuck(stuck, k=k, seed=seed, classes=class_counts(drawn))
 
     def run_stuck(
         self, stuck: dict[tuple[int, int], int], *, k: int = 0, seed: int = 0,
         classes: dict[str, int] | None = None,
     ) -> TrialRecord:
-        """One trial with these stuck cells, in physical coordinates (spare rows
-        at 2^A + i, spare columns at bit W + k), value 0 or 1 each."""
+        """One trial with these stuck cells, as (memory address, bit) on the
+        spare-augmented memory (spare row i's words at 2^A + i * words_per_row
+        onwards, spare columns at bit W + k), value 0 or 1 each."""
         module = self.module_dir  # generated first: generating writes blank masks
         self._write_masks(stuck)
         result = run_simulation(module, extra_make_vars={"COCOTB_TEST_MODULES": SELF_REPAIR_TEST_MODULE},
@@ -550,11 +590,11 @@ class SelfRepairEngine:
         elif not repaired and exact.repaired:
             if not failed:
                 cause = "false_pass"
-            elif _uncovered(observed, signature) or outcome.get("unrepairable"):
+            elif _uncovered(observed, signature, self.geometry) or outcome.get("unrepairable"):
                 # it saw these cells and its allocation leaves some uncovered
                 # (the row-only analyzer also says so with its unrepairable flag)
                 cause = "analyzer"
-            elif _uncovered(base, signature):
+            elif _uncovered(base, signature, self.geometry):
                 cause = "observation_escape"
             elif verify_solution(base, self.geometry, signature, faults):
                 cause = "faulty_spare"

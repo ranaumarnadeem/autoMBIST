@@ -654,6 +654,7 @@ def yield_sweep_cmd(
     diagnosis_entries: int = typer.Option(0, "--diagnosis-entries", min=0, help="With --self-repair: also build the on-chip diagnosis log with this many entries and report its overflows"),
     spare_retry: bool = typer.Option(False, "--spare-retry", help="With --self-repair: build with redundancy.onchip_spare_retry, so a faulty spare the verify pass catches is retired and the repair retried"),
     analyzer: str = typer.Option("greedy", "--analyzer", help="With --self-repair and spare columns: the on-chip 2D analyzer, greedy (one pass) or deferred (two passes, redundancy.onchip_analyzer: deferred)"),
+    words_per_row: int = typer.Option(1, "--words-per-row", min=1, help="Words on each physical row (the macro's column mux; ram-synth prints it): a defect preset lands on the physical array, and a spare row replaces a physical row. Needs --spare-cols 0 above 1"),
     seed: int = typer.Option(0, "--seed", help="Base seed; every trial's own seed is derived deterministically from it"),
     json_output: bool = typer.Option(False, "--json", help="Print the sweep summary as JSON to stdout instead of a human table"),
 ) -> None:
@@ -683,6 +684,11 @@ def yield_sweep_cmd(
     (repaired over exactly repairable) and the reason for each gap: the greedy
     on-chip analyzer, a faulty allocated spare, or an observation escape.
 
+    With --words-per-row the memory is column-muxed as OpenRAM builds it: a
+    --defects preset lands on the physical array, the words' bits interleaved,
+    and a spare row replaces a whole physical row (with --self-repair the
+    wrapper is built with redundancy.words_per_row).
+
     Requirements: Icarus Verilog and Cocotb must be installed. Each trial is
     a real simulation, so a sweep's runtime scales with
     len(--faults) * --trials.
@@ -692,6 +698,7 @@ def yield_sweep_cmd(
       autombist yield-sweep --config config.yml --faults 2 --trials 50 --spare-rows 2 --spare-cols 1 --json
       autombist yield-sweep --config config.yml --faults 1..4 --spare-rows 1 --observe march --fault-type transition-up --algo march-raw
       autombist yield-sweep --config config.yml --faults 1..6 --spare-rows 2 --spare-cols 1 --self-repair --expose-spares --defects ohler-d2
+      autombist yield-sweep --config config.yml --faults 1..4 --spare-rows 1 --words-per-row 4 --self-repair --defects ohler-d2
     """
     import json as _json
     from datetime import datetime, timezone
@@ -712,7 +719,7 @@ def yield_sweep_cmd(
                 config_path, out / "yield_selfrepair_dut",
                 num_spare_rows=spare_rows, num_spare_cols=spare_cols, algo=algo, defects=defects,
                 expose_spares=expose_spares, diagnosis_entries=diagnosis_entries, spare_retry=spare_retry,
-                analyzer=analyzer,
+                analyzer=analyzer, words_per_row=words_per_row,
             )
         else:
             if expose_spares or diagnosis_entries or spare_retry or analyzer != "greedy":
@@ -721,6 +728,7 @@ def yield_sweep_cmd(
                 config_path, out / "yield_sweep_dut",
                 num_spare_rows=spare_rows, num_spare_cols=spare_cols,
                 algo=algo, observe=observe, fault_type=fault_type, defects=defects,
+                words_per_row=words_per_row,
             )
         total = len(fault_counts) * trials
         with fault_progress(total, "trials") as advance:
@@ -770,7 +778,8 @@ def yield_sweep_cmd(
                     else ["From injected cells", "Escape trials"])
         print_status_table("Repair-yield sweep", headers, rows, status_col=3)
         observed_by = "the chip's own analyze pass and self-repair" if self_repair else OBSERVATIONS[observe]
-        typer.echo(f"Observed by: {observed_by}; spares: {spare_rows} rows, {spare_cols} columns")
+        muxing = f"; {words_per_row} words per row" if words_per_row != 1 else ""
+        typer.echo(f"Observed by: {observed_by}; spares: {spare_rows} rows, {spare_cols} columns{muxing}")
         typer.echo(f"Report: {report_path}")
 
 
@@ -900,10 +909,11 @@ def _parse_array(text: str) -> tuple[int, int]:
 
 @app.command("yield-sim")
 def yield_sim_cmd(
-    array: str = typer.Option(..., "--array", help="Base array per bank as ROWSxCOLS (rows are words, columns bits), e.g. 1024x1024"),
+    array: str = typer.Option(..., "--array", help="Base array per bank as ROWSxCOLS cells (rows are words and columns bits at one word per row), e.g. 1024x1024"),
     banks: int = typer.Option(1, "--banks", min=1, help="Banks side by side along the columns, each --array wide with its own spares; a memory is repaired only if every bank is"),
     spare_rows: int = typer.Option(..., "--spare-rows", min=0, help="Spare rows per bank"),
     spare_cols: int = typer.Option(0, "--spare-cols", min=0, help="Spare columns per bank"),
+    words_per_row: int = typer.Option(1, "--words-per-row", min=1, help="Words on each physical row (the macro's column mux; ram-synth prints it). Each row of --array then holds that many words with their bits interleaved, and a spare row replaces a whole physical row. Needs --spare-cols 0 above 1"),
     expose_spares: bool = typer.Option(False, "--expose-spares", help="Let defects land in the spares too (spare rows above the array, spare columns to its right, as OpenRAM places them); k then counts defects over the physical array"),
     min_spares: bool = typer.Option(False, "--min-spares", help="Also find each repaired trial's minimum spare count, for the rate of overused spares (slower)"),
     classes: bool = typer.Option(False, "--classes", help="Classify each trial's fail bitmap into shapes (single, twin, segment, line, cluster, cross; after Lin et al. 2016) and report the classes, the merge rate and the match against the injected defects"),
@@ -928,7 +938,9 @@ def yield_sim_cmd(
     the ITC'2020 RA Benchmarks, with shape parameters this tool fixes itself.
     With --expose-spares a defect can also hit the spares, which the solver
     then has to work around (a faulty spare row is usable only if its faulty
-    bits are column-repaired, and so on). Feed yield_sim.json to
+    bits are column-repaired, and so on). With --words-per-row the array is
+    column-muxed as OpenRAM builds it: defects land on the physical cells and
+    a spare row replaces a physical row of that many words. Feed yield_sim.json to
     yield-multiplier for yield with redundancy; it takes the area ratio of an
     exposed sweep from the report.
 
@@ -936,6 +948,7 @@ def yield_sim_cmd(
       autombist yield-sim --array 1024x1024 --spare-rows 5 --spare-cols 5 --defects ohler-d2 --faults 1..15
       autombist yield-sim --array 512x256 --banks 2 --spare-rows 3 --spare-cols 3 --defects itc2020-3050 --faults 8..12 --json
       autombist yield-sim --array 256x64 --spare-rows 2 --spare-cols 2 --defects ohler-d2 --faults 1..8 --expose-spares --min-spares
+      autombist yield-sim --array 64x128 --words-per-row 4 --spare-rows 1 --defects ohler-d2 --faults 1..4
     """
     import json as _json
     from datetime import datetime, timezone
@@ -950,6 +963,7 @@ def yield_sim_cmd(
             ArrayGeometry(rows=rows, cols=cols, banks=banks),
             spare_rows=spare_rows, spare_cols=spare_cols, model=model,
             expose_spares=expose_spares, min_spares=min_spares, classify_shapes=classes,
+            words_per_row=words_per_row,
         )
         total = len(fault_counts) * trials
         with fault_progress(total, "trials") as advance:
@@ -1016,7 +1030,8 @@ def yield_sim_cmd(
                                "Patterns per trial", "Merged defects", "Most common classes"],
                                shape_rows, status_col=0)
         exposure = "; defects reach the spares" if expose_spares else ""
-        typer.echo(f"Defect model: {defects}; spares per bank: {spare_rows} rows, {spare_cols} columns{exposure}")
+        muxing = f"; {words_per_row} words per row" if words_per_row != 1 else ""
+        typer.echo(f"Defect model: {defects}; spares per bank: {spare_rows} rows, {spare_cols} columns{muxing}{exposure}")
         typer.echo(f"Report: {report_path}")
 
 
