@@ -217,11 +217,13 @@ end (its own integration tests against a 1.1.0 manifest).
   - ~~The 1r1w macro's words per row is unknown~~ — done 2026-11-19: 2, from
     its `datasheet.info`; `flow/newalgo`'s 1r1w config sets it, and
     march-1r1w is simulated against a 2-words-per-row dual-port model.
-  - Column repair under muxing stays rejected: OpenRAM shares one spare column
-    set per physical row, but its behavioral `.v` gives every word its own
-    spare bit, so a simulation would not show the difference.
+  - ~~Column repair under muxing is rejected~~ — done 2026-11-19: a spare
+    column replaces one physical column (one bit of one word column), on the
+    tester-driven and on-chip paths, tested against a model that shares the
+    spare cell across the row. Single-port only: multi-port and shared-bus
+    wrappers still refuse spare columns under muxing (no macro here needs them).
   - ~~`yield-sim`/`yield-sweep` model one word per row~~ — done 2026-11-19:
-    both take `--words-per-row`. Neither models spare columns under muxing.
+    both take `--words-per-row`, with spare columns too.
 - ~~MAINTAINERS.md does not exist yet~~ — done 2026-09-22.
 - ~~GitHub repo description/topics refresh~~ — done 2026-09-22 (description
   now mentions shared-bus/multi-memory + row/column repair; added

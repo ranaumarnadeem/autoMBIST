@@ -28,15 +28,16 @@ matched the repair granularity we then needed. That is no longer the case:
 column repair is implemented and proven, and the proof deliberately runs
 against a macro generated *with* a spare column so the behavioural model's
 spare-write semantics are checked against real OpenRAM output rather than only
-against themselves. One genuine limitation remains, and it is a modelling one
-rather than a toolchain one: under column muxing OpenRAM shares a single
-spare-column set across every word in a physical row, which the repair model's
-global bit-lane view does not express — so column repair with more than one
-word per row is rejected rather than silently mis-repaired. Row repair does
-handle muxing (`redundancy.words_per_row`), and needs to: every sky130 macro
-built here has 2, 4 or 16 words per row, and until that option existed a spare
-row replaced one word rather than a physical row. The yield commands
-(`yield-sim`, `yield-sweep`) model muxing too, with `--words-per-row`.
+against themselves. Repair also has to handle column muxing
+(`redundancy.words_per_row`): every sky130 macro built here has 2, 4 or 16
+words per row, and until that option existed a spare row replaced one word
+rather than a physical row. Spare columns were the harder half. OpenRAM routes
+them around the column mux, so a spare column has one cell per physical row,
+shared by every word in it, and its behavioural `.v` hides this by giving each
+word its own spare bit. Column repair under muxing therefore names a physical
+column (one bit of one word column), and is tested against a model that shares
+the cell, with a control that shows a per-bit repair failing on it. The yield
+commands (`yield-sim`, `yield-sweep`) model muxing too, with `--words-per-row`.
 
 ## LEF units
 

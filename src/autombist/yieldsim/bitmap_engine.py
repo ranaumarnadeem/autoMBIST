@@ -20,8 +20,11 @@ interleaved (physical column ``c`` is bit ``c // words_per_row`` of word column
 ``c % words_per_row``), and the column bits are the low address bits. Defects
 still land on the physical array; each failed cell becomes the logical
 ``(row * words_per_row + c % words_per_row, c // words_per_row)`` the solver
-takes, and a spare row replaces a whole physical row. Spare columns are not
-modelled under muxing (``SpareGeometry`` rejects them).
+takes, and a spare row replaces a whole physical row. A spare column, which
+OpenRAM routes around the column mux, replaces one physical column, so the
+solver repairs physical columns (``SpareGeometry.col_of``); a faulty spare-row
+cell is named by its physical column, a faulty spare-column cell by its
+physical row's first address.
 """
 from __future__ import annotations
 
@@ -72,8 +75,6 @@ class BitmapEngine:
             raise ValueError(
                 f"the array's {geometry.cols} columns do not split into {words_per_row} words per row"
             )
-        if words_per_row > 1 and spare_cols:
-            raise ValueError(f"spare columns are not modelled with {words_per_row} words per row; use 0")
         self.words_per_row = words_per_row
         self.geometry = geometry
         self.model = model
@@ -135,9 +136,9 @@ class BitmapEngine:
             if r < rows and c < cols:
                 base.add((r, c))
             elif r >= rows and c < cols:
-                row_cells.setdefault(r - rows, set()).add(c // self.words_per_row)
+                row_cells.setdefault(r - rows, set()).add(c)  # the physical column
             elif r < rows:
-                col_cells.setdefault(c - cols, set()).add(r)
+                col_cells.setdefault(c - cols, set()).add(r * self.words_per_row)  # the row's first address
             else:
                 corners.add((r - rows, c - cols))
         out = []

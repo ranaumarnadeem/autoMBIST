@@ -249,6 +249,8 @@ def _analyzer(path_prefix: str, config: dict[str, Any], flags: dict[str, bool]) 
         }
         if flags["onchip_analyzer_deferred"]:
             params["DEFERRED"] = 1
+        if geo["words_per_row"] != 1:
+            params["WORDS_PER_ROW"] = geo["words_per_row"]
     else:
         module_type = "onchip_row_repair_analyzer"
         params = _row_repair_params(geo)
@@ -284,9 +286,13 @@ def _remap_row(path_prefix: str, name: str, config: dict[str, Any], why: str) ->
 
 def _remap_col(path_prefix: str, name: str, config: dict[str, Any], why: str) -> dict[str, Any]:
     geo = _geometry(config)
+    params = {"DATA_WIDTH": geo["data_width"], "NUM_SPARE_COLS": geo["num_spare_cols"]}
+    if geo["words_per_row"] != 1:
+        # A column-muxed remap steers by word column and follows each read's
+        # column bits for the controller's read latency.
+        params.update(WORDS_PER_ROW=geo["words_per_row"], READ_LATENCY=geo["read_latency"])
     return _instrument(
-        f"{path_prefix}{name}", name, "repair_remap_col", "repair_remap", why,
-        {"DATA_WIDTH": geo["data_width"], "NUM_SPARE_COLS": geo["num_spare_cols"]},
+        f"{path_prefix}{name}", name, "repair_remap_col", "repair_remap", why, params,
     )
 
 

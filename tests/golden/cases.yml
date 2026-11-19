@@ -300,6 +300,43 @@ selfrepair-row-muxed-retry:
     ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
     redundancy: {num_spare_rows: 2, num_spare_cols: 0, words_per_row: 4, onchip_selfrepair: true, onchip_spare_retry: true}
 
+# Spare columns on a column-muxed memory: the column remap gets WORDS_PER_ROW,
+# READ_LATENCY and the column bits of each write and read, and faulty_bit
+# names physical columns (bit * words_per_row + word column).
+tester-col-repair-muxed:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_tcmux
+    wrapper_module_name: sram_tcmux_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0, spare_wen: spare_wen0}
+    redundancy: {num_spare_rows: 1, num_spare_cols: 1, words_per_row: 4}
+    repair_ports:
+      - {name: row_repair_en, width: 1, dir: input}
+      - {name: faulty_row_addr, width: 4, dir: input}
+      - {name: col_repair_en, width: 1, dir: input}
+      - {name: faulty_bit, width: 5, dir: input}
+
+selfrepair-2d-muxed-deferred:
+  generate: {algo: march-c}
+  config:
+    memory_name: sram_s2dmux
+    wrapper_module_name: sram_s2dmux_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    read_latency: 0
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0, spare_wen: spare_wen0}
+    redundancy:
+      num_spare_rows: 1
+      num_spare_cols: 2
+      words_per_row: 4
+      onchip_selfrepair: true
+      onchip_col_repair: true
+      onchip_analyzer: deferred
+
 selfrepair-1r1w-row-muxed:
   generate: {algo: march-1r1w}
   config:

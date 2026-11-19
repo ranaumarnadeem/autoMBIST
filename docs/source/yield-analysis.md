@@ -108,9 +108,12 @@ the macro's column mux, which `ram-synth` prints) keeps the defects on the physi
 is then rows by cells, and each row holds N words with their bits interleaved
 as OpenRAM builds it (physical column c is bit c / N of word column c mod N,
 and the column bits are the low address bits). A word-line defect then fails N
-words, and a spare row replaces the whole physical row. `yield-sweep` injects
-each cell at its word and bit, and with `--self-repair` builds the wrapper with
-`redundancy.words_per_row`. Spare columns are not modelled under muxing.
+words, and a spare row replaces the whole physical row. A spare column, one
+cell per physical row as OpenRAM routes it around the mux, replaces one
+physical column, so a bit-line defect takes one spare column. `yield-sweep`
+injects each cell at its word and bit (a spare-column cell at its row's first
+address, where the injectable model keeps the row's one spare cell), and with
+`--self-repair` builds the wrapper with `redundancy.words_per_row`.
 
 ## Calibration
 
@@ -300,7 +303,6 @@ spares retired, the remaining budget leaves no slack for a heuristic.
 
 - Banks are independent: no spares shared between banks (the ITC'2020 global and
   common spares).
-- Column-muxed memories (`--words-per-row`) are modelled without spare
-  columns. Address scrambling is not modelled.
+- Address scrambling is not modelled.
 - One fault type per RTL sweep; trials run one after another.
 - Unknown bitmap shapes are classed `other`, not named by run-length strings.

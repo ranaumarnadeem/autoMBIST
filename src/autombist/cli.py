@@ -654,7 +654,7 @@ def yield_sweep_cmd(
     diagnosis_entries: int = typer.Option(0, "--diagnosis-entries", min=0, help="With --self-repair: also build the on-chip diagnosis log with this many entries and report its overflows"),
     spare_retry: bool = typer.Option(False, "--spare-retry", help="With --self-repair: build with redundancy.onchip_spare_retry, so a faulty spare the verify pass catches is retired and the repair retried"),
     analyzer: str = typer.Option("greedy", "--analyzer", help="With --self-repair and spare columns: the on-chip 2D analyzer, greedy (one pass) or deferred (two passes, redundancy.onchip_analyzer: deferred)"),
-    words_per_row: int = typer.Option(1, "--words-per-row", min=1, help="Words on each physical row (the macro's column mux; ram-synth prints it): a defect preset lands on the physical array, and a spare row replaces a physical row. Needs --spare-cols 0 above 1"),
+    words_per_row: int = typer.Option(1, "--words-per-row", min=1, help="Words on each physical row (the macro's column mux; ram-synth prints it): a defect preset lands on the physical array, a spare row replaces a physical row and a spare column a physical column"),
     seed: int = typer.Option(0, "--seed", help="Base seed; every trial's own seed is derived deterministically from it"),
     json_output: bool = typer.Option(False, "--json", help="Print the sweep summary as JSON to stdout instead of a human table"),
 ) -> None:
@@ -686,8 +686,9 @@ def yield_sweep_cmd(
 
     With --words-per-row the memory is column-muxed as OpenRAM builds it: a
     --defects preset lands on the physical array, the words' bits interleaved,
-    and a spare row replaces a whole physical row (with --self-repair the
-    wrapper is built with redundancy.words_per_row).
+    a spare row replaces a whole physical row and a spare column one physical
+    column (with --self-repair the wrapper is built with
+    redundancy.words_per_row).
 
     Requirements: Icarus Verilog and Cocotb must be installed. Each trial is
     a real simulation, so a sweep's runtime scales with
@@ -913,7 +914,7 @@ def yield_sim_cmd(
     banks: int = typer.Option(1, "--banks", min=1, help="Banks side by side along the columns, each --array wide with its own spares; a memory is repaired only if every bank is"),
     spare_rows: int = typer.Option(..., "--spare-rows", min=0, help="Spare rows per bank"),
     spare_cols: int = typer.Option(0, "--spare-cols", min=0, help="Spare columns per bank"),
-    words_per_row: int = typer.Option(1, "--words-per-row", min=1, help="Words on each physical row (the macro's column mux; ram-synth prints it). Each row of --array then holds that many words with their bits interleaved, and a spare row replaces a whole physical row. Needs --spare-cols 0 above 1"),
+    words_per_row: int = typer.Option(1, "--words-per-row", min=1, help="Words on each physical row (the macro's column mux; ram-synth prints it). Each row of --array then holds that many words with their bits interleaved, a spare row replaces a whole physical row and a spare column one physical column"),
     expose_spares: bool = typer.Option(False, "--expose-spares", help="Let defects land in the spares too (spare rows above the array, spare columns to its right, as OpenRAM places them); k then counts defects over the physical array"),
     min_spares: bool = typer.Option(False, "--min-spares", help="Also find each repaired trial's minimum spare count, for the rate of overused spares (slower)"),
     classes: bool = typer.Option(False, "--classes", help="Classify each trial's fail bitmap into shapes (single, twin, segment, line, cluster, cross; after Lin et al. 2016) and report the classes, the merge rate and the match against the injected defects"),
@@ -939,8 +940,9 @@ def yield_sim_cmd(
     With --expose-spares a defect can also hit the spares, which the solver
     then has to work around (a faulty spare row is usable only if its faulty
     bits are column-repaired, and so on). With --words-per-row the array is
-    column-muxed as OpenRAM builds it: defects land on the physical cells and
-    a spare row replaces a physical row of that many words. Feed yield_sim.json to
+    column-muxed as OpenRAM builds it: defects land on the physical cells, a
+    spare row replaces a physical row of that many words and a spare column
+    one physical column. Feed yield_sim.json to
     yield-multiplier for yield with redundancy; it takes the area ratio of an
     exposed sweep from the report.
 

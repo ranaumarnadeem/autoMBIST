@@ -310,8 +310,43 @@ def test_a_cell_in_a_muxed_spare_row_is_a_fault_on_its_bit() -> None:
                           model=defect_model("singles"), expose_spares=True, words_per_row=4)
     ((base, faults, n),) = engine._banks({(0, 1), (4, 6)})
     assert base == {(0, 1)} and n == 1
-    assert faults.row_cells == {0: frozenset({1})}  # physical column 6 is bit 1
+    assert faults.row_cells == {0: frozenset({6})}  # named by its physical column
     assert not analyze_detailed({engine._logical(c) for c in base}, engine.spares, spare_faults=faults).repaired
+
+
+def test_one_spare_column_repairs_a_muxed_bit_line_defect() -> None:
+    """A full-column defect is one physical column: bit c // 4 of one word
+    column in every row. One spare column covers it; no row budget does."""
+    engine = BitmapEngine(ArrayGeometry(rows=8, cols=32), spare_rows=1, spare_cols=1,
+                          model=MixModel(weights={"full_col": 1.0}), words_per_row=4)
+    for seed in range(10):
+        record = engine.run_trial(1, seed)
+        assert record.repaired and record.spares_used == 1 and record.cells == 8
+
+
+def test_two_bit_line_defects_in_one_bit_of_two_words_need_two_spare_columns() -> None:
+    """Physical columns 4 and 5 are bit 1 of word columns 0 and 1: two columns,
+    where a per-bit model would see one bit."""
+    engine = BitmapEngine(ArrayGeometry(rows=8, cols=32), spare_rows=1, spare_cols=1,
+                          model=defect_model("singles"), words_per_row=4)
+    cells = {(r, c) for r in range(8) for c in (4, 5)}
+    logical = {engine._logical(cell) for cell in cells}
+    assert {bit for _, bit in logical} == {1}
+    assert not analyze_detailed(logical, engine.spares).repaired
+    two = BitmapEngine(ArrayGeometry(rows=8, cols=32), spare_rows=1, spare_cols=2,
+                       model=defect_model("singles"), words_per_row=4)
+    assert analyze_detailed(logical, two.spares).repaired
+
+
+def test_muxed_spare_column_faults_name_the_physical_row() -> None:
+    engine = BitmapEngine(ArrayGeometry(rows=4, cols=16), spare_rows=1, spare_cols=1,
+                          model=defect_model("singles"), expose_spares=True, words_per_row=4)
+    # Placement 5 x 17: column 16 is the spare column, row 4 the spare row.
+    ((base, faults, n),) = engine._banks({(2, 16), (4, 16), (4, 3)})
+    assert base == set() and n == 3
+    assert faults.col_cells == {0: frozenset({8})}   # physical row 2's first address
+    assert faults.corners == frozenset({(0, 0)})
+    assert faults.row_cells == {0: frozenset({3})}
 
 
 def test_muxed_geometry_is_described_and_checked() -> None:
@@ -321,7 +356,6 @@ def test_muxed_geometry_is_described_and_checked() -> None:
     for kwargs, fragment in [
         ({"words_per_row": 3}, "power of two"),
         ({"words_per_row": 64}, "do not split"),
-        ({"words_per_row": 4, "spare_cols": 1}, "spare columns are not modelled"),
     ]:
         args = {"spare_rows": 1, "spare_cols": 0, **kwargs}
         with pytest.raises(ValueError, match=fragment):

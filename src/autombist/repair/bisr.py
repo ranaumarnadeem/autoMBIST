@@ -52,7 +52,8 @@ def encode_repair(
 
     The row half is identical to :func:`encode_row_repair`. The column half sets
     ``col_repair_en`` bit ``k`` iff spare column ``k`` is in use, and packs each
-    spare's assigned LOGICAL bit index into its own
+    spare's assigned column -- the logical bit index, or on a column-muxed
+    geometry the physical column ``SpareGeometry.col_of`` names -- into its own
     ``spare_geometry.bit_index_width``-bit slice at offset
     ``k * bit_index_width`` -- matching ``repair_remap_col.sv``'s
     ``faulty_bit[k*BIT_IDX_WIDTH +: BIT_IDX_WIDTH]`` slicing exactly, the same

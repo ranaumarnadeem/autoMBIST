@@ -27,8 +27,7 @@ everything that predates the migration.
   `WORDS_PER_ROW` parameter and compare only the row bits; BIRA counts faulty
   physical rows; spare row `i` is at `2**addr_width + i*words_per_row`, where
   OpenRAM puts it. Works on the tester-driven and on-chip paths, single-port,
-  multi-port and shared-bus. Column repair stays rejected under muxing, and
-  `num_spare_rows * words_per_row` may not exceed `2**addr_width`. At the
+  multi-port and shared-bus. `num_spare_rows * words_per_row` may not exceed `2**addr_width`. At the
   default of 1 the generated RTL is unchanged. `ram-synth` prints the macro's
   words per row (from OpenRAM's `datasheet.info`). `selfrepair_x` (march-X
   over `sky130_sram_32b256w`, 4 words per row) hardens with it: LVS, routing
@@ -39,7 +38,19 @@ everything that predates the migration.
   array: defects land on the physical cells, each row holds N words with their
   bits interleaved as OpenRAM builds it, and a spare row replaces a physical
   row. `yield-sweep --self-repair` builds the wrapper with
-  `redundancy.words_per_row`. Spare columns are refused with it.
+  `redundancy.words_per_row`.
+- Column repair on column-muxed memories. OpenRAM routes spare columns around
+  the column mux, so a spare column has one cell per physical row, shared by
+  the row's words, and replaces one physical column. `faulty_bit` then names
+  that column (`bit * words_per_row + addr % words_per_row`, so it is
+  `ceil(log2(data_width * words_per_row))` bits per spare). `repair_remap_col`
+  takes `WORDS_PER_ROW` and `READ_LATENCY`, writes the spare only for the
+  replaced word column and steers a read by the column bits of the read that
+  produced the data. The on-chip 2D analyzer (greedy and deferred), BIRA, the
+  generated `tb/` model and the yield commands use physical columns.
+  Tester-driven and on-chip, for a single-port memory with its own
+  controller; multi-port and shared-bus wrappers still refuse spare columns
+  under muxing. At one word per row nothing changes.
 - [Using the Safety Report in an FMEDA](docs/source/safety-report.md): the inputs a
   safety engineer must supply, unweighted coverage against diagnostic coverage, a
   worked example a test re-runs, and what autoMBIST does not provide (#41).

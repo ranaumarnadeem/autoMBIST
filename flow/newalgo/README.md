@@ -75,9 +75,10 @@ in `harden_x.yml`.
 In the final netlist, the macro's `addr0[1:0]` (the column-mux bits) come
 straight from the controller and only `addr0[8:2]` pass through the row
 remap: the shape physical-row repair at 4 words per row should have.
-OpenROAD also reports 2 floating nets without naming them; they were not
-traced. No pre-`words_per_row` counts were recorded for this design, so
-there is no before/after comparison.
+The 2 "floating nets" OpenROAD's resizer reports (`RSZ-0020`) are `VPWR`
+and `VGND`, the power nets, which no logic cell drives; the flow's own check
+finds 0 disconnected pins. No pre-`words_per_row` counts were recorded for
+this design, so there is no before/after comparison.
 
 ## march-1r1w: real, genuinely-dual-port macro (hardened, DRC not clean)
 

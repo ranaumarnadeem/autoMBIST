@@ -219,9 +219,16 @@ The yield commands take the same value as `--words-per-row`: `yield-sim` and
 fails every word of its row and takes one spare row (see
 [Repair Yield Analysis](yield-analysis.md)).
 
+Spare columns work with it too. OpenRAM routes the spare columns around the
+column mux, so a spare column has one cell per physical row, shared by every
+word in it, and replaces one *physical* column: bit `b` of the words whose
+column bits are `w`. Column repair names that column as `b * words_per_row + w`,
+`repair_remap_col` writes and reads the spare only for word column `w`, and the
+on-chip 2D analyzer tracks physical columns (see "Column repair" below).
+
 Rules: a power of two; `num_spare_rows * words_per_row` may not exceed
-`2**addr_width`; and `num_spare_cols` must be 0, since column repair is not
-supported under muxing (see "Column repair" below).
+`2**addr_width`; and spare columns need a single-port memory with its own
+controller (multi-port and shared-bus wrappers refuse them under muxing).
 
 `onchip_selfrepair` currently requires `--algo` to be one of `march-c`,
 `march-raw`, `march-1r1w` (a 1-read-port + 1-write-port config, `type: r`/
@@ -410,12 +417,16 @@ This requires three additional things:
   role (e.g. `spare_wen0` on an OpenRAM macro);
 * two extra `repair_ports` with canonical names and exact widths —
   `col_repair_en` (`num_spare_cols` bits) and `faulty_bit`
-  (`num_spare_cols * ceil(log2(data_width))` bits);
-* `words_per_row: 1` (the default). Column repair on a column-muxed memory is
-  rejected: OpenRAM gives each *physical* row one cell per spare column,
-  shared by all its muxed words, which the repair model's per-bit-lane view
-  does not express (and OpenRAM's behavioral `.v` gives every word its own
-  spare bit, so a simulation would not show the difference).
+  (`num_spare_cols * ceil(log2(data_width * words_per_row))` bits);
+* on a column-muxed memory (`words_per_row` above 1), each `faulty_bit` slice
+  names a physical column, `bit * words_per_row + (addr % words_per_row)`, and
+  the spare is written and read only for that word column. OpenRAM gives each
+  physical row one cell per spare column, shared by its muxed words; its
+  behavioral `.v` gives every word its own spare bit instead, so simulate
+  against a model that shares the cell (the generated `tb/` model does) or a
+  remap that writes the spare from the wrong word goes unnoticed. The remap
+  follows a read's column bits for `read_latency` cycles, so `read_latency`
+  must match the memory, as it must for the controller.
 
 ```yaml
 ports:

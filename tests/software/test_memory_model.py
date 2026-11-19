@@ -143,6 +143,26 @@ def test_spare_lanes_are_written_only_under_their_spare_wen_bit() -> None:
     assert "localparam integer DEPTH = 8;" in model
 
 
+MUXED_COL = {**SRC, "words_per_row": 4, "mem_addr_width": 4}  # 8 words + one spare row of 4
+
+
+@pytest.mark.parametrize("latency", [0, 1])
+def test_a_muxed_spare_lane_is_one_cell_per_physical_row(latency: int) -> None:
+    model = render_memory_model(_cfg(ports=COL, redundancy=MUXED_COL, read_latency=latency))
+    addr = "p0_addr_q" if latency == 0 else "addr0"
+    # Writes from any word of the row land on the row's first address ...
+    assert f"mem[{{{addr}[3:2], 2'b0}}][LOGICAL_W + p0_k]" in model
+    # ... and every read takes its spare lanes from there.
+    assert "word_at(p0_addr_q)" in model and "b = {a[3:2], 2'b0};" in model
+    assert "4 words per row" in model
+
+
+def test_an_injectable_muxed_model_masks_the_spare_cell_at_its_row() -> None:
+    model = render_memory_model(_cfg(ports=COL, redundancy=MUXED_COL), stuck_masks=("/m/sa0", "/m/sa1"))
+    assert "s = (s & sa0_mask[b]) | sa1_mask[b];" in model
+    assert "dout0 <= word_at(p0_addr_q);" in model  # not masked again outside word_at
+
+
 def test_a_memory_without_spare_columns_stores_whole_words() -> None:
     model = render_memory_model(SHAPES["single-port"])
 

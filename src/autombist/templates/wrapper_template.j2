@@ -14,6 +14,12 @@
    deferred analyzer's second pass runs through repairs just applied, and a
    new pass restarts the log (#46). The controller's diag_enable is that. #}
 {% set has_diag_enable = has_onchip_spare_retry or onchip_analyzer_deferred %}
+{# Column repair on a column-muxed memory: each repair_remap_col steers only
+   the word column its spare replaces, so it gets the column bits (the low
+   col_bits address bits) of every write and read -- see
+   rtl/repair_remap_col.sv. #}
+{% set col_mux = has_col_repair and redundancy.words_per_row != 1 %}
+{% set col_bits = ("{0:b}".format(redundancy.words_per_row - 1) | length) if col_mux else 0 %}
 {# The on-chip self-repair instances -- analyzer, diagnosis log, controller --
    the same for single- and multi-port wrappers; one copy, so a fix lands in
    both (#46's diagnosis-enable bug was in each copy, #65). #}
@@ -28,6 +34,9 @@
         .DEFERRED(1)
 {% else %}
         .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+{% endif %}
+{% if redundancy.words_per_row != 1 %}
+      , .WORDS_PER_ROW({{ redundancy.words_per_row }})
 {% endif %}
     ) u_onchip_analyzer (
         .clk(clk),
@@ -750,6 +759,10 @@ module {{ wrapper_module_name }} #(
     repair_remap_col #(
         .DATA_WIDTH(DATA_WIDTH),
         .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+{% if col_mux %}
+      , .WORDS_PER_ROW({{ redundancy.words_per_row }})
+      , .READ_LATENCY({{ read_latency }})
+{% endif %}
     ) u_repair_remap_col (
         .din_in(sram_din),
         .din_out(sram_din_phys),
@@ -758,6 +771,12 @@ module {{ wrapper_module_name }} #(
         .spare_wen(sram_spare_wen),
         .col_repair_en(col_repair_en),
         .faulty_bit(faulty_bit)
+{% if col_mux %}
+      , .clk(clk)
+      , .wr_col(sram_addr[{{ col_bits - 1 }}:0])
+      , .rd_col(sram_addr[{{ col_bits - 1 }}:0])
+      , .rd_issue(!sram_csb && !selected_write_req)
+{% endif %}
     );
 {% endif %}
 {% elif has_onchip_selfrepair and is_shared_bus %}
@@ -808,6 +827,10 @@ module {{ wrapper_module_name }} #(
     repair_remap_col #(
         .DATA_WIDTH(DATA_WIDTH),
         .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+{% if col_mux %}
+      , .WORDS_PER_ROW({{ redundancy.words_per_row }})
+      , .READ_LATENCY({{ read_latency }})
+{% endif %}
     ) u_repair_remap_col (
         .din_in(sram_din),
         .din_out(sram_din_phys),
@@ -817,6 +840,12 @@ module {{ wrapper_module_name }} #(
 {% for rp in repair_ports if rp.bind == 'col' %}
       , .{{ rp.name }}({{ rp.name }})
 {% endfor %}
+{% if col_mux %}
+      , .clk(clk)
+      , .wr_col(sram_addr[{{ col_bits - 1 }}:0])
+      , .rd_col(sram_addr[{{ col_bits - 1 }}:0])
+      , .rd_issue(!sram_csb && !selected_write_req)
+{% endif %}
     );
 {% endif %}
 {% endif %}
