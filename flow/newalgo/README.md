@@ -5,9 +5,8 @@ that autoMBIST's on-chip self-repair (BIRA analyzer + BISR sequencer +
 external row remap) completes the full LibreLane RTL-to-GDS flow with a
 passing top-level LVS -- generalizes to the two algorithms hand-written this
 session (Workstream B1), each wrapping a REAL sky130 OpenRAM macro (not the
-toy behavioral fixtures). No timing result is recorded for these designs,
-and no DRC or cell counts are recorded for `selfrepair_x` / `selfrepair_mp`;
-only march-1r1w below has counts.
+toy behavioral fixtures). Counts are recorded for `selfrepair_x` with
+`words_per_row: 4` (below) and for march-1r1w; none for `selfrepair_mp`.
 
 Each design is a single generated self-repair wrapper used directly as the
 LibreLane `DESIGN_NAME` (no multi-macro subsystem needed): `selfrepair_x`
@@ -50,6 +49,35 @@ autombist harden --config flow/newalgo/harden_x.yml --run
 ```
 
 Same for `harden_mp.yml` / MATS+ / `sky130_sram_32b512w`.
+
+## selfrepair_x with physical-row repair (hardened 2026-11-19)
+
+`selfrepair_x` was re-hardened with the config above (`words_per_row: 4`,
+one spare row), so its spare row replaces a whole physical row of the
+macro. The macro was `sky130_sram_32b256w` from OpenRAM v1.2.50 with
+`scripts/openram-local.patch`, the build that passed OpenRAM's own DRC/LVS
+on 2026-11-15; its LEF already declares 1000 database units, so
+`fix-lef-units` was not needed. LibreLane 3.0.5, die and macro placement as
+in `harden_x.yml`.
+
+**Result:** exit code 0, all stages.
+
+| Check | Result |
+|---|---|
+| LVS | 0 errors, 0 unmatched devices or nets |
+| Routing DRC | 0 |
+| Antenna | 0 violating nets or pins |
+| Setup / hold worst slack | +11.6 ns / +0.11 ns (20 ns clock), no violations |
+| Standard cells | 5,914 |
+| Magic / KLayout DRC | 382 / 657, macro-internal, not fatal (see `src/autombist/signoff.py`) |
+| Max slew | 15 violations, slow (ss) corners only |
+
+In the final netlist, the macro's `addr0[1:0]` (the column-mux bits) come
+straight from the controller and only `addr0[8:2]` pass through the row
+remap: the shape physical-row repair at 4 words per row should have.
+OpenROAD also reports 2 floating nets without naming them; they were not
+traced. No pre-`words_per_row` counts were recorded for this design, so
+there is no before/after comparison.
 
 ## march-1r1w: real, genuinely-dual-port macro (hardened, DRC not clean)
 

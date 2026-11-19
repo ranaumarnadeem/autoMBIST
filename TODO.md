@@ -209,8 +209,11 @@ end (its own integration tests against a 1.1.0 manifest).
     products, not committed, so the result is reproducible but not stored.
 - **Column-muxed macros (`redundancy.words_per_row`)** — row repair now
   replaces a physical row. Still open:
-  - The real-macro wrappers with `words_per_row` set have been simulated, not
-    re-hardened (`harden --run` on `flow/multimem/mbist/harden.yml`).
+  - ~~The real-macro wrappers with `words_per_row` set have been simulated,
+    not re-hardened~~ — `selfrepair_x` (march-X, `sky130_sram_32b256w`, 4
+    words per row) hardened 2026-11-19: LVS, routing DRC and antenna 0,
+    timing met (`flow/newalgo/README.md`). Not yet re-hardened:
+    `flow/multimem/mbist`, `selfrepair_mp` and march-1r1w.
   - ~~The 1r1w macro's words per row is unknown~~ — done 2026-11-19: 2, from
     its `datasheet.info`; `flow/newalgo`'s 1r1w config sets it, and
     march-1r1w is simulated against a 2-words-per-row dual-port model.
