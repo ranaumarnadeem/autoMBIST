@@ -69,20 +69,38 @@ def _validate_fail_cells(
 def _fold_rows(
     fail_cells: set[tuple[int, int]], spare_geometry: SpareGeometry
 ) -> set[tuple[int, int]]:
-    """Name each failing cell's row by the FIRST address of its physical row.
+    """Put each failing cell at its physical row and physical column.
 
     On a column-muxed memory (``words_per_row > 1``) one spare row replaces a
     whole physical row of ``words_per_row`` addresses, so faults at two
     addresses in the same physical row need one spare, not two. Folding every
     address to ``row * words_per_row`` makes the row algorithm below count
     physical rows, and the ``row_map`` keys it returns are addresses the remap
-    accepts (``repair_remap_row.sv`` compares only the row bits). With
-    ``words_per_row == 1`` this is the identity.
+    accepts (``repair_remap_row.sv`` compares only the row bits).
+
+    A spare column likewise replaces one physical column, which holds bit ``b``
+    of only the words whose column bits are ``addr % words_per_row``: the bit
+    becomes :meth:`SpareGeometry.col_of`, so ``col_map`` keys are physical
+    columns. With ``words_per_row == 1`` this is the identity.
     """
     wpr = spare_geometry.words_per_row
     if wpr == 1:
         return fail_cells
-    return {((addr // wpr) * wpr, bit) for addr, bit in fail_cells}
+    return {((addr // wpr) * wpr, spare_geometry.col_of(addr, bit)) for addr, bit in fail_cells}
+
+
+def _fold_spare_faults(faults: SpareFaults, spare_geometry: SpareGeometry) -> SpareFaults:
+    """Name each faulty spare-column cell's row by its physical row's first
+    address, as :func:`_fold_rows` names the fail map's rows. The identity
+    without muxing."""
+    wpr = spare_geometry.words_per_row
+    if wpr == 1 or not faults.col_cells:
+        return faults
+    return SpareFaults(
+        row_cells=faults.row_cells,
+        col_cells={k: frozenset((a // wpr) * wpr for a in addrs) for k, addrs in faults.col_cells.items()},
+        corners=faults.corners,
+    )
 
 
 def _forced_row(remaining: set[tuple[int, int]], c_left: int) -> int | None:
@@ -236,7 +254,9 @@ def analyze(
 
     On a column-muxed geometry (``words_per_row > 1``) a repaired row is a
     physical row, named in ``row_map`` (and ``Unrepairable.faulty_rows``) by its
-    first address -- see :func:`_fold_rows`.
+    first address, and a repaired column is a physical column, named in
+    ``col_map`` (and ``Unrepairable.faulty_cols``) by
+    :meth:`SpareGeometry.col_of` -- see :func:`_fold_rows`.
     """
     _validate_fail_cells(fail_cells, spare_geometry)
     fail_cells = _fold_rows(fail_cells, spare_geometry)
@@ -386,7 +406,7 @@ def _solve_classic(
 
 def _validate_spare_faults(faults: SpareFaults, geometry: SpareGeometry) -> None:
     for i, bits in faults.row_cells.items():
-        if not 0 <= i < geometry.num_spare_rows or any(not 0 <= j < geometry.word_size for j in bits):
+        if not 0 <= i < geometry.num_spare_rows or any(not 0 <= j < geometry.num_cols for j in bits):
             raise ValueError(f"spare row {i} faults {sorted(bits)} are outside the geometry")
     for k, addrs in faults.col_cells.items():
         if not 0 <= k < geometry.num_spare_cols or any(not 0 <= a < geometry.base_words for a in addrs):
@@ -435,6 +455,7 @@ def analyze_detailed(
     fail_cells = _fold_rows(fail_cells, spare_geometry)
     faults = spare_faults if spare_faults is not None else SpareFaults()
     _validate_spare_faults(faults, spare_geometry)
+    faults = _fold_spare_faults(faults, spare_geometry)
     n_rows, n_cols = spare_geometry.num_spare_rows, spare_geometry.num_spare_cols
 
     bad_row_set = {i for i, bits in faults.row_cells.items() if bits} | {i for i, _ in faults.corners}
@@ -504,7 +525,7 @@ def verify_solution(
     problems: list[str] = []
     for label, mapping, lines, spares in (
         ("row", solution.row_map, spare_geometry.base_words, spare_geometry.num_spare_rows),
-        ("column", solution.col_map, spare_geometry.word_size, spare_geometry.num_spare_cols),
+        ("column", solution.col_map, spare_geometry.num_cols, spare_geometry.num_spare_cols),
     ):
         if len(mapping) > spares:
             problems.append(f"{len(mapping)} {label} repairs exceed the {spares} spare {label}s")
@@ -515,12 +536,14 @@ def verify_solution(
                 problems.append(f"repaired {label} {line} is outside the logical array")
             if not 0 <= spare < spares:
                 problems.append(f"spare {label} {spare} does not exist")
-    # A row repair covers its whole physical row (one word when words_per_row == 1).
+    # A row repair covers its whole physical row (one word when words_per_row ==
+    # 1), and a column repair its whole physical column (col_of).
     repaired_rows = {spare_geometry.row_of(a) for a in solution.row_map}
     if len(repaired_rows) != len(solution.row_map):
         problems.append("two row repairs name the same physical row")
     for addr, bit in sorted(fail_cells):
-        if spare_geometry.row_of(addr) not in repaired_rows and bit not in solution.col_map:
+        if (spare_geometry.row_of(addr) not in repaired_rows
+                and spare_geometry.col_of(addr, bit) not in solution.col_map):
             problems.append(f"faulty cell {(addr, bit)} is not covered")
     used_rows = set(solution.row_map.values())
     used_cols = set(solution.col_map.values())
@@ -530,7 +553,7 @@ def verify_solution(
                 problems.append(f"spare row {i} is used but its faulty bit {bit} is not column-repaired")
     for k in sorted(used_cols):
         for addr in sorted(faults.col_cells.get(k, ())):
-            if addr not in solution.row_map:
+            if spare_geometry.row_of(addr) not in repaired_rows:
                 problems.append(f"spare column {k} is used but its faulty row {addr} is not row-repaired")
     for i, k in sorted(faults.corners):
         if i in used_rows and k in used_cols:

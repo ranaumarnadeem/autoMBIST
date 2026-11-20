@@ -460,7 +460,7 @@ autombist yield-sim --array ROWSxCOLS --spare-rows N --faults K [OPTIONS]
 | `--array ROWSxCOLS` | required | Base array per bank, in cells (rows are words and columns bits at one word per row) |
 | `--banks N` | 1 | Banks side by side, each with its own spares; a memory is repaired only if every bank is |
 | `--spare-rows N` / `--spare-cols N` | required / 0 | Spares per bank |
-| `--words-per-row N` | 1 | Words on each physical row, the macro's column mux (`ram-synth` prints it): each row holds N words with their bits interleaved, and a spare row replaces a physical row. Above 1 it needs `--spare-cols 0` |
+| `--words-per-row N` | 1 | Words on each physical row, the macro's column mux (`ram-synth` prints it): each row holds N words with their bits interleaved, a spare row replaces a physical row and a spare column one physical column |
 | `--defects PRESET` | `singles` | `singles`, `ohler-d1`..`d3`, `itc2020-1020`/`1050`/`3020`/`3050` |
 | `--itc-reading NAME` | `each-memory` | How an `itc2020` preset reads the paper's two open points |
 | `--faults K` | required | Defect count to sweep; repeatable, and a value may be a range (`1..15`). For `itc2020` presets k is faulty cells per bank |
@@ -516,7 +516,7 @@ autombist yield-sweep --config config.yml --spare-rows N --faults K [OPTIONS]
 | `--diagnosis-entries N` | 0 | With `--self-repair`: also build the diagnosis log and count its overflows |
 | `--spare-retry` | off | With `--self-repair`: build with `redundancy.onchip_spare_retry`, so a faulty spare the verify pass catches is retired and the repair retried |
 | `--analyzer` | `greedy` | With `--self-repair` and spare columns: the on-chip 2D analyzer, `greedy` (one pass) or `deferred` (two passes, `redundancy.onchip_analyzer: deferred`) |
-| `--words-per-row N` | 1 | Words on each physical row, the macro's column mux (`ram-synth` prints it): a `--defects` preset lands on the physical array, a spare row replaces a physical row, and `--self-repair` builds with `redundancy.words_per_row`. Above 1 it needs `--spare-cols 0` |
+| `--words-per-row N` | 1 | Words on each physical row, the macro's column mux (`ram-synth` prints it): a `--defects` preset lands on the physical array, a spare row replaces a physical row and a spare column one physical column, and `--self-repair` builds with `redundancy.words_per_row` |
 | `--trial-detail` | `all` | Per-trial records kept: `all`, `failures` or `none` |
 | `--seed N` | 0 | Base seed (trial seed = seed + k x trials + i, as before) |
 | `--out DIR` | `out` | Where the build and `yield_sweep.json` go |

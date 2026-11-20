@@ -25,8 +25,9 @@ without regenerating anything.
 With ``words_per_row`` above 1 the memory is column-muxed as OpenRAM builds it:
 a defect preset lands on the physical array (``depth / words_per_row`` rows of
 ``data_width * words_per_row`` cells, the words' bits interleaved), each cell
-becomes the word and bit it holds (:func:`_to_word`), and a spare row replaces
-a physical row. Spare columns are not modelled with it.
+becomes the word and bit it holds (:func:`_to_word`), a spare row replaces a
+physical row, and a spare column -- one cell per physical row, routed around the
+column mux -- replaces one physical column (``SpareGeometry.col_of``).
 """
 from __future__ import annotations
 
@@ -140,9 +141,11 @@ def _physical_array(depth: int, width: int, words_per_row: int) -> ArrayGeometry
 
 
 def _escapes(cells: set[tuple[int, int]], solution: RepairSolution, geometry: SpareGeometry) -> int:
-    """Cells no spare in ``solution`` covers; a row repair covers its whole physical row."""
+    """Cells no spare in ``solution`` covers; a row repair covers its whole
+    physical row and a column repair its whole physical column."""
     rows = {geometry.row_of(addr) for addr in solution.row_map}
-    return sum(1 for addr, bit in cells if geometry.row_of(addr) not in rows and bit not in solution.col_map)
+    return sum(1 for addr, bit in cells
+               if geometry.row_of(addr) not in rows and geometry.col_of(addr, bit) not in solution.col_map)
 
 
 class RtlEngine:
@@ -500,6 +503,17 @@ class SelfRepairEngine:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("".join(f"{word:0{digits}X}\n" for word in words), encoding="ascii")
 
+    def _to_memory(self, cell: tuple[int, int]) -> tuple[int, int]:
+        """A placement cell's (memory address, bit). A regular or spare-row cell
+        is the word and bit it holds (:func:`_to_word`); a spare-column cell --
+        one per physical row, shared by the row's words -- is spare lane
+        ``W + k`` at the row's first address, where the injectable model keeps it."""
+        row, col = cell
+        lanes = col - self.width * self.words_per_row
+        if lanes >= 0:
+            return row * self.words_per_row, self.width + lanes
+        return _to_word(cell, self.words_per_row)
+
     def _split(self, stuck: dict[tuple[int, int], int]) -> tuple[set[tuple[int, int]], SpareFaults, int]:
         base: set[tuple[int, int]] = set()
         row_cells: dict[int, set[int]] = {}
@@ -509,11 +523,13 @@ class SelfRepairEngine:
             if row < self.depth and col < self.width:
                 base.add((row, col))
             elif col < self.width:
-                row_cells.setdefault((row - self.depth) // self.words_per_row, set()).add(col)
+                # A spare-row cell is named by its physical column.
+                row_cells.setdefault((row - self.depth) // self.words_per_row, set()).add(
+                    self.geometry.col_of(row, col))
             elif row < self.depth:
                 col_cells.setdefault(col - self.width, set()).add(row)
             else:
-                corners.add((row - self.depth, col - self.width))
+                corners.add(((row - self.depth) // self.words_per_row, col - self.width))
         faults = SpareFaults(row_cells={i: frozenset(v) for i, v in row_cells.items()},
                              col_cells={k: frozenset(v) for k, v in col_cells.items()},
                              corners=frozenset(corners))
@@ -554,7 +570,7 @@ class SelfRepairEngine:
         for defect in drawn:
             value = rng.randrange(2)
             for cell in defect.cells:
-                stuck[_to_word(cell, self.words_per_row)] = value
+                stuck[self._to_memory(cell)] = value
         return self.run_stuck(stuck, k=k, seed=seed, classes=class_counts(drawn))
 
     def run_stuck(
@@ -563,7 +579,9 @@ class SelfRepairEngine:
     ) -> TrialRecord:
         """One trial with these stuck cells, as (memory address, bit) on the
         spare-augmented memory (spare row i's words at 2^A + i * words_per_row
-        onwards, spare columns at bit W + k), value 0 or 1 each."""
+        onwards, spare columns at bit W + k -- on a column-muxed memory at the
+        first address of the cell's physical row, see :meth:`_to_memory`),
+        value 0 or 1 each."""
         module = self.module_dir  # generated first: generating writes blank masks
         self._write_masks(stuck)
         result = run_simulation(module, extra_make_vars={"COCOTB_TEST_MODULES": SELF_REPAIR_TEST_MODULE},

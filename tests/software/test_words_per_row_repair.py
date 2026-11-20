@@ -69,11 +69,6 @@ def test_words_per_row_must_divide_the_array() -> None:
         _geo(base_words=4, words_per_row=8)
 
 
-def test_spare_columns_are_refused_under_muxing() -> None:
-    with pytest.raises(SpareGeometryError, match="spare columns"):
-        _geo(num_spare_cols=1)
-
-
 # --- BIRA ---------------------------------------------------------------------
 
 WORDLINE = {(a, 2) for a in range(4, 8)}  # bit 2 broken in every word of row 1
@@ -152,21 +147,39 @@ def test_spare_rows_cannot_hold_more_words_than_the_array(tmp_path: Path) -> Non
         load_config(_config(tmp_path, {**ONCHIP, "num_spare_rows": 2, "words_per_row": 4}, addr_width=2))
 
 
-def test_column_repair_is_refused_under_muxing(tmp_path: Path) -> None:
-    ports = {**PORTS, "spare_wen": "spare_wen0"}
-    path = _config(
+def _col_config(tmp_path: Path, faulty_bit_width: int) -> Path:
+    return _config(
         tmp_path,
         {"num_spare_rows": 1, "num_spare_cols": 1, "words_per_row": 4},
-        ports=ports,
+        ports={**PORTS, "spare_wen": "spare_wen0"},
         repair_ports=[
             {"name": "row_repair_en", "width": 1, "dir": "input"},
             {"name": "faulty_row_addr", "width": 3, "dir": "input"},
             {"name": "col_repair_en", "width": 1, "dir": "input"},
-            {"name": "faulty_bit", "width": 2, "dir": "input"},
+            {"name": "faulty_bit", "width": faulty_bit_width, "dir": "input"},
         ],
     )
-    with pytest.raises(ConfigError, match="num_spare_cols must be 0"):
-        load_config(path)
+
+
+def test_column_repair_under_muxing_names_physical_columns(tmp_path: Path) -> None:
+    # 4 bits x 4 words per row = 16 physical columns: a 4-bit faulty_bit slice.
+    loaded = load_config(_col_config(tmp_path, 4))
+    assert loaded["redundancy"]["bit_index_width"] == 4
+    with pytest.raises(ConfigError, match="faulty_bit' width must be 4"):
+        load_config(_col_config(tmp_path, 2))
+
+
+def test_multi_port_column_repair_is_refused_under_muxing(tmp_path: Path) -> None:
+    ports = {
+        "rport": {"type": "r", "clk": "clk0", "addr": "addr0", "dout": "dout0", "csb": "csb0"},
+        "wport": {"type": "w", "clk": "clk1", "addr": "addr1", "din": "din1", "csb": "csb1", "we": "web1",
+                  "spare_wen": "spare_wen1"},
+    }
+    redundancy = {**ONCHIP, "num_spare_cols": 1, "onchip_col_repair": True, "words_per_row": 2}
+    with pytest.raises(ConfigError, match="single-port memory"):
+        load_config(_config(tmp_path, redundancy, ports=ports))
+    # Row repair alone is fine there.
+    load_config(_config(tmp_path, {**ONCHIP, "words_per_row": 2}, ports=ports))
 
 
 # --- rendered RTL -------------------------------------------------------------
@@ -177,6 +190,22 @@ def test_remap_and_analyzer_get_words_per_row(tmp_path: Path) -> None:
     )
     text = wrapper.read_text(encoding="utf-8")
     assert text.count(".WORDS_PER_ROW(4)") == 2  # u_onchip_analyzer and u_repair_remap
+
+
+def test_column_remap_gets_the_column_bits_under_muxing(tmp_path: Path) -> None:
+    redundancy = {**ONCHIP, "num_spare_cols": 1, "onchip_col_repair": True, "words_per_row": 4}
+    config = _config(tmp_path, redundancy, ports={**PORTS, "spare_wen": "spare_wen0"}, read_latency=0)
+    text = generate_from_config(config, tmp_path / "out", algo="march-c").read_text(encoding="utf-8")
+    assert text.count(".WORDS_PER_ROW(4)") == 3  # analyzer, row remap, column remap
+    assert ".READ_LATENCY(0)" in text
+    assert ".wr_col(sram_addr[1:0])" in text and ".rd_issue(!sram_csb && !selected_write_req)" in text
+
+
+def test_no_column_mux_ports_at_one_word_per_row(tmp_path: Path) -> None:
+    redundancy = {**ONCHIP, "num_spare_cols": 1, "onchip_col_repair": True}
+    config = _config(tmp_path, redundancy, ports={**PORTS, "spare_wen": "spare_wen0"})
+    text = generate_from_config(config, tmp_path / "out", algo="march-c").read_text(encoding="utf-8")
+    assert "WORDS_PER_ROW" not in text and ".wr_col(" not in text
 
 
 def test_no_words_per_row_parameter_at_the_default(tmp_path: Path) -> None:

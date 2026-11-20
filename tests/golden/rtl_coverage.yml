@@ -92,8 +92,8 @@ files:
     covered: 63
     points: 65
     uncovered:
-    - 407:13 branch if
-    - 408:17 line block
+    - 431:13 branch if
+    - 432:17 line block
   rtl/onchip_diagnosis_log.sv:
     covered: 20
     points: 20
@@ -108,13 +108,13 @@ files:
     uncovered:
     - 277:17 line case
   rtl/repair_remap_col.sv:
-    covered: 6
-    points: 6
+    covered: 12
+    points: 12
     uncovered: []
   rtl/repair_remap_row.sv:
     covered: 4
     points: 4
     uncovered: []
 total:
-  covered: 472
-  points: 503
+  covered: 478
+  points: 509

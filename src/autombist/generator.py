@@ -692,12 +692,11 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
     by the ``repair_ports`` pins -- not by pins on the memory itself. Absent ->
     nothing changes (byte-identical).
 
-    Column repair (M > 0) is tester-driven only in this phase: it requires the
-    memory's ``spare_wen`` port role and the canonical ``col_repair_en``/
-    ``faulty_bit`` repair pins, and is rejected for ``onchip_selfrepair`` (whose
-    analyzer is row-only) and for ``words_per_row != 1`` (column muxing). Row
-    repair supports column muxing: ``words_per_row`` makes a spare replace a
-    whole physical row.
+    Column repair (M > 0) requires the memory's ``spare_wen`` port role and, on
+    the tester-driven path, the canonical ``col_repair_en``/``faulty_bit``
+    repair pins; with ``onchip_selfrepair`` it needs ``onchip_col_repair``.
+    ``words_per_row`` (column muxing) makes a spare row replace a whole physical
+    row and a spare column one physical column.
 
     ``redundancy`` and ``repair_ports`` are a required pair: spares need repair
     pins to drive the remap, and (now that repair pins bind to the remap, not a
@@ -844,14 +843,19 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         raise ConfigError(
             f"redundancy.words_per_row must be a power of two (1, 2, 4, 8, 16), got {words_per_row!r}"
         )
+    # Spare columns work with it too: OpenRAM gives each physical row ONE cell
+    # per spare column, so a spare replaces one physical column (bit b of word
+    # column w), and repair_remap_col steers only that word column. Single-port
+    # dedicated memories only: the multi-port and shared-bus column remaps are
+    # not tested under muxing, and no macro built here needs them.
     if words_per_row > 1:
-        if num_spare_cols > 0:
+        if num_spare_cols > 0 and (
+            len(loaded["normalized_ports"]) != 1 or loaded.get("topology", "dedicated") == "shared-bus"
+        ):
             raise ConfigError(
-                f"redundancy.num_spare_cols must be 0 with words_per_row={words_per_row} -- "
-                "column repair is not supported on a column-muxed memory. OpenRAM "
-                "gives each physical row ONE cell per spare column, shared by all "
-                "its muxed words (its behavioral .v gives each word its own, so a "
-                "simulation would not show the difference)"
+                f"redundancy.num_spare_cols > 0 with words_per_row={words_per_row} is supported "
+                "for a single-port memory with its own controller only, not a multi-port or "
+                "shared-bus one -- use num_spare_cols: 0 (row repair) there"
             )
         base_words = 1 << int(loaded["addr_width"])
         if num_spare_rows * words_per_row > base_words:

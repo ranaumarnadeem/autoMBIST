@@ -61,11 +61,13 @@ class SpareGeometry:
     # The column-mux factor: how many consecutive addresses share one physical
     # row (OpenRAM's "words per row"). A spare row replaces a whole physical
     # row, so BIRA counts faulty rows as distinct addr // words_per_row, and
-    # spare row i covers addresses base_words + i*words_per_row onwards. Column
-    # repair is not modelled under muxing: OpenRAM gives each physical row ONE
-    # cell per spare column, shared by all its words, which a per-bit-lane
-    # column model does not express -- so words_per_row > 1 requires
-    # num_spare_cols == 0.
+    # spare row i covers addresses base_words + i*words_per_row onwards.
+    #
+    # Spare columns bypass the column mux (OpenRAM's port_data.py), so a spare
+    # column has ONE cell per physical row and replaces ONE physical column:
+    # bit b of the words whose address ends in column bits w, physical column
+    # col_of(addr, bit) = b * words_per_row + w. Column repair is therefore
+    # indexed by physical column, and at words_per_row == 1 that is the bit.
     words_per_row: int = 1
 
     def __post_init__(self) -> None:
@@ -83,21 +85,27 @@ class SpareGeometry:
                 f"words_per_row ({wpr}) must divide base_words ({self.base_words}) -- "
                 "a physical row holds words_per_row whole words"
             )
-        if wpr > 1 and self.num_spare_cols > 0:
-            raise SpareGeometryError(
-                "spare columns are not supported with words_per_row > 1: OpenRAM "
-                "shares one spare-column cell per physical row across its muxed "
-                "words, which the per-bit-lane column model does not express"
-            )
 
     def row_of(self, addr: int) -> int:
         """The physical row a logical address sits in: ``addr // words_per_row``."""
         return addr // self.words_per_row
 
+    def col_of(self, addr: int, bit: int) -> int:
+        """The physical column holding bit ``bit`` of address ``addr``:
+        ``bit * words_per_row + addr % words_per_row`` (OpenRAM interleaves the
+        muxed words' bits, and the column bits are the low address bits). The
+        bit itself at ``words_per_row == 1``."""
+        return bit * self.words_per_row + addr % self.words_per_row
+
     @property
     def num_rows(self) -> int:
         """Physical (non-spare) row count: ``base_words // words_per_row``."""
         return self.base_words // self.words_per_row
+
+    @property
+    def num_cols(self) -> int:
+        """Physical (non-spare) column count: ``word_size * words_per_row``."""
+        return self.word_size * self.words_per_row
 
     @property
     def total_words(self) -> int:
@@ -135,19 +143,21 @@ class SpareGeometry:
 
     @property
     def bit_index_width(self) -> int:
-        """LOGICAL bit-index width: ``ceil(log2(word_size))``.
+        """Column-index width: ``ceil(log2(word_size * words_per_row))``, which is
+        ``ceil(log2(word_size))`` without muxing.
 
         The exact column analogue of ``addr_width``, for the same reason: this is
         ``repair_remap_col.sv``'s ``BIT_IDX_WIDTH`` parameter -- the width of each
-        packed slice of ``faulty_bit`` -- and a bit index a repair signature names
-        is always a LOGICAL bit (a spare column is never itself "faulty"), so
-        encoding must pack at this width, not ``mem_data_width``.
+        packed slice of ``faulty_bit`` -- and a column a repair signature names
+        is always a regular physical column (see :meth:`col_of`; a spare column
+        is never itself "faulty"), so encoding must pack at this width, not
+        ``mem_data_width``.
 
         The ``max(1, ...)`` mirrors ``addr_width``'s: a 1-bit word would otherwise
         give 0, making ``faulty_bit`` a zero-width port. ``repair_remap_col.sv``
-        carries the matching ``(DATA_WIDTH > 1)`` guard.
+        carries the matching guard.
         """
-        return max(1, (self.word_size - 1).bit_length())
+        return max(1, (self.num_cols - 1).bit_length())
 
     @property
     def mem_data_width(self) -> int:
@@ -173,7 +183,8 @@ class RepairSolution:
     """
 
     row_map: dict[int, int]  # faulty (logical) row address -> spare row index (0-based)
-    # faulty (logical) column/bit index -> spare column index (0-based). Empty for
+    # faulty column -> spare column index (0-based): the bit index, or on a
+    # column-muxed geometry the physical column (SpareGeometry.col_of). Empty for
     # a row-only repair (num_spare_cols == 0) -- the default row-only callers get.
     col_map: dict[int, int] = field(default_factory=dict)
 
@@ -234,6 +245,10 @@ class SpareFaults:
     (that cell then comes from the spare column, or the corner); a spare
     column in use likewise needs its faulty rows row-repaired, and a faulty
     corner forbids using its spare row and spare column together.
+
+    On a column-muxed geometry ``row_cells[i]`` holds physical columns
+    (``SpareGeometry.col_of``), and ``col_cells[k]`` any address of each
+    faulty physical row (a spare column has one cell per physical row).
     """
 
     row_cells: dict[int, frozenset[int]] = field(default_factory=dict)

@@ -204,5 +204,4 @@ def test_muxed_setup_is_described_and_checked(config_path, monkeypatch) -> None:
     assert "words_per_row" not in _engine(config_path, monkeypatch, FakeRtl()).describe()["config"]
     with pytest.raises(ValueError, match="power of two"):
         _engine(config_path, monkeypatch, FakeRtl(), words_per_row=3)
-    with pytest.raises(ValueError, match="spare columns are not supported"):
-        _engine(config_path, monkeypatch, FakeRtl(), words_per_row=4, num_spare_cols=1)
+    assert _engine(config_path, monkeypatch, FakeRtl(), words_per_row=4, num_spare_cols=1).geometry.num_cols == 16

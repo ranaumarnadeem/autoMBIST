@@ -228,7 +228,8 @@ def test_a_cell_in_a_muxed_spare_row_is_a_fault_on_that_spare(config_path, monke
     engine = _engine(config_path, monkeypatch, num_spare_rows=2, words_per_row=4)
     base, faults, spare = engine._split({(5, 1): 1, (9, 2): 0, (15, 0): 1})
     assert base == {(5, 1)} and spare == 2
-    assert faults.row_cells == {0: frozenset({2}), 1: frozenset({0})}
+    # named by physical column: bit 2 of word column 1 is 9, bit 0 of word column 3 is 3
+    assert faults.row_cells == {0: frozenset({9}), 1: frozenset({3})}
 
 
 def test_a_muxed_word_line_defect_lands_on_every_word_of_its_row(config_path, monkeypatch) -> None:
@@ -254,5 +255,31 @@ def test_a_muxed_word_line_defect_lands_on_every_word_of_its_row(config_path, mo
 def test_muxed_self_repair_refuses_what_the_wrapper_cannot_build(config_path, monkeypatch) -> None:
     with pytest.raises(ValueError, match="exceed the 8 logical words"):
         _engine(config_path, monkeypatch, num_spare_rows=3, words_per_row=4)
-    with pytest.raises(ValueError, match="spare columns are not supported"):
-        _engine(config_path, monkeypatch, num_spare_rows=1, num_spare_cols=1, words_per_row=4)
+
+
+def test_a_muxed_build_with_spare_columns(config_path, monkeypatch) -> None:
+    engine = _engine(config_path, monkeypatch, num_spare_rows=1, num_spare_cols=1, words_per_row=4,
+                     expose_spares=True)
+    redundancy = yaml.safe_load((engine.module_dir / "config.yml").read_text(encoding="utf-8"))["redundancy"]
+    assert redundancy["words_per_row"] == 4 and redundancy["onchip_col_repair"]
+    assert redundancy["bit_index_width"] == 4  # 16 physical columns
+    assert (engine.placement.rows, engine.placement.cols) == (3, 17)
+    wrapper = next(engine.module_dir.glob("*_mbist.v")).read_text(encoding="utf-8")
+    assert ".READ_LATENCY(1)" in wrapper and ".wr_col(sram_addr[1:0])" in wrapper
+    # The injectable model shares each spare cell across the physical row.
+    assert "word_at(" in engine.model_path.read_text(encoding="utf-8")
+
+
+def test_a_muxed_spare_column_cell_sits_at_its_rows_first_address(config_path, monkeypatch) -> None:
+    engine = _engine(config_path, monkeypatch, num_spare_rows=1, num_spare_cols=1, words_per_row=4,
+                     expose_spares=True)
+    # Placement: physical rows 0-1 regular, 2 the spare row; columns 0-15 regular, 16 the spare.
+    assert engine._to_memory((1, 16)) == (4, 4)    # spare lane at physical row 1's first address
+    assert engine._to_memory((2, 16)) == (8, 4)    # the corner: the spare row's spare cell
+    assert engine._to_memory((1, 6)) == (6, 1)     # a regular cell: word 6, bit 1
+    assert engine._to_memory((2, 7)) == (11, 1)    # a spare-row cell
+    base, faults, spare = engine._split({(6, 1): 1, (4, 4): 0, (8, 4): 1, (11, 1): 0})
+    assert base == {(6, 1)} and spare == 3
+    assert faults.col_cells == {0: frozenset({4})}
+    assert faults.corners == frozenset({(0, 0)})
+    assert faults.row_cells == {0: frozenset({7})}  # bit 1 of word column 3

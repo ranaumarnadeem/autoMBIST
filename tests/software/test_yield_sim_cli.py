@@ -127,8 +127,9 @@ def test_words_per_row_models_a_column_muxed_array(tmp_path: Path) -> None:
     assert table.exit_code == 0 and "4 words per row" in table.output
 
 
-def test_words_per_row_refuses_spare_columns(tmp_path: Path) -> None:
+def test_words_per_row_takes_spare_columns(tmp_path: Path) -> None:
     result = _invoke(tmp_path, "--array", "8x32", "--words-per-row", "4", "--spare-rows", "1",
-                     "--spare-cols", "1", "--faults", "1", "--trials", "5")
-    assert result.exit_code == 1
-    assert "spare columns are not modelled" in result.output
+                     "--spare-cols", "1", "--defects", "ohler-d2", "--faults", "1..2", "--trials", "10", "--json")
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["geometry"]["words_per_row"] == 4 and report["geometry"]["spare_cols_per_bank"] == 1
