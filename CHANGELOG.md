@@ -30,9 +30,10 @@ everything that predates the migration.
   multi-port and shared-bus. `num_spare_rows * words_per_row` may not exceed `2**addr_width`. At the
   default of 1 the generated RTL is unchanged. `ram-synth` prints the macro's
   words per row (from OpenRAM's `datasheet.info`). `selfrepair_x` (march-X
-  over `sky130_sram_32b256w`, 4 words per row) hardens with it: LVS, routing
-  DRC and antenna clean, timing met (`flow/newalgo/README.md`); the other
-  real-macro designs are not re-hardened yet. The 1r1w macro has 2 words per
+  over `sky130_sram_32b256w`, 4 words per row) and `selfrepair_mp` (MATS+
+  over `sky130_sram_32b512w`, 4 words per row) harden with it: LVS, routing
+  DRC and antenna clean, timing met (`flow/newalgo/README.md`); the
+  march-1r1w and `flow/multimem/mbist` designs are not re-hardened yet. The 1r1w macro has 2 words per
   row, and `flow/newalgo`'s march-1r1w config now says so.
 - `yield-sim` and `yield-sweep` take `--words-per-row N` for a column-muxed
   array: defects land on the physical cells, each row holds N words with their
