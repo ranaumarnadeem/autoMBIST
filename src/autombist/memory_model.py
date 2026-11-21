@@ -20,7 +20,9 @@ a spare lane is ONE cell per physical row, shared by the row's words, as
 OpenRAM builds it (its spare columns bypass the column mux). The model keeps it
 at the row's first address: every word of the row writes and reads the same
 spare cell. (OpenRAM's own behavioral ``.v`` gives each word its own, which
-would hide a remap that writes the spare from the wrong word.)
+would hide a remap that writes the spare from the wrong word.) On two ports
+the cell is shared by both, and a read's spare lane is X while the other port
+writes that row's cell in the same cycle, as a dual-port bitcell leaves it.
 """
 from __future__ import annotations
 
@@ -99,7 +101,7 @@ def render_memory_model(config: dict[str, Any], *, stuck_masks: tuple[str, str] 
         for i, pdata in enumerate(ports):
             if pdata["type"] in ("r", "rw"):
                 body += _read_function(i, ports, addr_w=addr_w, data_w=data_w,
-                                       we_active_low=we_active_low)
+                                       we_active_low=we_active_low, lanes=lanes, col_bits=col_bits)
 
     collision = ", a read of an address another port writes in the same cycle X" if collide else ""
     style = (
@@ -218,22 +220,35 @@ def _shared_word_function(*, addr_w: int, data_w: int, col_bits: int, masked: bo
 
 
 def _read_function(
-    r: int, ports: list[dict[str, Any]], *, addr_w: int, data_w: int, we_active_low: bool
+    r: int, ports: list[dict[str, Any]], *, addr_w: int, data_w: int, we_active_low: bool,
+    lanes: int = 0, col_bits: int = 0,
 ) -> list[str]:
     """``p<r>_read(a)``: the stored word at ``a``, or X when another port wrote ``a`` in
-    the cycle this read was issued (its registered csb/we/addr are that cycle's)."""
+    the cycle this read was issued (its registered csb/we/addr are that cycle's).
+
+    On a column-muxed memory the read's spare lanes are the row's shared cells
+    (``word_at``), and a lane is X when another port wrote that cell in the same
+    cycle -- a write to ANY word of the row with that lane's spare_wen raised."""
     p = f"p{r}"
     out = [
         f"    // port {r}'s read: X if another port wrote the same address in the same cycle",
         f"    function [{data_w - 1}:0] {p}_read(input [{addr_w - 1}:0] a);",
-        "        begin",
-        f"            {p}_read = mem[a];",
     ]
+    if col_bits:
+        out.append("        integer k;")
+    out += ["        begin", f"            {p}_read = {'word_at(a)' if col_bits else 'mem[a]'};"]
     for w, wdata in enumerate(ports):
         if w == r or wdata["type"] not in ("w", "rw"):
             continue
         q = f"p{w}"
         write_q, _ = _terms(True, f"{q}_we_q", we_active_low)
+        if col_bits and wdata.get("spare_wen"):
+            same_row = f"{q}_addr_q[{addr_w - 1}:{col_bits}] == a[{addr_w - 1}:{col_bits}]"
+            out += [
+                f"            if (!{q}_csb_q && {write_q} && {same_row})",
+                f"                for (k = 0; k < {lanes}; k = k + 1)",
+                f"                    if ({q}_spare_q[k]) {p}_read[LOGICAL_W + k] = 1'bx;",
+            ]
         out.append(f"            if (!{q}_csb_q && {write_q} && {q}_addr_q == a) {p}_read = {{{data_w}{{1'bx}}}};")
     out += ["        end", "    endfunction", ""]
     return out
@@ -253,14 +268,18 @@ def _port_behavior(
     k = f"{p}_k"
     write_live, _ = _terms(has_we, we, we_active_low)
     write_q, read_q = _terms(has_we, f"{p}_we_q" if has_we else None, we_active_low)
+    # The registered spare_wen: latency 0 stores from it; on a multi-port
+    # column-muxed memory the other ports' reads also check it for a write to
+    # their row's shared spare cell (_read_function).
+    spare_q = bool(spare_wen) and (latency == 0 or (collide and col_bits > 0))
 
     out = [f"    // port {i}: {ptype}", f"    reg {p}_csb_q;", f"    reg [{addr_w - 1}:0] {p}_addr_q;"]
     if has_we:
         out.append(f"    reg {p}_we_q;")
         if latency == 0:
             out.append(f"    reg [{data_w - 1}:0] {p}_din_q;")
-            if spare_wen:
-                out.append(f"    reg [{lanes - 1}:0] {p}_spare_q;")
+        if spare_q:
+            out.append(f"    reg [{lanes - 1}:0] {p}_spare_q;")
         if spare_wen:
             out.append(f"    integer {k};")
 
@@ -268,11 +287,11 @@ def _port_behavior(
     out += [f"        {p}_csb_q  <= {csb};", f"        {p}_addr_q <= {addr};"]
     if has_we:
         out.append(f"        {p}_we_q   <= {we};")
-    if latency == 0:
-        if has_we:
+        if latency == 0:
             out.append(f"        {p}_din_q  <= {din};")
-            if spare_wen:
-                out.append(f"        {p}_spare_q <= {spare_wen}[{lanes - 1}:0];")
+    if spare_q:
+        out.append(f"        {p}_spare_q <= {spare_wen}[{lanes - 1}:0];")
+    if latency == 0:
         out.append("    end")
         out.append(f"    always @(negedge {clk}) begin")
         if has_we:
@@ -287,9 +306,7 @@ def _port_behavior(
                                                     _row_base(addr, addr_w, col_bits) if col_bits else None)]
         out.append("        end")
     if does_read:
-        # Column-muxed spare cells exist on single-port memories only (the
-        # generator refuses them elsewhere), so collide and col_bits never meet.
-        if collide:
+        if collide:  # _read_function reads the row's shared spare cells itself
             word = f"{p}_read({p}_addr_q)"
         else:
             word = f"word_at({p}_addr_q)" if col_bits else f"mem[{p}_addr_q]"

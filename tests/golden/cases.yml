@@ -365,6 +365,44 @@ shared-bus-selfrepair-muxed:
     ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0}
     redundancy: {num_spare_rows: 1, num_spare_cols: 0, words_per_row: 4, onchip_selfrepair: true}
 
+selfrepair-2d-1r1w-muxed:
+  generate: {algo: march-1r1w}
+  config:
+    memory_name: sram_s2d1r1wmux
+    wrapper_module_name: sram_s2d1r1wmux_mbist
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports:
+      rport: {type: r, clk: clk0, addr: addr0, dout: dout0, csb: csb0}
+      wport: {type: w, clk: clk1, addr: addr1, din: din1, csb: csb1, we: web1, spare_wen: spare_wen1}
+    redundancy:
+      num_spare_rows: 1
+      num_spare_cols: 1
+      words_per_row: 2
+      onchip_selfrepair: true
+      onchip_col_repair: true
+
+shared-bus-2d-muxed:
+  generate: {algo: march-c}
+  config:
+    topology: shared-bus
+    memory_name: sram_bank_2dmux
+    wrapper_module_name: shared_2dmux_ctrl
+    memories:
+      - {name: mem_bank0}
+      - {name: mem_bank1}
+    addr_width: 4
+    data_width: 8
+    we_active_low: true
+    ports: {clk: clk0, addr: addr0, din: din0, dout: dout0, we: web0, csb: csb0, spare_wen: spare_wen0}
+    redundancy:
+      num_spare_rows: 1
+      num_spare_cols: 1
+      words_per_row: 4
+      onchip_selfrepair: true
+      onchip_col_repair: true
+
 shared-bus:
   generate: {algo: march-c}
   config:

@@ -845,18 +845,10 @@ def _validate_redundancy(loaded: dict[str, Any]) -> None:
         )
     # Spare columns work with it too: OpenRAM gives each physical row ONE cell
     # per spare column, so a spare replaces one physical column (bit b of word
-    # column w), and repair_remap_col steers only that word column. Single-port
-    # dedicated memories only: the multi-port and shared-bus column remaps are
-    # not tested under muxing, and no macro built here needs them.
+    # column w), and every repair_remap_col -- single-port, multi-port (one per
+    # rw port, or one across the r+w pair) and shared-bus (one per memory) --
+    # steers only that word column, from its own port's column bits.
     if words_per_row > 1:
-        if num_spare_cols > 0 and (
-            len(loaded["normalized_ports"]) != 1 or loaded.get("topology", "dedicated") == "shared-bus"
-        ):
-            raise ConfigError(
-                f"redundancy.num_spare_cols > 0 with words_per_row={words_per_row} is supported "
-                "for a single-port memory with its own controller only, not a multi-port or "
-                "shared-bus one -- use num_spare_cols: 0 (row repair) there"
-            )
         base_words = 1 << int(loaded["addr_width"])
         if num_spare_rows * words_per_row > base_words:
             raise ConfigError(

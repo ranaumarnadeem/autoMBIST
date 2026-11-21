@@ -220,8 +220,10 @@ end (its own integration tests against a 1.1.0 manifest).
   - ~~Column repair under muxing is rejected~~ — done 2026-11-19: a spare
     column replaces one physical column (one bit of one word column), on the
     tester-driven and on-chip paths, tested against a model that shares the
-    spare cell across the row. Single-port only: multi-port and shared-bus
-    wrappers still refuse spare columns under muxing (no macro here needs them).
+    spare cell across the row. Single-port, multi-port (march-1r1w and
+    march-2rw) and shared-bus, done 2026-11-21. A march-2rw remap fed the
+    other port's column bits passes simulation (solid backgrounds, one
+    mission-mode address), so the render test checks each instance's wiring.
   - ~~`yield-sim`/`yield-sweep` model one word per row~~ — done 2026-11-19:
     both take `--words-per-row`, with spare columns too.
 - ~~MAINTAINERS.md does not exist yet~~ — done 2026-09-22.
