@@ -5,8 +5,8 @@ that autoMBIST's on-chip self-repair (BIRA analyzer + BISR sequencer +
 external row remap) completes the full LibreLane RTL-to-GDS flow with a
 passing top-level LVS -- generalizes to the two algorithms hand-written this
 session (Workstream B1), each wrapping a REAL sky130 OpenRAM macro (not the
-toy behavioral fixtures). Counts are recorded for `selfrepair_x` with
-`words_per_row: 4` (below) and for march-1r1w; none for `selfrepair_mp`.
+toy behavioral fixtures). Counts are recorded for `selfrepair_x` and
+`selfrepair_mp`, both with `words_per_row: 4` (below), and for march-1r1w.
 
 Each design is a single generated self-repair wrapper used directly as the
 LibreLane `DESIGN_NAME` (no multi-macro subsystem needed): `selfrepair_x`
@@ -79,6 +79,38 @@ The 2 "floating nets" OpenROAD's resizer reports (`RSZ-0020`) are `VPWR`
 and `VGND`, the power nets, which no logic cell drives; the flow's own check
 finds 0 disconnected pins. No pre-`words_per_row` counts were recorded for
 this design, so there is no before/after comparison.
+
+## selfrepair_mp with physical-row repair (hardened 2026-11-21)
+
+`selfrepair_mp` (MATS+ over `sky130_sram_32b512w`, `read_latency: 0`,
+`words_per_row: 4`, one spare row, as in
+`tests/hardware/run_newalgo_real_macro_selfrepair_tb.py`) was hardened the
+same way. The macro was the OpenRAM v1.2.50 build that passed OpenRAM's own
+DRC (0) and LVS on 2026-11-15: 33 data bits (one spare column, unused here),
+10 address bits, 4 words per row (its `datasheet.info`), and a LEF already
+in 1000 database units. LibreLane 3.0.5, die and macro placement as in
+`harden_mp.yml`; about 25 minutes.
+
+**Result:** exit code 0, all stages.
+
+| Check | Result |
+|---|---|
+| LVS | 0 errors, 0 unmatched devices or nets |
+| Routing DRC | 0 |
+| Antenna | 0 violating nets or pins |
+| Setup / hold worst slack | +8.5 ns / +0.12 ns (20 ns clock), no violations |
+| Standard cells | 5,190 |
+| Magic / KLayout DRC | 363 / 657, macro-internal, not fatal (see `src/autombist/signoff.py`) |
+| Max slew | 54 violations in the slow (ss) corners, 7 at typical (tt) |
+
+The 7 typical-corner violations are one chain of `clkdlybuf4s25_1` delay
+buffers the resizer inserted on a single internal net, each about 17 ps over
+the 750 ps limit (2%); timing is met. In the final netlist the macro's
+`addr0[1:0]` come straight from the controller and `addr0[9:2]` through the
+row remap, the 4-words-per-row shape. The 2 `RSZ-0020` floating nets are
+again `VPWR` and `VGND`, with 0 disconnected pins. `DRT-0418` ("no pins on
+routing grid") is reported for a few macro address pins here as in
+`selfrepair_x`, whose routing was also clean.
 
 ## march-1r1w: real, genuinely-dual-port macro (hardened, DRC not clean)
 
