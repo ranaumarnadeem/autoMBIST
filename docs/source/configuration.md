@@ -226,9 +226,13 @@ column bits are `w`. Column repair names that column as `b * words_per_row + w`,
 `repair_remap_col` writes and reads the spare only for word column `w`, and the
 on-chip 2D analyzer tracks physical columns (see "Column repair" below).
 
-Rules: a power of two; `num_spare_rows * words_per_row` may not exceed
-`2**addr_width`; and spare columns need a single-port memory with its own
-controller (multi-port and shared-bus wrappers refuse them under muxing).
+This holds for every wrapper. On march-1r1w the one column remap takes the
+write port's column bits for the spare write and the read port's for the
+read; on march-2rw each rw port's remap takes its own port's; under shared-bus
+each memory's remap takes that memory's own access.
+
+Rules: a power of two, and `num_spare_rows * words_per_row` may not exceed
+`2**addr_width`.
 
 `onchip_selfrepair` currently requires `--algo` to be one of `march-c`,
 `march-raw`, `march-1r1w` (a 1-read-port + 1-write-port config, `type: r`/

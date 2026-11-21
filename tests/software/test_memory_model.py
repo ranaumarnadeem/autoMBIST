@@ -157,6 +157,29 @@ def test_a_muxed_spare_lane_is_one_cell_per_physical_row(latency: int) -> None:
     assert "4 words per row" in model
 
 
+@pytest.mark.parametrize(("ports", "writers"), [(C1R1W, ["p1"]), (C2RW, ["p0", "p1"])], ids=["1r1w", "2rw"])
+@pytest.mark.parametrize("latency", [0, 1])
+def test_a_multi_port_muxed_model_shares_the_spare_cell_across_ports(ports, writers, latency: int) -> None:
+    """Every port's read takes its spare lanes from the row's one cell, and a
+    lane reads X when another port writes that cell in the same cycle (a write
+    to any word of the row with that lane's spare_wen raised)."""
+    model = render_memory_model(_cfg(ports=ports, redundancy=MUXED_COL, read_latency=latency))
+    for w in writers:
+        assert f"reg [0:0] {w}_spare_q;" in model  # registered at both latencies
+    read = model[model.index("function [4:0] p0_read"):]
+    read = read[:read.index("endfunction")]
+    assert "p0_read = word_at(a);" in read
+    other = "p1"
+    assert f"{other}_addr_q[3:2] == a[3:2]" in read
+    assert f"if ({other}_spare_q[k]) p0_read[LOGICAL_W + k] = 1'bx;" in read
+    assert f"{other}_addr_q == a) p0_read = {{5{{1'bx}}}};" in read  # the whole word, as before
+
+
+def test_a_multi_port_model_without_muxing_keeps_whole_word_collisions() -> None:
+    model = render_memory_model(SHAPES["spare-cols-1r1w"])
+    assert "p0_read = mem[a];" in model and "spare_q" not in model and "word_at" not in model
+
+
 def test_an_injectable_muxed_model_masks_the_spare_cell_at_its_row() -> None:
     model = render_memory_model(_cfg(ports=COL, redundancy=MUXED_COL), stuck_masks=("/m/sa0", "/m/sa1"))
     assert "s = (s & sa0_mask[b]) | sa1_mask[b];" in model

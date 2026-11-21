@@ -169,17 +169,43 @@ def test_column_repair_under_muxing_names_physical_columns(tmp_path: Path) -> No
         load_config(_col_config(tmp_path, 2))
 
 
-def test_multi_port_column_repair_is_refused_under_muxing(tmp_path: Path) -> None:
-    ports = {
-        "rport": {"type": "r", "clk": "clk0", "addr": "addr0", "dout": "dout0", "csb": "csb0"},
-        "wport": {"type": "w", "clk": "clk1", "addr": "addr1", "din": "din1", "csb": "csb1", "we": "web1",
-                  "spare_wen": "spare_wen1"},
-    }
-    redundancy = {**ONCHIP, "num_spare_cols": 1, "onchip_col_repair": True, "words_per_row": 2}
-    with pytest.raises(ConfigError, match="single-port memory"):
-        load_config(_config(tmp_path, redundancy, ports=ports))
-    # Row repair alone is fine there.
-    load_config(_config(tmp_path, {**ONCHIP, "words_per_row": 2}, ports=ports))
+PORTS_1R1W = {
+    "rport": {"type": "r", "clk": "clk0", "addr": "addr0", "dout": "dout0", "csb": "csb0"},
+    "wport": {"type": "w", "clk": "clk1", "addr": "addr1", "din": "din1", "csb": "csb1", "we": "web1",
+              "spare_wen": "spare_wen1"},
+}
+PORTS_2RW = {
+    "p0": {"type": "rw", "clk": "clk0", "addr": "addr0", "din": "din0", "dout": "dout0", "csb": "csb0",
+           "we": "web0", "spare_wen": "spare_wen0"},
+    "p1": {"type": "rw", "clk": "clk1", "addr": "addr1", "din": "din1", "dout": "dout1", "csb": "csb1",
+           "we": "web1", "spare_wen": "spare_wen1"},
+}
+MUXED_2D = {**ONCHIP, "num_spare_cols": 1, "onchip_col_repair": True, "words_per_row": 2}
+
+
+def test_1r1w_column_remap_takes_each_ports_column_bits(tmp_path: Path) -> None:
+    # One remap across the pair: the write port's column for spare_wen, the
+    # read port's for the read steer.
+    config = _config(tmp_path, MUXED_2D, ports=PORTS_1R1W)
+    text = generate_from_config(config, tmp_path / "out", algo="march-1r1w").read_text(encoding="utf-8")
+    assert text.count(".WORDS_PER_ROW(2)") == 4  # analyzer, 2 row remaps, column remap
+    assert ".wr_col(sram_addr1[0:0])" in text
+    assert ".rd_col(sram_addr0[0:0])" in text and ".rd_issue(!sram_csb0)" in text
+
+
+def test_2rw_column_remaps_each_take_their_own_port(tmp_path: Path) -> None:
+    """Checked per instance, in its own block: a remap fed the OTHER port's
+    column bits passes simulation (march-2rw's backgrounds are solid, so the
+    shared cell gets the same value from either word, and in mission mode both
+    ports carry one address), so only the rendered wiring can catch it."""
+    config = _config(tmp_path, MUXED_2D, ports=PORTS_2RW)
+    text = generate_from_config(config, tmp_path / "out", algo="march-2rw").read_text(encoding="utf-8")
+    assert text.count(".WORDS_PER_ROW(2)") == 5  # analyzer, 2 row remaps, 2 column remaps
+    for s in "01":
+        block = text.split(f") u_repair_remap_col{s} (", 1)[1].split(");", 1)[0]
+        assert f".wr_col(sram_addr{s}[0:0])" in block and f".rd_col(sram_addr{s}[0:0])" in block
+        assert f".rd_issue(!sram_csb{s} && !selected_write_req{s})" in block
+        assert f".din_in(sram_din{s})" in block and f".spare_wen(sram_spare_wen{s})" in block
 
 
 # --- rendered RTL -------------------------------------------------------------

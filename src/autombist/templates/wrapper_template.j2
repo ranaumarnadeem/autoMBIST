@@ -413,6 +413,9 @@ module {{ wrapper_module_name }} #(
             .DATA_WIDTH(DATA_WIDTH),
             .NUM_SPARE_ROWS({{ redundancy.num_spare_rows }}),
             .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+{% if redundancy.words_per_row != 1 %}
+          , .WORDS_PER_ROW({{ redundancy.words_per_row }})
+{% endif %}
         ) u_onchip_analyzer (
             .clk(clk),
             .rst_n(rst_n),
@@ -501,6 +504,10 @@ module {{ wrapper_module_name }} #(
         repair_remap_col #(
             .DATA_WIDTH(DATA_WIDTH),
             .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+{% if col_mux %}
+          , .WORDS_PER_ROW({{ redundancy.words_per_row }})
+          , .READ_LATENCY({{ read_latency }})
+{% endif %}
         ) u_repair_remap_col (
             .din_in(sram_din_arr[gsr]),
             .din_out(sram_din_phys_arr[gsr]),
@@ -509,6 +516,14 @@ module {{ wrapper_module_name }} #(
             .spare_wen(spare_wen_arr[gsr]),
             .col_repair_en(col_repair_en_arr[gsr]),
             .faulty_bit(faulty_bit_arr[gsr])
+{% if col_mux %}
+            // Each memory's own access: its column bits, and a read when it is
+            // selected and not writing (sram_we_arr is the memory's own polarity).
+          , .clk(clk)
+          , .wr_col(sram_addr_arr[gsr][{{ col_bits - 1 }}:0])
+          , .rd_col(sram_addr_arr[gsr][{{ col_bits - 1 }}:0])
+          , .rd_issue(!sram_csb_arr[gsr] && {% if we_active_low %}sram_we_arr[gsr]{% else %}!sram_we_arr[gsr]{% endif %})
+{% endif %}
         );
 {% endif %}
       end
@@ -1225,6 +1240,10 @@ module {{ wrapper_module_name }} #(
     repair_remap_col #(
         .DATA_WIDTH(DATA_WIDTH),
         .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+{% if col_mux %}
+      , .WORDS_PER_ROW({{ redundancy.words_per_row }})
+      , .READ_LATENCY({{ read_latency }})
+{% endif %}
     ) u_repair_remap_col{{ suffix }} (
         .din_in(sram_din{{ suffix }}),
         .din_out(sram_din_phys{{ suffix }}),
@@ -1233,6 +1252,12 @@ module {{ wrapper_module_name }} #(
         .spare_wen(sram_spare_wen{{ suffix }}),
         .col_repair_en(col_repair_en),
         .faulty_bit(faulty_bit)
+{% if col_mux %}
+      , .clk(clk)
+      , .wr_col(sram_addr{{ suffix }}[{{ col_bits - 1 }}:0])
+      , .rd_col(sram_addr{{ suffix }}[{{ col_bits - 1 }}:0])
+      , .rd_issue(!sram_csb{{ suffix }} && !selected_write_req{{ suffix }})
+{% endif %}
     );
     {% endfor %}
 {% else %}
@@ -1259,6 +1284,10 @@ module {{ wrapper_module_name }} #(
     repair_remap_col #(
         .DATA_WIDTH(DATA_WIDTH),
         .NUM_SPARE_COLS({{ redundancy.num_spare_cols }})
+{% if col_mux %}
+      , .WORDS_PER_ROW({{ redundancy.words_per_row }})
+      , .READ_LATENCY({{ read_latency }})
+{% endif %}
     ) u_repair_remap_col (
         .din_in(sram_din{{ ns.write_suffix }}),
         .din_out(sram_din_phys{{ ns.write_suffix }}),
@@ -1267,6 +1296,14 @@ module {{ wrapper_module_name }} #(
         .spare_wen(sram_spare_wen),
         .col_repair_en(col_repair_en),
         .faulty_bit(faulty_bit)
+{% if col_mux %}
+        // The write's column bits from the write port, the read's from the
+        // read port (read-only: every access it issues is a read).
+      , .clk(clk)
+      , .wr_col(sram_addr{{ ns.write_suffix }}[{{ col_bits - 1 }}:0])
+      , .rd_col(sram_addr{{ ns.read_suffix }}[{{ col_bits - 1 }}:0])
+      , .rd_issue(!sram_csb{{ ns.read_suffix }})
+{% endif %}
     );
 {% endif %}
 {% endif %}

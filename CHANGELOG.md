@@ -48,9 +48,12 @@ everything that predates the migration.
   replaced word column and steers a read by the column bits of the read that
   produced the data. The on-chip 2D analyzer (greedy and deferred), BIRA, the
   generated `tb/` model and the yield commands use physical columns.
-  Tester-driven and on-chip, for a single-port memory with its own
-  controller; multi-port and shared-bus wrappers still refuse spare columns
-  under muxing. At one word per row nothing changes.
+  Tester-driven and on-chip, single-port, multi-port (march-1r1w: the write
+  port's column bits for the spare write, the read port's for the read;
+  march-2rw: each rw port's own) and shared-bus (each memory's own access).
+  In the generated two-port `tb/` model a spare lane reads X while the other
+  port writes that row's spare cell in the same cycle. At one word per row
+  nothing changes.
 - [Using the Safety Report in an FMEDA](docs/source/safety-report.md): the inputs a
   safety engineer must supply, unweighted coverage against diagnostic coverage, a
   worked example a test re-runs, and what autoMBIST does not provide (#41).

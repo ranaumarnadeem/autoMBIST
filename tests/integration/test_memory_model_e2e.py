@@ -80,6 +80,16 @@ CASES = {
     "spare-cols-1r1w-rl0": (_cfg("m_u", addr_width=2, ports=C1R1W, redundancy=SRC, read_latency=0), "march-1r1w"),
     "spare-cols-2rw-rl1": (_cfg("m_v", addr_width=2, ports=C2RW, redundancy=SRC), "march-2rw"),
     "spare-cols-2rw-rl0": (_cfg("m_w", addr_width=2, ports=C2RW, redundancy=SRC, read_latency=0), "march-2rw"),
+    # Column-muxed: the spare lanes are one cell per physical row (word_at), and on
+    # two ports a lane reads X while the other port writes that cell.
+    "muxed-cols-1r1w-rl1": (_cfg("m_y", ports=C1R1W, redundancy={**SRC, "words_per_row": 2}), "march-1r1w"),
+    "muxed-cols-1r1w-rl0": (_cfg("m_z", ports=C1R1W, redundancy={**SRC, "words_per_row": 2},
+                                 read_latency=0), "march-1r1w"),
+    "muxed-cols-2rw-rl1": (_cfg("m_aa", ports=C2RW, redundancy={**SRC, "words_per_row": 2}), "march-2rw"),
+    "muxed-cols-2rw-rl0": (_cfg("m_ab", ports=C2RW, redundancy={**SRC, "words_per_row": 2},
+                                read_latency=0), "march-2rw"),
+    "muxed-cols-shared-bus": (_cfg("m_ac", ports=COL, topology="shared-bus", memories=[{"name": "b0"}, {"name": "b1"}],
+                                   redundancy={**SRC, "words_per_row": 4}), "march-c"),
     "shared-bus-x3": (_cfg("m_x", addr_width=4, topology="shared-bus",
                            memories=[{"name": "b0"}, {"name": "b1"}, {"name": "b2"}]), "march-c"),
 }

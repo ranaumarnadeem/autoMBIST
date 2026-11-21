@@ -193,7 +193,10 @@ def _scenarios(snapshot: dict) -> list[tuple[str, str, dict, dict]]:
     redundancy = snapshot.get("redundancy") or {}
     depth, width = 1 << snapshot["addr_width"], snapshot["data_width"]
     rows, cols = redundancy.get("num_spare_rows", 0), redundancy.get("num_spare_cols", 0)
-    column = {(r, 3): 1 for r in range(4)}
+    # One PHYSICAL column, bit 3 of word column 0, in four physical rows: on a
+    # column-muxed memory consecutive addresses are different columns.
+    wpr = redundancy.get("words_per_row", 1)
+    column = {(r * wpr, 3): 1 for r in range(4)}
     out = [
         ("bist", "restart", {}, {"fail": 0}),
         ("bist-defect", "bist", {(1, 0): 1}, {"fail": 1}),
@@ -216,7 +219,6 @@ def _scenarios(snapshot: dict) -> list[tuple[str, str, dict, dict]]:
         faulty_rows = rows + cols + 1 + redundancy.get("num_diagnosis_entries", 0)
         # One cell in each of that many PHYSICAL rows: on a column-muxed memory
         # a row is words_per_row consecutive addresses, and one spare covers it.
-        wpr = redundancy.get("words_per_row", 1)
         out.append(("selfrepair-unrepairable", "selfrepair",
                     {(r * wpr, r % width): 1 for r in range(min(faulty_rows, depth // wpr))}, {"fail": 1}))
     if redundancy.get("onchip_repair_persistence"):

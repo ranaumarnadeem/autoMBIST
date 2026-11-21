@@ -53,6 +53,11 @@ selfrepair-2d:
   cells: 574
   flops: 55
   selfrepair_cycles: 807
+selfrepair-2d-1r1w-muxed:
+  bist_cycles: 281
+  cells: 840
+  flops: 61
+  selfrepair_cycles: 567
 selfrepair-2d-deferred-diagnosis:
   bist_cycles: 401
   cells: 972
@@ -97,6 +102,11 @@ shared-bus:
   bist_cycles: 1209
   cells: 276
   flops: 22
+shared-bus-2d-muxed:
+  bist_cycles: 806
+  cells: 1972
+  flops: 143
+  selfrepair_cycles: 1618
 shared-bus-selfrepair-2d:
   bist_cycles: 806
   cells: 1054
