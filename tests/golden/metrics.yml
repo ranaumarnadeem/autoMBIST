@@ -40,7 +40,7 @@ mats-plus:
   flops: 15
 selfrepair-1r1w-2d:
   bist_cycles: 281
-  cells: 615
+  cells: 626
   flops: 60
   selfrepair_cycles: 567
 selfrepair-1r1w-row-muxed:
@@ -50,32 +50,32 @@ selfrepair-1r1w-row-muxed:
   selfrepair_cycles: 567
 selfrepair-2d:
   bist_cycles: 401
-  cells: 574
+  cells: 585
   flops: 55
   selfrepair_cycles: 807
 selfrepair-2d-1r1w-muxed:
   bist_cycles: 281
-  cells: 840
-  flops: 61
+  cells: 883
+  flops: 94
   selfrepair_cycles: 567
 selfrepair-2d-deferred-diagnosis:
   bist_cycles: 401
-  cells: 972
+  cells: 981
   flops: 139
   selfrepair_cycles: 1211
 selfrepair-2d-deferred-retry-diagnosis:
   bist_cycles: 401
-  cells: 1062
+  cells: 1067
   flops: 147
   selfrepair_cycles: 1211
 selfrepair-2d-muxed-deferred:
   bist_cycles: 321
-  cells: 3656
-  flops: 180
+  cells: 3879
+  flops: 241
   selfrepair_cycles: 971
 selfrepair-2rw-2d-retry:
   bist_cycles: 243
-  cells: 771
+  cells: 775
   flops: 69
   selfrepair_cycles: 491
 selfrepair-row:
@@ -104,12 +104,12 @@ shared-bus:
   flops: 22
 shared-bus-2d-muxed:
   bist_cycles: 806
-  cells: 1972
-  flops: 143
+  cells: 2047
+  flops: 196
   selfrepair_cycles: 1618
 shared-bus-selfrepair-2d:
   bist_cycles: 806
-  cells: 1054
+  cells: 1079
   flops: 105
   selfrepair_cycles: 1618
 shared-bus-selfrepair-muxed:

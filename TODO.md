@@ -214,7 +214,11 @@ end (its own integration tests against a 1.1.0 manifest).
     words per row) hardened 2026-11-19: LVS, routing DRC and antenna 0,
     timing met (`flow/newalgo/README.md`). `selfrepair_mp` (MATS+,
     `sky130_sram_32b512w`, 4 words per row) hardened 2026-11-21, the same
-    checks clean. Not yet re-hardened: `flow/multimem/mbist` and march-1r1w.
+    checks clean, and on 2026-11-22 with on-chip column repair too
+    (`harden_mp_col.yml`): clean and timing met, but only with the analyzer's
+    pipeline stage and `synth_strategy: "DELAY 1"`, at the cost of 615
+    slow-corner and 62 typical-corner max-slew violations. Not yet
+    re-hardened: `flow/multimem/mbist` and march-1r1w.
   - ~~The 1r1w macro's words per row is unknown~~ — done 2026-11-19: 2, from
     its `datasheet.info`; `flow/newalgo`'s 1r1w config sets it, and
     march-1r1w is simulated against a 2-words-per-row dual-port model.

@@ -113,7 +113,10 @@
 //     SAME answer and one would silently clobber the other's claim -- a
 //     genuine data-loss hazard, not merely a capacity limit. This is the
 //     same discipline a priority encoder/leading-zero-counter needs, not a
-//     new pattern.
+//     new pattern. It is computed like one, too: from a running count of the
+//     lower bits that want a column, built as a tree (see the decision block),
+//     not by walking the bits one after another, which was too slow for a
+//     20 ns clock at sky130's slow corner on a 32-bit, 4-words-per-row memory.
 //   * At NUM_SPARE_COLS==0, this degenerates to EXACTLY
 //     onchip_row_repair_analyzer.sv's own behavior: rule 3's column-claim
 //     attempt trivially always fails (there are never any free column
@@ -148,6 +151,23 @@
 //     per-bit-lane state grows WORDS_PER_ROW times; faulty_bit names physical
 //     columns, as repair/bisr.py::encode_repair packs them. The rules above
 //     are unchanged, read with "bit" meaning that physical column.
+//   * Column muxing also adds one pipeline stage (PIPE). Looking up each
+//     bit's physical column, b * WORDS_PER_ROW + w, means fanning the failing
+//     address's column bits out to every bit's WORDS_PER_ROW-way select;
+//     together with the claim decision in one cycle, that missed a 20 ns
+//     clock at sky130's slow corner (selfrepair_mp, 4 words per row). So the
+//     first stage registers every input and each bit's looked-up column
+//     state; the second decides and commits, a cycle later. Every input is
+//     delayed alike, so the sequencer sees the same order of events and only
+//     the outputs move a cycle: the sequencer kicks the next pass two cycles
+//     after latch_result (S_DECIDE between), the cycle the latched repair now
+//     reaches the remaps, and the pass's first access comes later still. Two
+//     things keep the decision exact: the update being committed while the
+//     next lookup is made is folded into it (fwd: seen_once and first_seen
+//     are only ever set, by the decision itself), and has_suspect includes a
+//     verify fail still in the decision stage, since the sequencer reads it
+//     in the cycle bist_done rises. At WORDS_PER_ROW == 1 there is no stage,
+//     and the outputs come in the same cycle as before it existed.
 //   * Spare retirement (redundancy.onchip_spare_retry), as in
 //     onchip_row_repair_analyzer.sv, for both kinds of spare: during the verify
 //     pass a fail at a row-remapped row blames that row's spare; a fail at any
@@ -162,7 +182,10 @@ module onchip_2d_repair_analyzer #(
     parameter integer NUM_SPARE_COLS = 1,
     parameter integer DEFERRED       = 0,   // 1: the two-pass deferred mode (see the header)
     parameter integer WORDS_PER_ROW  = 1,   // column-mux factor, a power of two (see the header)
-    parameter integer BIT_IDX_WIDTH  = (DATA_WIDTH * WORDS_PER_ROW > 1) ? $clog2(DATA_WIDTH * WORDS_PER_ROW) : 1
+    parameter integer BIT_IDX_WIDTH  = (DATA_WIDTH * WORDS_PER_ROW > 1) ? $clog2(DATA_WIDTH * WORDS_PER_ROW) : 1,
+    // The pipeline stage (see the header), on with column muxing. Left at its
+    // default by the generated wrapper; a test sets it to compare the two.
+    parameter integer PIPELINE       = (WORDS_PER_ROW > 1)
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -199,11 +222,24 @@ module onchip_2d_repair_analyzer #(
 
     localparam integer COL_BITS = $clog2(WORDS_PER_ROW);
     localparam integer NUM_COLS = DATA_WIDTH * WORDS_PER_ROW;  // physical columns
+    // Column muxing adds a pipeline stage (see the header): the decision below
+    // then works on the inputs one cycle late, with the per-bit column state
+    // looked up the cycle before.
+    localparam bit PIPE = (PIPELINE != 0);
+
+    // The inputs the decision stage works on: the ports one cycle late when
+    // PIPE, the ports themselves otherwise. Every input is delayed alike, so
+    // the order of fails, passes, latches and retires is unchanged.
+    logic                                 en_i, fv_i, latch_i, verify_i, retire_i, defer_i, load_i;
+    logic [ADDR_WIDTH-1:0]                fa_i;
+    logic [DATA_WIDTH-1:0]                fb_i;
+    logic [NUM_SPARE_ROWS-1:0]            fuse_en_i;
+    logic [NUM_SPARE_ROWS*ADDR_WIDTH-1:0] fuse_addr_i;
 
     // The failing word's column bits: its bit b is physical column
     // b * WORDS_PER_ROW + fail_wcol. Always 0 without muxing.
     logic [31:0] fail_wcol;
-    assign fail_wcol = fail_addr % WORDS_PER_ROW;
+    assign fail_wcol = fa_i % WORDS_PER_ROW;
 
     // ---- Row CAM: identical structure to onchip_row_repair_analyzer.sv ----
     logic                  live_row_valid [0:NUM_SPARE_ROWS-1];
@@ -217,14 +253,12 @@ module onchip_2d_repair_analyzer #(
     logic   found_free_row;
     integer free_row;
 
-    assign has_suspect = (|suspect_row) || (|suspect_col);
-
     always_comb begin
         already_row_registered = 1'b0;
         found_free_row         = 1'b0;
         free_row               = 0;
         for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
-            if (live_row_valid[i] && (live_row_addr[i] >> COL_BITS) == (fail_addr >> COL_BITS)) begin
+            if (live_row_valid[i] && (live_row_addr[i] >> COL_BITS) == (fa_i >> COL_BITS)) begin
                 already_row_registered = 1'b1;
             end
             if (!found_free_row && !live_row_valid[i] && !bad_row[i]) begin
@@ -253,75 +287,163 @@ module onchip_2d_repair_analyzer #(
     logic [NUM_COLS-1:0]            first_seen;
     logic [NUM_COLS*ADDR_WIDTH-1:0] first_row;
     logic                             defer_mode;
-    assign defer_mode = (DEFERRED != 0) && defer;
+    assign defer_mode = (DEFERRED != 0) && defer_i;
+
+    // Per bit b, the state of physical column b * WORDS_PER_ROW + w, w the
+    // failing word's column bits: seen before, first seen (deferred), and
+    // first seen at a different physical row. Looked up from the fail_addr
+    // PORT -- the same cycle's decision without PIPE, the next cycle's with it.
+    logic [31:0]           in_wcol;
+    logic [DATA_WIDTH-1:0] seen_now, first_now, rowne_now;  // looked up now
+    logic [DATA_WIDTH-1:0] seen_lk, first_lk, rowne_lk;     // what the decision stage gets
+    assign in_wcol = fail_addr % WORDS_PER_ROW;
+    always_comb begin
+        for (int b = 0; b < DATA_WIDTH; b++) begin
+            seen_now[b]  = seen_once[b * WORDS_PER_ROW + in_wcol];
+            first_now[b] = first_seen[b * WORDS_PER_ROW + in_wcol];
+            rowne_now[b] = (first_row[(b * WORDS_PER_ROW + in_wcol) * ADDR_WIDTH +: ADDR_WIDTH] >> COL_BITS)
+                           != (fail_addr >> COL_BITS);
+        end
+    end
+
+    generate
+        if (PIPE) begin : g_pipe
+            always_ff @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    en_i <= 1'b0; fv_i <= 1'b0; latch_i <= 1'b0; verify_i <= 1'b0;
+                    retire_i <= 1'b0; defer_i <= 1'b0; load_i <= 1'b0;
+                    fa_i <= '0; fb_i <= '0; fuse_en_i <= '0; fuse_addr_i <= '0;
+                    seen_lk <= '0; first_lk <= '0; rowne_lk <= '0;
+                end else begin
+                    en_i <= enable; fv_i <= fail_valid; latch_i <= latch_result; verify_i <= verify_enable;
+                    retire_i <= retire; defer_i <= defer; load_i <= repair_load;
+                    fa_i <= fail_addr; fb_i <= fail_bitmask;
+                    fuse_en_i <= fuse_row_repair_en; fuse_addr_i <= fuse_faulty_row_addr;
+                    seen_lk <= seen_now; first_lk <= first_now; rowne_lk <= rowne_now;
+                end
+            end
+        end else begin : g_no_pipe
+            assign en_i = enable;          assign fv_i = fail_valid;
+            assign latch_i = latch_result; assign verify_i = verify_enable;
+            assign retire_i = retire;      assign defer_i = defer;
+            assign load_i = repair_load;
+            assign fa_i = fail_addr;       assign fb_i = fail_bitmask;
+            assign fuse_en_i = fuse_row_repair_en; assign fuse_addr_i = fuse_faulty_row_addr;
+            assign seen_lk = seen_now; assign first_lk = first_now; assign rowne_lk = rowne_now;
+        end
+    endgenerate
+
+    // PIPE: a lookup misses the update the decision stage was committing in
+    // the same cycle -- the previous fail's -- so that update is kept
+    // (upd_*) and folded in when it hit the same word column. seen_once and
+    // first_seen are only ever set, by that stage, so nothing else is missed.
+    logic                  upd_valid;
+    logic [ADDR_WIDTH-1:0] upd_addr;
+    logic [DATA_WIDTH-1:0] upd_seen, upd_first;
+    logic                  fwd;
+    logic [DATA_WIDTH-1:0] seen_eff, first_eff, rowne_eff;
+    assign fwd = PIPE && upd_valid && (upd_addr % WORDS_PER_ROW) == fail_wcol;
+    always_comb begin
+        for (int b = 0; b < DATA_WIDTH; b++) begin
+            seen_eff[b]  = seen_lk[b]  || (fwd && upd_seen[b]);
+            first_eff[b] = first_lk[b] || (fwd && upd_first[b]);
+            rowne_eff[b] = (fwd && upd_first[b]) ? ((upd_addr >> COL_BITS) != (fa_i >> COL_BITS)) : rowne_lk[b];
+        end
+    end
     logic                     live_col_valid        [0:NUM_SPARE_COLS-1];
     logic [BIT_IDX_WIDTH-1:0] live_col_bit          [0:NUM_SPARE_COLS-1];
-    logic                     col_provisional_valid [0:NUM_SPARE_COLS-1];
-    logic                     already_col_covered;
-    logic                     claimed;
     logic [BIT_IDX_WIDTH-1:0] commit_slot;
 
-    // Per-bit decision, sequential priority chain (NOT independent parallel
-    // lanes -- see header). col_claim_valid[b]/col_claim_slot's b-th slice
-    // carry each bit's column-slot decision (if any) out to the always_ff
-    // below, using the SAME slot index computed here, so the register write
-    // can't race against a second computation.
+    // Per-bit decision. Within one word, the bits that want a column take the
+    // free column slots in ascending bit order -- the j-th such bit the j-th
+    // free slot, by ascending slot index -- a priority chain in effect (see
+    // the header). It is computed from a running count of the earlier bits
+    // that want one, built as a tree, so its depth grows with log2(DATA_WIDTH)
+    // rather than DATA_WIDTH: written bit by bit, the chain missed a 20 ns
+    // clock at sky130's slow corner. tests/hardware/tb_2d_analyzer_pipeline.sv
+    // checks it, decision for decision, against the bit-by-bit form
+    // (tests/hardware/onchip_2d_repair_analyzer_seq.sv). col_claim_valid[b] and
+    // col_claim_slot's b-th slice carry each bit's claim out to the always_ff
+    // below, which commits exactly these slots.
+    localparam integer NCS = (NUM_SPARE_COLS > 0) ? NUM_SPARE_COLS : 1;
+    localparam integer CW  = $clog2(NCS + 1);  // a count of 0..NUM_SPARE_COLS
+    logic                  active;              // this word is being analyzed
+    logic [DATA_WIDTH-1:0] covered;             // rule 2: a claimed column covers the bit
+    logic [DATA_WIDTH-1:0] cand;                // rule 3: wants a column
+    logic [DATA_WIDTH-1:0] first_sight;         // rule 4: wants a row
+    logic [NCS-1:0]        col_free;            // not claimed, not retired
+    logic [CW-1:0]         num_free;
+    logic [NCS*CW-1:0]     free_rank;           // per free slot: free slots below it
+    logic [DATA_WIDTH*CW-1:0] cand_cnt, cand_nxt;  // running counts, saturating at NUM_SPARE_COLS
+    logic [DATA_WIDTH*CW-1:0] cand_before;         // per bit: candidates below it
     logic [DATA_WIDTH-1:0]               wants_row;
     logic [DATA_WIDTH-1:0]               col_claim_valid;
     logic [DATA_WIDTH*BIT_IDX_WIDTH-1:0] col_claim_slot;
+    logic [DATA_WIDTH-1:0]               wants_below;  // some lower bit wants a row
+    integer                              sum, rank;
+
+    assign active = en_i && fv_i && !already_row_registered;
 
     always_comb begin
-        for (int k = 0; k < NUM_SPARE_COLS; k++) begin
-            // A bad spare column is never free: treat it as occupied.
-            col_provisional_valid[k] = live_col_valid[k] || bad_col[k];
+        num_free  = '0;
+        free_rank = '0;
+        rank      = 0;
+        for (int k = 0; k < NCS; k++) begin
+            col_free[k] = (k < NUM_SPARE_COLS) && !live_col_valid[k] && !bad_col[k];
+            free_rank[k*CW +: CW] = rank;
+            if (col_free[k]) rank = rank + 1;
         end
-
-        wants_row       = '0;
-        col_claim_valid = '0;
-        col_claim_slot  = '0;
-        // Per-bit scratch, re-initialized before every read below; defaulted
-        // here too so no path leaves them unassigned (Yosys infers a latch
-        // otherwise and rejects the always_comb).
-        already_col_covered = 1'b0;
-        claimed             = 1'b0;
+        num_free = rank;
 
         for (int b = 0; b < DATA_WIDTH; b++) begin
-            if (enable && fail_valid && !already_row_registered && fail_bitmask[b]) begin
-                already_col_covered = 1'b0;
-                for (int k = 0; k < NUM_SPARE_COLS; k++) begin
-                    if (live_col_valid[k] && live_col_bit[k] == b * WORDS_PER_ROW + fail_wcol) begin
-                        already_col_covered = 1'b1;
-                    end
-                end
-
-                if (already_col_covered) begin
-                    // rule 2: already covered, no action.
-                end else if (defer_mode ? (first_seen[b * WORDS_PER_ROW + fail_wcol]
-                                           && (first_row[(b * WORDS_PER_ROW + fail_wcol) * ADDR_WIDTH +: ADDR_WIDTH] >> COL_BITS)
-                                              != (fail_addr >> COL_BITS))
-                                        : seen_once[b * WORDS_PER_ROW + fail_wcol]) begin
-                    // rule 3 (deferred pass one: only a recurrence at a
-                    // DIFFERENT row counts): try to claim a column now, against
-                    // THIS-cycle provisional occupancy (earlier bits' claims
-                    // already reserved above), not a stale snapshot.
-                    claimed = 1'b0;
-                    for (int k = 0; k < NUM_SPARE_COLS; k++) begin
-                        if (!claimed && !col_provisional_valid[k]) begin
-                            col_provisional_valid[k] = 1'b1;
-                            col_claim_valid[b]       = 1'b1;
-                            col_claim_slot[b*BIT_IDX_WIDTH +: BIT_IDX_WIDTH] = k[BIT_IDX_WIDTH-1:0];
-                            claimed                  = 1'b1;
-                        end
-                    end
-                    if (!claimed) begin
-                        wants_row[b] = 1'b1;  // fallback, not a straight unrepairable
-                    end
-                end else begin
-                    // rule 4: first sighting -- row wins ties.
-                    wants_row[b] = 1'b1;
+            covered[b] = 1'b0;
+            for (int k = 0; k < NUM_SPARE_COLS; k++) begin
+                if (live_col_valid[k] && live_col_bit[k] == b * WORDS_PER_ROW + fail_wcol) begin
+                    covered[b] = 1'b1;
                 end
             end
+            // rule 3 (deferred pass one: only a recurrence at a DIFFERENT row
+            // counts) versus rule 4 (first sighting: row wins ties).
+            cand[b]        = active && fb_i[b] && !covered[b]
+                             && (defer_mode ? (first_eff[b] && rowne_eff[b]) : seen_eff[b]);
+            first_sight[b] = active && fb_i[b] && !covered[b]
+                             && !(defer_mode ? (first_eff[b] && rowne_eff[b]) : seen_eff[b]);
         end
+
+        // Inclusive running count of cand, a doubling (Kogge-Stone) tree.
+        for (int b = 0; b < DATA_WIDTH; b++) cand_cnt[b*CW +: CW] = cand[b];
+        for (int st = 1; st < DATA_WIDTH; st = st * 2) begin
+            for (int b = 0; b < DATA_WIDTH; b++) begin
+                if (b >= st) begin
+                    sum = cand_cnt[b*CW +: CW] + cand_cnt[(b-st)*CW +: CW];
+                    cand_nxt[b*CW +: CW] = (sum > NUM_SPARE_COLS) ? NUM_SPARE_COLS : sum;
+                end else begin
+                    cand_nxt[b*CW +: CW] = cand_cnt[b*CW +: CW];
+                end
+            end
+            cand_cnt = cand_nxt;
+        end
+
+        col_claim_valid = '0;
+        col_claim_slot  = '0;
+        for (int b = 0; b < DATA_WIDTH; b++) begin
+            cand_before[b*CW +: CW] = (b == 0) ? '0 : cand_cnt[(b-1)*CW +: CW];
+            // The j-th candidate takes the j-th free slot while any is left;
+            // past them it falls back to wanting a row (not a straight
+            // unrepairable).
+            col_claim_valid[b] = cand[b] && (cand_before[b*CW +: CW] < num_free);
+            for (int k = 0; k < NUM_SPARE_COLS; k++) begin
+                if (col_free[k] && free_rank[k*CW +: CW] == cand_before[b*CW +: CW]) begin
+                    col_claim_slot[b*BIT_IDX_WIDTH +: BIT_IDX_WIDTH] = k[BIT_IDX_WIDTH-1:0];
+                end
+            end
+            wants_row[b] = first_sight[b] || (cand[b] && !col_claim_valid[b]);
+        end
+
+        // For "two or more": some lower bit also wants a row (prefix OR tree).
+        wants_below = wants_row;
+        for (int st = 1; st < DATA_WIDTH; st = st * 2) wants_below = wants_below | (wants_below << st);
+        wants_below = wants_below << 1;
     end
 
     // Greedy: any bit left wanting a row asks for one. Deferred pass one: only a
@@ -329,13 +451,43 @@ module onchip_2d_repair_analyzer #(
     // remembered instead, below).
     logic word_wants_row;
     logic word_takes_row;
-    assign word_wants_row = enable && fail_valid && !already_row_registered
-                            && (defer_mode ? ((wants_row & (wants_row - 1'b1)) != '0) : (|wants_row));
+    assign word_wants_row = active && (defer_mode ? ((wants_row & wants_below) != '0) : (|wants_row));
     assign word_takes_row = word_wants_row && found_free_row;
 
     // The 2D analyzer never declares a chip unrepairable itself: it is lenient,
     // and the sequencer's verify pass decides (see the header).
     assign unrepairable = 1'b0;
+
+    // Verify pass: blame the spare that served the failing cell. A
+    // row-remapped row's cells all come from its spare row; at any other row,
+    // a failing column-remapped bit comes from its spare column.
+    logic [NUM_SPARE_ROWS-1:0] suspect_row_set;
+    logic [NUM_SPARE_COLS-1:0] suspect_col_set;
+    always_comb begin
+        suspect_row_set = '0;
+        suspect_col_set = '0;
+        if (verify_i && fv_i) begin
+            if (already_row_registered) begin
+                for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
+                    if (live_row_valid[i] && (live_row_addr[i] >> COL_BITS) == (fa_i >> COL_BITS)) begin
+                        suspect_row_set[i] = 1'b1;
+                    end
+                end
+            end else begin
+                for (int k = 0; k < NUM_SPARE_COLS; k++) begin
+                    if (live_col_valid[k] && fb_i[live_col_bit[k] >> COL_BITS]
+                        && live_col_bit[k] % WORDS_PER_ROW == fail_wcol) begin
+                        suspect_col_set[k] = 1'b1;
+                    end
+                end
+            end
+        end
+    end
+    // The sequencer reads has_suspect in the cycle bist_done rises; with PIPE
+    // the last verify fail may still be in the decision stage then, so it
+    // counts here as it already would have without PIPE.
+    assign has_suspect = (|suspect_row) || (|suspect_col)
+                         || (PIPE && ((|suspect_row_set) || (|suspect_col_set)));
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -359,26 +511,26 @@ module onchip_2d_repair_analyzer #(
             suspect_row       <= '0;
             bad_col           <= '0;
             suspect_col       <= '0;
+            upd_valid         <= 1'b0;
+            upd_addr          <= '0;
+            upd_seen          <= '0;
+            upd_first         <= '0;
         end else begin
-            // Verify pass: blame the spare that served the failing cell. A
-            // row-remapped row's cells all come from its spare row; at any
-            // other row, a failing column-remapped bit comes from its spare
-            // column.
-            if (verify_enable && fail_valid) begin
-                if (already_row_registered) begin
-                    for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
-                        if (live_row_valid[i] && (live_row_addr[i] >> COL_BITS) == (fail_addr >> COL_BITS)) begin
-                            suspect_row[i] <= 1'b1;
-                        end
-                    end
-                end else begin
-                    for (int k = 0; k < NUM_SPARE_COLS; k++) begin
-                        if (live_col_valid[k] && fail_bitmask[live_col_bit[k] >> COL_BITS]
-                            && live_col_bit[k] % WORDS_PER_ROW == fail_wcol) begin
-                            suspect_col[k] <= 1'b1;
-                        end
-                    end
-                end
+            for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
+                if (suspect_row_set[i]) suspect_row[i] <= 1'b1;
+            end
+            for (int k = 0; k < NUM_SPARE_COLS; k++) begin
+                if (suspect_col_set[k]) suspect_col[k] <= 1'b1;
+            end
+
+            // This cycle's seen_once/first_seen sets, for the lookup the next
+            // decision got while they were being committed (fwd above).
+            upd_valid <= en_i && fv_i && !already_row_registered;
+            upd_addr  <= fa_i;
+            for (int b = 0; b < DATA_WIDTH; b++) begin
+                upd_seen[b]  <= fb_i[b] && wants_row[b]
+                                && (!defer_mode || (!word_takes_row && !first_eff[b]));
+                upd_first[b] <= fb_i[b] && wants_row[b] && defer_mode && !word_takes_row && !first_eff[b];
             end
 
             // Bit bookkeeping: mark first sightings seen, commit column
@@ -387,19 +539,18 @@ module onchip_2d_repair_analyzer #(
             // live_col_* index, guaranteed by the sequential threading above,
             // the same "dynamic-index array write in a bounded loop" pattern
             // the row CAM below already uses for live_row_valid[free_row]).
-            if (enable && fail_valid && !already_row_registered) begin
+            if (en_i && fv_i && !already_row_registered) begin
                 for (int b = 0; b < DATA_WIDTH; b++) begin
-                    if (fail_bitmask[b]) begin
+                    if (fb_i[b]) begin
                         if (wants_row[b] && !defer_mode) begin
                             seen_once[b * WORDS_PER_ROW + fail_wcol] <= 1'b1;
                         end
                         // Deferred pass one: a bit left over in a word that
                         // takes no row is remembered with the row it first
                         // failed at; pass two treats it as seen.
-                        if (wants_row[b] && defer_mode && !word_takes_row
-                            && !first_seen[b * WORDS_PER_ROW + fail_wcol]) begin
+                        if (wants_row[b] && defer_mode && !word_takes_row && !first_eff[b]) begin
                             first_seen[b * WORDS_PER_ROW + fail_wcol] <= 1'b1;
-                            first_row[(b * WORDS_PER_ROW + fail_wcol) * ADDR_WIDTH +: ADDR_WIDTH] <= fail_addr;
+                            first_row[(b * WORDS_PER_ROW + fail_wcol) * ADDR_WIDTH +: ADDR_WIDTH] <= fa_i;
                             seen_once[b * WORDS_PER_ROW + fail_wcol]  <= 1'b1;
                         end
                         if (col_claim_valid[b]) begin
@@ -420,7 +571,7 @@ module onchip_2d_repair_analyzer #(
             // pass says whether the repair holds (see the header).
             if (word_takes_row) begin
                 live_row_valid[free_row] <= 1'b1;
-                live_row_addr[free_row]  <= fail_addr;
+                live_row_addr[free_row]  <= fa_i;
             end
 
             // Placed after the live-fail blocks above, same last-write-wins
@@ -428,17 +579,17 @@ module onchip_2d_repair_analyzer #(
             // onchip_row_repair_analyzer.sv (see that module's port-list
             // comment for the full timing argument, which applies unchanged
             // here since persistence stays row-only).
-            if (repair_load) begin
+            if (load_i) begin
                 for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
-                    live_row_valid[i] <= fuse_row_repair_en[i];
-                    live_row_addr[i]  <= fuse_faulty_row_addr[i*ADDR_WIDTH +: ADDR_WIDTH];
-                    row_repair_en[i]  <= fuse_row_repair_en[i];
-                    faulty_row_addr[i*ADDR_WIDTH +: ADDR_WIDTH] <= fuse_faulty_row_addr[i*ADDR_WIDTH +: ADDR_WIDTH];
+                    live_row_valid[i] <= fuse_en_i[i];
+                    live_row_addr[i]  <= fuse_addr_i[i*ADDR_WIDTH +: ADDR_WIDTH];
+                    row_repair_en[i]  <= fuse_en_i[i];
+                    faulty_row_addr[i*ADDR_WIDTH +: ADDR_WIDTH] <= fuse_addr_i[i*ADDR_WIDTH +: ADDR_WIDTH];
                 end
                 repair_load_done <= 1'b1;
             end
 
-            if (latch_result) begin
+            if (latch_i) begin
                 for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
                     row_repair_en[i] <= live_row_valid[i];
                     faulty_row_addr[i*ADDR_WIDTH +: ADDR_WIDTH] <= live_row_addr[i];
@@ -453,7 +604,7 @@ module onchip_2d_repair_analyzer #(
 
             // Retire: only ever pulsed between passes (the sequencer's
             // S_RETIRE), never in the same cycle as a fail or a latch.
-            if (retire) begin
+            if (retire_i) begin
                 for (int i = 0; i < NUM_SPARE_ROWS; i++) begin
                     if (suspect_row[i]) begin
                         bad_row[i]        <= 1'b1;

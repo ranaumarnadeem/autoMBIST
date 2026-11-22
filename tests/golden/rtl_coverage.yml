@@ -89,11 +89,12 @@ files:
     - 197:38 branch else
     - 223:17 line case
   rtl/onchip_2d_repair_analyzer.sv:
-    covered: 63
-    points: 65
+    covered: 85
+    points: 88
     uncovered:
-    - 431:13 branch if
-    - 432:17 line block
+    - 419:69 branch cond_then
+    - 582:13 branch if
+    - 583:17 line block
   rtl/onchip_diagnosis_log.sv:
     covered: 20
     points: 20
@@ -116,5 +117,5 @@ files:
     points: 4
     uncovered: []
 total:
-  covered: 478
-  points: 509
+  covered: 500
+  points: 532

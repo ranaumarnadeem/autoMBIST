@@ -74,6 +74,19 @@ def test_config_minimal_no_macros():
     assert out["VERILOG_FILES"] == ["mem_subsystem.sv", "sky130_srams_bb.v"]
     assert "MACROS" not in out  # no macros -> no macro machinery
     assert "PDN_MACRO_CONNECTIONS" not in out
+    assert "SYNTH_STRATEGY" not in out  # LibreLane's own default
+
+
+@pytest.mark.parametrize("strategy", ["DELAY 1", "AREA 0", "DELAY 4", "AREA 3"])
+def test_config_passes_the_synthesis_strategy(strategy):
+    out = build_librelane_config({**_min_cfg(), "synth_strategy": strategy})
+    assert out["SYNTH_STRATEGY"] == strategy
+
+
+@pytest.mark.parametrize("strategy", ["DELAY", "delay 1", "DELAY 5", "AREA 4", 1, "DELAY 1 "])
+def test_config_rejects_an_unknown_synthesis_strategy(strategy):
+    with pytest.raises(SignoffConfigError, match="synth_strategy"):
+        build_librelane_config({**_min_cfg(), "synth_strategy": strategy})
 
 
 def test_config_with_macros_bakes_the_recipe():
