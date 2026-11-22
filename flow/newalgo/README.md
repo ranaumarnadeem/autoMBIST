@@ -112,6 +112,58 @@ again `VPWR` and `VGND`, with 0 disconnected pins. `DRT-0418` ("no pins on
 routing grid") is reported for a few macro address pins here as in
 `selfrepair_x`, whose routing was also clean.
 
+## selfrepair_mp with on-chip column repair (hardened 2026-11-22)
+
+The same design with the macro's spare column used as well: `redundancy:
+{num_spare_rows: 1, num_spare_cols: 1, words_per_row: 4, onchip_selfrepair:
+true, onchip_col_repair: true}`, `ports` with `spare_wen: spare_wen0`, and
+`flow/newalgo/harden_mp_col.yml`. With 4 words per row a spare column
+replaces one physical column, so the 2D analyzer tracks 128 physical
+columns.
+
+Before hardening, the wrapper was simulated against OpenRAM's own behavioral
+model of the macro, with two changes in a copy: one spare cell per physical
+row, shared by the row's words, and a stuck-at-1 bitline (bit 5 of word
+column 2 in every row). Self-repair then succeeds and a rescan finds no
+failing cell; at `words_per_row: 1` (the control) it reports unrepairable.
+
+The first harden missed timing at the slow corner, and closing it took two
+changes, each of which fails alone:
+
+| 2D analyzer | `AREA 0` (LibreLane's default) | `DELAY 1` |
+|---|---|---|
+| as before (bit by bit, no stage) | -1.84 ns, 8 paths per slow corner | -4.67 ns, 203 paths |
+| pipeline stage + claims from counts | -1.57 ns, 8 paths | **+3.0 ns, met** |
+
+(Worst setup slack, `max_ss_100C_1v60`, 20 ns clock.) The analyzer now has a
+pipeline stage when `words_per_row > 1`, and computes its column claims from
+running counts built as trees (`rtl/onchip_2d_repair_analyzer.sv`, checked
+decision for decision against the bit-by-bit version by
+`tests/integration/test_2d_analyzer_pipeline.py`). With the area strategy the
+remaining path ran through the 32-input "any bit wants a row" OR, which
+synthesis maps as a chain of six OR4 gates; `synth_strategy: "DELAY 1"` in
+the harden config maps it as a tree.
+
+**Result:** exit code 0, all stages.
+
+| Check | Result |
+|---|---|
+| LVS | 0 errors, 0 unmatched devices or nets |
+| Routing DRC | 0 |
+| Antenna | 0 violating nets or pins |
+| Setup / hold worst slack | +3.0 ns / +0.10 ns (20 ns clock), no violations at any corner |
+| Standard cells | 6,643 (5,190 row-only) |
+| Magic / KLayout DRC | 362 / 657, macro-internal, not fatal (see `src/autombist/signoff.py`) |
+| Max slew | 615 violations at the slow (ss) corners, 62 at typical (tt) |
+| Max capacitance | 2 violations, slow corner |
+
+The slew violations are design-rule warnings, not timing failures (the
+timing above includes the slow transitions). The worst is 0.98 ns against the
+0.75 ns limit at the typical corner and 1.64 ns at the slow one; row-only
+`selfrepair_mp` already reached 1.22 ns (1.63x) at its slow corner, but the
+delay strategy, which favours speed over drive, leaves many more. Not
+investigated further. The 2 `RSZ-0020` floating nets are `VPWR` and `VGND`.
+
 ## march-1r1w: real, genuinely-dual-port macro (hardened, DRC not clean)
 
 march-1r1w's self-repair wrapper (Workstream A2, the multi-port scaffold)

@@ -72,6 +72,8 @@ def normalize_lef_units(text: str, target_dbu: int = 1000) -> tuple[str, int]:
 # --------------------------------------------------------------------------
 _REQUIRED_TOP = ("design_name", "verilog_files", "clock_port")
 _REQUIRED_MACRO = ("name", "gds", "lef", "instance")
+# LibreLane 3's SYNTH_STRATEGY values: ABC scripts that map for area or delay.
+_SYNTH_STRATEGY_RE = re.compile(r"(AREA [0-3]|DELAY [0-4])")
 
 
 def _validate_harden_config(cfg: dict[str, Any]) -> None:
@@ -96,6 +98,11 @@ def _validate_harden_config(cfg: dict[str, Any]) -> None:
         if inst in seen_instances:
             raise SignoffConfigError(f"duplicate macro instance: {inst}")
         seen_instances.add(inst)
+    strategy = cfg.get("synth_strategy")
+    if strategy is not None and not (isinstance(strategy, str) and _SYNTH_STRATEGY_RE.fullmatch(strategy)):
+        raise SignoffConfigError(
+            f"synth_strategy must be 'AREA 0'..'AREA 3' or 'DELAY 0'..'DELAY 4', got {strategy!r}"
+        )
 
 
 def build_librelane_config(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -107,7 +114,9 @@ def build_librelane_config(cfg: dict[str, Any]) -> dict[str, Any]:
     {name, gds, lef, instance, location:[x,y], orientation}), and a power block
     {vdd_net, gnd_net, macro_vdd_pin, macro_gnd_pin} (defaults suit sky130
     OpenRAM macros: VPWR/VGND design nets, vccd1/vssd1 macro pins). Macro halos
-    default to 15um. Raises SignoffConfigError on a malformed config.
+    default to 15um. synth_strategy (e.g. "DELAY 1") sets LibreLane's
+    SYNTH_STRATEGY; left out, LibreLane's own default (AREA 0) applies. Raises
+    SignoffConfigError on a malformed config.
     """
     _validate_harden_config(cfg)
 
@@ -122,6 +131,12 @@ def build_librelane_config(cfg: dict[str, Any]) -> dict[str, Any]:
         out["FP_SIZING"] = "absolute"
         out["DIE_AREA"] = list(cfg["die_area"])
     out["PL_TARGET_DENSITY_PCT"] = cfg.get("pl_target_density_pct", 40)
+    if cfg.get("synth_strategy"):
+        # The area default maps a wide OR as a chain of gates; a design whose
+        # critical path ends in one (the column-muxed 2D analyzer's "any bit
+        # wants a row") meets a 20 ns slow-corner clock only with a delay
+        # strategy (flow/newalgo/README.md).
+        out["SYNTH_STRATEGY"] = cfg["synth_strategy"]
 
     macros = cfg.get("macros", [])
     if macros:

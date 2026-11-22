@@ -1,0 +1,32 @@
+# Harden config for selfrepair_mp WITH on-chip column repair (`autombist
+# harden`) -- MATS+ self-repair wrapping the real sky130_sram_32b512w OpenRAM
+# macro, using its spare column as well as a spare row. The macro has 4 words
+# per row, so a spare column replaces one physical column (one bit of one word
+# column) and the 2D analyzer runs its column-muxed pipeline stage.
+#
+# synth_strategy "DELAY 1": with LibreLane's default (AREA 0) the analyzer's
+# "any bit wants a row" OR is mapped as a chain of gates and misses the 20 ns
+# clock at the slow corner (flow/newalgo/README.md has the numbers).
+#
+# EDIT the absolute paths below to your generated wrapper (autombist generate
+# --algo mats-plus with read_latency: 0 and the redundancy block in
+# flow/newalgo/README.md) and your units-normalized macro.
+design_name: selfrepair_mp
+verilog_files:
+  - gen_mpc/sram_wrap_mp/mats_plus/mats_plus_algo.sv
+  - gen_mpc/sram_wrap_mp/mats_plus/mats_plus_fsm.sv
+  - gen_mpc/sram_wrap_mp/mats_plus/mats_plus_top.sv
+  - gen_mpc/sram_wrap_mp/onchip_2d_repair_analyzer.sv
+  - gen_mpc/sram_wrap_mp/onchip_selfrepair_ctrl.sv
+  - gen_mpc/sram_wrap_mp/repair_remap_row.sv
+  - gen_mpc/sram_wrap_mp/repair_remap_col.sv
+  - gen_mpc/sram_wrap_mp/sram_wrap_mp_mbist.v
+  - flow/newalgo/sram_wrap_mp.sv
+  - flow/multimem/sky130_srams_bb.v
+clock_port: clk
+clock_period: 20
+die_area: [0, 0, 900, 600]
+pl_target_density_pct: 25
+synth_strategy: "DELAY 1"
+macros:
+  - {name: sky130_sram_32b512w, gds: macros_1000/sky130_sram_32b512w.gds, lef: macros_1000/sky130_sram_32b512w.lef, instance: u_sram.u_macro, location: [55, 60]}

@@ -55,6 +55,13 @@ everything that predates the migration.
   In the generated two-port `tb/` model a spare lane reads X while the other
   port writes that row's spare cell in the same cycle. At one word per row
   nothing changes.
+- `autombist harden` takes an optional `synth_strategy` in its config
+  (`"AREA 0"` to `"AREA 3"`, `"DELAY 0"` to `"DELAY 4"`), passed to LibreLane
+  as `SYNTH_STRATEGY`; left out, LibreLane's default applies.
+  `flow/newalgo/harden_mp_col.yml` hardens `selfrepair_mp` with on-chip
+  column repair using `"DELAY 1"`: LVS, routing DRC and antenna clean, timing
+  met at every corner, with 615 slow-corner and 62 typical-corner max-slew
+  warnings.
 - [Using the Safety Report in an FMEDA](docs/source/safety-report.md): the inputs a
   safety engineer must supply, unweighted coverage against diagnostic coverage, a
   worked example a test re-runs, and what autoMBIST does not provide (#41).
@@ -255,6 +262,19 @@ everything that predates the migration.
   `-v` so a clean result is logged too.
 
 ### Changed
+- The on-chip 2D analyzer (`rtl/onchip_2d_repair_analyzer.sv`) computes its
+  column claims from running counts built as trees rather than bit by bit, and
+  with column muxing (`words_per_row > 1`) adds a pipeline stage: the first
+  registers the inputs and each bit's physical-column lookup, the second
+  decides a cycle later. Its decisions are unchanged, checked against the
+  bit-by-bit version on random fail streams
+  (`tests/integration/test_2d_analyzer_pipeline.py`); with muxing its outputs
+  come a cycle later, which the self-repair sequence already leaves room for,
+  and self-repair cycle counts are unchanged. 2D wrappers grow 4-25 cells at
+  one word per row, and 33-61 flops with muxing. Together with
+  `synth_strategy: "DELAY 1"` this lets on-chip column repair on
+  `sky130_sram_32b512w` (4 words per row) meet a 20 ns clock at the slow
+  corner; neither change does alone (`flow/newalgo/README.md`).
 - The `config.yml` snapshot `generate` writes names each run parameter once:
   `use_saboteur`, `algo`, `fault_type`, `fault_count`, `fault_seed` and
   `pulse_width_ns`, without the `autombist_use_saboteur`, `autombist_algo`, ...

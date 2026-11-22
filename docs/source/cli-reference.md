@@ -1200,6 +1200,11 @@ The config maps a `design_name`, `verilog_files`, `clock_port`/`clock_period`,
 optional `die_area`, and a list of `macros` (each `{name, gds, lef, instance,
 location}`) into a full LibreLane config. Point `gds`/`lef` at the
 **units-normalized** LEF (run `fix-lef-units` first; the GDS needs no change).
+An optional `synth_strategy` (`"AREA 0"` to `"AREA 3"`, `"DELAY 0"` to
+`"DELAY 4"`) sets LibreLane's `SYNTH_STRATEGY`; without it LibreLane's default,
+`AREA 0`, applies. On-chip column repair with column muxing needs
+`"DELAY 1"` to meet a 20 ns clock at the slow corner
+(`flow/newalgo/harden_mp_col.yml`).
 
 `--run` checks for `nix` on `PATH` before invoking LibreLane (`nix run
 <ref>`); if it's missing, `harden` prints an actionable error naming the
