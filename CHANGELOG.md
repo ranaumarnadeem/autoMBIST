@@ -356,6 +356,18 @@ Results are unchanged in every case (#64).
   give a warning instead of failing, since they depend on the tool. Flip-flops,
   latches, clock cycles and verdicts still fail on any version. CI sets
   `AUTOMBIST_GOLDEN_STRICT=1`, so there a deviation fails on any version.
+- Gate-level tests for what synthesis does to the handed-over netlist. The
+  JTAG/IJTAG network (`wrap-test-access` output) is synthesized with Yosys,
+  hierarchy kept: every TAP, SIB, TDR and synchronizer instance must survive as
+  the same module, and the JTAG testbench, checking only TDO, runs against the
+  gates: run_mbist (good memory passes, stuck bit fails), the IDCODE read,
+  a shared-bus network, on-chip self-repair started and read back over JTAG
+  (repairable and unrepairable, with the diagnosis log's wide registers on the
+  chain) and a repair signature written through the wide repair-pin TDRs. The
+  synthesized controller also runs on-chip row, 2D and column-muxed self-repair
+  and the diagnosis log, each with an unrepairable or overflow counterpart.
+  Breaking the row remap, the column remap or the diagnosis overflow in the RTL,
+  or deleting a SIB from the netlist, fails them.
 
 ## [0.6.0] - 2026-11-04
 
