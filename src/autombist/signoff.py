@@ -74,6 +74,43 @@ _REQUIRED_TOP = ("design_name", "verilog_files", "clock_port")
 _REQUIRED_MACRO = ("name", "gds", "lef", "instance")
 # LibreLane 3's SYNTH_STRATEGY values: ABC scripts that map for area or delay.
 _SYNTH_STRATEGY_RE = re.compile(r"(AREA [0-3]|DELAY [0-4])")
+# design_repair keys -> the LibreLane variables they set. Margins and the wire
+# length apply to both resizer repair passes: after global placement and, with
+# after_global_route, after global routing.
+_DESIGN_REPAIR_PCT = {
+    "slew_margin_pct": ("DESIGN_REPAIR_MAX_SLEW_PCT", "GRT_DESIGN_REPAIR_MAX_SLEW_PCT"),
+    "cap_margin_pct": ("DESIGN_REPAIR_MAX_CAP_PCT", "GRT_DESIGN_REPAIR_MAX_CAP_PCT"),
+}
+_DESIGN_REPAIR_KEYS = (*_DESIGN_REPAIR_PCT, "max_wire_length_um", "after_global_route", "exclude_cells")
+
+
+def _validate_design_repair(dr: Any) -> None:
+    if not isinstance(dr, dict):
+        raise SignoffConfigError("design_repair must be a mapping")
+    unknown = sorted(set(dr) - set(_DESIGN_REPAIR_KEYS))
+    if unknown:
+        raise SignoffConfigError(
+            f"design_repair: unknown key(s) {unknown}; known: {list(_DESIGN_REPAIR_KEYS)}"
+        )
+    for key in _DESIGN_REPAIR_PCT:
+        v = dr.get(key)
+        if v is not None and (isinstance(v, bool) or not isinstance(v, int) or not 0 <= v < 100):
+            raise SignoffConfigError(f"design_repair.{key} must be an integer from 0 to 99, got {v!r}")
+    wl = dr.get("max_wire_length_um")
+    if wl is not None and (isinstance(wl, bool) or not isinstance(wl, (int, float)) or wl < 0):
+        raise SignoffConfigError(
+            f"design_repair.max_wire_length_um must be a number >= 0 (0 = no limit), got {wl!r}"
+        )
+    agr = dr.get("after_global_route")
+    if agr is not None and not isinstance(agr, bool):
+        raise SignoffConfigError(f"design_repair.after_global_route must be true or false, got {agr!r}")
+    cells = dr.get("exclude_cells")
+    if cells is not None and not (
+        isinstance(cells, list) and cells and all(isinstance(c, str) and c.strip() == c and c for c in cells)
+    ):
+        raise SignoffConfigError(
+            f"design_repair.exclude_cells must be a non-empty list of cell names or wildcards, got {cells!r}"
+        )
 
 
 def _validate_harden_config(cfg: dict[str, Any]) -> None:
@@ -103,6 +140,8 @@ def _validate_harden_config(cfg: dict[str, Any]) -> None:
         raise SignoffConfigError(
             f"synth_strategy must be 'AREA 0'..'AREA 3' or 'DELAY 0'..'DELAY 4', got {strategy!r}"
         )
+    if cfg.get("design_repair") is not None:
+        _validate_design_repair(cfg["design_repair"])
 
 
 def build_librelane_config(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -115,7 +154,12 @@ def build_librelane_config(cfg: dict[str, Any]) -> dict[str, Any]:
     {vdd_net, gnd_net, macro_vdd_pin, macro_gnd_pin} (defaults suit sky130
     OpenRAM macros: VPWR/VGND design nets, vccd1/vssd1 macro pins). Macro halos
     default to 15um. synth_strategy (e.g. "DELAY 1") sets LibreLane's
-    SYNTH_STRATEGY; left out, LibreLane's own default (AREA 0) applies. Raises
+    SYNTH_STRATEGY; left out, LibreLane's own default (AREA 0) applies.
+    design_repair tunes the resizer's slew/capacitance repair: slew_margin_pct
+    and cap_margin_pct (how far under the limit it repairs to, both passes),
+    max_wire_length_um (0 = no limit), after_global_route (a second pass on
+    global-route parasitics) and exclude_cells (EXTRA_EXCLUDED_CELLS, kept out of
+    synthesis and PnR); a key left out keeps LibreLane's default. Raises
     SignoffConfigError on a malformed config.
     """
     _validate_harden_config(cfg)
@@ -137,6 +181,18 @@ def build_librelane_config(cfg: dict[str, Any]) -> dict[str, Any]:
         # wants a row") meets a 20 ns slow-corner clock only with a delay
         # strategy (flow/newalgo/README.md).
         out["SYNTH_STRATEGY"] = cfg["synth_strategy"]
+    dr = cfg.get("design_repair") or {}
+    for key, variables in _DESIGN_REPAIR_PCT.items():
+        if key in dr:
+            for var in variables:
+                out[var] = dr[key]
+    if "max_wire_length_um" in dr:
+        out["DESIGN_REPAIR_MAX_WIRE_LENGTH"] = dr["max_wire_length_um"]
+        out["GRT_DESIGN_REPAIR_MAX_WIRE_LENGTH"] = dr["max_wire_length_um"]
+    if "after_global_route" in dr:
+        out["RUN_POST_GRT_DESIGN_REPAIR"] = dr["after_global_route"]
+    if "exclude_cells" in dr:
+        out["EXTRA_EXCLUDED_CELLS"] = list(dr["exclude_cells"])
 
     macros = cfg.get("macros", [])
     if macros:

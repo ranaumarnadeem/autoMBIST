@@ -89,6 +89,49 @@ def test_config_rejects_an_unknown_synthesis_strategy(strategy):
         build_librelane_config({**_min_cfg(), "synth_strategy": strategy})
 
 
+_REPAIR_VARS = (
+    "DESIGN_REPAIR_MAX_SLEW_PCT", "GRT_DESIGN_REPAIR_MAX_SLEW_PCT",
+    "DESIGN_REPAIR_MAX_CAP_PCT", "GRT_DESIGN_REPAIR_MAX_CAP_PCT",
+    "DESIGN_REPAIR_MAX_WIRE_LENGTH", "GRT_DESIGN_REPAIR_MAX_WIRE_LENGTH",
+    "RUN_POST_GRT_DESIGN_REPAIR", "EXTRA_EXCLUDED_CELLS",
+)
+
+
+def test_config_leaves_design_repair_to_librelane_by_default():
+    out = build_librelane_config(_min_cfg())
+    assert not set(_REPAIR_VARS) & set(out)
+
+
+def test_config_passes_design_repair_to_both_passes():
+    out = build_librelane_config({**_min_cfg(), "design_repair": {
+        "slew_margin_pct": 65, "cap_margin_pct": 30, "max_wire_length_um": 300,
+        "after_global_route": True, "exclude_cells": ["sky130_fd_sc_hd__clkdlybuf4s*"],
+    }})
+    assert out["DESIGN_REPAIR_MAX_SLEW_PCT"] == out["GRT_DESIGN_REPAIR_MAX_SLEW_PCT"] == 65
+    assert out["DESIGN_REPAIR_MAX_CAP_PCT"] == out["GRT_DESIGN_REPAIR_MAX_CAP_PCT"] == 30
+    assert out["DESIGN_REPAIR_MAX_WIRE_LENGTH"] == out["GRT_DESIGN_REPAIR_MAX_WIRE_LENGTH"] == 300
+    assert out["RUN_POST_GRT_DESIGN_REPAIR"] is True
+    assert out["EXTRA_EXCLUDED_CELLS"] == ["sky130_fd_sc_hd__clkdlybuf4s*"]
+
+
+def test_config_design_repair_sets_only_the_keys_given():
+    out = build_librelane_config({**_min_cfg(), "design_repair": {"after_global_route": False}})
+    assert out["RUN_POST_GRT_DESIGN_REPAIR"] is False
+    assert not (set(_REPAIR_VARS) - {"RUN_POST_GRT_DESIGN_REPAIR"}) & set(out)
+
+
+@pytest.mark.parametrize("repair", [
+    [], {"slew_margin": 50}, {"slew_margin_pct": 100}, {"slew_margin_pct": -1},
+    {"slew_margin_pct": 50.5}, {"slew_margin_pct": True}, {"cap_margin_pct": "30"},
+    {"max_wire_length_um": -1}, {"max_wire_length_um": "300"}, {"after_global_route": 1},
+    {"exclude_cells": []}, {"exclude_cells": "sky130_fd_sc_hd__clkdlybuf4s*"},
+    {"exclude_cells": [""]}, {"exclude_cells": [" x"]},
+])
+def test_config_rejects_a_malformed_design_repair(repair):
+    with pytest.raises(SignoffConfigError, match="design_repair"):
+        build_librelane_config({**_min_cfg(), "design_repair": repair})
+
+
 def test_config_with_macros_bakes_the_recipe():
     cfg = _min_cfg()
     cfg["die_area"] = [0, 0, 1120, 700]

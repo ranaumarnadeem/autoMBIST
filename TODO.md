@@ -216,9 +216,11 @@ end (its own integration tests against a 1.1.0 manifest).
     `sky130_sram_32b512w`, 4 words per row) hardened 2026-11-21, the same
     checks clean, and on 2026-11-22 with on-chip column repair too
     (`harden_mp_col.yml`): clean and timing met, but only with the analyzer's
-    pipeline stage and `synth_strategy: "DELAY 1"`, at the cost of 615
-    slow-corner and 62 typical-corner max-slew violations. Not yet
-    re-hardened: `flow/multimem/mbist` and march-1r1w.
+    pipeline stage and `synth_strategy: "DELAY 1"`; its 615 max-slew
+    violations came down to 5 (the `clk` input port, slow corner) with the
+    `design_repair` harden options. The other hardened designs here were not
+    re-run with them and still have their own few slow-corner slew
+    violations. Not yet re-hardened: `flow/multimem/mbist` and march-1r1w.
   - ~~The 1r1w macro's words per row is unknown~~ — done 2026-11-19: 2, from
     its `datasheet.info`; `flow/newalgo`'s 1r1w config sets it, and
     march-1r1w is simulated against a 2-words-per-row dual-port model.

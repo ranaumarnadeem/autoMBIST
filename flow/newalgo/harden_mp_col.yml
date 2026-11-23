@@ -8,6 +8,14 @@
 # "any bit wants a row" OR is mapped as a chain of gates and misses the 20 ns
 # clock at the slow corner (flow/newalgo/README.md has the numbers).
 #
+# design_repair: without it, 615 pins exceed sky130's 0.75 ns max transition
+# at the slow corner and 62 at typical. The resizer repairs to 20% under the
+# limit on estimated wires, which come out about 1.7x lighter than the routed
+# ones, and it buffers with the clkdlybuf4s25_1 delay cell, which the PDK's
+# layout exclusion list leaves in. A wider margin, a second repair pass after
+# global routing, a wire-length limit and excluding the delay cells leave none
+# at typical (flow/newalgo/README.md).
+#
 # EDIT the absolute paths below to your generated wrapper (autombist generate
 # --algo mats-plus with read_latency: 0 and the redundancy block in
 # flow/newalgo/README.md) and your units-normalized macro.
@@ -28,5 +36,11 @@ clock_period: 20
 die_area: [0, 0, 900, 600]
 pl_target_density_pct: 25
 synth_strategy: "DELAY 1"
+design_repair:
+  slew_margin_pct: 50
+  cap_margin_pct: 30
+  max_wire_length_um: 300
+  after_global_route: true
+  exclude_cells: ["sky130_fd_sc_hd__clkdlybuf4s*"]
 macros:
   - {name: sky130_sram_32b512w, gds: macros_1000/sky130_sram_32b512w.gds, lef: macros_1000/sky130_sram_32b512w.lef, instance: u_sram.u_macro, location: [55, 60]}

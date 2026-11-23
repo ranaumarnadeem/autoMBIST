@@ -60,8 +60,16 @@ everything that predates the migration.
   as `SYNTH_STRATEGY`; left out, LibreLane's default applies.
   `flow/newalgo/harden_mp_col.yml` hardens `selfrepair_mp` with on-chip
   column repair using `"DELAY 1"`: LVS, routing DRC and antenna clean, timing
-  met at every corner, with 615 slow-corner and 62 typical-corner max-slew
-  warnings.
+  met at every corner.
+- `autombist harden` takes an optional `design_repair` block: slew and
+  capacitance repair margins, a wire-length limit (both resizer passes), a
+  second pass after global routing, and cells to exclude. Left out, nothing
+  changes. With it `harden_mp_col.yml` goes from 615 max-slew and 2
+  max-capacitance violations to 5 and 0, all 5 on the `clk` input port at the
+  slow corner, and its slow-corner setup slack from +3.0 to +5.6 ns. The
+  resizer had been buffering with sky130's `clkdlybuf4s25_1` delay cell,
+  which the PDK does not exclude, and repairing on wire estimates the routing
+  exceeded (`flow/newalgo/README.md`).
 - [Using the Safety Report in an FMEDA](docs/source/safety-report.md): the inputs a
   safety engineer must supply, unweighted coverage against diagnostic coverage, a
   worked example a test re-runs, and what autoMBIST does not provide (#41).

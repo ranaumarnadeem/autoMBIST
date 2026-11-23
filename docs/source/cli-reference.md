@@ -1206,6 +1206,25 @@ An optional `synth_strategy` (`"AREA 0"` to `"AREA 3"`, `"DELAY 0"` to
 `"DELAY 1"` to meet a 20 ns clock at the slow corner
 (`flow/newalgo/harden_mp_col.yml`).
 
+An optional `design_repair` block tunes OpenROAD's slew and capacitance
+repair; each key left out keeps LibreLane's default:
+
+| Key | Sets | Meaning |
+|---|---|---|
+| `slew_margin_pct` | `DESIGN_REPAIR_MAX_SLEW_PCT`, `GRT_DESIGN_REPAIR_MAX_SLEW_PCT` | Repair to this many percent under the max transition (0-99; LibreLane: 20, 10 after routing) |
+| `cap_margin_pct` | `DESIGN_REPAIR_MAX_CAP_PCT`, `GRT_DESIGN_REPAIR_MAX_CAP_PCT` | The same for max capacitance |
+| `max_wire_length_um` | `DESIGN_REPAIR_MAX_WIRE_LENGTH`, `GRT_DESIGN_REPAIR_MAX_WIRE_LENGTH` | Buffer wires longer than this (0: no limit) |
+| `after_global_route` | `RUN_POST_GRT_DESIGN_REPAIR` | A second repair pass on global-route parasitics (LibreLane: off) |
+| `exclude_cells` | `EXTRA_EXCLUDED_CELLS` | Cells or wildcards kept out of synthesis and place-and-route |
+
+The margins and wire length apply to both repair passes. The resizer repairs
+on estimated wires, which come out lighter than routed ones, and on sky130
+it buffers with the `clkdlybuf4s25_1` delay cell, which the PDK does not
+exclude; `harden_mp_col.yml` uses `{slew_margin_pct: 50, cap_margin_pct: 30,
+max_wire_length_um: 300, after_global_route: true, exclude_cells:
+["sky130_fd_sc_hd__clkdlybuf4s*"]}`, which took it from 615 max-slew
+violations to 5 (`flow/newalgo/README.md`).
+
 `--run` checks for `nix` on `PATH` before invoking LibreLane (`nix run
 <ref>`); if it's missing, `harden` prints an actionable error naming the
 missing tool instead of a raw subprocess traceback.
