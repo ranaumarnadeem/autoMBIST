@@ -492,6 +492,15 @@ def _single_fault_file(workdir: Path, index: int, record: FaultRecord) -> Path:
     return write_fault_list([record], directory / f"{index}.txt")
 
 
+def _remove_fault_runs_dir(workdir: Path) -> None:
+    """The emptied ``fault_runs/`` directory, once a campaign ends. Left alone
+    if anything is still in it (a file the caller put there)."""
+    try:
+        (Path(workdir) / "fault_runs").rmdir()
+    except OSError:
+        pass
+
+
 def _validate_fault_addresses(mem: MemoryParams, faults: list[FaultRecord]) -> None:
     """A fault record's address/bit/port fields feed registers in the
     generated testbench that are exactly ADDR_WIDTH/DATA_WIDTH/num_ports bits
@@ -1296,16 +1305,26 @@ def _run_campaign_against_artifact(
     )
 
     def _run_one_fault(i: int, record: FaultRecord) -> FaultResult:
-        out = run_one(
-            artifact, alg_file=alg_file, fault_file=_single_fault_file(workdir, i, record), index=0,
-            verbose=verbose, extra_plusargs=plusargs,
-        )
+        # Each fault's list is removed after its run: a caller's --workdir is
+        # kept, and would otherwise collect one file per fault, stale ones from
+        # a bigger earlier campaign included.
+        fault_file = _single_fault_file(workdir, i, record)
+        try:
+            out = run_one(
+                artifact, alg_file=alg_file, fault_file=fault_file, index=0,
+                verbose=verbose, extra_plusargs=plusargs,
+            )
+        finally:
+            fault_file.unlink(missing_ok=True)
         return _fault_result(i, record, out, with_hits=verbose)
 
-    return _run_faults_and_tally(
-        faults, _run_one_fault, algo_name=alg.name, mem=mem, artifact=artifact, sim=sim,
-        start=start, progress_callback=progress_callback, max_workers=max_workers,
-    )
+    try:
+        return _run_faults_and_tally(
+            faults, _run_one_fault, algo_name=alg.name, mem=mem, artifact=artifact, sim=sim,
+            start=start, progress_callback=progress_callback, max_workers=max_workers,
+        )
+    finally:
+        _remove_fault_runs_dir(workdir)
 
 
 def _compile_algo_front(

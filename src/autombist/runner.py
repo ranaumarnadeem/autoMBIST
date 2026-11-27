@@ -426,6 +426,15 @@ def run_simulation(
     # build directory is keyed by the model too: make only compares mtimes, so
     # switching to a model older than the last build would otherwise reuse a
     # simulator compiled from the previous one.
+    # make splits a source list on whitespace and has no quoting for it, so a
+    # path with a space would reach the compiler as two missing files.
+    spaced = [str(p) for p in (*models, module_outdir) if any(ch.isspace() for ch in str(p))]
+    if spaced:
+        raise SimulationError(
+            "simulation paths cannot contain whitespace (make splits its source lists on it): "
+            + ", ".join(repr(p) for p in spaced)
+            + ". Move or copy the file, or pick an output directory, without spaces"
+        )
     command.insert(command.index("sim"), "SRAM_SOURCE=" + " ".join(str(p) for p in models))
     command.insert(command.index("sim"), f"SIM_BUILD={_sim_build_dir(module_outdir, algo, use_saboteur, models)}")
     # Redundancy builds add the external row-repair remap RTL to the compile.

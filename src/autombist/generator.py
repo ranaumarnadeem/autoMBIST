@@ -16,6 +16,7 @@ from jinja2 import Environment, PackageLoader, TemplateNotFound
 # type. `autombist.repair` never imports back (enforced by
 # tests/software/test_repair_package_boundary.py), keeping it extractable.
 from .repair.types import SpareGeometry, SpareGeometryError
+from .yaml_io import construct_unique_mapping
 
 REQUIRED_TOP_KEYS = (
     "wrapper_module_name",
@@ -108,13 +109,9 @@ class _DuplicateKeyGuardLoader(yaml.SafeLoader):
 
 
 def _construct_mapping_no_dupes(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
-    mapping: dict[Any, Any] = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        if key in mapping:
-            raise ConfigError(f"Duplicate key in config YAML: {key!r}")
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
+    return construct_unique_mapping(
+        loader, node, deep, lambda key, _node: ConfigError(f"Duplicate key in config YAML: {key!r}"),
+    )
 
 
 _DuplicateKeyGuardLoader.add_constructor(
@@ -1291,9 +1288,12 @@ def generate_from_config(
     config = load_config(config_path)
     # algo and fault_type are command options; in a config they are snapshot
     # keys generate writes, never reads. A user's `algo: march-raw` was
-    # silently replaced by the option's value (#60).
+    # silently replaced by the option's value (#60). A snapshot (it always has
+    # algo_dir, which no user writes) records the run that wrote it, and this
+    # run's options replace those values below, so it is not checked.
+    is_snapshot = "algo_dir" in config
     for key, given in (("algo", algo), ("fault_type", fault_type)):
-        if key in config and str(config[key]).strip().lower() != given:
+        if not is_snapshot and key in config and str(config[key]).strip().lower() != given:
             raise ConfigError(
                 f"{config_path} sets {key}: {config[key]!r}, but this run was given {given!r}. "
                 f"{key} is not read from a config: pass --{key.replace('_', '-')} instead, and remove it "

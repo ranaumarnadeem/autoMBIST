@@ -75,6 +75,20 @@ everything that predates the migration.
   worked example a test re-runs, and what autoMBIST does not provide (#41).
 
 ### Fixed
+- A `config.yml` snapshot given back to `generate --config` (or `run`) with a
+  different `--algo` or `--fault-type` regenerates with the new options. The
+  check that refuses an `algo:` or `fault_type:` key in a hand-written config
+  also refused the snapshot's own record of the run that wrote it.
+- YAML merge keys (`<<: *anchor`) load again in `openram.yml`, `harden.yml`,
+  yield-sweep configs and failure-rate files, and now load in `config.yml` too.
+  A key the mapping sets itself overrides a merged one; a key written twice is
+  still an error.
+- `simulate` refuses a memory model or output directory whose path contains
+  whitespace, with the path in the message. make splits its source lists on
+  whitespace, so the compile used to fail on two missing files.
+- A fault campaign given a `workdir` (`run_algo_campaign(..., workdir=...)`)
+  removes each fault's one-line list after its run, instead of leaving one file
+  per fault in `fault_runs/`.
 - The Python model of the on-chip repair analyzer reads march-c's last pass
   descending, as the RTL does. It could not change a repair decision (every
   spare a word can take is taken before that pass), so no repair figure

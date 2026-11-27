@@ -83,6 +83,7 @@ def test_checkerboard_detects_stuck_at_both_parities(
     result = run_algo_campaign(_mem(), resolve_algo("checkerboard"), [fault], workdir=tmp_path)
 
     assert result.golden_clean is True
+    assert not (tmp_path / "fault_runs").exists()  # each fault's own list is removed after its run
     r = result.faults[0]
     assert r.detected is True, f"{fault_type}@addr={vaddr} escaped -- expected detection at elem={expected_elem}"
     assert r.elem == expected_elem

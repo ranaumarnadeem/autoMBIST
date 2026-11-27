@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -31,16 +31,43 @@ _UserYamlLoader.add_implicit_resolver(
 )
 
 
-def _construct_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+_MERGE_TAG = "tag:yaml.org,2002:merge"
+
+
+def construct_unique_mapping(
+    loader: yaml.SafeLoader,
+    node: yaml.MappingNode,
+    deep: bool,
+    on_duplicate: Callable[[Any, yaml.Node], Exception],
+) -> dict[Any, Any]:
+    """A mapping, raising ``on_duplicate(key, key_node)`` for a key written twice.
+
+    ``<<:`` merge keys work as in SafeLoader: a merged key is a default the
+    mapping's own keys override, so only two of the mapping's OWN keys clash.
+    """
+    own = sum(1 for key_node, _ in node.value if key_node.tag != _MERGE_TAG)
+    # Puts the merged pairs first, then the mapping's own (always the last `own`).
+    loader.flatten_mapping(node)
+    merged_count = len(node.value) - own
     mapping: dict[Any, Any] = {}
-    for key_node, value_node in node.value:
+    own_keys: set[Any] = set()
+    for position, (key_node, value_node) in enumerate(node.value):
         key = loader.construct_object(key_node, deep=deep)
-        if key in mapping:
-            raise yaml.constructor.ConstructorError(
-                None, None, f"duplicate key {key!r}", key_node.start_mark,
-            )
+        if position >= merged_count:
+            if key in own_keys:
+                raise on_duplicate(key, key_node)
+            own_keys.add(key)
         mapping[key] = loader.construct_object(value_node, deep=deep)
     return mapping
+
+
+def _construct_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+    return construct_unique_mapping(
+        loader, node, deep,
+        lambda key, key_node: yaml.constructor.ConstructorError(
+            None, None, f"duplicate key {key!r}", key_node.start_mark,
+        ),
+    )
 
 
 _UserYamlLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)

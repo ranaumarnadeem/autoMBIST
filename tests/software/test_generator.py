@@ -1566,3 +1566,41 @@ def test_fixed_geometry_must_be_a_boolean(tmp_path: Path, base_config: dict[str,
     _write_yaml(config_path, {**base_config, "memory_has_fixed_geometry": "yes"})
     with pytest.raises(ConfigError, match="memory_has_fixed_geometry must be a boolean"):
         load_config(config_path)
+
+
+def test_a_snapshot_regenerates_with_another_algo_and_fault_type(tmp_path: Path, base_config: dict[str, object]) -> None:
+    """A config.yml snapshot records the run that wrote it; giving it back with
+    other options is a new run, not a conflicting config."""
+    config_path = tmp_path / "config.yml"
+    _write_yaml(config_path, base_config)
+    first = generate_from_config(config_path, tmp_path / "first")
+    snapshot = first.parent / "config.yml"
+    assert yaml.safe_load(snapshot.read_text(encoding="utf-8"))["algo"] == "march-c"
+    second = generate_from_config(snapshot, tmp_path / "second", algo="march-raw", fault_type="transition-up")
+    data = yaml.safe_load((second.parent / "config.yml").read_text(encoding="utf-8"))
+    assert (data["algo"], data["fault_type"]) == ("march-raw", "transition-up")
+    assert "march_raw_top" in second.read_text(encoding="utf-8")
+
+
+def test_a_config_can_use_yaml_merge_keys(tmp_path: Path) -> None:
+    """`<<: *anchor` shares port fields; a key the mapping sets itself overrides
+    the merged one, and is not a duplicate."""
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        "memory_name: sram_2rw\nwrapper_module_name: sram_2rw_mbist\naddr_width: 4\ndata_width: 8\n"
+        "we_active_low: true\nports:\n"
+        "  porta: &rw {type: rw, clk: clk0, addr: addr0, din: din0, dout: dout0, csb: csb0, we: web0}\n"
+        "  portb:\n    <<: *rw\n    clk: clk1\n    addr: addr1\n    din: din1\n    dout: dout1\n"
+        "    csb: csb1\n    we: web1\n",
+        encoding="utf-8",
+    )
+    ports = load_config(config_path)["normalized_ports"]
+    assert ports["portb"]["type"] == "rw" and ports["portb"]["clk"] == "clk1"
+
+
+def test_a_key_written_twice_beside_a_merge_key_is_still_a_duplicate(tmp_path: Path, base_config: dict[str, object]) -> None:
+    config_path = tmp_path / "config.yml"
+    text = yaml.safe_dump(base_config, sort_keys=False)
+    config_path.write_text("defaults: &d {addr_width: 4}\n" + text + "addr_width: 6\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="Duplicate key in config YAML: 'addr_width'"):
+        load_config(config_path)

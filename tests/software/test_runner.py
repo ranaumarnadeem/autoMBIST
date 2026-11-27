@@ -709,3 +709,18 @@ def test_the_fault_command_selects_one_observation(tmp_path: Path, kwargs, mode:
         fault_type="stuck-at", pulse_width_ns=2, algo="march-c", project_root=tmp_path, **kwargs,
     )
     assert mode in command
+
+
+def test_run_simulation_refuses_a_model_path_with_a_space(tmp_path: Path, monkeypatch) -> None:
+    """make splits SRAM_SOURCE on whitespace: the compile saw two missing files."""
+    config_path = tmp_path / "config.yml"
+    _write_yaml(config_path, _base_config())
+    generate_from_config(config_path, tmp_path / "out", use_saboteur=False)
+    model = tmp_path / "my models" / "sram_1rw.v"
+    model.parent.mkdir()
+    model.write_text("module sram_1rw; endmodule\n", encoding="utf-8")
+    monkeypatch.setattr(runner_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("autombist.runner.subprocess.run", lambda *a, **k: pytest.fail("make must not run"))
+
+    with pytest.raises(SimulationError, match="cannot contain whitespace.*my models"):
+        run_simulation(tmp_path / "out" / "sram_1rw", memory_model=[model])
